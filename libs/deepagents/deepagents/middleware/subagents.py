@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware._state import private_state_field_names
 
 
 class SubAgent(TypedDict):
@@ -234,9 +235,6 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
-    "skills_metadata",
-    "skills_load_errors",
-    "memory_contents",
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -248,14 +246,9 @@ When returning updates:
 2. The todos and `structured_response` keys are excluded as they do not have
     a defined reducer and no clear meaning for returning them from a subagent
     to the main agent.
-3. The `skills_metadata`, `skills_load_errors`, and `memory_contents` keys are
-    automatically excluded from subagent output via `PrivateStateAttr`
-    annotations on their respective state schemas. However, they must ALSO
-    be explicitly filtered from runtime.state when invoking a subagent to
-    prevent parent state from leaking to child agents (e.g., the general-purpose
-    subagent loads its own skills via `SkillsMiddleware`).
+3. Agent-private fields on middleware state schemas are excluded from both
+    subagent output and subagent inputs.
 """
-
 
 class TaskToolSchema(BaseModel):
     """Input schema for the `task` tool."""
@@ -460,6 +453,8 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
 ) -> BaseTool:
     """Create a task tool from pre-built subagent graphs.
 
@@ -529,6 +524,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
@@ -671,6 +667,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -680,12 +677,19 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
         self._backend = backend
         self._subagents = subagents
+        self._private_state_keys = private_state_keys or frozenset()
+        self._task_description = task_description
         subagent_specs = self._get_subagents()
+        self._subagent_specs = subagent_specs
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(subagent_specs, task_description)
+        task_tool = _build_task_tool(
+            subagent_specs,
+            task_description,
+            private_state_keys=self._private_state_keys,
+        )
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -694,6 +698,16 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
 
+        self.tools = [task_tool]
+
+    def set_private_state_keys(self, private_state_keys: frozenset[str]) -> None:
+        """Update the private-state filter and rebuild the task tool."""
+        self._private_state_keys = private_state_keys
+        task_tool = _build_task_tool(
+            self._subagent_specs,
+            task_description=self._task_description,
+            private_state_keys=private_state_keys,
+        )
         self.tools = [task_tool]
 
     def _get_subagents(self) -> list[_SubagentSpec]:

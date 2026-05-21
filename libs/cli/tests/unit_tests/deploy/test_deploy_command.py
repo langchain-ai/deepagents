@@ -156,3 +156,34 @@ def _extract_json(stdout: str) -> str:
             if depth == 0:
                 return stdout[start : i + 1]
     raise AssertionError("no JSON object found in stdout")
+
+
+def test_deploy_fails_when_tools_reference_unregistered_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_project(tmp_path)
+    (tmp_path / "tools.json").write_text(json.dumps({
+        "tools": [{"name": "x", "mcp_server_url": "https://missing.example"}],
+        "interrupt_config": {},
+    }))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/mcp-servers"):
+            return httpx.Response(200, json={"servers": []})
+        return httpx.Response(500)
+
+    monkeypatch.setattr(
+        api_client_module.ApiClient, "from_env",
+        classmethod(lambda cls, transport=None: cls(
+            endpoint="https://api.invalid", api_key="k",
+            transport=_make_transport(handler))),
+    )
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    with pytest.raises(SystemExit):
+        execute_deploy_command(_ns(tmp_path))
+    err = capsys.readouterr().out
+    assert "https://missing.example" in err
+    assert "deepagents mcp-servers add" in err

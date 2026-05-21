@@ -5,14 +5,18 @@ from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
+    STANDALONE_EXTRAS,
     format_extras_status,
     format_extras_status_plain,
     get_extras_status,
     get_optional_dependency_status,
+    verify_interpreter_deps,
 )
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -196,15 +200,16 @@ def test_format_extras_status_plain_columns_are_aligned() -> None:
 
 
 def test_extras_taxonomy_covers_pyproject() -> None:
-    """Every declared extra must be classified as provider or sandbox.
+    """Every declared extra must be classified in one of the taxonomy sets.
 
     A new extra added to `pyproject.toml` without an entry in
-    `MODEL_PROVIDER_EXTRAS` or `SANDBOX_EXTRAS` would silently fall out of
-    the onboarding dependency screen. This drift test forces the contributor
-    to update one of those constants alongside the dependency.
+    `MODEL_PROVIDER_EXTRAS`, `SANDBOX_EXTRAS`, or `STANDALONE_EXTRAS` would
+    silently fall out of the onboarding dependency screen. This drift test
+    forces the contributor to update one of those constants alongside the
+    dependency.
     """
     declared = _declared_extras()
-    classified = MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS
+    classified = MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
 
     uncategorized = declared - classified
     assert not uncategorized, (
@@ -219,9 +224,32 @@ def test_extras_taxonomy_covers_pyproject() -> None:
 
 
 def test_extras_categories_are_disjoint() -> None:
-    """An extra cannot be both a model provider and a sandbox."""
-    overlap = MODEL_PROVIDER_EXTRAS & SANDBOX_EXTRAS
-    assert not overlap, f"Extras classified twice: {sorted(overlap)}"
+    """An extra can only be classified in one taxonomy set."""
+    pairs = (
+        ("providers/sandboxes", MODEL_PROVIDER_EXTRAS & SANDBOX_EXTRAS),
+        ("providers/standalone", MODEL_PROVIDER_EXTRAS & STANDALONE_EXTRAS),
+        ("sandboxes/standalone", SANDBOX_EXTRAS & STANDALONE_EXTRAS),
+    )
+    for label, overlap in pairs:
+        assert not overlap, f"Extras classified twice in {label}: {sorted(overlap)}"
+
+
+def test_verify_interpreter_deps_raises_when_module_missing() -> None:
+    with (
+        patch(
+            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
+        ),
+        pytest.raises(ImportError, match="deepagents-code\\[quickjs\\]"),
+    ):
+        verify_interpreter_deps()
+
+
+def test_verify_interpreter_deps_passes_when_module_present() -> None:
+    fake_spec = MagicMock()
+    with patch(
+        "deepagents_code.extras_info.importlib.util.find_spec", return_value=fake_spec
+    ):
+        verify_interpreter_deps()
 
 
 def test_format_extras_status_renders_markdown_table() -> None:

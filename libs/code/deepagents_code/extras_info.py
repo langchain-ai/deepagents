@@ -7,6 +7,7 @@ in either plain text (for stdout) or markdown (for rich UI contexts).
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import re
 from dataclasses import dataclass
@@ -61,6 +62,14 @@ Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 
 SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
 """Optional extras that add sandbox integrations."""
+
+STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
+"""Optional extras that don't fit the provider/sandbox taxonomy.
+
+These integrations layer onto the main agent (e.g. a JS REPL via
+`langchain-quickjs`) and aren't grouped under `all-providers` or
+`all-sandboxes`.
+"""
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
@@ -191,6 +200,36 @@ def get_optional_dependency_status(
         )
         for name in names
     )
+
+
+def verify_interpreter_deps() -> None:
+    """Check that `langchain-quickjs` is installed for the `--interpreter` flag.
+
+    Uses `importlib.util.find_spec` for a lightweight check with no actual
+    imports. Call this in the app process *before* spawning the server
+    subprocess so users get a clear, actionable error instead of an opaque
+    server crash when the optional `quickjs` extra is not installed.
+
+    Returns silently when the package is importable.
+
+    Raises:
+        ImportError: If `langchain_quickjs` is not importable.
+    """
+    try:
+        found = importlib.util.find_spec("langchain_quickjs") is not None
+    except (ImportError, ValueError):
+        # A broken-but-installed `langchain_quickjs` (e.g., parent package
+        # raises during import) would otherwise masquerade as "not installed";
+        # capture the underlying cause for debug logs.
+        logger.debug("find_spec failed for langchain_quickjs", exc_info=True)
+        found = False
+
+    if not found:
+        msg = (
+            "Missing dependencies for --interpreter. "
+            "Install with: pip install 'deepagents-code[quickjs]'"
+        )
+        raise ImportError(msg)
 
 
 def format_extras_status_plain(status: ExtrasStatus) -> str:

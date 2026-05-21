@@ -116,6 +116,9 @@ all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop]",
 ]
 
+# Standalone integrations (not part of any composite extra)
+quickjs = ["langchain-quickjs>=0.1.2,<0.2.0"]
+
 
 [project.scripts]
 deepagents-code = "deepagents_code:cli_main"
@@ -137,6 +140,7 @@ test = [
     "build>=1.0.0,<2.0.0",
     "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
+    "langchain-quickjs>=0.1.2,<0.2.0",
     "pytest>=8.3.4,<10.0.0",
     "pytest-asyncio>=0.25.3,<2.0.0",
     "pytest-benchmark>=5.1.0,<6.0.0",
@@ -167,6 +171,7 @@ include = [
 deepagents = { path = "../deepagents", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
@@ -175,6 +180,7 @@ extra-paths = [
     "../deepagents",
     "../partners/daytona",
     "../partners/modal",
+    "../partners/quickjs",
     "../partners/runloop",
 ]
 

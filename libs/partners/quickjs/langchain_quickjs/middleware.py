@@ -1,4 +1,4 @@
-"""``CodeInterpreterMiddleware``: exposes a persistent JavaScript REPL as an agent tool.
+"""`CodeInterpreterMiddleware`: exposes a persistent JavaScript REPL as an agent tool.
 
 State persists across tool calls within a LangGraph thread (each thread
 gets its own QuickJS context).
@@ -52,7 +52,7 @@ _DEFAULT_TOOL_NAME = "eval"
 
 
 class REPLState(AgentState):
-    """State schema for ``CodeInterpreterMiddleware``."""
+    """State schema for `CodeInterpreterMiddleware`."""
 
     _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
 
@@ -69,15 +69,15 @@ class EvalSchema(BaseModel):
 
 
 def _resolve_thread_id(fallback: str) -> str:
-    """Extract ``thread_id`` from langgraph config or use ``fallback``.
+    """Extract `thread_id` from langgraph config or use `fallback`.
 
     The fallback is a middleware-instance-scoped id: when the caller
-    didn't configure a ``thread_id`` (common for ad-hoc
-    ``agent.invoke(...)`` in tests or single-shot scripts), we still need
+    didn't configure a `thread_id` (common for ad-hoc
+    `agent.invoke(...)` in tests or single-shot scripts), we still need
     all resolver calls within one CodeInterpreterMiddleware lifetime to return the
-    same id — otherwise ``wrap_model_call`` installs tools on one REPL
+    same id — otherwise `wrap_model_call` installs tools on one REPL
     and the eval tool looks up a different one, and the model sees
-    ``ReferenceError: tools is not defined``.
+    `ReferenceError: tools is not defined`.
     """
     try:
         config = get_config()
@@ -101,47 +101,48 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call wall-clock timeout in seconds. Applied to every
-            ``eval`` on every context. Default 5.
-        max_ptc_calls: Maximum number of ``tools.*`` bridge calls allowed
-            during one ``eval`` execution. Exceeding this budget throws
+            `eval` on every context. Default 5.
+        max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
+            during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
-            Uncaught overflows surface as ``PTCCallBudgetExceeded``.
-            ``None`` disables the budget (unsafe for untrusted prompts;
+            Uncaught overflows surface as `PTCCallBudgetExceeded`.
+            `None` disables the budget (unsafe for untrusted prompts;
             enables PTC-call DoS patterns). Default 256.
 
             !!! warning
-                Setting ``max_ptc_calls=None`` disables the call budget and can allow
+
+                Setting `max_ptc_calls=None` disables the call budget and can allow
                 unbounded PTC host-call loops (DoS risk). Only disable in trusted
                 environments.
 
-        tool_name: Name of the tool exposed to the model. Default ``eval``.
+        tool_name: Name of the tool exposed to the model. Default `eval`.
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
             the model. Console buffering is also bounded to this value
             during collection. Default 4000.
-        capture_console: If ``True``, install a ``console`` object that
-            buffers ``console.log/warn/error`` calls and emits them in
-            ``<stdout>`` blocks alongside the result. Default ``True``.
-        skills_backend: Optional ``BackendProtocol`` the REPL reads skill
+        capture_console: If `True`, install a `console` object that
+            buffers `console.log/warn/error` calls and emits them in
+            `<stdout>` blocks alongside the result. Default `True`.
+        skills_backend: Optional `BackendProtocol` the REPL reads skill
             source files from. When set and a paired
-            ``SkillsMiddleware`` populates ``skills_metadata`` in state,
-            skills with a ``module`` frontmatter key become dynamic-
-            importable from the REPL as ``await import("@/skills/<name>")``.
-            When ``None``, skill modules are not installed
-            (``import(...)`` fails at the resolver). This must be the
-            same backend ``SkillsMiddleware`` uses.
+            `SkillsMiddleware` populates `skills_metadata` in state,
+            skills with a `module` frontmatter key become dynamic-
+            importable from the REPL as `await import("@/skills/<name>")`.
+            When `None`, skill modules are not installed
+            (`import(...)` fails at the resolver). This must be the
+            same backend `SkillsMiddleware` uses.
         ptc: Programmatic tool calling — expose agent tools inside the
-            REPL as ``tools.<camelCase>(input) => Promise<string>``. One
-            ``eval`` call can then orchestrate many tool calls (loops,
-            ``Promise.all``, conditional branching). Accepts:
+            REPL as `tools.<camelCase>(input) => Promise<string>`. One
+            `eval` call can then orchestrate many tool calls (loops,
+            `Promise.all`, conditional branching). Accepts:
 
-            - ``None`` (default) — disabled.
-            - ``list[str | BaseTool]`` — allowlist entries may be:
-              - ``str`` tool names, matched against the agent's toolset.
-              - ``BaseTool`` instances, exposed directly even if not on
+            - `None` (default) — disabled.
+            - `list[str | BaseTool]` — allowlist entries may be:
+              - `str` tool names, matched against the agent's toolset.
+              - `BaseTool` instances, exposed directly even if not on
                 the agent's tool list.
 
-            Mixed lists are supported. Explicit ``BaseTool`` entries are
+            Mixed lists are supported. Explicit `BaseTool` entries are
             considered first; then name-matched agent tools are added.
             Duplicate names are deduplicated.
 
@@ -152,15 +153,15 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 enforced per PTC-invoked tool call.
 
             The REPL's own tool is always excluded; a model asking for
-            ``tools.eval("...")`` would recurse pointlessly.
-        snapshot_between_turns: If ``True`` (default), persist REPL state
-            across agent turns by creating a snapshot in ``after_agent`` and
-            restoring it in ``before_agent``. If ``False``, preserve the
+            `tools.eval("...")` would recurse pointlessly.
+        snapshot_between_turns: If `True` (default), persist REPL state
+            across agent turns by creating a snapshot in `after_agent` and
+            restoring it in `before_agent`. If `False`, preserve the
             previous behavior where state resets each turn.
         max_snapshot_bytes: Maximum serialized snapshot payload size allowed
             in middleware state. If a snapshot exceeds this size, it is
-            dropped (``_quickjs_snapshot_payload=None``). Defaults to
-            ``memory_limit``.
+            dropped (`_quickjs_snapshot_payload=None`). Defaults to
+            `memory_limit`.
 
     Example:
         ```python
@@ -224,11 +225,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             snapshot_between_turns=snapshot_between_turns,
         )
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
-        # Stable fallback thread id — used when ``thread_id`` isn't in
-        # langgraph config. Must be instance-scoped so ``wrap_model_call``
-        # and ``eval`` invocations within one conversation resolve to the
+        # Stable fallback thread id — used when `thread_id` isn't in
+        # langgraph config. Must be instance-scoped so `wrap_model_call`
+        # and `eval` invocations within one conversation resolve to the
         # same REPL; otherwise the PTC install happens on one REPL and the
-        # eval runs on another (and sees ``tools`` undefined).
+        # eval runs on another (and sees `tools` undefined).
         self._fallback_thread_id = f"session_{uuid.uuid4().hex[:8]}"
         self.tools: list[BaseTool] = [self._build_tool()]
 
@@ -339,7 +340,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of ``before_agent`` snapshot restore."""
+        """Async variant of `before_agent` snapshot restore."""
         if not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
@@ -393,7 +394,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         live tool list off the request (middlewares upstream may have
         filtered it), decides what PTC exposes this turn, registers any
         missing host-function bridges on the current thread's REPL, and
-        rebuilds ``globalThis.tools`` if the exposed name set changed.
+        rebuilds `globalThis.tools` if the exposed name set changed.
         """
         if self._ptc is None:
             return self._base_system_prompt
@@ -483,7 +484,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of ``after_agent`` snapshot+evict behavior."""
+        """Async variant of `after_agent` snapshot+evict behavior."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         if not self._snapshot_between_turns:
             await self._registry.aevict(thread_id)
@@ -511,7 +512,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""
-        # Wrapped in ``contextlib.suppress`` because __del__ must not raise
+        # Wrapped in `contextlib.suppress` because __del__ must not raise
         # during interpreter shutdown, when dependencies may already be
         # half-unloaded.
         with contextlib.suppress(Exception):

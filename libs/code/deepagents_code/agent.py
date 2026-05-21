@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
@@ -196,6 +196,121 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if (rejection := self._validate_tool_call(request)) is not None:
             return rejection
         return await handler(request)
+
+
+_INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
+    {"execute", "write_file", "edit_file"}
+)
+"""Tools considered write/shell capable for PTC auditing.
+
+When `interpreter_ptc="all"` resolves to this set, an INFO log names every
+write tool that was included so the audit trail is searchable. The `"safe"`
+preset already excludes them; this is the belt-and-braces check for `"all"`.
+"""
+
+
+def _resolve_ptc_option(
+    ptc: str | bool | list[str],
+    *,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]],
+    acknowledge_unsafe: bool,
+    auto_approve: bool,
+) -> list[str] | None:
+    """Resolve the configured PTC allowlist to a concrete list of tool names.
+
+    Args:
+        ptc: Raw `interpreter_ptc` value from settings or CLI. Accepts
+            `False`/`[]`, `"safe"`, `"all"`, or a list of names.
+        tools: Live tool list given to `create_cli_agent`. Used to validate
+            explicit names, intersect the `"safe"` preset, and enumerate
+            `"all"`.
+        acknowledge_unsafe: Mirrors `settings.interpreter_ptc_acknowledge_unsafe`;
+            required when `ptc="all"` and `auto_approve` is `False`.
+        auto_approve: Whether HITL approval is globally disabled. When `True`,
+            `"all"` does not require `acknowledge_unsafe` because every host
+            tool already runs without prompting.
+
+    Returns:
+        `None` when PTC should be disabled, otherwise a list of tool names
+        suitable for `CodeInterpreterMiddleware(ptc=...)`.
+
+    Raises:
+        ValueError: For unknown names in an explicit list, or for `"all"`
+            without `acknowledge_unsafe` outside of `auto_approve`.
+    """
+    from langchain.tools import BaseTool as _BaseTool
+
+    if ptc is False or ptc is None or ptc == []:
+        return None
+
+    live_names: list[str] = []
+    for tool in tools:
+        if isinstance(tool, _BaseTool):
+            name = tool.name
+            if isinstance(name, str):
+                live_names.append(name)
+        elif isinstance(tool, dict):
+            raw_name = cast("dict[str, Any]", tool).get("name")
+            if isinstance(raw_name, str):
+                live_names.append(raw_name)
+        else:
+            attr = getattr(tool, "name", None)
+            if isinstance(attr, str):
+                live_names.append(attr)
+    live_set: set[str] = set(live_names)
+
+    if isinstance(ptc, str):
+        normalized = ptc.strip().lower()
+        if normalized == "safe":
+            from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+            selected = sorted(INTERPRETER_PTC_SAFE_PRESET & live_set)
+            dropped = sorted(INTERPRETER_PTC_SAFE_PRESET - live_set)
+            if dropped:
+                logger.debug(
+                    "interpreter_ptc='safe' preset members not present in toolset: %s",
+                    dropped,
+                )
+            return selected
+        if normalized == "all":
+            if not auto_approve and not acknowledge_unsafe:
+                msg = (
+                    "interpreter_ptc='all' exposes every host tool to PTC "
+                    "calls that bypass HITL approval. Set "
+                    "interpreter_ptc_acknowledge_unsafe=True (or use "
+                    "auto_approve=True) to opt in."
+                )
+                raise ValueError(msg)
+            included = sorted(live_set)
+            write_included = sorted(_INTERPRETER_WRITE_TOOLS & live_set)
+            if write_included:
+                logger.info(
+                    "interpreter_ptc='all' includes write/shell tools: %s",
+                    write_included,
+                )
+            return included
+        msg = (
+            f"Invalid interpreter_ptc string {ptc!r}; expected 'safe', 'all', "
+            "or a list of tool names."
+        )
+        raise ValueError(msg)
+
+    if isinstance(ptc, list):
+        unknown = [name for name in ptc if name not in live_set]
+        if unknown:
+            available = ", ".join(sorted(live_set)) or "<none>"
+            msg = (
+                "Unknown tool names in interpreter_ptc: "
+                f"{sorted(set(unknown))}. Available tools: {available}."
+            )
+            raise ValueError(msg)
+        return list(ptc)
+
+    msg = (
+        "interpreter_ptc must be False, 'safe', 'all', or a list of tool names; "
+        f"got {type(ptc).__name__}."
+    )
+    raise ValueError(msg)
 
 
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
@@ -924,6 +1039,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    enable_interpreter: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -980,6 +1096,27 @@ def create_cli_agent(
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
+        enable_interpreter: Wire `CodeInterpreterMiddleware` from
+            `langchain-quickjs` into the main agent.
+
+            Local-mode only — passing a non-`None` `sandbox` while
+            `enable_interpreter=True` raises `ValueError`. Subagents do not
+            receive the interpreter in v1.
+
+            PTC (`tools.*` host bridge) calls bypass `interrupt_on`/HITL
+            approval, so `settings.interpreter_ptc` is the only effective
+            control over which host tools can be invoked from inside the
+            REPL. `js_eval` itself is intentionally not gated by HITL —
+            per-call approval would be unusably noisy and would not block
+            PTC fan-out anyway. The `"safe"` preset is therefore restricted
+            to tools that are already non-HITL outside the REPL (read-only
+            file inspection); exposing HITL-gated tools — network fetch,
+            subagent dispatch, shell, file writes — requires an explicit
+            list or `interpreter_ptc="all"` with
+            `interpreter_ptc_acknowledge_unsafe=True`.
+
+            Requires the `quickjs` optional extra
+            (`langchain-quickjs>=0.1.2,<0.2.0`).
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -998,6 +1135,12 @@ def create_cli_agent(
             - `agent_graph`: Configured LangGraph Pregel instance ready
                 for execution
             - `composite_backend`: `CompositeBackend` for file operations
+
+    Raises:
+        ValueError: When `enable_interpreter=True` is paired with a
+            non-`None` `sandbox`, when `settings.interpreter_ptc` contains
+            unknown tool names, or when `interpreter_ptc="all"` is used
+            without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
     """
     tools = tools or []
     effective_cwd = (
@@ -1200,6 +1343,37 @@ def create_cli_agent(
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    if enable_interpreter:
+        if sandbox is not None:
+            msg = (
+                "enable_interpreter=True is not supported with a remote "
+                "sandbox in this release. Disable the sandbox or unset "
+                "enable_interpreter."
+            )
+            raise ValueError(msg)
+        # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
+        from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
+
+        ptc_names = _resolve_ptc_option(
+            settings.interpreter_ptc,
+            tools=tools,
+            acknowledge_unsafe=settings.interpreter_ptc_acknowledge_unsafe,
+            auto_approve=auto_approve,
+        )
+        ptc_option: PTCOption | None = (
+            cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
+        )
+        agent_middleware.append(
+            CodeInterpreterMiddleware(
+                tool_name="js_eval",
+                timeout=settings.interpreter_timeout_seconds,
+                memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
+                max_ptc_calls=settings.interpreter_max_ptc_calls,
+                max_result_chars=settings.interpreter_max_result_chars,
+                ptc=ptc_option,
+            )
+        )
 
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):

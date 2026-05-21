@@ -6,13 +6,13 @@ Mirrors the structure of langgraph's `test_stream_subgraph_transformer.py`.
 
 The realistic event sequence is:
 
-1. Parent-scope `tasks` start with ``name == "tools"`` and ``input``
-   containing ``task`` tool calls — this is how the transformer learns
-   ``parent_task_id → (subagent_type, tool_call_id)``.
-2. Child-scope `tasks` start at ``["tools:<parent_task_id>"]`` —
+1. Parent-scope `tasks` start with `name == "tools"` and `input`
+   containing `task` tool calls — this is how the transformer learns
+   `parent_task_id → (subagent_type, tool_call_id)`.
+2. Child-scope `tasks` start at `["tools:<parent_task_id>"]` —
    triggers `_on_started`, which looks up the parent mapping and
    builds a `SubagentRunStream` if the type is declared.
-3. Parent-scope `tasks` result with the matching ``id`` — closes the
+3. Parent-scope `tasks` result with the matching `id` — closes the
    child handle.
 """
 

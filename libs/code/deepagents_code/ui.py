@@ -129,6 +129,14 @@ def show_help() -> None:
     console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
+    console.print(
+        "  --interpreter              Enable JS interpreter (`js_eval`) middleware "
+        "(local mode only)"
+    )
+    console.print(
+        "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
+        "tool names"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(

@@ -54,8 +54,8 @@ class ContextHubBackend(BackendProtocol):
         """Initialize ContextHubBackend.
 
         Args:
-            identifier: Hub agent repo, as ``"owner/name"`` or ``"-/name"``.
-            client: LangSmith client. Defaults to ``Client()``.
+            identifier: Hub agent repo, as `"owner/name"` or `"-/name"`.
+            client: LangSmith client. Defaults to `Client()`.
         """
         self._identifier = identifier
         self._client = client if client is not None else Client()
@@ -103,7 +103,7 @@ class ContextHubBackend(BackendProtocol):
         return self._commit_hash is not None
 
     def _commit(self, files: dict[str, str]) -> None:
-        """Push ``files`` as one commit; update the cache on success."""
+        """Push `files` as one commit; update the cache on success."""
         if not files:
             return
 
@@ -162,7 +162,7 @@ class ContextHubBackend(BackendProtocol):
         )
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        """Commit ``content`` to ``file_path``."""
+        """Commit `content` to `file_path`."""
         hub_path = self._strip_prefix(file_path)
         try:
             self._ensure_cache()  # populates _commit_hash for parent_commit on push
@@ -180,7 +180,7 @@ class ContextHubBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
-        """Replace ``old_string`` with ``new_string`` in a file."""
+        """Replace `old_string` with `new_string` in a file."""
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
@@ -201,7 +201,7 @@ class ContextHubBackend(BackendProtocol):
         return EditResult(path=file_path, occurrences=occurrences)
 
     def ls(self, path: str = "/") -> LsResult:
-        """List immediate files and subdirectories under ``path`` (non-recursive)."""
+        """List immediate files and subdirectories under `path` (non-recursive)."""
         hub_prefix = self._strip_prefix(path).rstrip("/")
         try:
             cache = self._ensure_cache()
@@ -238,7 +238,7 @@ class ContextHubBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search contents for ``pattern`` (optional ``path`` / ``glob`` filters)."""
+        """Search contents for `pattern` (optional `path` / `glob` filters)."""
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
@@ -265,7 +265,7 @@ class ContextHubBackend(BackendProtocol):
         return GrepResult(matches=matches)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
-        """Return files matching ``pattern`` (``path`` unused — flat namespace)."""
+        """Return files matching `pattern` (`path` unused — flat namespace)."""
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
@@ -280,7 +280,7 @@ class ContextHubBackend(BackendProtocol):
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload text files in one commit; non-UTF-8 inputs rejected per file."""
-        # Decode each input; ``None`` text means we'll reject this entry as invalid.
+        # Decode each input; `None` text means we'll reject this entry as invalid.
         decoded: list[tuple[str, str | None]] = []
         valid_files: dict[str, str] = {}
         for path, content in files:
@@ -315,7 +315,7 @@ class ContextHubBackend(BackendProtocol):
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files as raw bytes. Missing paths return ``file_not_found``."""
+        """Download files as raw bytes. Missing paths return `file_not_found`."""
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:

@@ -15,10 +15,13 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
-import traceback
 from typing import Any
 
 from deepagents_code._server_config import ServerConfig
+from deepagents_code._startup_error import (
+    STARTUP_ERROR_MARKER as _STARTUP_ERROR_MARKER,
+    emit_startup_failure,
+)
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 
 logger = logging.getLogger(__name__)
@@ -26,7 +29,6 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
-_STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
 
 
 def _print_startup_error(message: str) -> None:
@@ -229,10 +231,6 @@ def make_graph() -> Any:  # noqa: ANN401
 
 try:
     graph = make_graph()
-except Exception as exc:
-    logger.critical("Failed to initialize server graph", exc_info=True)
-    print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-        f"Failed to initialize server graph: {exc}\n{traceback.format_exc()}",
-        file=sys.stderr,
-    )
+except Exception as exc:  # noqa: BLE001  # top-level barrier: any failure must surface to parent
+    emit_startup_failure(exc)
     sys.exit(1)

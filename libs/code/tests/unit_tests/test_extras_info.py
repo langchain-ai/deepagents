@@ -5,6 +5,8 @@ from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
@@ -14,6 +16,7 @@ from deepagents_code.extras_info import (
     format_extras_status_plain,
     get_extras_status,
     get_optional_dependency_status,
+    verify_interpreter_deps,
 )
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -229,6 +232,24 @@ def test_extras_categories_are_disjoint() -> None:
     )
     for label, overlap in pairs:
         assert not overlap, f"Extras classified twice in {label}: {sorted(overlap)}"
+
+
+def test_verify_interpreter_deps_raises_when_module_missing() -> None:
+    with (
+        patch(
+            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
+        ),
+        pytest.raises(ImportError, match="deepagents-code\\[quickjs\\]"),
+    ):
+        verify_interpreter_deps()
+
+
+def test_verify_interpreter_deps_passes_when_module_present() -> None:
+    fake_spec = MagicMock()
+    with patch(
+        "deepagents_code.extras_info.importlib.util.find_spec", return_value=fake_spec
+    ):
+        verify_interpreter_deps()
 
 
 def test_format_extras_status_renders_markdown_table() -> None:

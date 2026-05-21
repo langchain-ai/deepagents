@@ -1630,6 +1630,26 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     return False
 
 
+def _verify_interpreter_or_exit() -> None:
+    """Run the `--interpreter` pre-flight check; print and exit on failure.
+
+    Called before spawning the langgraph dev server subprocess so a missing
+    `langchain-quickjs` extra surfaces a one-line install hint instead of an
+    opaque "Server process exited with code N" downstream.
+    """
+    from deepagents_code.extras_info import verify_interpreter_deps
+
+    try:
+        verify_interpreter_deps()
+    except ImportError as exc:
+        from rich.markup import escape
+
+        from deepagents_code.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        sys.exit(1)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -2154,6 +2174,9 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
+
             # Non-interactive mode - execute single task and exit
             from deepagents_code.non_interactive import run_non_interactive
 
@@ -2241,6 +2264,9 @@ def cli_main() -> None:
 
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
+
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
 
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(

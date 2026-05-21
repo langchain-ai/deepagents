@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import sys
+import types
 from typing import TYPE_CHECKING
 
 import pytest
@@ -206,6 +210,87 @@ class TestRenderDeployGraph:
         result = _render_deploy_graph(config, mcp_present=False)
         assert "_load_mcp_tools" not in result
         assert "pass  # no MCP servers configured" in result
+
+    def test_mcp_loader_expands_env_vars(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Emitted loader expands `${VAR}` in url + headers before MCP connect.
+
+        Mirrors the `${VAR}` substitution behavior of `deepagents-code`'s
+        `.mcp.json`. Without this, headers like
+        `Authorization: Bearer ${TOKEN}` reach MCP servers as the literal
+        string and auth fails silently.
+
+        Also verifies the documented contracts: unset references are left as
+        literal `${VAR}` so a recognizable token surfaces, non-string header
+        values pass through unchanged, and unresolved tokens emit a warning.
+        """
+        from deepagents_cli.deploy.templates import MCP_TOOLS_TEMPLATE
+
+        captured: dict[str, dict] = {}
+
+        class _FakeClient:
+            def __init__(self, connections: dict) -> None:
+                captured["connections"] = connections
+
+            async def get_tools(self) -> list:
+                return []
+
+        fake_root = types.ModuleType("langchain_mcp_adapters")
+        fake_client = types.ModuleType("langchain_mcp_adapters.client")
+        fake_client.MultiServerMCPClient = _FakeClient  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters", fake_root)
+        monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", fake_client)
+
+        (tmp_path / "_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "primary": {
+                            "type": "http",
+                            "url": "https://api.example.com/${ENDPOINT}",
+                            "headers": {
+                                "Authorization": "Bearer ${TOKEN}",
+                                "X-Unset": "value-${MISSING_VAR}",
+                                "X-Numeric": 42,
+                            },
+                        },
+                    },
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("ENDPOINT", "v1/chat")
+        monkeypatch.setenv("TOKEN", "secret-abc")
+        monkeypatch.delenv("MISSING_VAR", raising=False)
+
+        loader_logger = logging.getLogger("test_mcp_loader")
+        namespace: dict = {
+            "__file__": str(tmp_path / "graph.py"),
+            "logger": loader_logger,
+        }
+        exec(
+            compile(MCP_TOOLS_TEMPLATE, "<MCP_TOOLS_TEMPLATE>", "exec"),
+            namespace,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="test_mcp_loader"):
+            asyncio.run(namespace["_load_mcp_tools"]())
+
+        conn = captured["connections"]["primary"]
+        assert conn["url"] == "https://api.example.com/v1/chat"
+        assert conn["headers"]["Authorization"] == "Bearer secret-abc"
+        assert conn["headers"]["X-Unset"] == "value-${MISSING_VAR}"
+        assert conn["headers"]["X-Numeric"] == 42
+        assert any(
+            "unresolved environment reference" in rec.getMessage()
+            and "${MISSING_VAR}" in rec.getMessage()
+            for rec in caplog.records
+        )
 
     def test_no_system_prompt_in_output(self) -> None:
         """AGENTS.md should not be baked into the deploy graph as a system prompt."""

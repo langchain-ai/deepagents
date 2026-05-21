@@ -631,6 +631,7 @@ provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fir
 [package.metadata.requires-dev]
 test = [
     { name = "build", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "pytest", specifier = ">=8.3.4,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.25.3,<2.0.0" },
     { name = "pytest-benchmark", specifier = ">=5.1.0,<6.0.0" },

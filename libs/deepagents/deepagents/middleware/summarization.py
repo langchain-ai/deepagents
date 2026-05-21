@@ -66,6 +66,7 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
+from langchain.chat_models import BaseChatModel
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
@@ -84,7 +85,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
-    from langchain.chat_models import BaseChatModel
     from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
@@ -92,6 +92,11 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+# Helpers are cached per distinct override model: typically {main, summarizer}
+# plus one prior of each across a hot-swap, so 4 covers the realistic ceiling
+# without unbounded growth under server-mode concurrency.
+_HELPER_CACHE_MAX_SIZE = 4
 
 
 class CompactConversationSchema(BaseModel):
@@ -274,12 +279,17 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
             model_resolver: Optional callable that turns a model spec string
-                into a `BaseChatModel`. Used to resolve runtime context
-                overrides (`runtime.context["model"]` and
+                into a `BaseChatModel`.
+
+                Used to resolve runtime context overrides
+                (`runtime.context["model"]` and
                 `runtime.context["summarization_model"]`) without importing
-                CLI/host code into this module. When unset and a string
-                override is encountered at runtime, a `RuntimeError` is
-                raised.
+                CLI/host code into this module. When unset, the SDK's
+                `resolve_model` is used as a fallback. Hosts that need to
+                cache resolved models (recommended — the per-request helper
+                cache keys on `id(model)`) should pass an `lru_cache`-wrapped
+                factory here so repeated string specs return the same
+                `BaseChatModel` instance.
 
         Example:
             ```python
@@ -321,9 +331,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         # Capture LC helper construction args so we can reconstitute the helper
         # per-request when the runtime context swaps the effective model.
-        # `_lc_helper.model` is the construction-time fallback; runtime overrides
-        # produce a fresh helper without mutating the shared instance.
-        self._construction_model = self._lc_helper.model
+        # `self._lc_helper.model` remains the construction-time fallback;
+        # runtime overrides produce a fresh helper without mutating it.
         self._helper_init_kwargs: dict[str, Any] = {
             "trigger": trigger,
             "keep": keep,
@@ -334,7 +343,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         }
         self._model_resolver: Callable[[str], BaseChatModel] | None = model_resolver
         self._helper_cache: OrderedDict[int, LCSummarizationMiddleware] = OrderedDict()
-        self._helper_cache_max = 4
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -379,42 +387,40 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         Helpers are cached by `id(model)` with a small LRU bound so a graph
         running under server-mode concurrency does not accumulate one helper
-        per request, but does avoid rebuilding on every turn.
+        per request, but does avoid rebuilding on every turn. The cache itself
+        pins `model`, so `id` recycling between live entries is not a concern.
         """
-        if model is self._construction_model:
+        if model is self._lc_helper.model:
             return self._lc_helper
         key = id(model)
         cached = self._helper_cache.get(key)
-        if cached is not None and cached.model is model:
+        if cached is not None:
             self._helper_cache.move_to_end(key)
             return cached
         helper = LCSummarizationMiddleware(model=model, **self._helper_init_kwargs)
         self._helper_cache[key] = helper
-        self._helper_cache.move_to_end(key)
-        while len(self._helper_cache) > self._helper_cache_max:
+        if len(self._helper_cache) > _HELPER_CACHE_MAX_SIZE:
             self._helper_cache.popitem(last=False)
         return helper
 
     def _resolve_model_from_context(
         self,
-        runtime: Runtime | None,
+        ctx: dict[str, Any] | None,
         key: str,
     ) -> BaseChatModel | None:
-        """Resolve a model from `runtime.context[key]`, or `None` if absent.
+        """Resolve a model from `ctx[key]`, or `None` if absent.
 
         For string specs, looks up a resolver in this order:
 
         1. The constructor-level `model_resolver`.
-        2. `runtime.context["model_resolver"]` — a per-call resolver hosts
-            (e.g. `deepagents-code`) can inject without touching SDK API.
+        2. `ctx["model_resolver"]` — a per-call resolver hosts (e.g.
+            `deepagents-code`) can inject without touching SDK API.
+        3. `deepagents._models.resolve_model` — SDK default, matches what
+            `create_summarization_tool_middleware` does at the public API.
 
-        Raises `RuntimeError` when a string spec is found but no resolver is
-        available.
+        Raises `TypeError` if `spec` is neither a string nor a `BaseChatModel`.
         """
-        if runtime is None:
-            return None
-        ctx = getattr(runtime, "context", None)
-        if not isinstance(ctx, dict):
+        if ctx is None:
             return None
         spec = ctx.get(key)
         if spec is None:
@@ -422,17 +428,14 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         if isinstance(spec, str):
             resolver = self._model_resolver or ctx.get("model_resolver")
             if resolver is None:
-                msg = (
-                    f"Runtime context provided a string model spec for "
-                    f"'{key}' but no `model_resolver` was configured. Either "
-                    "pass `model_resolver=...` to the summarization "
-                    "middleware, place a callable at "
-                    "`runtime.context['model_resolver']`, or supply a "
-                    "resolved `BaseChatModel` instance instead of a string."
-                )
-                raise RuntimeError(msg)
+                from deepagents._models import resolve_model  # noqa: PLC0415
+
+                resolver = resolve_model
             return resolver(spec)
-        return cast("BaseChatModel", spec)
+        if isinstance(spec, BaseChatModel):
+            return spec
+        msg = f"Runtime context['{key}'] must be a string model spec or a `BaseChatModel` instance, got {type(spec).__name__}."
+        raise TypeError(msg)
 
     def _resolve_models(
         self,
@@ -451,10 +454,17 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         `summarization_model` does NOT influence thresholds.
         """
-        ctx_main = self._resolve_model_from_context(runtime, "model")
-        threshold_model = ctx_main if ctx_main is not None else self._construction_model
+        ctx: dict[str, Any] | None = None
+        if runtime is not None:
+            raw = getattr(runtime, "context", None)
+            if isinstance(raw, dict):
+                ctx = raw
 
-        ctx_summ = self._resolve_model_from_context(runtime, "summarization_model")
+        construction_model = self._lc_helper.model
+        ctx_main = self._resolve_model_from_context(ctx, "model")
+        threshold_model = ctx_main if ctx_main is not None else construction_model
+
+        ctx_summ = self._resolve_model_from_context(ctx, "summarization_model")
         summarizer_model = ctx_summ if ctx_summ is not None else threshold_model
 
         return threshold_model, summarizer_model
@@ -706,15 +716,15 @@ A condensed summary follows:
         self,
         messages: list[AnyMessage],
         total_tokens: int,
-        helper: LCSummarizationMiddleware | None = None,
+        *,
+        helper: LCSummarizationMiddleware,
     ) -> bool:
         """Check if argument truncation should be triggered.
 
         Args:
             messages: Current message history.
             total_tokens: Total token count of messages.
-            helper: Optional LC helper to read profile limits from. Defaults
-                to the construction-time helper.
+            helper: LC helper to read profile limits from.
 
         Returns:
             True if truncation should occur, False otherwise.
@@ -723,14 +733,13 @@ A condensed summary follows:
             return False
 
         trigger_type, trigger_value = self._truncate_args_trigger
-        _helper = helper if helper is not None else self._lc_helper
 
         if trigger_type == "messages":
             return len(messages) >= trigger_value
         if trigger_type == "tokens":
             return total_tokens >= trigger_value
         if trigger_type == "fraction":
-            max_input_tokens = _helper._get_profile_limits()
+            max_input_tokens = helper._get_profile_limits()
             if max_input_tokens is None:
                 return False
             threshold = int(max_input_tokens * trigger_value)
@@ -743,7 +752,8 @@ A condensed summary follows:
     def _determine_truncate_cutoff_index(  # noqa: PLR0911
         self,
         messages: list[AnyMessage],
-        helper: LCSummarizationMiddleware | None = None,
+        *,
+        helper: LCSummarizationMiddleware,
     ) -> int:
         """Determine the cutoff index for argument truncation based on keep policy.
 
@@ -752,15 +762,13 @@ A condensed summary follows:
 
         Args:
             messages: Current message history.
-            helper: Optional LC helper to read profile limits from. Defaults
-                to the construction-time helper.
+            helper: LC helper to read profile limits from.
 
         Returns:
             Index where truncation cutoff occurs. Messages before this index
             should have args truncated, messages at/after should be preserved.
         """
         keep_type, keep_value = self._truncate_args_keep
-        _helper = helper if helper is not None else self._lc_helper
 
         if keep_type == "messages":
             # Keep the most recent N messages
@@ -771,7 +779,7 @@ A condensed summary follows:
         if keep_type in {"tokens", "fraction"}:
             # Calculate target token count
             if keep_type == "fraction":
-                max_input_tokens = _helper._get_profile_limits()
+                max_input_tokens = helper._get_profile_limits()
                 if max_input_tokens is None:
                     # Fallback to message count if profile not available
                     messages_to_keep = 20
@@ -788,7 +796,7 @@ A condensed summary follows:
             # Keep recent messages up to token limit
             tokens_kept = 0
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = _helper._partial_token_counter([messages[i]])
+                msg_tokens = helper._partial_token_counter([messages[i]])
                 if tokens_kept + msg_tokens > target_token_count:
                     return i + 1
                 tokens_kept += msg_tokens
@@ -829,7 +837,8 @@ A condensed summary follows:
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
-        helper: LCSummarizationMiddleware | None = None,
+        *,
+        helper: LCSummarizationMiddleware,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
@@ -837,8 +846,7 @@ A condensed summary follows:
             messages: Messages to potentially truncate.
             system_message: Optional system message for token counting.
             tools: Optional tools for token counting.
-            helper: Optional LC helper used for fraction-based threshold
-                lookups. Defaults to the construction-time helper.
+            helper: LC helper used for fraction-based threshold lookups.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
@@ -1073,10 +1081,11 @@ A condensed summary follows:
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
         """
-        # Resolve effective threshold/summarizer models from runtime context.
+        # Resolve effective threshold model from runtime context.
+        # `summarizer_model` is resolved up-front but its helper is built
+        # lazily below, only on the rare compaction path.
         threshold_model, summarizer_model = self._resolve_models(request.runtime)
         threshold_helper = self._get_helper_for(threshold_model)
-        summarizer_helper = self._get_helper_for(summarizer_model)
 
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -1112,6 +1121,7 @@ A condensed summary follows:
             # Can't summarize, return truncated messages
             return handler(request.override(messages=truncated_messages))
 
+        summarizer_helper = self._get_helper_for(summarizer_model)
         messages_to_summarize, preserved_messages = threshold_helper._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._get_backend(request.state, request.runtime)
@@ -1206,10 +1216,11 @@ A condensed summary follows:
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
         """
-        # Resolve effective threshold/summarizer models from runtime context.
+        # Resolve effective threshold model from runtime context.
+        # `summarizer_model` is resolved up-front but its helper is built
+        # lazily below, only on the rare compaction path.
         threshold_model, summarizer_model = self._resolve_models(request.runtime)
         threshold_helper = self._get_helper_for(threshold_model)
-        summarizer_helper = self._get_helper_for(summarizer_model)
 
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
@@ -1245,6 +1256,7 @@ A condensed summary follows:
             # Can't summarize, return truncated messages
             return await handler(request.override(messages=truncated_messages))
 
+        summarizer_helper = self._get_helper_for(summarizer_model)
         messages_to_summarize, preserved_messages = threshold_helper._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._get_backend(request.state, request.runtime)
@@ -1362,9 +1374,8 @@ def create_summarization_middleware(
             runtime-context model spec strings (e.g.
             `runtime.context["model"]` or
             `runtime.context["summarization_model"]`) into
-            `BaseChatModel` instances. Hosts (such as the `deepagents-code`
-            CLI) plug their `create_model` factory here so the SDK does not
-            need to import host code.
+            `BaseChatModel` instances. Hosts plug their `create_model` factory
+            here so the SDK does not need to import host code.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1372,9 +1383,7 @@ def create_summarization_middleware(
     Raises:
         TypeError: If `model` is not a `BaseChatModel` instance.
     """
-    from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
-
-    if not isinstance(model, RuntimeBaseChatModel):
+    if not isinstance(model, BaseChatModel):
         msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
         raise TypeError(msg)
 

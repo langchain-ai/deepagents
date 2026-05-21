@@ -8,10 +8,12 @@ Exercises the precedence rules documented on
 """
 
 from typing import TYPE_CHECKING, Any, cast
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse
+from langchain.chat_models import BaseChatModel
 
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
@@ -30,6 +32,17 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
 
 
+def _as_chat_model(mock_model: MagicMock) -> MagicMock:
+    """Make a `MagicMock` pass `isinstance(..., BaseChatModel)`.
+
+    The middleware's runtime-context type check rejects non-`BaseChatModel`
+    specs; `make_mock_model` returns a bare `MagicMock`, so we tag `__class__`
+    here to opt that mock into the type contract.
+    """
+    mock_model.__class__ = BaseChatModel  # ty: ignore[invalid-assignment]
+    return mock_model
+
+
 def _runtime_with_context(**kwargs: Any) -> MagicMock:
     """Build a mock runtime with the given context dict."""
     runtime = make_mock_runtime()
@@ -44,8 +57,8 @@ class TestSummarizerModelResolution:
         """`runtime.context["summarization_model"]` wins over `model`."""
         backend = MockBackend()
         construction_model = make_mock_model(summary_response="construction")
-        main_override = make_mock_model(summary_response="main")
-        summ_override = make_mock_model(summary_response="explicit")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
+        summ_override = _as_chat_model(make_mock_model(summary_response="explicit"))
 
         middleware = SummarizationMiddleware(
             model=construction_model,
@@ -73,7 +86,7 @@ class TestSummarizerModelResolution:
         """Without `summarization_model`, the summarizer follows the `model` override."""
         backend = MockBackend()
         construction_model = make_mock_model(summary_response="construction")
-        main_override = make_mock_model(summary_response="main")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
 
         middleware = SummarizationMiddleware(
             model=construction_model,
@@ -119,7 +132,7 @@ class TestSummarizerModelResolution:
         """Async variant honors `summarization_model` override."""
         backend = MockBackend()
         construction_model = make_mock_model(summary_response="construction")
-        summ_override = make_mock_model(summary_response="explicit")
+        summ_override = _as_chat_model(make_mock_model(summary_response="explicit"))
 
         middleware = SummarizationMiddleware(
             model=construction_model,
@@ -151,7 +164,7 @@ class TestThresholdModelResolution:
 
         # Bigger context window — fraction-based trigger threshold goes up
         # so the same message bucket falls below the new trigger.
-        main_override = make_mock_model(summary_response="main")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
         main_override.profile = {"max_input_tokens": 10_000_000}
 
         # Use the lower-level constructor since `create_summarization_middleware`
@@ -202,7 +215,7 @@ class TestThresholdModelResolution:
 
         # Summarization_model has a huge profile — but it should NOT affect
         # thresholds, only the summarizer invocation.
-        summ_override = make_mock_model(summary_response="summ")
+        summ_override = _as_chat_model(make_mock_model(summary_response="summ"))
         summ_override.profile = {"max_input_tokens": 10_000_000}
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
@@ -253,10 +266,11 @@ class TestModelResolverCallback:
         resolved.invoke.assert_called_once()
         construction_model.invoke.assert_not_called()
 
-    def test_string_spec_without_resolver_raises(self) -> None:
-        """Missing `model_resolver` with a string spec is a clear error."""
+    def test_string_spec_without_resolver_falls_back_to_resolve_model(self) -> None:
+        """A string spec with no `model_resolver` falls back to `resolve_model`."""
         backend = MockBackend()
-        construction_model = make_mock_model()
+        construction_model = make_mock_model(summary_response="construction")
+        resolved = make_mock_model(summary_response="resolved")
 
         middleware = SummarizationMiddleware(
             model=construction_model,
@@ -269,7 +283,71 @@ class TestModelResolverCallback:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = _runtime_with_context(summarization_model="openai:gpt-5.4-mini")
 
-        with mock_get_config(), pytest.raises(RuntimeError, match="model_resolver"):
+        seen: list[str] = []
+
+        def fake_resolve_model(spec: str) -> Any:  # noqa: ANN401
+            seen.append(spec)
+            return resolved
+
+        with (
+            mock_get_config(),
+            mock.patch(
+                "deepagents._models.resolve_model",
+                side_effect=fake_resolve_model,
+            ),
+        ):
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert seen == ["openai:gpt-5.4-mini"]
+        resolved.invoke.assert_called_once()
+        construction_model.invoke.assert_not_called()
+
+    def test_non_string_non_model_spec_raises_type_error(self) -> None:
+        """A spec that is neither `str` nor `BaseChatModel` is rejected loudly."""
+        backend = MockBackend()
+        construction_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        # A dict is not a valid model spec.
+        runtime = _runtime_with_context(summarization_model={"oops": True})
+
+        with mock_get_config(), pytest.raises(TypeError, match="summarization_model"):
+            call_wrap_model_call(middleware, state, runtime)
+
+    def test_resolver_exception_propagates(self) -> None:
+        """Errors raised by a host-supplied resolver surface unchanged."""
+        backend = MockBackend()
+        construction_model = make_mock_model()
+
+        class ResolverError(RuntimeError):
+            pass
+
+        def resolver(_spec: str) -> Any:  # noqa: ANN401
+            msg = "boom"
+            raise ResolverError(msg)
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            model_resolver=resolver,
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = _runtime_with_context(summarization_model="openai:gpt-5.4-mini")
+
+        with mock_get_config(), pytest.raises(ResolverError, match="boom"):
             call_wrap_model_call(middleware, state, runtime)
 
     def test_string_spec_resolved_via_runtime_context(self) -> None:

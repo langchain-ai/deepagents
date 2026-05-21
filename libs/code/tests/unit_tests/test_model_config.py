@@ -713,6 +713,19 @@ default = "claude-sonnet-4-5"
 
         assert config.default_model == "claude-sonnet-4-5"
 
+    def test_loads_summarization_default_model(self, tmp_path):
+        """`[models].summarization_default` is exposed on `ModelConfig`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+summarization_default = "openai:gpt-5.4-mini"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.default_model == "anthropic:claude-sonnet-4-5"
+        assert config.summarization_default_model == "openai:gpt-5.4-mini"
+
     def test_loads_providers(self, tmp_path):
         """Loads provider configurations."""
         config_path = tmp_path / "config.toml"

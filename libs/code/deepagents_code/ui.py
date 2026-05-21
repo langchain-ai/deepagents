@@ -97,6 +97,9 @@ def show_help() -> None:
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
+    console.print(
+        "  --summarization-model MODEL  Model for compaction summaries (falls back to --model)"  # noqa: E501
+    )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print("  --skill NAME               Invoke a skill when the session starts")

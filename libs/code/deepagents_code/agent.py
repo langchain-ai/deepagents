@@ -1268,7 +1268,10 @@ def create_cli_agent(
         create_summarization_tool_middleware(model, composite_backend)
     )
 
-    # Create the agent
+    # Create the agent. The SDK's `SummarizationMiddleware` resolves any
+    # `runtime.context["summarization_model"]` / `runtime.context["model"]`
+    # string specs via `runtime.context["model_resolver"]`, which the app
+    # injects per-turn (see `DeepAgentsApp._build_runtime_context`).
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
         *custom_subagents,
         *(async_subagents or []),

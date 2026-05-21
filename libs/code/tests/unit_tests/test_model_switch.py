@@ -1120,3 +1120,124 @@ class TestModelCommandIntegration:
 
         assert len(captured_errors) == 1
         assert "cannot be used with --default" in captured_errors[0]
+
+
+class TestSwitchSummarizationModel:
+    """Tests for `/summarization-model` and `_switch_summarization_model`."""
+
+    async def test_switch_sets_summarization_override(self) -> None:
+        """`/summarization-model <spec>` sets `_summarization_model_override`."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        await app._switch_summarization_model("openai:gpt-5.4-mini")
+
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        assert app._summarization_model_params_override is None
+        # No mutation of the main-model override.
+        assert app._model_override is None
+
+    async def test_switch_with_bare_model_auto_detects_provider(self) -> None:
+        """Bare model name resolves a `provider:model` display string."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        await app._switch_summarization_model("gpt-5.5")
+
+        assert app._summarization_model_override == "openai:gpt-5.5"
+
+    async def test_switch_with_none_clears_override(self) -> None:
+        """`_switch_summarization_model(None)` clears any prior override."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._summarization_model_override = "openai:gpt-5.4-mini"
+        app._summarization_model_params_override = {"temperature": 0.1}
+
+        await app._switch_summarization_model(None)
+
+        assert app._summarization_model_override is None
+        assert app._summarization_model_params_override is None
+
+    async def test_model_switch_does_not_affect_summarization_override(self) -> None:
+        """`/model` swap must leave `_summarization_model_override` untouched."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        # Pre-set the summarization override.
+        app._summarization_model_override = "openai:gpt-5.4-mini"
+
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        # Summarization override survives the main-model swap.
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+
+    async def test_summarization_command_dispatch(self) -> None:
+        """`/summarization-model <spec>` dispatches through `_handle_command`."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        await app._handle_command("/summarization-model openai:gpt-5.4-mini")
+
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+
+    async def test_summarization_command_clear(self) -> None:
+        """`/summarization-model --clear` resets the override."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._summarization_model_override = "openai:gpt-5.4-mini"
+
+        await app._handle_command("/summarization-model --clear")
+
+        assert app._summarization_model_override is None
+
+    async def test_summarization_appears_in_cli_context(self) -> None:
+        """`CLIContext` built for the next turn includes the override."""
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.app import _summarization_model_resolver
+
+        app = DeepAgentsApp()
+        app._summarization_model_override = "openai:gpt-5.4-mini"
+        app._summarization_model_params_override = None
+
+        # Reconstruct the dict the app builds before invoking the agent.
+        ctx = CLIContext(
+            model=app._model_override,
+            model_params=app._model_params_override or {},
+            summarization_model=app._summarization_model_override,
+            summarization_model_params=app._summarization_model_params_override or {},
+            model_resolver=_summarization_model_resolver,
+        )
+        assert ctx["summarization_model"] == "openai:gpt-5.4-mini"
+        assert ctx["summarization_model_params"] == {}
+        assert ctx["model_resolver"] is _summarization_model_resolver
+
+    async def test_resolver_delegates_to_create_model(self) -> None:
+        """`_summarization_model_resolver` returns the `.model` from `create_model`.
+
+        Acts as the boundary between the SDK's runtime-context resolver hook
+        and the CLI's `config.create_model` factory: the SDK calls the
+        resolver with a string spec; the resolver hands back a
+        `BaseChatModel`. The contract the SDK relies on is just that
+        `_summarization_model_resolver(spec)` invokes `create_model(spec)`
+        and unwraps `.model`.
+        """
+        from deepagents_code.app import _summarization_model_resolver
+
+        sentinel = object()
+        fake_result = Mock(model=sentinel)
+        with patch(
+            "deepagents_code.config.create_model", return_value=fake_result
+        ) as mock_create:
+            resolved = _summarization_model_resolver("anthropic:claude-sonnet-4-5")
+
+        mock_create.assert_called_once_with("anthropic:claude-sonnet-4-5")
+        assert resolved is sentinel

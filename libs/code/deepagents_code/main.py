@@ -81,6 +81,29 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     return DEFAULT_AGENT_NAME
 
 
+def _resolve_summarization_model_default(cli_arg: str | None) -> str | None:
+    """Return the summarization-model override for app startup.
+
+    Precedence: `--summarization-model` CLI flag, then `[models].summarization_default`
+    in `~/.deepagents/config.toml`, then `None` (the SDK falls back to the
+    main model / construction-time model).
+    """
+    if cli_arg:
+        return cli_arg
+    try:
+        from deepagents_code.model_config import ModelConfig
+    except ImportError:
+        return None
+    try:
+        config = ModelConfig.load()
+    except Exception:
+        logger.debug(
+            "Could not load ModelConfig for summarization default", exc_info=True
+        )
+        return None
+    return config.summarization_default_model
+
+
 def _normalize_cwd_filter(cwd: str | None) -> str | None:
     """Normalize the `threads list --cwd` filter for metadata matching.
 
@@ -743,6 +766,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--summarization-model",
+        metavar="MODEL",
+        help="Model to use for context-compaction summaries "
+        "(e.g., openai:gpt-5.4-mini). Falls back to --model when unset.",
+    )
+
+    parser.add_argument(
         "--profile-override",
         metavar="JSON",
         help="Override model profile fields as a JSON string "
@@ -978,6 +1008,7 @@ async def run_textual_cli_async(
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     thread_id: str | None = None,
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
@@ -1007,6 +1038,11 @@ async def run_textual_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
+        summarization_model: Optional model spec for context-compaction
+            summaries.
+
+            When unset, falls back to the main model and ultimately the
+            construction-time model. Surfaced to the SDK via `CLIContext`.
         thread_id: Thread ID for the session.
 
             `None` when `resume_thread` is provided (the TUI resolves the final
@@ -1131,6 +1167,7 @@ async def run_textual_cli_async(
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
             defer_server_start=defer_server_start,
+            summarization_model=summarization_model,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
@@ -2193,6 +2230,9 @@ def cli_main() -> None:
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
                         profile_override=profile_override,
+                        summarization_model=_resolve_summarization_model_default(
+                            getattr(args, "summarization_model", None)
+                        ),
                         thread_id=thread_id,
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),

@@ -94,6 +94,26 @@ logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
 _monotonic = time.monotonic
 
+
+def _summarization_model_resolver(spec: str) -> Any:  # noqa: ANN401  # SDK boundary returns `BaseChatModel`
+    """Resolve a `provider:model` spec into a `BaseChatModel` for the SDK.
+
+    Placed in `runtime.context["model_resolver"]` so the SDK's
+    `SummarizationMiddleware` can resolve string overrides for
+    `model` / `summarization_model` without importing CLI code. Imports
+    `create_model` lazily to keep the hot startup path light.
+
+    Args:
+        spec: A `provider:model` (or bare-model) spec string.
+
+    Returns:
+        A `BaseChatModel` instance built via `deepagents_code.config.create_model`.
+    """
+    from deepagents_code.config import create_model
+
+    return create_model(spec).model
+
+
 _DEFERRED_START_NOTICE = (
     "No model is configured yet. Run `/model` to choose one. "
     "Deep Agents will ask for credentials for the selected provider."
@@ -1104,6 +1124,7 @@ class DeepAgentsApp(App):
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
+        summarization_model: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -1168,6 +1189,12 @@ class DeepAgentsApp(App):
                 When `None`, the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
+            summarization_model: Initial value for the
+                `_summarization_model_override` attribute. When set, the SDK's
+                summarization middleware uses this model spec for
+                context-compaction summaries; `None` falls back to the
+                main-model `/model` override and ultimately the
+                construction-time model.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -1385,6 +1412,19 @@ class DeepAgentsApp(App):
 
         self._model_params_override: dict[str, Any] | None = None
         """Per-turn model params override set via `/model --model-params`."""
+
+        self._summarization_model_override: str | None = summarization_model
+        """Summarization-model override set via `/summarization-model` or
+        `--summarization-model`.
+
+        Surfaced to the SDK via `CLIContext.summarization_model`. When unset,
+        compaction follows the main model (`/model` swap) and ultimately the
+        construction-time model.
+        """
+
+        self._summarization_model_params_override: dict[str, Any] | None = None
+        """Reserved for future use — kwargs forwarded to the summarization
+        model factory."""
 
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
@@ -4997,6 +5037,7 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
+                "/summarization-model [MODEL|--clear], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
                 "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
@@ -5234,6 +5275,15 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/summarization-model" or cmd.startswith("/summarization-model "):
+            await self._mount_message(UserMessage(command))
+            if cmd == "/summarization-model":
+                await self._switch_summarization_model(None)
+            else:
+                spec = command.strip()[len("/summarization-model ") :].strip()
+                if spec in {"--clear", "clear", "default", "--default"}:
+                    spec = None
+                await self._switch_summarization_model(spec or None)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
 
@@ -5810,6 +5860,10 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    summarization_model=self._summarization_model_override,
+                    summarization_model_params=self._summarization_model_params_override
+                    or {},
+                    model_resolver=_summarization_model_resolver,
                 ),
                 turn_stats=turn_stats,
             )
@@ -9400,6 +9454,68 @@ class DeepAgentsApp(App):
         finally:
             self._model_switching = False
 
+    async def _switch_summarization_model(self, model_spec: str | None) -> None:
+        """Set or clear the summarization-model override for this session.
+
+        Unlike `_switch_model`, this does not touch the `### Model Identity`
+        section of the system prompt — the summarizer model never speaks to
+        the user, so its identity must not bleed into the main agent's
+        self-description. It also skips MRU/recent-model tracking and the
+        status-bar update for the same reason.
+
+        Args:
+            model_spec: A `provider:model` spec to use for context-compaction
+                summaries, or `None` to clear the override and fall back to
+                the main model (`/model`) and ultimately the construction-time
+                model.
+        """
+        from deepagents_code.config import create_model, detect_provider
+        from deepagents_code.model_config import ModelSpec
+
+        if model_spec is None:
+            self._summarization_model_override = None
+            self._summarization_model_params_override = None
+            await self._mount_message(
+                AppMessage("Summarization model override cleared."),
+            )
+            logger.info("Summarization model override cleared")
+            return
+
+        spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = spec
+            provider = detect_provider(spec)
+
+        display = spec
+        if provider and not parsed:
+            display = f"{provider}:{model_name}"
+
+        # Validate spec resolves — surface a friendly error instead of
+        # waiting for the next compaction to blow up server-side.
+        try:
+            create_model(display)
+        except Exception as exc:
+            logger.exception(
+                "Failed to resolve summarization model spec %s",
+                display,
+            )
+            await self._mount_message(
+                ErrorMessage(_build_model_switch_error_body(exc)),
+            )
+            return
+
+        self._summarization_model_override = display
+        self._summarization_model_params_override = None
+        await self._mount_message(
+            AppMessage(f"Summarization model set to {display}."),
+        )
+        logger.info("Summarization model override set to %s", display)
+
     async def _retry_startup_with_model(
         self,
         model_spec: str,
@@ -9611,6 +9727,7 @@ async def run_textual_app(
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
+    summarization_model: str | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -9661,6 +9778,8 @@ async def run_textual_app(
             default `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
+        summarization_model: Initial summarization-model override forwarded
+            to `DeepAgentsApp` so it surfaces via `CLIContext`.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -9686,6 +9805,7 @@ async def run_textual_app(
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,
+        summarization_model=summarization_model,
     )
     try:
         await app.run_async()

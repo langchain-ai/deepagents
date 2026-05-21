@@ -95,7 +95,6 @@ logger = logging.getLogger(__name__)
 
 # Helpers are cached per distinct override model: typically {main, summarizer}
 # plus one prior of each across a hot-swap, so 4 covers the realistic ceiling
-# without unbounded growth under server-mode concurrency.
 _HELPER_CACHE_MAX_SIZE = 4
 
 
@@ -466,10 +465,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self,
         runtime: Runtime | ToolRuntime | None,
     ) -> tuple[BaseChatModel, BaseChatModel]:
-        """Resolve (threshold_model, summarizer_model) per the documented precedence.
+        """Resolve `(threshold_model, summarizer_model)` per the documented precedence.
 
         Threshold model precedence:
-            1. `runtime.context["model"]` — follows `/model`.
+            1. `runtime.context["model"]`
             2. Construction-time model — fallback.
 
         Summarizer model precedence:

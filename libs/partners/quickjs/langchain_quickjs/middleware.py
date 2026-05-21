@@ -54,6 +54,7 @@ _DEFAULT_TOOL_NAME = "eval"
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
+    _quickjs_slot_id: NotRequired[Annotated[str | None, PrivateStateAttr]]
     _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
 
 
@@ -67,27 +68,9 @@ class EvalSchema(BaseModel):
         ),
     )
 
-
-def _resolve_thread_id(fallback: str) -> str:
-    """Extract `thread_id` from langgraph config or use `fallback`.
-
-    The fallback is a middleware-instance-scoped id: when the caller
-    didn't configure a `thread_id` (common for ad-hoc
-    `agent.invoke(...)` in tests or single-shot scripts), we still need
-    all resolver calls within one CodeInterpreterMiddleware lifetime to return the
-    same id — otherwise `wrap_model_call` installs tools on one REPL
-    and the eval tool looks up a different one, and the model sees
-    `ReferenceError: tools is not defined`.
-    """
-    try:
-        config = get_config()
-    except RuntimeError:
-        # Not running inside a Runnable — test / bare-call path.
-        return fallback
-    thread_id = config.get("configurable", {}).get("thread_id") if config else None
-    if thread_id is not None:
-        return str(thread_id)
-    return fallback
+def _new_slot_id() -> str:
+    """Create a private interpreter slot id."""
+    return f"qjs_{uuid.uuid4().hex}"
 
 
 @beta()
@@ -225,19 +208,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             snapshot_between_turns=snapshot_between_turns,
         )
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
-        # Stable fallback thread id — used when `thread_id` isn't in
-        # langgraph config. Must be instance-scoped so `wrap_model_call`
-        # and `eval` invocations within one conversation resolve to the
-        # same REPL; otherwise the PTC install happens on one REPL and the
-        # eval runs on another (and sees `tools` undefined).
-        self._fallback_thread_id = f"session_{uuid.uuid4().hex[:8]}"
+        self._fallback_slot_id = _new_slot_id()
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
         tool_name = self._tool_name
         registry = self._registry
         max_chars = self._max_result_chars
-        fallback_id = self._fallback_thread_id
         middleware = self
 
         def _make_tool_message(
@@ -258,7 +235,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
-            repl = registry.get(_resolve_thread_id(fallback_id))
+            repl = registry.get(self._slot_id_for_state(runtime.state))
             skills = middleware._skills_for_eval(runtime)
             outcome = repl.eval_sync(
                 code,
@@ -272,7 +249,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
-            repl = registry.get(_resolve_thread_id(fallback_id))
+            repl = registry.get(self._slot_id_for_state(runtime.state))
             skills = middleware._skills_for_eval(runtime)
             outcome = await repl.eval_async(
                 code,
@@ -311,53 +288,76 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         return {m["name"]: m for m in metadata_list}
 
+    def _slot_id_for_state(
+        self,
+        state: dict[str, Any] | None,
+    ) -> str:
+        """Return the private interpreter slot id for a state/config pair."""
+        state = state or {}
+        slot_id = state.get("_quickjs_slot_id")
+        if isinstance(slot_id, str) and slot_id:
+            return slot_id
+        return self._fallback_slot_id
+
+    def _slot_update_for_runtime(self) -> dict[str, str]:
+        """Build a private state update with a fresh slot id when needed."""
+        return {"_quickjs_slot_id": _new_slot_id()}
+
     def before_agent(
         self,
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Restore REPL snapshot bytes into the current thread slot."""
+        """Ensure a private REPL slot exists and restore snapshot bytes if present."""
+        slot_id = state.get("_quickjs_slot_id")
+        update: dict[str, Any] | None = None
+        if not isinstance(slot_id, str) or not slot_id:
+            update = self._slot_update_for_runtime()
+            slot_id = update["_quickjs_slot_id"]
         if not self._snapshot_between_turns:
-            return None
+            return update
         payload = state.get("_quickjs_snapshot_payload")
         if payload is None:
-            return None
-        thread_id = _resolve_thread_id(self._fallback_thread_id)
-        repl = self._registry.get(thread_id)
+            return update
+        repl = self._registry.get(slot_id)
         try:
             repl.restore_snapshot(payload, inject_globals=True)
         except Exception:  # noqa: BLE001  # best-effort restore path
             logger.warning(
-                "Failed to restore QuickJS snapshot for thread_id=%s",
-                thread_id,
+                "Failed to restore QuickJS snapshot for slot_id=%s",
+                slot_id,
                 exc_info=True,
             )
-            return {"_quickjs_snapshot_payload": None}
-        return None
+            update = {"_quickjs_snapshot_payload": None}
+        return update
 
     async def abefore_agent(
         self,
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of `before_agent` snapshot restore."""
+        """Ensure a private REPL slot exists and restore snapshot bytes if present."""
+        slot_id = state.get("_quickjs_slot_id")
+        update: dict[str, Any] | None = None
+        if not isinstance(slot_id, str) or not slot_id:
+            update = self._slot_update_for_runtime()
+            slot_id = update["_quickjs_slot_id"]
         if not self._snapshot_between_turns:
-            return None
+            return update
         payload = state.get("_quickjs_snapshot_payload")
         if payload is None:
-            return None
-        thread_id = _resolve_thread_id(self._fallback_thread_id)
-        repl = self._registry.get(thread_id)
+            return update
+        repl = self._registry.get(slot_id)
         try:
             await repl.arestore_snapshot(payload, inject_globals=True)
         except Exception:  # noqa: BLE001  # best-effort restore path
             logger.warning(
-                "Failed to restore QuickJS snapshot for thread_id=%s",
-                thread_id,
+                "Failed to restore QuickJS snapshot for slot_id=%s",
+                slot_id,
                 exc_info=True,
             )
-            return {"_quickjs_snapshot_payload": None}
-        return None
+            update = {"_quickjs_snapshot_payload": None}
+        return update
 
     def wrap_model_call(
         self,
@@ -409,8 +409,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         # is fine: PTC bindings must be in place *before* the first eval
         # that references them, and the next eval on this thread is the
         # earliest that could matter.
-        thread_id = _resolve_thread_id(self._fallback_thread_id)
-        repl = self._registry.get(thread_id)
+        slot_id = self._slot_id_for_state(getattr(request, "state", None))
+        repl = self._registry.get(slot_id)
         repl.install_tools(exposed)
         # Rendering the TS-ish signature block is cheap but not free;
         # cache by the set of exposed names. The set doesn't encode tool
@@ -431,17 +431,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return append_to_system_message(system_message, prompt)
 
     def _snapshot_update(
-        self, *, payload: bytes, thread_id: str
+        self, *, payload: bytes, slot_id: str
     ) -> dict[str, bytes | None]:
         """Build state update for a serialized snapshot payload."""
         size = len(payload)
         if size > self._max_snapshot_bytes:
             logger.warning(
                 (
-                    "Dropping QuickJS snapshot for thread_id=%s "
+                    "Dropping QuickJS snapshot for slot_id=%s "
                     "(size=%d bytes exceeds max_snapshot_bytes=%d)"
                 ),
-                thread_id,
+                slot_id,
                 size,
                 self._max_snapshot_bytes,
             )
@@ -454,29 +454,31 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
-        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        slot_id = state.get("_quickjs_slot_id")
+        if not isinstance(slot_id, str) or not slot_id:
+            return None
         if not self._snapshot_between_turns:
-            self._registry.evict(thread_id)
+            self._registry.evict(slot_id)
             return None
 
-        repl = self._registry.get_if_exists(thread_id)
+        repl = self._registry.get_if_exists(slot_id)
         if repl is None:
             return None
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=repl.create_snapshot(),
-                thread_id=thread_id,
+                slot_id=slot_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
-                thread_id,
+                "Failed to create QuickJS snapshot for slot_id=%s",
+                slot_id,
                 exc_info=True,
             )
             update = {"_quickjs_snapshot_payload": None}
         finally:
-            self._registry.evict(thread_id)
+            self._registry.evict(slot_id)
         return update
 
     async def aafter_agent(
@@ -485,29 +487,31 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent` snapshot+evict behavior."""
-        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        slot_id = state.get("_quickjs_slot_id")
+        if not isinstance(slot_id, str) or not slot_id:
+            return None
         if not self._snapshot_between_turns:
-            await self._registry.aevict(thread_id)
+            await self._registry.aevict(slot_id)
             return None
 
-        repl = self._registry.get_if_exists(thread_id)
+        repl = self._registry.get_if_exists(slot_id)
         if repl is None:
             return None
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=await repl.acreate_snapshot(),
-                thread_id=thread_id,
+                slot_id=slot_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for thread_id=%s",
-                thread_id,
+                "Failed to create QuickJS snapshot for slot_id=%s",
+                slot_id,
                 exc_info=True,
             )
             update = {"_quickjs_snapshot_payload": None}
         finally:
-            await self._registry.aevict(thread_id)
+            await self._registry.aevict(slot_id)
         return update
 
     def __del__(self) -> None:

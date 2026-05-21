@@ -148,3 +148,54 @@ def test_skill_duplicate_names_raises(tmp_path: Path) -> None:
         )
     with pytest.raises(ProjectError, match="duplicate"):
         Project.load(tmp_path)
+
+
+def test_load_with_subagents() -> None:
+    proj = Project.load(_FIXTURES / "with_subagents")
+    assert len(proj.subagents) == 1
+    sa = proj.subagents[0]
+    assert sa.name == "researcher"
+    assert sa.description == "Researches a topic."
+    assert sa.model_id == "anthropic:claude-sonnet-4-6"
+    assert "research a topic" in sa.instructions
+    assert sa.tools is not None
+    assert sa.tools["tools"][0]["name"] == "search"
+    assert sa.extra_files == {}
+
+
+def test_subagent_local_skills_go_into_extra_files() -> None:
+    proj = Project.load(_FIXTURES / "subagent_with_local_skills")
+    sa = proj.subagents[0]
+    assert "skills/note/SKILL.md" in sa.extra_files
+    assert "Take a note." in sa.extra_files["skills/note/SKILL.md"]
+
+
+def test_subagent_missing_agent_json_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    sa = tmp_path / "subagents" / "broken"
+    sa.mkdir(parents=True)
+    (sa / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="agent.json"):
+        Project.load(tmp_path)
+
+
+def test_subagent_duplicate_names_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    from deepagents_cli.deploy.project import _read_subagents  # noqa: PLC0415
+    sa1 = tmp_path / "subagents" / "x"
+    sa1.mkdir(parents=True)
+    (sa1 / "agent.json").write_text("{}")
+    (sa1 / "AGENTS.md").write_text("hi")
+    sa2 = tmp_path / "subagents" / "X"
+    if sa1.resolve() == sa2.resolve():  # case-insensitive FS — synthesize
+        pytest.skip("case-insensitive FS")
+    try:
+        sa2.mkdir(parents=True)
+    except FileExistsError:
+        pytest.skip("case-insensitive FS")
+    (sa2 / "agent.json").write_text("{}")
+    (sa2 / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="duplicate"):
+        _read_subagents(tmp_path)

@@ -101,7 +101,7 @@ class Project:
             extras=agent_data.get("extras"),
             tools=_read_tools_json(root),
             skills=_read_skills(root),
-            subagents=[],       # task 9
+            subagents=_read_subagents(root),
         )
 
 
@@ -249,6 +249,60 @@ def _read_skills(root: Path) -> list[Skill]:
                 description=frontmatter["description"],
                 instructions=body,
                 files=files,
+            )
+        )
+    return result
+
+
+def _read_subagents(root: Path) -> list[Subagent]:
+    sa_dir = root / _SUBAGENTS_DIR
+    if not sa_dir.is_dir():
+        return []
+    result: list[Subagent] = []
+    seen: set[str] = set()
+    for entry in sorted(sa_dir.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        agent_json = entry / _AGENT_JSON
+        agents_md = entry / _AGENTS_MD
+        if not agent_json.is_file():
+            msg = f"{entry}: missing agent.json"
+            raise ProjectError(msg)
+        if not agents_md.is_file():
+            msg = f"{entry}: missing AGENTS.md"
+            raise ProjectError(msg)
+        try:
+            data = json.loads(agent_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            msg = f"Invalid JSON in {agent_json}: {exc}"
+            raise ProjectError(msg) from exc
+        if not isinstance(data, dict):
+            msg = f"{agent_json} must contain a JSON object."
+            raise ProjectError(msg)
+        name = entry.name
+        key = name.lower()
+        if key in seen:
+            msg = f"duplicate subagent name {name!r} (case-insensitive)"
+            raise ProjectError(msg)
+        seen.add(key)
+
+        tools = _read_tools_json(entry)
+        extra_files: dict[str, str] = {}
+        local_skills_dir = entry / _SKILLS_DIR
+        if local_skills_dir.is_dir():
+            for f in sorted(local_skills_dir.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    rel = f.relative_to(entry).as_posix()
+                    extra_files[rel] = f.read_text(encoding="utf-8")
+
+        result.append(
+            Subagent(
+                name=name,
+                description=data.get("description"),
+                model_id=data.get("model_id"),
+                instructions=agents_md.read_text(encoding="utf-8"),
+                tools=tools,
+                extra_files=extra_files,
             )
         )
     return result

@@ -152,6 +152,26 @@ class ServerConfig:
     enable_skills: bool = True
     """Enable the skills subsystem (SKILL.md loading and skill tools)."""
 
+    enable_interpreter: bool = False
+    """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
+
+    Local-mode only; the server graph raises if a sandbox is configured and
+    this flag is `True`.
+    """
+
+    interpreter_ptc: str | list[str] | None = None
+    """Override for `settings.interpreter_ptc`.
+
+    `None` means "fall through to whatever `settings.interpreter_ptc` resolves
+    to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
+    a list is an explicit allowlist of tool names.
+    """
+
+    interpreter_ptc_acknowledge_unsafe: bool = False
+    """Mirror of `settings.interpreter_ptc_acknowledge_unsafe` — required when
+    `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
+    """
+
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
     host. `'none'` is normalized to `None` in `__post_init__`."""
@@ -226,6 +246,15 @@ class ServerConfig:
             "ENABLE_ASK_USER": str(self.enable_ask_user).lower(),
             "ENABLE_MEMORY": str(self.enable_memory).lower(),
             "ENABLE_SKILLS": str(self.enable_skills).lower(),
+            "ENABLE_INTERPRETER": str(self.enable_interpreter).lower(),
+            "INTERPRETER_PTC": (
+                json.dumps(self.interpreter_ptc)
+                if self.interpreter_ptc is not None
+                else None
+            ),
+            "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
+                self.interpreter_ptc_acknowledge_unsafe
+            ).lower(),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SETUP": self.sandbox_setup,
@@ -268,6 +297,11 @@ class ServerConfig:
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
+            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER"),
+            interpreter_ptc=_read_env_json("INTERPRETER_PTC"),
+            interpreter_ptc_acknowledge_unsafe=_read_env_bool(
+                "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
+            ),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_setup=_read_env_str("SANDBOX_SETUP"),
@@ -298,6 +332,9 @@ class ServerConfig:
         sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
+        enable_interpreter: bool = False,
+        interpreter_ptc: str | list[str] | None = None,
+        interpreter_ptc_acknowledge_unsafe: bool = False,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -324,6 +361,11 @@ class ServerConfig:
             sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
+            enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
+                agent.
+            interpreter_ptc: Override for `settings.interpreter_ptc`.
+            interpreter_ptc_acknowledge_unsafe: Mirror of
+                `settings.interpreter_ptc_acknowledge_unsafe`.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -344,6 +386,9 @@ class ServerConfig:
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
+            enable_interpreter=enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_setup=_normalize_path(

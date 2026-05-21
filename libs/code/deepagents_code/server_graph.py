@@ -196,6 +196,13 @@ def make_graph() -> Any:  # noqa: ANN401
 
     async_subagents = load_async_subagents() or None
 
+    if config.interpreter_ptc is not None:
+        settings.interpreter_ptc = config.interpreter_ptc
+    if config.interpreter_ptc_acknowledge_unsafe:
+        settings.interpreter_ptc_acknowledge_unsafe = True
+    if config.enable_interpreter:
+        settings.enable_interpreter = True
+
     agent, _ = create_cli_agent(
         model=result.model,
         assistant_id=config.assistant_id,
@@ -211,6 +218,7 @@ def make_graph() -> Any:  # noqa: ANN401
         enable_memory=config.enable_memory,
         enable_skills=config.enable_skills,
         enable_shell=config.enable_shell,
+        enable_interpreter=config.enable_interpreter,
         mcp_server_info=mcp_server_info,
         cwd=project_context.user_cwd if project_context is not None else config.cwd,
         project_context=project_context,

@@ -62,6 +62,13 @@ Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
 """Optional extras that add sandbox integrations."""
 
+STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
+"""Optional extras that don't fit the provider/sandbox taxonomy.
+
+These integrations layer onto the main agent (e.g. a JS REPL via
+`langchain-quickjs`) and aren't grouped under `all-providers` or
+`all-sandboxes`."""
+
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
 

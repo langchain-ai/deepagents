@@ -184,6 +184,14 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
             return f'{prefix} {tool_name}("{command}")'
 
+    elif tool_name == "js_eval":
+        # JS interpreter: show the first line of the snippet, truncated.
+        code = tool_args.get("code")
+        if isinstance(code, str) and code.strip():
+            snippet = _sanitize_display_value(code, max_length=120)
+            return f'{prefix} {tool_name}("{snippet}")'
+        return f"{prefix} {tool_name}()"
+
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory
         if tool_args.get("path"):

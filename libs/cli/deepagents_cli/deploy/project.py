@@ -98,7 +98,7 @@ class Project:
             runtime=agent_data.get("runtime"),
             permissions=agent_data.get("permissions"),
             extras=agent_data.get("extras"),
-            tools=None,         # task 7
+            tools=_read_tools_json(root),
             skills=[],          # task 8
             subagents=[],       # task 9
         )
@@ -157,3 +157,36 @@ def _read_agents_md(root: Path) -> str:
         msg = f"AGENTS.md is required but not found in {root}."
         raise ProjectError(msg)
     return path.read_text(encoding="utf-8")
+
+
+def _read_tools_json(root: Path) -> dict[str, Any] | None:
+    path = root / _TOOLS_JSON
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        msg = f"Invalid JSON in {path}: {exc}"
+        raise ProjectError(msg) from exc
+    if not isinstance(data, dict):
+        msg = f"{path} must contain a JSON object."
+        raise ProjectError(msg)
+    tools = data.get("tools")
+    if not isinstance(tools, list):
+        msg = f"{path}: `tools` must be an array."
+        raise ProjectError(msg)
+    for idx, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            msg = f"{path}: tools[{idx}] must be an object."
+            raise ProjectError(msg)
+        if not isinstance(tool.get("name"), str) or not tool["name"]:
+            msg = f"{path}: tools[{idx}].name is required."
+            raise ProjectError(msg)
+        if not isinstance(tool.get("mcp_server_url"), str) or not tool["mcp_server_url"]:
+            msg = f"{path}: tools[{idx}].mcp_server_url is required."
+            raise ProjectError(msg)
+    interrupt_config = data.get("interrupt_config")
+    if interrupt_config is not None and not isinstance(interrupt_config, dict):
+        msg = f"{path}: `interrupt_config` must be an object."
+        raise ProjectError(msg)
+    return data

@@ -86,3 +86,31 @@ def test_invalid_runtime_backend_type_raises(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("hi")
     with pytest.raises(ProjectError, match="backend_type"):
         Project.load(tmp_path)
+
+
+def test_load_with_tools_reads_tools_json() -> None:
+    proj = Project.load(_FIXTURES / "with_tools")
+    assert proj.tools is not None
+    assert proj.tools["tools"][0]["name"] == "tavily_web_search"
+    assert proj.tools["tools"][0]["mcp_server_url"] == "https://tools.langchain.com"
+    assert proj.tools["interrupt_config"][
+        "https://tools.langchain.com::tavily_web_search::Fleet"
+    ] is True
+
+
+def test_invalid_tools_json_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    (tmp_path / "tools.json").write_text("[]")  # array, not object
+    with pytest.raises(ProjectError, match="tools.json"):
+        Project.load(tmp_path)
+
+
+def test_tools_missing_mcp_server_url_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    (tmp_path / "tools.json").write_text(
+        '{"tools": [{"name": "search"}], "interrupt_config": {}}'
+    )
+    with pytest.raises(ProjectError, match="mcp_server_url"):
+        Project.load(tmp_path)

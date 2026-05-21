@@ -69,9 +69,17 @@ class ApiClient:
 
     @classmethod
     def from_env(
-        cls, *, transport: httpx.BaseTransport | None = None
+        cls,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        endpoint_fallback: str | None = None,
     ) -> ApiClient:
         """Build a client from `LANGSMITH_*` / `LANGCHAIN_*` env vars.
+
+        Endpoint resolution: env var > `endpoint_fallback` (e.g. state.json)
+        > `_DEFAULT_ENDPOINT`. This keeps teammates who clone a project
+        targeting a non-default endpoint consistent without having to set
+        the env var themselves.
 
         Exits non-zero with a friendly message if the API key is missing.
         """
@@ -88,6 +96,7 @@ class ApiClient:
         endpoint = (
             os.environ.get("LANGSMITH_ENDPOINT")
             or os.environ.get("LANGCHAIN_ENDPOINT")
+            or endpoint_fallback
             or _DEFAULT_ENDPOINT
         ).rstrip("/")
         return cls(endpoint=endpoint, api_key=api_key, transport=transport)

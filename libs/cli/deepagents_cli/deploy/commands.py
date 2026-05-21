@@ -182,7 +182,7 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
         print(json.dumps(payload, indent=2))
         return
 
-    client = ApiClient.from_env()
+    client = ApiClient.from_env(endpoint_fallback=state.endpoint)
     state.endpoint = client.endpoint
 
     try:
@@ -234,7 +234,7 @@ def _print_deploy_result(
     """Print a deploy summary and optionally poll agent health."""
     name = agent.get("name", "?")
     agent_id = agent.get("id", "?")
-    revision = agent.get("revision", "")[:8]
+    revision = (agent.get("revision") or "")[:8]
     smith_endpoint = endpoint.replace("api.smith.langchain.com", "smith.langchain.com")
     print(f"\nDeployed: {name}")
     print(f"  agent_id: {agent_id}")

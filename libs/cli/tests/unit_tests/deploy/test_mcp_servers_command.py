@@ -16,7 +16,7 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.setattr(
         api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None: cls(
+        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
             endpoint="https://api.invalid", api_key="k",
             transport=httpx.MockTransport(handler))),
     )

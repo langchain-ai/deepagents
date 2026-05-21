@@ -61,7 +61,7 @@ def test_deploy_creates_agent_and_writes_state(
 
     monkeypatch.setattr(
         api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None: cls(
+        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
             endpoint="https://api.invalid", api_key="k",
             transport=_make_transport(handler))),
     )
@@ -98,7 +98,7 @@ def test_second_deploy_patches(
 
     monkeypatch.setattr(
         api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None: cls(
+        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
             endpoint="https://api.invalid", api_key="k",
             transport=_make_transport(handler))),
     )
@@ -132,7 +132,7 @@ def test_deploy_404_falls_back_to_create(
 
     monkeypatch.setattr(
         api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None: cls(
+        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
             endpoint="https://api.invalid", api_key="k",
             transport=_make_transport(handler))),
     )
@@ -176,7 +176,7 @@ def test_deploy_fails_when_tools_reference_unregistered_server(
 
     monkeypatch.setattr(
         api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None: cls(
+        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
             endpoint="https://api.invalid", api_key="k",
             transport=_make_transport(handler))),
     )

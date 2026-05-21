@@ -31,7 +31,9 @@ _SUBAGENTS_DIR = "subagents"
 _SKILL_FILE = "SKILL.md"
 
 _VALID_BACKEND_TYPES = frozenset(
-    {"default", "thread_scoped_sandbox", "agent_scoped_sandbox"}
+    # `sandbox` is a legacy alias the platform still accepts; keep it permitted
+    # client-side so config files written before the rename keep working.
+    {"default", "sandbox", "thread_scoped_sandbox", "agent_scoped_sandbox"}
 )
 _VALID_IDENTITY = frozenset({"personal", "shared"})
 _VALID_VISIBILITY = frozenset({"tenant", "user"})

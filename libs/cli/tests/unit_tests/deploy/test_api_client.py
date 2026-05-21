@@ -36,6 +36,27 @@ def test_endpoint_resolution_env_override(monkeypatch: pytest.MonkeyPatch) -> No
     assert client.endpoint == "https://eu.example.invalid"
 
 
+def test_endpoint_falls_back_to_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+    client = ApiClient.from_env(
+        transport=_transport(lambda r: httpx.Response(200, json={})),
+        endpoint_fallback="https://state.example.invalid/",
+    )
+    assert client.endpoint == "https://state.example.invalid"
+
+
+def test_endpoint_env_beats_state_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://env.example.invalid")
+    client = ApiClient.from_env(
+        transport=_transport(lambda r: httpx.Response(200, json={})),
+        endpoint_fallback="https://state.example.invalid",
+    )
+    assert client.endpoint == "https://env.example.invalid"
+
+
 def test_request_sends_x_api_key_header(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, str] = {}
 

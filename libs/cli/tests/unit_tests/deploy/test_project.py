@@ -114,3 +114,37 @@ def test_tools_missing_mcp_server_url_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ProjectError, match="mcp_server_url"):
         Project.load(tmp_path)
+
+
+def test_load_with_skills_parses_frontmatter_and_files() -> None:
+    proj = Project.load(_FIXTURES / "with_skills")
+    assert len(proj.skills) == 1
+    skill = proj.skills[0]
+    assert skill.name == "summarize"
+    assert skill.description == "Summarise text into a one-paragraph summary."
+    assert "one-paragraph summary" in skill.instructions
+    assert "examples.md" in skill.files
+    assert "Example 1" in skill.files["examples.md"]
+
+
+def test_skill_missing_frontmatter_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    skill_dir = tmp_path / "skills" / "bad"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# No frontmatter here\n")
+    with pytest.raises(ProjectError, match="frontmatter"):
+        Project.load(tmp_path)
+
+
+def test_skill_duplicate_names_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    for dirname in ("a", "b"):
+        d = tmp_path / "skills" / dirname
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: same\ndescription: x\n---\nhi\n"
+        )
+    with pytest.raises(ProjectError, match="duplicate"):
+        Project.load(tmp_path)

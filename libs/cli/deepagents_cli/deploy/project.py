@@ -18,6 +18,7 @@ payload builder (`payload.py`) consumes this dataclass.
 from __future__ import annotations
 
 import json
+import re as _re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -99,7 +100,7 @@ class Project:
             permissions=agent_data.get("permissions"),
             extras=agent_data.get("extras"),
             tools=_read_tools_json(root),
-            skills=[],          # task 8
+            skills=_read_skills(root),
             subagents=[],       # task 9
         )
 
@@ -190,3 +191,64 @@ def _read_tools_json(root: Path) -> dict[str, Any] | None:
         msg = f"{path}: `interrupt_config` must be an object."
         raise ProjectError(msg)
     return data
+
+
+_FRONTMATTER_RE = _re.compile(
+    r"^---\n(?P<fm>.*?)\n---\n(?P<body>.*)$", _re.DOTALL
+)
+
+
+def _parse_skill_frontmatter(text: str, *, source: Path) -> tuple[dict[str, str], str]:
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        msg = f"{source}: YAML frontmatter (--- ... ---) is required."
+        raise ProjectError(msg)
+    frontmatter: dict[str, str] = {}
+    for line in match.group("fm").splitlines():
+        if not line.strip() or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        frontmatter[key.strip()] = value.strip().strip('"').strip("'")
+    if "name" not in frontmatter or not frontmatter["name"]:
+        msg = f"{source}: frontmatter is missing required key `name`."
+        raise ProjectError(msg)
+    if "description" not in frontmatter or not frontmatter["description"]:
+        msg = f"{source}: frontmatter is missing required key `description`."
+        raise ProjectError(msg)
+    return frontmatter, match.group("body").strip()
+
+
+def _read_skills(root: Path) -> list[Skill]:
+    skills_dir = root / _SKILLS_DIR
+    if not skills_dir.is_dir():
+        return []
+    result: list[Skill] = []
+    seen: set[str] = set()
+    for entry in sorted(skills_dir.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        skill_file = entry / _SKILL_FILE
+        if not skill_file.is_file():
+            msg = f"{entry}: missing SKILL.md"
+            raise ProjectError(msg)
+        frontmatter, body = _parse_skill_frontmatter(
+            skill_file.read_text(encoding="utf-8"), source=skill_file
+        )
+        name = frontmatter["name"]
+        if name in seen:
+            msg = f"duplicate skill name {name!r} in {skills_dir}"
+            raise ProjectError(msg)
+        seen.add(name)
+        files: dict[str, str] = {}
+        for child in sorted(entry.iterdir()):
+            if child.is_file() and child.name != _SKILL_FILE and not child.name.startswith("."):
+                files[child.name] = child.read_text(encoding="utf-8")
+        result.append(
+            Skill(
+                name=name,
+                description=frontmatter["description"],
+                instructions=body,
+                files=files,
+            )
+        )
+    return result

@@ -70,6 +70,47 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestSandboxSnapshotNameArg:
+    """Tests for `--sandbox-snapshot-name` argument."""
+
+    def test_flag_sets_snapshot_name(self) -> None:
+        """Verify `--sandbox-snapshot-name` stores the requested snapshot name."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--sandbox",
+                "langsmith",
+                "--sandbox-snapshot-name",
+                "custom-snap",
+            ],
+        ):
+            args = parse_args()
+        assert args.sandbox_snapshot_name == "custom-snap"
+
+    def test_no_flag(self) -> None:
+        """Verify `sandbox_snapshot_name` defaults to `None`."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.sandbox_snapshot_name is None
+
+    def test_snapshot_name_without_langsmith_errors(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--sandbox-snapshot-name` without `--sandbox langsmith` errors out."""
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--sandbox-snapshot-name", "custom-snap"],
+            ),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        assert "requires --sandbox langsmith" in capsys.readouterr().err
+
+
 class TestStartupCmdArg:
     """Tests for `--startup-cmd` pre-prompt shell command argument."""
 

@@ -917,6 +917,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--sandbox-snapshot-name",
+        metavar="NAME",
+        help="LangSmith sandbox snapshot name to use or create",
+    )
+
+    parser.add_argument(
         "--sandbox-setup",
         metavar="PATH",
         help="Path to setup script to run in sandbox after creation",
@@ -1025,6 +1031,7 @@ async def run_textual_cli_async(
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
@@ -1052,6 +1059,7 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Optional LangSmith snapshot name to use or create.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -1158,6 +1166,7 @@ async def run_textual_cli_async(
         "model_params": model_params,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
+        "sandbox_snapshot_name": sandbox_snapshot_name,
         "sandbox_setup": sandbox_setup,
         "enable_ask_user": True,
         "enable_interpreter": enable_interpreter,
@@ -2196,6 +2205,9 @@ def cli_main() -> None:
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
                             sandbox_id=args.sandbox_id,
+                            sandbox_snapshot_name=getattr(
+                                args, "sandbox_snapshot_name", None
+                            ),
                             sandbox_setup=getattr(args, "sandbox_setup", None),
                             initial_skill=getattr(args, "initial_skill", None),
                             startup_cmd=getattr(args, "startup_cmd", None),
@@ -2288,6 +2300,9 @@ def cli_main() -> None:
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_snapshot_name=getattr(
+                            args, "sandbox_snapshot_name", None
+                        ),
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,

@@ -10,6 +10,7 @@ import pytest
 
 from deepagents_code.integrations.sandbox_factory import (
     _get_provider,
+    create_sandbox,
     get_default_working_dir,
     verify_sandbox_deps,
 )
@@ -40,6 +41,45 @@ def test_get_provider_raises_helpful_error_for_missing_optional_dependency(
         pytest.raises(ImportError, match=error),
     ):
         _get_provider(provider)
+
+
+def test_create_sandbox_passes_langsmith_snapshot_name() -> None:
+    """LangSmith snapshot names are forwarded to the provider."""
+    backend = MagicMock(id="sandbox-1")
+    provider = MagicMock()
+    provider.get_or_create.return_value = backend
+
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._get_provider",
+            return_value=provider,
+        ),
+        create_sandbox("langsmith", snapshot_name="custom-snap") as result,
+    ):
+        assert result is backend
+
+    provider.get_or_create.assert_called_once_with(
+        sandbox_id=None,
+        snapshot="custom-snap",
+    )
+    provider.delete.assert_called_once_with(sandbox_id="sandbox-1")
+
+
+def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
+    """Snapshot names only apply to LangSmith sandboxes."""
+    provider = MagicMock()
+
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._get_provider",
+            return_value=provider,
+        ),
+        pytest.raises(ValueError, match="only supported for langsmith"),
+        create_sandbox("modal", snapshot_name="custom-snap"),
+    ):
+        pass
+
+    provider.get_or_create.assert_not_called()
 
 
 def test_agentcore_get_or_create_raises_for_missing_dep() -> None:
@@ -366,6 +406,25 @@ class TestLangSmithSnapshotResolution:
         mock_client.create_sandbox.assert_called_once()
         kwargs = mock_client.create_sandbox.call_args.kwargs
         assert kwargs["snapshot_id"] == "snap-abc123"
+
+    def test_snapshot_kwarg_overrides_env_var(
+        self,
+        provider,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit snapshot kwarg wins over `LANGSMITH_SANDBOX_SNAPSHOT_NAME`."""
+        monkeypatch.delenv("LANGSMITH_SANDBOX_SNAPSHOT_ID", raising=False)
+        monkeypatch.setenv("LANGSMITH_SANDBOX_SNAPSHOT_NAME", "env-snap")
+
+        existing = MagicMock(id="snap-flag", status="ready")
+        existing.name = "flag-snap"
+        mock_client.list_snapshots.return_value = [existing]
+
+        provider.get_or_create(snapshot="flag-snap")
+
+        mock_client.create_snapshot.assert_not_called()
+        assert mock_client.create_sandbox.call_args.kwargs["snapshot_id"] == "snap-flag"
 
     def test_snapshot_name_env_var_overrides_default(
         self,

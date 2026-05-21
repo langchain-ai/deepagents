@@ -116,6 +116,9 @@ def show_help() -> None:
         "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
     )
     console.print(
+        "  --sandbox-snapshot-name NAME  LangSmith snapshot name to use or create"
+    )
+    console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
     console.print(

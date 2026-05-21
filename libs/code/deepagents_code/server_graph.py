@@ -165,6 +165,7 @@ def make_graph() -> Any:  # noqa: ANN401
             _sandbox_cm = create_sandbox(
                 config.sandbox_type,
                 sandbox_id=config.sandbox_id,
+                snapshot_name=config.sandbox_snapshot_name,
                 setup_script_path=config.sandbox_setup,
             )
             _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime

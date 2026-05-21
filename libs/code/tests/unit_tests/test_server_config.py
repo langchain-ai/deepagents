@@ -215,3 +215,19 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_type is None
+
+    def test_sandbox_snapshot_name_round_trips(self) -> None:
+        """LangSmith snapshot names survive server env serialization."""
+        original = ServerConfig(
+            sandbox_type="langsmith",
+            sandbox_snapshot_name="customer-image",
+        )
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.sandbox_type == "langsmith"
+        assert restored.sandbox_snapshot_name == "customer-image"

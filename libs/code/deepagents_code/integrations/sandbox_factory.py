@@ -85,6 +85,7 @@ def create_sandbox(
     provider: str,
     *,
     sandbox_id: str | None = None,
+    snapshot_name: str | None = None,
     setup_script_path: str | None = None,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
@@ -96,20 +97,31 @@ def create_sandbox(
         provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
+        snapshot_name: Optional LangSmith snapshot name to use or create.
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         `SandboxBackendProtocol` instance
+
+    Raises:
+        ValueError: If `snapshot_name` is provided for a non-LangSmith provider.
     """
+    if snapshot_name is not None and provider != "langsmith":
+        msg = "--sandbox-snapshot-name is only supported for langsmith sandboxes"
+        raise ValueError(msg)
+
     # Get provider instance
     provider_obj = _get_provider(provider)
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
+    provider_kwargs: dict[str, str | None] = {}
+    if snapshot_name is not None:
+        provider_kwargs["snapshot"] = snapshot_name
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **provider_kwargs)
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
@@ -271,10 +283,9 @@ class _LangSmithProvider(SandboxProvider):
             snapshot: Snapshot name to boot from.
 
                 Resolved to a snapshot ID, creating the snapshot from
-                `snapshot_image` if missing. Overridden by the env vars
-                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything)
-                and `LANGSMITH_SANDBOX_SNAPSHOT_NAME` (name, wins over this
-                kwarg).
+                `snapshot_image` if missing. Overrides
+                `LANGSMITH_SANDBOX_SNAPSHOT_NAME`; overridden by
+                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything).
             snapshot_image: Docker image used when building the snapshot.
             fs_capacity_bytes: Filesystem capacity when building the snapshot.
             **kwargs: Additional LangSmith-specific parameters.

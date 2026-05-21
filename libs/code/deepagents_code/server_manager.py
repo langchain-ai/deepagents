@@ -277,6 +277,7 @@ async def start_server_and_get_agent(
     shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
@@ -301,6 +302,7 @@ async def start_server_and_get_agent(
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
+        sandbox_snapshot_name: LangSmith snapshot name to use or create.
         sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
@@ -346,6 +348,7 @@ async def start_server_and_get_agent(
         shell_allow_list=shell_allow_list,
         sandbox_type=sandbox_type,
         sandbox_id=sandbox_id,
+        sandbox_snapshot_name=sandbox_snapshot_name,
         sandbox_setup=sandbox_setup,
         enable_shell=enable_shell,
         enable_ask_user=enable_ask_user,
@@ -395,6 +398,7 @@ async def server_session(
     shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
@@ -422,6 +426,7 @@ async def server_session(
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
+        sandbox_snapshot_name: LangSmith snapshot name to use or create.
         sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
@@ -452,6 +457,7 @@ async def server_session(
             shell_allow_list=shell_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,

@@ -918,6 +918,7 @@ async def run_non_interactive(
     model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     *,
     initial_skill: str | None = None,
@@ -960,6 +961,7 @@ async def run_non_interactive(
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Optional LangSmith snapshot name to use or create.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         initial_skill: Optional skill name whose `SKILL.md` instructions wrap
@@ -1161,6 +1163,7 @@ async def run_non_interactive(
             shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=False,

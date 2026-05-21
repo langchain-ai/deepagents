@@ -3446,7 +3446,13 @@ class DeepAgentsApp(App):
         Custom themes use their stored registry colors; built-in Textual themes
         resolve colors from the active app theme. Terminal write failures are
         logged and swallowed because the OSC background sync is cosmetic.
+
+        ANSI themes intentionally skip this step so the terminal's native
+        background is preserved.
         """
+        if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+
         from deepagents_code.terminal_escape import set_terminal_background
 
         entry = theme.get_registry().get(self.theme)

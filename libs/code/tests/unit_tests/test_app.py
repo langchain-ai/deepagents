@@ -4561,6 +4561,10 @@ class TestTerminalBackgroundSync:
         )
 
         app = DeepAgentsApp()
+        # Force a known non-ANSI theme so the assertion is stable regardless
+        # of the test runner's saved preference (which may be ansi-dark).
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
         entry = theme.get_registry()[app.theme]
 
         assert calls[-1] == entry.colors.background
@@ -4639,6 +4643,7 @@ class TestTerminalBackgroundSync:
         from deepagents_code import terminal_escape
 
         app = DeepAgentsApp()
+        app.theme = "langchain"  # force non-ANSI so the error path runs
 
         def _raise(_color: str) -> bool:
             msg = "terminal unavailable"
@@ -4650,6 +4655,42 @@ class TestTerminalBackgroundSync:
             app.sync_terminal_background()
 
         assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_sync_terminal_background_skips_ansi_dark(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = "ansi-dark"
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_ansi_light(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        app.theme = "ansi-light"
+        app.sync_terminal_background()
+
+        assert calls == []
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch

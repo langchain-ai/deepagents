@@ -403,6 +403,31 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             self._helper_cache.popitem(last=False)
         return helper
 
+    @staticmethod
+    def _count_tokens(
+        helper: LCSummarizationMiddleware,
+        messages: list[AnyMessage],
+        tools: list[BaseTool | dict[str, Any]] | None = None,
+    ) -> int:
+        """Count tokens with the helper that owns the active model profile.
+
+        Static because callers pass the resolved helper explicitly; using
+        `self` here risks drifting back to the construction-time helper.
+
+        Args:
+            helper: The resolved LangChain summarization helper.
+            messages: Messages to count.
+            tools: Optional tool definitions to include when supported by the
+                helper's token counter.
+
+        Returns:
+            Number of tokens estimated by the helper's token counter.
+        """
+        try:
+            return helper.token_counter(messages, tools=tools)  # ty: ignore[unknown-argument]
+        except TypeError:
+            return helper.token_counter(messages)
+
     def _resolve_model_from_context(
         self,
         ctx: dict[str, Any] | None,
@@ -439,7 +464,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _resolve_models(
         self,
-        runtime: Runtime | None,
+        runtime: Runtime | ToolRuntime | None,
     ) -> tuple[BaseChatModel, BaseChatModel]:
         """Resolve (threshold_model, summarizer_model) per the documented precedence.
 
@@ -853,10 +878,7 @@ A condensed summary follows:
             truncated_messages is the same as input messages.
         """
         counted_messages = [system_message, *messages] if system_message is not None else messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        total_tokens = self._count_tokens(helper, counted_messages, tools)
         if not self._should_truncate_args(messages, total_tokens, helper=helper):
             return messages, False
 
@@ -1100,10 +1122,7 @@ A condensed summary follows:
 
         # Step 2: Check if summarization should happen
         counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        total_tokens = self._count_tokens(threshold_helper, counted_messages, request.tools)
         should_summarize = threshold_helper._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1133,7 +1152,7 @@ A condensed summary follows:
                 backend,
                 keep=threshold_helper.keep,
                 max_input_tokens=threshold_helper._get_profile_limits(),
-                token_counter=self.token_counter,
+                token_counter=threshold_helper.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
 
@@ -1235,10 +1254,7 @@ A condensed summary follows:
 
         # Step 2: Check if summarization should happen
         counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        total_tokens = self._count_tokens(threshold_helper, counted_messages, request.tools)
         should_summarize = threshold_helper._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1268,7 +1284,7 @@ A condensed summary follows:
                 backend,
                 keep=threshold_helper.keep,
                 max_input_tokens=threshold_helper._get_profile_limits(),
-                token_counter=self.token_counter,
+                token_counter=threshold_helper.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
 
@@ -1686,7 +1702,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
                     ToolMessage(
                         content=(
                             "Compaction failed: an error occurred while "
-                            f"generating the summary ({type(exc).__name__}: "
+                            f"compacting the conversation ({type(exc).__name__}: "
                             f"{exc}). The conversation has not been compacted "
                             "— no messages were summarized or removed."
                         ),
@@ -1696,7 +1712,12 @@ class SummarizationToolMiddleware(AgentMiddleware):
             }
         )
 
-    def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
+    def _is_eligible_for_compaction(
+        self,
+        messages: list[AnyMessage],
+        *,
+        helper: LCSummarizationMiddleware,
+    ) -> bool:
         """Check if manual compaction is currently allowed.
 
         This is an eligibility gate for `compact_conversation` tool calls, not a
@@ -1709,8 +1730,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         Uses reported usage metadata when available.
         """
-        lc = self._summarization._lc_helper
-        trigger_conditions = lc._trigger_conditions
+        trigger_conditions = helper._trigger_conditions
         if not trigger_conditions:
             return False
 
@@ -1719,16 +1739,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 threshold = int(value * 0.5)
                 if threshold <= 0:
                     threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                if helper._should_summarize_based_on_reported_tokens(messages, threshold):
                     return True
             elif kind == "fraction":
-                max_input_tokens = lc._get_profile_limits()
+                max_input_tokens = helper._get_profile_limits()
                 if max_input_tokens is None:
                     continue
                 threshold = int(max_input_tokens * value * 0.5)
                 if threshold <= 0:
                     threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                if helper._should_summarize_based_on_reported_tokens(messages, threshold):
                     return True
         return False
 
@@ -1744,20 +1764,24 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
-        messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
-        effective = s._apply_event_to_messages(messages, event)
-
-        if not self._is_eligible_for_compaction(effective):
-            return self._nothing_to_compact(tool_call_id)
-
-        cutoff = s._determine_cutoff_index(effective)
-        if cutoff == 0:
-            return self._nothing_to_compact(tool_call_id)
 
         try:
-            to_summarize, _ = s._partition_messages(effective, cutoff)
-            summary = s._create_summary(to_summarize)
+            messages = runtime.state.get("messages", [])
+            event = runtime.state.get("_summarization_event")
+            effective = s._apply_event_to_messages(messages, event)
+            threshold_model, summarizer_model = s._resolve_models(runtime)
+            threshold_helper = s._get_helper_for(threshold_model)
+            summarizer_helper = s._get_helper_for(summarizer_model)
+
+            if not self._is_eligible_for_compaction(effective, helper=threshold_helper):
+                return self._nothing_to_compact(tool_call_id)
+
+            cutoff = threshold_helper._determine_cutoff_index(effective)
+            if cutoff == 0:
+                return self._nothing_to_compact(tool_call_id)
+
+            to_summarize, _ = threshold_helper._partition_messages(effective, cutoff)
+            summary = summarizer_helper._create_summary(to_summarize)
             backend = self._resolve_backend(runtime)
             file_path = s._offload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
@@ -1778,20 +1802,24 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
-        messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
-        effective = s._apply_event_to_messages(messages, event)
-
-        if not self._is_eligible_for_compaction(effective):
-            return self._nothing_to_compact(tool_call_id)
-
-        cutoff = s._determine_cutoff_index(effective)
-        if cutoff == 0:
-            return self._nothing_to_compact(tool_call_id)
 
         try:
-            to_summarize, _ = s._partition_messages(effective, cutoff)
-            summary = await s._acreate_summary(to_summarize)
+            messages = runtime.state.get("messages", [])
+            event = runtime.state.get("_summarization_event")
+            effective = s._apply_event_to_messages(messages, event)
+            threshold_model, summarizer_model = s._resolve_models(runtime)
+            threshold_helper = s._get_helper_for(threshold_model)
+            summarizer_helper = s._get_helper_for(summarizer_model)
+
+            if not self._is_eligible_for_compaction(effective, helper=threshold_helper):
+                return self._nothing_to_compact(tool_call_id)
+
+            cutoff = threshold_helper._determine_cutoff_index(effective)
+            if cutoff == 0:
+                return self._nothing_to_compact(tool_call_id)
+
+            to_summarize, _ = threshold_helper._partition_messages(effective, cutoff)
+            summary = await summarizer_helper._acreate_summary(to_summarize)
             backend = self._resolve_backend(runtime)
             file_path = await s._aoffload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise

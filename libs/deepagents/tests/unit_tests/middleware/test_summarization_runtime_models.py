@@ -14,6 +14,8 @@ from unittest.mock import MagicMock
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse
 from langchain.chat_models import BaseChatModel
+from langchain_core.exceptions import ContextOverflowError
+from langchain_core.messages import AIMessage
 
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
@@ -25,6 +27,7 @@ from tests.unit_tests.middleware.test_summarization_middleware import (
     make_conversation_messages,
     make_mock_model,
     make_mock_runtime,
+    make_model_request,
     mock_get_config,
 )
 
@@ -156,6 +159,24 @@ class TestSummarizerModelResolution:
 class TestThresholdModelResolution:
     """Threshold computation follows `model`, not `summarization_model`."""
 
+    def test_count_tokens_supports_tool_aware_and_legacy_counters(self) -> None:
+        """`_count_tokens` supports counters with and without `tools`."""
+        messages = [MagicMock()]
+        tools = [{"name": "example"}]
+
+        tool_aware_counter = MagicMock(return_value=12)
+        tool_aware_helper = MagicMock(token_counter=tool_aware_counter)
+        assert SummarizationMiddleware._count_tokens(tool_aware_helper, messages, tools) == 12
+        tool_aware_counter.assert_called_once_with(messages, tools=tools)
+
+        def legacy_counter(msgs: list[Any]) -> int:
+            return len(msgs)
+
+        legacy = MagicMock(side_effect=legacy_counter)
+        legacy_helper = MagicMock(token_counter=legacy)
+        assert SummarizationMiddleware._count_tokens(legacy_helper, messages, tools) == 1
+        assert legacy.call_count == 2
+
     def test_threshold_uses_main_model_profile(self) -> None:
         """A bigger-context `model` override raises the fraction-based trigger."""
         backend = MockBackend()
@@ -197,6 +218,110 @@ class TestThresholdModelResolution:
         assert not isinstance(result, ExtendedModelResponse)
         assert main_override.invoke.call_count == 0
         assert construction_model.invoke.call_count == 0
+
+    def test_threshold_uses_runtime_model_token_counter(self) -> None:
+        """Token thresholds are counted with the runtime model helper."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
+        construction_counter = MagicMock(return_value=1)
+        runtime_counter = MagicMock(return_value=1_000)
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("tokens", 100),
+            keep=("messages", 2),
+            token_counter=construction_counter,
+        )
+        middleware._get_helper_for(main_override).token_counter = runtime_counter
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = _runtime_with_context(model=main_override)
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        runtime_counter.assert_called()
+        construction_counter.assert_not_called()
+        main_override.invoke.assert_called_once()
+
+    async def test_async_threshold_uses_runtime_model_token_counter(self) -> None:
+        """Async token thresholds are counted with the runtime model helper."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
+        construction_counter = MagicMock(return_value=1)
+        runtime_counter = MagicMock(return_value=1_000)
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("tokens", 100),
+            keep=("messages", 2),
+            token_counter=construction_counter,
+        )
+        middleware._get_helper_for(main_override).token_counter = runtime_counter
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = _runtime_with_context(model=main_override)
+
+        with mock_get_config():
+            result, _ = await call_awrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        runtime_counter.assert_called()
+        construction_counter.assert_not_called()
+        main_override.ainvoke.assert_called_once()
+
+    def test_overflow_clipping_uses_runtime_model_token_counter(self) -> None:
+        """Overflow fallback clips preserved messages with runtime helper counter."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="main"))
+        construction_counter = MagicMock(return_value=1)
+        runtime_counter = MagicMock(return_value=1)
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 100),
+            keep=("messages", 2),
+            token_counter=construction_counter,
+        )
+        middleware._get_helper_for(main_override).token_counter = runtime_counter
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = _runtime_with_context(model=main_override)
+        request = make_model_request(state, runtime)
+        call_count = 0
+
+        def handler(_req: Any) -> AIMessage:  # noqa: ANN401
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ContextOverflowError
+            return AIMessage(content="ok")
+
+        def clip_side_effect(preserved: list[Any], *_args: Any, **_kwargs: Any) -> tuple[list[Any], list[Any]]:
+            return preserved, []
+
+        with (
+            mock_get_config(),
+            mock.patch(
+                "deepagents.middleware.summarization._clip_overflow_tail",
+                side_effect=clip_side_effect,
+            ) as clip,
+        ):
+            result = middleware.wrap_model_call(request, handler)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert clip.call_args.kwargs["token_counter"] is runtime_counter
+        construction_counter.assert_not_called()
 
     def test_summarization_model_does_not_change_thresholds(self) -> None:
         """`summarization_model` alone must not move the trigger boundary."""

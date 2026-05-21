@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, NonCallableMagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ModelRequest
+from langchain.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
@@ -50,6 +51,12 @@ def _make_mock_model() -> MagicMock:
     return model
 
 
+def _as_chat_model(mock_model: MagicMock) -> MagicMock:
+    """Make a `MagicMock` satisfy runtime model override validation."""
+    mock_model.__class__ = BaseChatModel  # ty: ignore[invalid-assignment]
+    return mock_model
+
+
 def _make_messages(n: int, *, total_tokens: int = 120_000) -> list[Any]:
     """Create a list of mock messages with unique IDs.
 
@@ -77,6 +84,7 @@ def _make_runtime(
     messages: list[Any],
     *,
     event: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
     thread_id: str = "test-thread",
     tool_call_id: str = "tc-1",
 ) -> MagicMock:
@@ -86,6 +94,7 @@ def _make_runtime(
     if event is not None:
         state["_summarization_event"] = event
     runtime.state = state
+    runtime.context = {} if context is None else context
     runtime.config = {"configurable": {"thread_id": thread_id}}
     runtime.tool_call_id = tool_call_id
     return runtime
@@ -165,7 +174,7 @@ class TestNotEnoughMessages:
         messages = _make_messages(3)
         runtime = _make_runtime(messages)
 
-        with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
+        with patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=0):
             result = mw._run_compact(runtime)
 
         assert isinstance(result, Command)
@@ -180,7 +189,7 @@ class TestNotEnoughMessages:
         messages = _make_messages(3)
         runtime = _make_runtime(messages)
 
-        with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
+        with patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=0):
             result = await mw._arun_compact(runtime)
 
         assert isinstance(result, Command)
@@ -199,14 +208,14 @@ class TestCompactSuccess:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/test-thread.md"),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary of the conversation."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary of the conversation."),
         ):
             result = mw._run_compact(runtime)
 
@@ -239,14 +248,14 @@ class TestCompactSuccess:
         runtime = _make_runtime(messages, event=prior_event)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=3),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=3),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
 
@@ -263,14 +272,14 @@ class TestCompactSuccess:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_aoffload_to_backend", return_value="/conversation_history/test-thread.md"),
-            patch.object(mw._summarization, "_acreate_summary", return_value="Summary of the conversation."),
+            patch.object(mw._summarization._lc_helper, "_acreate_summary", return_value="Summary of the conversation."),
         ):
             result = await mw._arun_compact(runtime)
 
@@ -286,14 +295,14 @@ class TestCompactSuccess:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value="/conversation_history/t.md"),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
 
@@ -308,14 +317,14 @@ class TestCompactSuccess:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
 
@@ -334,14 +343,14 @@ class TestOffloadFailure:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
         ):
             result = mw._run_compact(runtime)
 
@@ -362,14 +371,14 @@ class TestCompactErrorHandling:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
-            patch.object(mw._summarization, "_create_summary", side_effect=RuntimeError("model unavailable")),
+            patch.object(mw._summarization._lc_helper, "_create_summary", side_effect=RuntimeError("model unavailable")),
         ):
             result = mw._run_compact(runtime)
 
@@ -388,15 +397,15 @@ class TestCompactErrorHandling:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
             patch.object(mw._summarization, "_aoffload_to_backend", return_value=None),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_acreate_summary",
                 side_effect=RuntimeError("model unavailable"),
             ),
@@ -416,13 +425,13 @@ class TestCompactErrorHandling:
         runtime = _make_runtime(messages)
 
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=4),
             patch.object(
-                mw._summarization,
+                mw._summarization._lc_helper,
                 "_partition_messages",
                 side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
             ),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
             patch.object(
                 mw,
                 "_resolve_backend",
@@ -581,9 +590,9 @@ class TestIsEligibleForCompaction:
         messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
         runtime = _make_runtime(messages)
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
-            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization._lc_helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
         ):
             result = mw._run_compact(runtime)
@@ -603,9 +612,9 @@ class TestIsEligibleForCompaction:
         messages = [HumanMessage(content="hi"), _ai_message_with_usage(100_000)]
         runtime = _make_runtime(messages)
         with (
-            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
-            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
-            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization._lc_helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization._lc_helper, "_create_summary", return_value="Summary."),
             patch.object(mw._summarization, "_offload_to_backend", return_value=None),
         ):
             result = mw._run_compact(runtime)
@@ -617,7 +626,7 @@ class TestIsEligibleForCompaction:
         # Explicitly create messages without any usage metadata to test the fallback path.
         messages = [HumanMessage(content=f"msg {i}") for i in range(30)]
         runtime = _make_runtime(messages)
-        with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
+        with patch.object(mw._summarization._lc_helper, "_determine_cutoff_index", return_value=0):
             result = mw._run_compact(runtime)
         assert "Nothing to compact" in result.update["messages"][0].content
 
@@ -628,6 +637,150 @@ class TestIsEligibleForCompaction:
         runtime = _make_runtime(messages)
         result = await mw._arun_compact(runtime)
         assert "Nothing to compact" in result.update["messages"][0].content
+
+
+class TestRuntimeModelOverrides:
+    """Runtime model overrides apply to manual compaction."""
+
+    def test_compact_tool_uses_runtime_model_override(self) -> None:
+        """`runtime.context["model"]` controls compact tool summarization."""
+        construction_model = _make_mock_model()
+        construction_model.invoke.return_value.text = "construction summary"
+        construction_model.invoke.return_value.content = "construction summary"
+        override_model = _as_chat_model(_make_mock_model())
+        override_model.invoke.return_value.text = "override summary"
+        override_model.invoke.return_value.content = "override summary"
+        mw = _make_middleware(model=construction_model)
+        construction_helper = mw._summarization._lc_helper
+        override_helper = mw._summarization._get_helper_for(override_model)
+
+        messages = [HumanMessage(content=f"message {i}") for i in range(29)]
+        messages.append(_ai_message_with_usage(120_000))
+        runtime = _make_runtime(messages, context={"model": override_model})
+
+        with (
+            patch.object(construction_helper, "_partition_messages", wraps=construction_helper._partition_messages) as construction_partition,
+            patch.object(construction_helper, "_create_summary", wraps=construction_helper._create_summary) as construction_summary,
+            patch.object(override_helper, "_determine_cutoff_index", return_value=1),
+            patch.object(override_helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])) as override_partition,
+            patch.object(override_helper, "_create_summary", return_value="override summary") as override_summary,
+        ):
+            result = mw._run_compact(runtime)
+
+        event = result.update["_summarization_event"]
+        assert "override summary" in event["summary_message"].content
+        override_partition.assert_called_once()
+        override_summary.assert_called_once()
+        construction_partition.assert_not_called()
+        construction_summary.assert_not_called()
+
+    async def test_async_compact_tool_uses_runtime_model_override(self) -> None:
+        """Async compact uses `runtime.context["model"]` for summarization."""
+        construction_model = _make_mock_model()
+        override_model = _as_chat_model(_make_mock_model())
+        mw = _make_middleware(model=construction_model)
+        construction_helper = mw._summarization._lc_helper
+        override_helper = mw._summarization._get_helper_for(override_model)
+
+        messages = [HumanMessage(content=f"message {i}") for i in range(29)]
+        messages.append(_ai_message_with_usage(120_000))
+        runtime = _make_runtime(messages, context={"model": override_model})
+
+        with (
+            patch.object(construction_helper, "_partition_messages", wraps=construction_helper._partition_messages) as construction_partition,
+            patch.object(construction_helper, "_acreate_summary", wraps=construction_helper._acreate_summary) as construction_summary,
+            patch.object(override_helper, "_determine_cutoff_index", return_value=1),
+            patch.object(override_helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])) as override_partition,
+            patch.object(override_helper, "_acreate_summary", return_value="async override summary") as override_summary,
+        ):
+            result = await mw._arun_compact(runtime)
+
+        event = result.update["_summarization_event"]
+        assert "async override summary" in event["summary_message"].content
+        override_partition.assert_called_once()
+        override_summary.assert_called_once()
+        construction_partition.assert_not_called()
+        construction_summary.assert_not_called()
+
+    def test_compact_tool_uses_distinct_threshold_and_summarizer_overrides(self) -> None:
+        """`model` controls cutoff while `summarization_model` controls summary."""
+        construction_model = _make_mock_model()
+        threshold_model = _as_chat_model(_make_mock_model())
+        summarizer_model = _as_chat_model(_make_mock_model())
+        mw = _make_middleware(model=construction_model)
+        threshold_helper = mw._summarization._get_helper_for(threshold_model)
+        summarizer_helper = mw._summarization._get_helper_for(summarizer_model)
+
+        messages = [HumanMessage(content=f"message {i}") for i in range(29)]
+        messages.append(_ai_message_with_usage(120_000))
+        runtime = _make_runtime(
+            messages,
+            context={"model": threshold_model, "summarization_model": summarizer_model},
+        )
+
+        with (
+            patch.object(threshold_helper, "_determine_cutoff_index", return_value=1) as threshold_cutoff,
+            patch.object(threshold_helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])) as threshold_partition,
+            patch.object(threshold_helper, "_create_summary", wraps=threshold_helper._create_summary) as threshold_summary,
+            patch.object(summarizer_helper, "_create_summary", return_value="separate summarizer summary") as summarizer_summary,
+        ):
+            result = mw._run_compact(runtime)
+
+        event = result.update["_summarization_event"]
+        assert "separate summarizer summary" in event["summary_message"].content
+        threshold_cutoff.assert_called_once()
+        threshold_partition.assert_called_once()
+        threshold_summary.assert_not_called()
+        summarizer_summary.assert_called_once()
+
+    def test_compact_tool_model_resolution_error_returns_tool_message(self) -> None:
+        """Invalid runtime model context returns an error ToolMessage."""
+        mw = _make_middleware()
+        messages = [HumanMessage(content=f"message {i}") for i in range(29)]
+        messages.append(_ai_message_with_usage(120_000))
+        runtime = _make_runtime(messages, context={"model": {"invalid": True}})
+
+        result = mw._run_compact(runtime)
+
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "model" in msg.content
+        assert "_summarization_event" not in result.update
+
+    def test_factory_compact_tool_uses_model_resolver_for_runtime_string(self) -> None:
+        """Factory-created compact tool honors runtime string model overrides."""
+        construction_model = GenericFakeChatModel(messages=iter([]))
+        construction_model.profile = {"max_input_tokens": 120_000}
+        override_model = _as_chat_model(_make_mock_model())
+        override_model.invoke.return_value.text = "resolved summary"
+        override_model.invoke.return_value.content = "resolved summary"
+        seen: list[str] = []
+
+        def resolver(spec: str) -> Any:  # noqa: ANN401
+            seen.append(spec)
+            return override_model
+
+        mw = create_summarization_tool_middleware(
+            construction_model,
+            _make_mock_backend(),
+            model_resolver=resolver,
+        )
+        helper = mw._summarization._get_helper_for(override_model)
+        messages = [HumanMessage(content=f"message {i}") for i in range(29)]
+        messages.append(_ai_message_with_usage(120_000))
+        runtime = _make_runtime(messages, context={"model": "runtime-model"})
+
+        with (
+            patch.object(helper, "_determine_cutoff_index", return_value=1),
+            patch.object(helper, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(helper, "_create_summary", return_value="resolved summary") as create_summary,
+        ):
+            result = mw._run_compact(runtime)
+
+        event = result.update["_summarization_event"]
+        assert seen == ["runtime-model"]
+        assert "resolved summary" in event["summary_message"].content
+        create_summary.assert_called_once()
 
 
 def test_create_summarization_tool_middleware_returns_instance() -> None:

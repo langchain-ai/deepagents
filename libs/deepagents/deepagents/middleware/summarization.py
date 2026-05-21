@@ -54,6 +54,7 @@ import logging
 import uuid
 import warnings
 from collections import OrderedDict
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
@@ -96,6 +97,79 @@ logger = logging.getLogger(__name__)
 # Helpers are cached per distinct override model: typically {main, summarizer}
 # plus one prior of each across a hot-swap, so 4 covers the realistic ceiling
 _HELPER_CACHE_MAX_SIZE = 4
+
+
+class SummarizationContext(TypedDict, total=False):
+    """Runtime context keys this middleware reads on every invocation.
+
+    Hosts compose this into their own `context_schema` to get type-checked
+    access to the override slots. All keys are optional — when absent, the
+    middleware falls back to the construction-time model and the SDK default
+    resolver.
+
+    Example:
+        ```python
+        from dataclasses import dataclass
+        from typing import TYPE_CHECKING, Callable
+
+        if TYPE_CHECKING:
+            from langchain.chat_models import BaseChatModel
+
+
+        @dataclass
+        class AppContext:
+            user_id: str
+            # Reuse the published keys verbatim — same names the middleware reads.
+            model: str | None = None
+            model_resolver: Callable[[str], "BaseChatModel"] | None = None
+
+
+        agent.invoke(
+            {"messages": [...]},
+            context=AppContext(user_id="u1", model="openai:gpt-5.4-mini"),
+        )
+        ```
+    """
+
+    model: str | BaseChatModel
+    """Override for the threshold model.
+
+    A string spec is resolved via `model_resolver` (or the SDK default); a
+    `BaseChatModel` instance is used as-is.
+
+    Drives token/fraction-based summarization triggers.
+    """
+
+    summarization_model: str | BaseChatModel
+    """Override for the model used to generate the summary.
+
+    Falls back to `model`, then to the construction-time model.
+
+    Does not influence thresholds.
+    """
+
+    model_resolver: Callable[[str], BaseChatModel]
+    """Per-call callable that turns a string spec into a `BaseChatModel`.
+
+    Lets hosts inject a (typically `lru_cache`-wrapped) factory without the SDK
+    importing host code. Constructor-level `model_resolver` takes precedence
+    over this key.
+    """
+
+
+def _ctx_get(ctx: Any, key: str) -> Any:  # noqa: ANN401  # ctx is host-supplied (dict, TypedDict, dataclass, or attribute-style); value type varies per key.
+    """Read `key` from a runtime context that may be a mapping or a dataclass.
+
+    LangGraph documents both `typing.TypedDict` and `dataclasses.dataclass` as
+    valid shapes for `context_schema`. This helper normalizes lookup so the
+    summarization middleware honors overrides regardless of which form a host
+    chose. Returns `None` when the key is absent on either shape.
+    """
+    if ctx is None:
+        return None
+    if isinstance(ctx, Mapping):
+        return ctx.get(key)
+    return getattr(ctx, key, None)
 
 
 class CompactConversationSchema(BaseModel):
@@ -432,15 +506,19 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _resolve_model_from_context(
         self,
-        ctx: dict[str, Any] | None,
+        ctx: Any,  # noqa: ANN401  # ctx is the host's `context_schema` instance — dict, TypedDict, or dataclass.
         key: str,
     ) -> BaseChatModel | None:
         """Resolve a model from `ctx[key]`, or `None` if absent.
 
+        Lookup is delegated to `_ctx_get`, which is the single source of truth
+        for how mapping-shaped and attribute-shaped `context_schema` instances
+        are read. Both shapes are documented choices for LangGraph contexts.
+
         For string specs, looks up a resolver in this order:
 
         1. The constructor-level `model_resolver`.
-        2. `ctx["model_resolver"]` — a per-call resolver hosts (e.g.
+        2. `_ctx_get(ctx, "model_resolver")` — a per-call resolver hosts (e.g.
             `deepagents-code`) can inject without touching SDK API.
         3. `deepagents._models.resolve_model` — SDK default, matches what
             `create_summarization_tool_middleware` does at the public API.
@@ -449,11 +527,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         if ctx is None:
             return None
-        spec = ctx.get(key)
+        spec = _ctx_get(ctx, key)
         if spec is None:
             return None
         if isinstance(spec, str):
-            resolver = self._model_resolver or ctx.get("model_resolver")
+            resolver = self._model_resolver or _ctx_get(ctx, "model_resolver")
             if resolver is None:
                 from deepagents._models import resolve_model  # noqa: PLC0415
 
@@ -481,11 +559,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         `summarization_model` does NOT influence thresholds.
         """
-        ctx: dict[str, Any] | None = None
-        if runtime is not None:
-            raw = getattr(runtime, "context", None)
-            if isinstance(raw, dict):
-                ctx = raw
+        ctx = getattr(runtime, "context", None) if runtime is not None else None
 
         construction_model = self._lc_helper.model
         ctx_main = self._resolve_model_from_context(ctx, "model")

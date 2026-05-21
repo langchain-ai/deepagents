@@ -7,6 +7,8 @@ Exercises the precedence rules documented on
 - Summarizer model: `runtime.context["summarization_model"]` then threshold model.
 """
 
+from dataclasses import dataclass
+from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 from unittest.mock import MagicMock
@@ -17,6 +19,7 @@ from langchain.chat_models import BaseChatModel
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage
 
+from deepagents.middleware import SummarizationContext
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
 )
@@ -548,3 +551,225 @@ class TestModelResolverCallback:
         assert isinstance(result, ExtendedModelResponse)
         ctor_resolved.invoke.assert_called_once()
         ctx_resolved.invoke.assert_not_called()
+
+
+class TestDataclassContext:
+    """Dataclass / attribute-style contexts are honored alongside dicts.
+
+    LangGraph documents both `typing.TypedDict` and `dataclasses.dataclass` as
+    valid `context_schema` shapes — these tests lock in that the summarization
+    middleware reads overrides from either form.
+    """
+
+    def test_dataclass_context_model_override(self) -> None:
+        """`runtime.context.model` on a dataclass swaps the threshold model."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="override"))
+
+        @dataclass
+        class Ctx:
+            model: Any = None
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = Ctx(model=main_override)
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        main_override.invoke.assert_called_once()
+        construction_model.invoke.assert_not_called()
+
+    def test_dataclass_context_resolver_injection(self) -> None:
+        """Dataclass contexts can inject `model_resolver` for string specs."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        resolved = make_mock_model(summary_response="resolved")
+        seen: list[str] = []
+
+        def resolver(spec: str) -> Any:  # noqa: ANN401
+            seen.append(spec)
+            return resolved
+
+        @dataclass
+        class Ctx:
+            summarization_model: Any = None
+            model_resolver: Any = None
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = Ctx(
+            summarization_model="openai:gpt-5.4-mini",
+            model_resolver=resolver,
+        )
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert seen == ["openai:gpt-5.4-mini"]
+        resolved.invoke.assert_called_once()
+        construction_model.invoke.assert_not_called()
+
+    def test_dataclass_context_without_override_keys(self) -> None:
+        """A dataclass missing the override keys falls back to construction model."""
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+
+        @dataclass
+        class Ctx:
+            user_id: str = "u1"
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = Ctx()
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        construction_model.invoke.assert_called_once()
+
+    def test_simplenamespace_context_model_override(self) -> None:
+        """`SimpleNamespace` (attribute-style, non-dataclass) is honored.
+
+        The ctx-extraction refactor dropped the prior `isinstance(raw, dict)`
+        gate, so any attribute-bearing object — Pydantic models,
+        `SimpleNamespace`, plain instances — should now route through
+        `getattr`. Locks that in.
+        """
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="override"))
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = SimpleNamespace(model=main_override)
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        main_override.invoke.assert_called_once()
+        construction_model.invoke.assert_not_called()
+
+    def test_mapping_proxy_context_model_override(self) -> None:
+        """`MappingProxyType` (Mapping but not `dict`) is honored.
+
+        `_ctx_get` keys off `isinstance(ctx, Mapping)`, not `dict` — this test
+        pins the broader contract a host could rely on (read-only mapping
+        views, custom Mapping subclasses).
+        """
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        main_override = _as_chat_model(make_mock_model(summary_response="override"))
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = MappingProxyType({"model": main_override})
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        main_override.invoke.assert_called_once()
+        construction_model.invoke.assert_not_called()
+
+    def test_ctor_resolver_beats_dataclass_ctx_resolver(self) -> None:
+        """Constructor `model_resolver` wins over `ctx.model_resolver` on dataclasses.
+
+        Mirrors the dict-ctx case in `TestModelResolverCallback` to lock
+        precedence symmetry across the two context shapes.
+        """
+        backend = MockBackend()
+        construction_model = make_mock_model(summary_response="construction")
+        ctor_resolved = make_mock_model(summary_response="ctor")
+        ctx_resolved = make_mock_model(summary_response="ctx")
+
+        def ctor_resolver(spec: str) -> Any:  # noqa: ANN401
+            assert spec == "openai:gpt-5.4-mini"
+            return ctor_resolved
+
+        def ctx_resolver(spec: str) -> Any:  # noqa: ANN401, ARG001  # signature must match `Callable[[str], BaseChatModel]`; spec unused since this branch should never fire.
+            return ctx_resolved
+
+        @dataclass
+        class Ctx:
+            summarization_model: Any = None
+            model_resolver: Any = None
+
+        middleware = SummarizationMiddleware(
+            model=construction_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            model_resolver=ctor_resolver,
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+        runtime.context = Ctx(
+            summarization_model="openai:gpt-5.4-mini",
+            model_resolver=ctx_resolver,
+        )
+
+        with mock_get_config():
+            result, _ = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        ctor_resolved.invoke.assert_called_once()
+        ctx_resolved.invoke.assert_not_called()
+
+
+class TestSummarizationContextExport:
+    """`SummarizationContext` is re-exported from the public middleware package."""
+
+    def test_exported_from_middleware_package(self) -> None:
+        """Hosts can import `SummarizationContext` from `deepagents.middleware`."""
+        # Every documented key is optional, so all three are listed in
+        # `__optional_keys__` and none in `__required_keys__`.
+        assert SummarizationContext.__optional_keys__ == frozenset({"model", "summarization_model", "model_resolver"})
+        assert SummarizationContext.__required_keys__ == frozenset()

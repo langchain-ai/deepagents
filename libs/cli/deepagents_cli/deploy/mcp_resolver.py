@@ -7,9 +7,10 @@ every `mcp_server_url` the payload references already exists at the
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from deepagents_cli.deploy.api_client import ApiClient
+if TYPE_CHECKING:
+    from deepagents_cli.deploy.api_client import ApiClient
 
 
 class UnresolvedServersError(RuntimeError):

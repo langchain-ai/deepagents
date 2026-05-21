@@ -6,10 +6,10 @@ suitable for `ApiClient.create_agent` or `ApiClient.patch_agent`.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents_cli.deploy.project import Project, Skill, Subagent
-
+if TYPE_CHECKING:
+    from deepagents_cli.deploy.project import Project, Skill, Subagent
 
 Mode = Literal["create", "patch"]
 

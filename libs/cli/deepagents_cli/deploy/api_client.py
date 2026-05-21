@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,6 +57,7 @@ class ApiClient:
         api_key: str,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        """Initialise the client with an endpoint and API key."""
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self._client = httpx.Client(
@@ -91,6 +93,7 @@ class ApiClient:
         return cls(endpoint=endpoint, api_key=api_key, transport=transport)
 
     def close(self) -> None:
+        """Close the underlying HTTP connection pool."""
         self._client.close()
 
     def _request(
@@ -107,11 +110,11 @@ class ApiClient:
             response = self._client.request(method, path, json=json, params=params)
             last_status = response.status_code
             last_text = response.text
-            if 200 <= response.status_code < 300:
-                if response.status_code == 204 or not response.content:
+            if 200 <= response.status_code < 300:  # noqa: PLR2004
+                if response.status_code == 204 or not response.content:  # noqa: PLR2004
                     return None
                 return response.json()
-            if 400 <= response.status_code < 500:
+            if 400 <= response.status_code < 500:  # noqa: PLR2004
                 raise self._build_error(response)
             # 5xx: retry once
             if attempt == 0:
@@ -135,9 +138,16 @@ class ApiClient:
     # --- agents ----------------------------------------------------------
 
     def create_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new agent and return the created resource."""
         return self._request("POST", f"{_DEPLOY_PATH}/agents", json=payload)
 
-    def get_agent(self, agent_id: str, *, include_files: bool = False) -> dict[str, Any]:
+    def get_agent(
+        self,
+        agent_id: str,
+        *,
+        include_files: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch a single agent by ID."""
         params = {"include_files": "true"} if include_files else None
         return self._request("GET", f"{_DEPLOY_PATH}/agents/{agent_id}", params=params)
 
@@ -146,7 +156,7 @@ class ApiClient:
         *,
         page_size: int = 50,
         name: str | None = None,
-    ):  # type: ignore[no-untyped-def]
+    ) -> Iterator[dict[str, Any]]:
         """Yield AgentSummary objects across all pages."""
         cursor: str | None = None
         while True:
@@ -156,25 +166,28 @@ class ApiClient:
             if name:
                 params["name"] = name
             body = self._request("GET", f"{_DEPLOY_PATH}/agents", params=params)
-            for item in body.get("items", []):
-                yield item
+            yield from body.get("items", [])
             cursor = body.get("next_cursor")
             if not cursor:
                 return
 
     def patch_agent(self, agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Partially update an agent by ID."""
         return self._request("PATCH", f"{_DEPLOY_PATH}/agents/{agent_id}", json=payload)
 
     def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent by ID."""
         self._request("DELETE", f"{_DEPLOY_PATH}/agents/{agent_id}")
 
     # --- mcp-servers -----------------------------------------------------
 
     def list_mcp_servers(self) -> list[dict[str, Any]]:
+        """Return all registered MCP servers in this workspace."""
         body = self._request("GET", f"{_DEPLOY_PATH}/mcp-servers")
         return list(body.get("servers", []))
 
     def get_mcp_server(self, mcp_server_id: str) -> dict[str, Any]:
+        """Fetch a single MCP server by ID."""
         return self._request("GET", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")
 
     def create_mcp_server(
@@ -185,6 +198,7 @@ class ApiClient:
         headers: list[dict[str, str]] | None = None,
         auth_type: str = "headers",
     ) -> dict[str, Any]:
+        """Register a new MCP server in this workspace."""
         payload: dict[str, Any] = {
             "name": name,
             "url": url,
@@ -195,4 +209,5 @@ class ApiClient:
         return self._request("POST", f"{_DEPLOY_PATH}/mcp-servers", json=payload)
 
     def delete_mcp_server(self, mcp_server_id: str) -> None:
+        """Delete an MCP server by ID."""
         self._request("DELETE", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")

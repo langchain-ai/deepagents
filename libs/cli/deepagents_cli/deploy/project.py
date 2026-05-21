@@ -144,7 +144,8 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
         if (vis := permissions.get("visibility")) and vis not in _VALID_VISIBILITY:
             msg = f"permissions.visibility {vis!r} not in {sorted(_VALID_VISIBILITY)}"
             raise ProjectError(msg)
-        if (lvl := permissions.get("tenant_access_level")) and lvl not in _VALID_TENANT_ACCESS:
+        lvl = permissions.get("tenant_access_level")
+        if lvl and lvl not in _VALID_TENANT_ACCESS:
             msg = (
                 f"permissions.tenant_access_level {lvl!r} not in "
                 f"{sorted(_VALID_TENANT_ACCESS)}"
@@ -185,7 +186,8 @@ def _read_tools_json(root: Path) -> dict[str, Any] | None:
         if not isinstance(tool.get("name"), str) or not tool["name"]:
             msg = f"{path}: tools[{idx}].name is required."
             raise ProjectError(msg)
-        if not isinstance(tool.get("mcp_server_url"), str) or not tool["mcp_server_url"]:
+        url_val = tool.get("mcp_server_url")
+        if not isinstance(url_val, str) or not url_val:
             msg = f"{path}: tools[{idx}].mcp_server_url is required."
             raise ProjectError(msg)
     interrupt_config = data.get("interrupt_config")
@@ -243,7 +245,12 @@ def _read_skills(root: Path) -> list[Skill]:
         seen.add(name)
         files: dict[str, str] = {}
         for child in sorted(entry.iterdir()):
-            if child.is_file() and child.name != _SKILL_FILE and not child.name.startswith("."):
+            is_plain_file = (
+                child.is_file()
+                and child.name != _SKILL_FILE
+                and not child.name.startswith(".")
+            )
+            if is_plain_file:
                 files[child.name] = child.read_text(encoding="utf-8")
         result.append(
             Skill(

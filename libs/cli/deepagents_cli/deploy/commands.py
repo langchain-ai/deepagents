@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents_cli.deploy.api_client import ApiClient
+
 _BETA_WARNING = (
     "\033[33mWarning: `deepagents deploy` is in beta. "
     "APIs, configuration format, and behavior may change between releases.\033[0m\n"
@@ -36,7 +38,10 @@ def setup_deploy_parsers(
 # --- init -------------------------------------------------------------------
 
 
-def _add_init_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001
+def _add_init_parser(
+    subparsers: Any,  # noqa: ANN401
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+) -> None:
     p = subparsers.add_parser(
         "init",
         help="(beta) Scaffold a new managed-agent project",
@@ -52,6 +57,7 @@ def _add_init_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001
 
 
 def execute_init_command(args: argparse.Namespace) -> None:
+    """Run the `deepagents init` command."""
     print(_BETA_WARNING)
     name = args.name
     if name is None:
@@ -125,7 +131,10 @@ LANGSMITH_API_KEY=
 # --- deploy / agents / mcp-servers (stubs filled by later tasks) ------------
 
 
-def _add_deploy_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001
+def _add_deploy_parser(
+    subparsers: Any,  # noqa: ANN401
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+) -> None:
     p = subparsers.add_parser(
         "deploy",
         help="(beta) Upsert the project as a managed deep agent",
@@ -145,6 +154,7 @@ def _add_deploy_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN0
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
+    """Run the `deepagents deploy` command."""
     from deepagents_cli.config import _load_dotenv  # existing helper
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
     from deepagents_cli.deploy.mcp_resolver import (
@@ -194,17 +204,18 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
 
 
 def _upsert_agent(
-    client,  # type: ignore[no-untyped-def]
+    client: ApiClient,
     agent_id: str | None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """Create or patch the agent depending on whether *agent_id* is known."""
     from deepagents_cli.deploy.api_client import ApiError
 
     if agent_id:
         try:
             return client.patch_agent(agent_id, payload)
         except ApiError as exc:
-            if exc.status == 404:
+            if exc.status == 404:  # noqa: PLR2004
                 print(
                     f"Note: agent {agent_id} no longer exists — creating a new one."
                 )
@@ -218,8 +229,9 @@ def _print_deploy_result(
     endpoint: str,
     *,
     detach: bool,
-    client,  # type: ignore[no-untyped-def]
+    client: ApiClient,
 ) -> None:
+    """Print a deploy summary and optionally poll agent health."""
     name = agent.get("name", "?")
     agent_id = agent.get("id", "?")
     revision = agent.get("revision", "")[:8]
@@ -233,36 +245,46 @@ def _print_deploy_result(
     try:
         health = client._request("GET", f"/v1/deepagents/agents/{agent_id}/health")
         print(f"  health:   {health}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"  health check skipped: {exc}")
 
 
-def _add_agents_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001
+def _add_agents_parser(
+    subparsers: Any,  # noqa: ANN401
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+) -> None:
     p = subparsers.add_parser("agents", help="Manage agents", add_help=False)
     p.add_argument("-h", "--help",
                    action=make_help_action(lambda: p.print_help()),
                    help="show this help message and exit")
     sub = p.add_subparsers(dest="agents_cmd", required=True)
     sub.add_parser("list")
-    g = sub.add_parser("get"); g.add_argument("agent_id"); g.add_argument("--include-files", action="store_true")
-    d = sub.add_parser("delete"); d.add_argument("agent_id"); d.add_argument("--yes", action="store_true")
+    g = sub.add_parser("get")
+    g.add_argument("agent_id")
+    g.add_argument("--include-files", action="store_true")
+    d = sub.add_parser("delete")
+    d.add_argument("agent_id")
+    d.add_argument("--yes", action="store_true")
 
 
 def execute_agents_command(args: argparse.Namespace) -> None:
+    """Run the `deepagents agents` sub-command."""
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
 
     client = ApiClient.from_env()
     try:
         if args.agents_cmd == "list":
             for agent in client.iter_agents(page_size=50):
-                print(f"{agent.get('id')}\t{agent.get('name', '')}\t{agent.get('updated_at', '')}")
+                updated = agent.get("updated_at", "")
+                print(f"{agent.get('id')}\t{agent.get('name', '')}\t{updated}")
         elif args.agents_cmd == "get":
             agent = client.get_agent(args.agent_id, include_files=args.include_files)
             print(json.dumps(agent, indent=2))
         elif args.agents_cmd == "delete":
             if not args.yes:
                 try:
-                    answer = input(f"Delete agent {args.agent_id}? [y/N]: ").strip().lower()
+                    prompt = f"Delete agent {args.agent_id}? [y/N]: "
+                    answer = input(prompt).strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     print("Aborted.")
@@ -277,7 +299,10 @@ def execute_agents_command(args: argparse.Namespace) -> None:
         raise SystemExit(1) from None
 
 
-def _add_mcp_servers_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001
+def _add_mcp_servers_parser(
+    subparsers: Any,  # noqa: ANN401
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+) -> None:
     p = subparsers.add_parser("mcp-servers", help="Manage MCP servers", add_help=False)
     p.add_argument("-h", "--help",
                    action=make_help_action(lambda: p.print_help()),
@@ -289,11 +314,15 @@ def _add_mcp_servers_parser(subparsers: Any, make_help_action) -> None:  # noqa:
     a.add_argument("--name", default=None)
     a.add_argument("--header", action="append", default=[], metavar="KEY=VALUE")
     a.add_argument("--auth-type", default="headers", choices=["headers"])
-    g = sub.add_parser("get"); g.add_argument("mcp_server_id")
-    d = sub.add_parser("delete"); d.add_argument("mcp_server_id"); d.add_argument("--yes", action="store_true")
+    g = sub.add_parser("get")
+    g.add_argument("mcp_server_id")
+    d = sub.add_parser("delete")
+    d.add_argument("mcp_server_id")
+    d.add_argument("--yes", action="store_true")
 
 
 def execute_mcp_servers_command(args: argparse.Namespace) -> None:
+    """Run the `deepagents mcp-servers` sub-command."""
     from urllib.parse import urlparse
 
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
@@ -312,13 +341,17 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                 headers=headers,
                 auth_type=args.auth_type,
             )
-            print(f"Created mcp_server {srv.get('id')}: {srv.get('name')} → {srv.get('url')}")
+            srv_id = srv.get("id")
+            srv_name = srv.get("name")
+            srv_url = srv.get("url")
+            print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
         elif args.mcp_cmd == "get":
             print(json.dumps(client.get_mcp_server(args.mcp_server_id), indent=2))
         elif args.mcp_cmd == "delete":
             if not args.yes:
                 try:
-                    answer = input(f"Delete MCP server {args.mcp_server_id}? [y/N]: ").strip().lower()
+                    prompt = f"Delete MCP server {args.mcp_server_id}? [y/N]: "
+                    answer = input(prompt).strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     print("Aborted.")

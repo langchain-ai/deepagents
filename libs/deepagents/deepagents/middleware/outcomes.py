@@ -5,7 +5,9 @@ markdown rubric. After each natural agent stop the middleware invokes a
 separate grader sub-agent; if the grader returns `needs_revision`, the
 deepagent is looped back to the model with the grader's feedback injected
 as a `HumanMessage`. The loop terminates on `satisfied`, on
-`max_iterations_reached`, on grader `failed`, or on `interrupted`.
+`max_iterations_reached`, or on grader `failed`. `KeyboardInterrupt` and
+`asyncio.CancelledError` propagate naturally so callers retain normal
+Python interrupt / cancellation semantics.
 
 The rubric is supplied per invocation via the `rubric` state field; it is
 sticky across invocations on a checkpointed thread. If no rubric is ever
@@ -32,6 +34,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     hook_config,
 )
+from langchain_core._api import beta
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
@@ -56,13 +59,9 @@ OutcomeResult = Literal[
     "needs_revision",
     "max_iterations_reached",
     "failed",
-    "interrupted",
 ]
-"""Terminal status reported on `outcome_status` and per evaluation."""
+"""Terminal status reported per evaluation."""
 
-
-_DEFAULT_EVALUATOR_MODEL = "anthropic:claude-haiku-4-5"
-"""Default grader model when `evaluator_model` is not supplied."""
 
 _MAX_TRANSCRIPT_MESSAGES = 30
 """Default upper bound on transcript messages forwarded to the grader.
@@ -137,7 +136,7 @@ class CriterionEval(TypedDict, total=False):
 
 
 class OutcomeEvaluation(TypedDict, total=False):
-    """One grader evaluation, appended to `outcome_evaluations` each iteration.
+    """One grader evaluation, appended to `_outcome_evaluations` each iteration.
 
     Attributes:
         outcome_id: Identifier shared by all evaluations for a single outcome
@@ -146,7 +145,6 @@ class OutcomeEvaluation(TypedDict, total=False):
         result: The grader's terminal verdict for this iteration.
         explanation: Free-form summary of the verdict, from the grader.
         criteria: Per-criterion verdicts.
-        usage: Token usage metadata for the grader call, when available.
     """
 
     outcome_id: str
@@ -154,33 +152,34 @@ class OutcomeEvaluation(TypedDict, total=False):
     result: OutcomeResult
     explanation: str
     criteria: list[CriterionEval]
-    usage: dict[str, int]
 
 
 class OutcomeState(AgentState):
     """State schema for `OutcomeMiddleware`.
 
-    Public fields (`rubric`, `outcome_status`, `outcome_iterations`,
-    `outcome_evaluations`) are intended for callers to read and write.
+    Only `rubric` is part of the public I/O schema -- callers write a
+    rubric and read the improved agent response back from `messages`.
 
-    Private fields (`_current_outcome_id`, `_active_rubric`) are annotated
-    with [`PrivateStateAttr`][langchain.agents.middleware.types.PrivateStateAttr]
-    so they are omitted from input/output schemas. They track the current
-    outcome attempt so a sticky rubric on a checkpointed thread does not
-    leak into the public API surface.
+    Everything else is bookkeeping: status, iteration count, accumulated
+    evaluations, and outcome-attempt tracking are annotated with
+    [`PrivateStateAttr`][langchain.agents.middleware.types.PrivateStateAttr]
+    so they are omitted from input/output schemas. Tests, evals, and
+    observability consumers can still reach them via the `on_evaluation`
+    callback, the `outcome_evaluation_*` stream events, or
+    `agent.get_state(config).values` on a checkpointed thread.
     """
 
     rubric: NotRequired[str]
     """Caller-supplied rubric describing what `done` looks like."""
 
-    outcome_status: NotRequired[OutcomeResult]
-    """The most recent terminal status. Updated each iteration."""
+    _outcome_status: NotRequired[Annotated[OutcomeResult, PrivateStateAttr]]
+    """The most recent terminal status. Private; not in I/O schema."""
 
-    outcome_iterations: NotRequired[int]
-    """Number of grader evaluations performed for the current outcome."""
+    _outcome_iterations: NotRequired[Annotated[int, PrivateStateAttr]]
+    """Grader evaluations performed for the current outcome. Private; not in I/O schema."""
 
-    outcome_evaluations: NotRequired[list[OutcomeEvaluation]]
-    """Accumulated grader evaluations across all outcomes on this thread."""
+    _outcome_evaluations: NotRequired[Annotated[list[OutcomeEvaluation], PrivateStateAttr]]
+    """Accumulated grader evaluations across outcomes. Private; not in I/O schema."""
 
     _current_outcome_id: NotRequired[Annotated[str, PrivateStateAttr]]
     """Tracking id for the active outcome attempt. Private; not in I/O schema."""
@@ -219,6 +218,7 @@ class GraderResponse(BaseModel):
     )
 
 
+@beta()
 class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     """Middleware that drives self-evaluated iteration against a rubric.
 
@@ -231,12 +231,14 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         max_iterations: Hard cap on grader iterations per outcome. Defaults
             to 3, hard-capped at 20.
             When the cap is reached without a `satisfied` verdict, the
-            agent terminates with `outcome_status='max_iterations_reached'`.
+            agent terminates with status `'max_iterations_reached'`.
 
-        evaluator_model: Model used by the grader sub-agent. Accepts the
+        model: Model used by the grader sub-agent. Required. Accepts the
             same forms as `create_agent`'s `model` parameter (either a
-            model string or a `BaseChatModel`). If `None`, lazily falls
-            back to a small fast default model.
+            model string like `"provider:model-id"` or a `BaseChatModel`
+            instance). Callers must specify this explicitly so the choice
+            of grader is recorded in code and cannot silently rot when a
+            default model is deprecated.
 
         grader_tools: Tools the grader sub-agent may call before producing
             its `GraderResponse`. Defaults to no tools (pure-LLM grader).
@@ -248,7 +250,8 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             after grading.
 
     Raises:
-        ValueError: If `max_iterations` is outside `[1, 20]`.
+        ValueError: If `model` is missing/empty or `max_iterations` is
+            outside `[1, 20]`.
     """
 
     state_schema = OutcomeState
@@ -256,12 +259,15 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     def __init__(  # noqa: D107
         self,
         *,
+        model: str | BaseChatModel,
         max_iterations: int = 3,
-        evaluator_model: str | BaseChatModel | None = None,
         grader_tools: Sequence[BaseTool] = (),
         on_evaluation: Callable[[OutcomeEvaluation], None] | None = None,
     ) -> None:
         # Fail-fast on configuration. Matches the FilesystemMiddleware pattern.
+        if not model:
+            msg = "OutcomeMiddleware: `model` is required. Pass a model string like 'provider:model-id' or a BaseChatModel instance."
+            raise ValueError(msg)
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
             msg = f"OutcomeMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
             raise TypeError(msg)
@@ -270,7 +276,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             raise ValueError(msg)
 
         self.max_iterations = max_iterations
-        self._evaluator_model = evaluator_model
+        self._model = model
         self._grader_tools = tuple(grader_tools)
         self._on_evaluation = on_evaluation
         # Built lazily so importing the middleware doesn't construct a model
@@ -286,9 +292,8 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
 
         A "new outcome" is when the supplied `rubric` differs from
         `_active_rubric` (or no `_active_rubric` is set yet). In that case
-        we mint a fresh `_current_outcome_id`, reset `outcome_iterations`
-        to 0, and clear `outcome_status` so the public surface reflects the
-        new attempt.
+        we mint a fresh `_current_outcome_id`, reset `_outcome_iterations`
+        to 0, and clear `_outcome_status` so a new attempt starts fresh.
 
         If `rubric` is unset the middleware is a no-op for this run.
 
@@ -318,8 +323,8 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             # Sticky rubric / follow-up turn on the same outcome.
             return None
         return {
-            "outcome_iterations": 0,
-            "outcome_status": None,
+            "_outcome_iterations": 0,
+            "_outcome_status": None,
             "_current_outcome_id": str(uuid.uuid4()),
             "_active_rubric": rubric,
         }
@@ -347,11 +352,11 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         outcome_id, iteration = prep
 
         try:
-            graded, usage = self._grade(state, iteration)
-        except BaseException as exc:  # noqa: BLE001
+            graded = self._grade(state, iteration)
+        except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, outcome_id, iteration, exc)
 
-        return self._finalize_evaluation(graded, usage, state, runtime, outcome_id, iteration)
+        return self._finalize_evaluation(graded, state, runtime, outcome_id, iteration)
 
     async def aafter_agent(
         self,
@@ -365,11 +370,11 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         outcome_id, iteration = prep
 
         try:
-            graded, usage = await self._agrade(state, iteration)
-        except BaseException as exc:  # noqa: BLE001
+            graded = await self._agrade(state, iteration)
+        except Exception as exc:  # noqa: BLE001
             return self._handle_grader_exception(runtime, state, outcome_id, iteration, exc)
 
-        return self._finalize_evaluation(graded, usage, state, runtime, outcome_id, iteration)
+        return self._finalize_evaluation(graded, state, runtime, outcome_id, iteration)
 
     def _prepare_evaluation(
         self,
@@ -383,7 +388,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         """
         if not state.get("rubric"):
             return None
-        iteration = state.get("outcome_iterations", 0) or 0
+        iteration = state.get("_outcome_iterations", 0) or 0
         outcome_id = state.get("_current_outcome_id") or str(uuid.uuid4())
         self._emit(runtime, "outcome_evaluation_start", outcome_id, iteration)
         return outcome_id, iteration
@@ -391,7 +396,6 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     def _finalize_evaluation(
         self,
         graded: GraderResponse,
-        usage: dict[str, int] | None,
         state: OutcomeState,
         runtime: Runtime[Any],
         outcome_id: str,
@@ -403,7 +407,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         difference between the two hook paths is the grader invocation
         (sync `_grade` vs `await _agrade`).
         """
-        evaluation = self._build_evaluation(graded, outcome_id, iteration, usage)
+        evaluation = self._build_evaluation(graded, outcome_id, iteration)
         self._emit(runtime, "outcome_evaluation_end", outcome_id, iteration, evaluation)
         if self._on_evaluation is not None:
             try:
@@ -415,7 +419,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
             return self._grader
-        model: str | BaseChatModel = _DEFAULT_EVALUATOR_MODEL if self._evaluator_model is None else self._evaluator_model
+        model: str | BaseChatModel = self._model
         # Passing the raw class lets `AutoStrategy` pick `ProviderStrategy`
         # vs `ToolStrategy` per the underlying model's capabilities. Tools
         # are propagated so the grader may interleave verification calls
@@ -428,30 +432,20 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         )
         return self._grader
 
-    def _grade(
-        self,
-        state: OutcomeState,
-        iteration: int,
-    ) -> tuple[GraderResponse, dict[str, int] | None]:
+    def _grade(self, state: OutcomeState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
         result = grader.invoke({"messages": [HumanMessage(content=payload)]})
         return self._extract_graded(result)
 
-    async def _agrade(
-        self,
-        state: OutcomeState,
-        iteration: int,
-    ) -> tuple[GraderResponse, dict[str, int] | None]:
+    async def _agrade(self, state: OutcomeState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
         result = await grader.ainvoke({"messages": [HumanMessage(content=payload)]})
         return self._extract_graded(result)
 
     @staticmethod
-    def _extract_graded(
-        result: dict[str, Any],
-    ) -> tuple[GraderResponse, dict[str, int] | None]:
+    def _extract_graded(result: dict[str, Any]) -> GraderResponse:
         graded = result.get("structured_response")
         if graded is None:
             msg = "OutcomeMiddleware grader did not return a structured_response. The grader sub-agent must use response_format=GraderResponse."
@@ -465,9 +459,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             else:
                 msg = f"OutcomeMiddleware grader returned unexpected structured_response of type {type(graded).__name__}."
                 raise TypeError(msg)
-
-        usage = _aggregate_usage(result.get("messages", []))
-        return graded, usage
+        return graded
 
     def _build_grader_payload(self, state: OutcomeState, iteration: int) -> str:
         """Assemble the grader's first user message.
@@ -518,7 +510,6 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         graded: GraderResponse,
         outcome_id: str,
         iteration: int,
-        usage: dict[str, int] | None,
     ) -> OutcomeEvaluation:
         evaluation: OutcomeEvaluation = {
             "outcome_id": outcome_id,
@@ -527,8 +518,6 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             "explanation": graded.explanation,
             "criteria": [dict(c) for c in graded.criteria],  # ty: ignore[invalid-argument-type]
         }
-        if usage:
-            evaluation["usage"] = usage
         return evaluation
 
     def _compose_update(
@@ -539,24 +528,24 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     ) -> dict[str, Any]:
         iteration = evaluation["iteration"]
         next_iteration = iteration + 1
-        evals = [*state.get("outcome_evaluations", []), evaluation]
+        evals = [*state.get("_outcome_evaluations", []), evaluation]
 
         update: dict[str, Any] = {
-            "outcome_evaluations": evals,
-            "outcome_iterations": next_iteration,
-            "outcome_status": evaluation["result"],
+            "_outcome_evaluations": evals,
+            "_outcome_iterations": next_iteration,
+            "_outcome_status": evaluation["result"],
         }
 
         if graded_result == "satisfied":
             return update
 
         if graded_result == "failed":
-            update["outcome_status"] = "failed"
+            update["_outcome_status"] = "failed"
             return update
 
         # needs_revision
         if next_iteration >= self.max_iterations:
-            update["outcome_status"] = "max_iterations_reached"
+            update["_outcome_status"] = "max_iterations_reached"
             return update
 
         return {
@@ -577,21 +566,18 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         state: OutcomeState,
         outcome_id: str,
         iteration: int,
-        exc: BaseException,
+        exc: Exception,
     ) -> dict[str, Any]:
-        # Cancellation is special-cased to `interrupted` so callers can
-        # distinguish "the grader blew up" from "the user pulled the plug".
-        is_cancel = isinstance(exc, (KeyboardInterrupt, _CANCEL_TYPES))
-        result: OutcomeResult = "interrupted" if is_cancel else "failed"
-        explanation = "Grader execution was interrupted." if is_cancel else f"Grader raised {type(exc).__name__}: {exc}"
-        if not is_cancel:
-            logger.exception("OutcomeMiddleware grader failed")
-
+        # `KeyboardInterrupt` and `asyncio.CancelledError` are deliberately
+        # not handled here -- they're `BaseException` subclasses, not
+        # `Exception`, so they propagate up the call stack and preserve
+        # normal Python interrupt / asyncio cancellation semantics.
+        logger.exception("OutcomeMiddleware grader failed")
         evaluation: OutcomeEvaluation = {
             "outcome_id": outcome_id,
             "iteration": iteration,
-            "result": result,
-            "explanation": explanation,
+            "result": "failed",
+            "explanation": f"Grader raised {type(exc).__name__}: {exc}",
             "criteria": [],
         }
         self._emit(runtime, "outcome_evaluation_end", outcome_id, iteration, evaluation)
@@ -601,11 +587,11 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             except Exception:
                 logger.exception("OutcomeMiddleware on_evaluation callback raised")
 
-        evals = [*state.get("outcome_evaluations", []), evaluation]
+        evals = [*state.get("_outcome_evaluations", []), evaluation]
         return {
-            "outcome_evaluations": evals,
-            "outcome_iterations": iteration + 1,
-            "outcome_status": result,
+            "_outcome_evaluations": evals,
+            "_outcome_iterations": iteration + 1,
+            "_outcome_status": "failed",
         }
 
     @staticmethod
@@ -632,11 +618,6 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             writer(payload)
         except Exception:  # noqa: BLE001
             logger.debug("OutcomeMiddleware stream_writer raised; ignoring")
-
-
-import asyncio as _asyncio  # noqa: E402  # placed late to avoid TYPE_CHECKING cycles
-
-_CANCEL_TYPES: tuple[type[BaseException], ...] = (_asyncio.CancelledError,)
 
 
 def _build_grader_transcript(messages: list[AnyMessage]) -> str:
@@ -686,54 +667,25 @@ def _role_label(msg: AnyMessage) -> str:
 def _coerce_text(msg: AnyMessage) -> str:
     """Best-effort conversion of a message body to a plain string.
 
-    Structured content blocks are rendered to text; tool calls on the
-    `AIMessage` are appended so the grader can see what the agent did even
-    when there's no natural-language content.
+    Iterates `msg.content_blocks`, LangChain's normalized list of typed
+    blocks, so we don't have to special-case each provider's raw `content`
+    shape or walk `AIMessage.tool_calls` separately -- both text and tool
+    calls arrive as blocks here.
     """
-    content = msg.content
     parts: list[str] = []
-    if isinstance(content, str):
-        if content:
-            parts.append(content)
-    elif isinstance(content, list):
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str) and text:
-                    parts.append(text)
-                else:
-                    # Render the block type only so the grader can see that
-                    # something opaque (e.g. an image, a server tool call)
-                    # was there without exposing raw bytes.
-                    btype = block.get("type", "block")
-                    parts.append(f"({btype})")
-    if isinstance(msg, AIMessage) and msg.tool_calls:
-        for call in msg.tool_calls:
-            name = call.get("name", "tool")
-            args = call.get("args", {})
+    for block in msg.content_blocks:
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append(text)
+        elif btype == "tool_call":
+            name = block.get("name", "tool")
+            args = block.get("args", {})
             parts.append(f"<tool_call name={name!r} args={args!r}/>")
+        else:
+            # Render the block type only so the grader can see something
+            # opaque (image, reasoning, server tool call, etc.) was there
+            # without exposing raw bytes.
+            parts.append(f"({btype or 'block'})")
     return "\n".join(parts) if parts else "(empty)"
-
-
-def _aggregate_usage(messages: list[AnyMessage]) -> dict[str, int] | None:
-    """Sum usage_metadata across grader AIMessages.
-
-    Returns `None` if no usage metadata is present; otherwise a dict with
-    `input_tokens`, `output_tokens`, and `total_tokens`.
-    """
-    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    found = False
-    for msg in messages:
-        if not isinstance(msg, AIMessage):
-            continue
-        usage = getattr(msg, "usage_metadata", None)
-        if not usage:
-            continue
-        found = True
-        for key in totals:
-            value = usage.get(key) if isinstance(usage, dict) else None
-            if isinstance(value, int):
-                totals[key] += value
-    return totals if found else None

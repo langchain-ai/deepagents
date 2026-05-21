@@ -90,7 +90,6 @@ Production agents powered by the LangChain stack:
 
 | Example | Description |
 |---|---|
-| [**Outcome Middleware**](outcome_middleware/) | Iterate against a markdown rubric until a grader sub-agent says "done" or a max-iteration cap is hit |
 | [**Ralph Loop**](ralph_mode/) | Autonomous looping with fresh context each iteration, using the filesystem for persistence |
 | [**RLM Agent**](rlm_agent/) | `create_rlm_agent` helper: recursive REPL + PTC subagent chain for parallel fan-out |
 | [**REPL Swarm**](repl_swarm/) | TypeScript `swarm` skill dispatching subagents in parallel from QuickJS |

@@ -68,7 +68,8 @@ STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
 
 These integrations layer onto the main agent (e.g. a JS REPL via
 `langchain-quickjs`) and aren't grouped under `all-providers` or
-`all-sandboxes`."""
+`all-sandboxes`.
+"""
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.

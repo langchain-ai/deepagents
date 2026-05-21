@@ -1131,7 +1131,8 @@ class Settings:
     agent. Local-mode only; raises `ValueError` at agent-build time when a
     remote sandbox is active. Subagents never receive the interpreter in v1.
 
-    The `quickjs` optional extra must be installed when this flag is `True`."""
+    The `quickjs` optional extra must be installed when this flag is `True`.
+    """
 
     interpreter_timeout_seconds: float = 5.0
     """Per-`js_eval`-call wall-clock timeout (seconds) for the QuickJS REPL."""
@@ -1143,7 +1144,8 @@ class Settings:
     """Maximum `tools.*` host-bridge invocations allowed per `js_eval` call.
 
     PTC calls bypass `interrupt_on`/HITL approval — this budget is the only
-    runtime limiter on bursty tool fan-out from inside the REPL."""
+    runtime limiter on bursty tool fan-out from inside the REPL.
+    """
 
     interpreter_max_result_chars: int = 4000
     """Independent cap (chars) on `js_eval` result and stdout blocks before
@@ -1156,9 +1158,9 @@ class Settings:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
     - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` intersected with the
-      live toolset.
+        live toolset.
     - `"all"`: every live tool is exposed. Requires
-      `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
+        `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
     - `list[str]`: explicit tool names, validated at agent-build time.
     """
 

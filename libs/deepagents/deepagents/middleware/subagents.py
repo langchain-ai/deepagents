@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
-from deepagents.middleware._state import private_state_field_names
 
 
 class SubAgent(TypedDict):
@@ -462,6 +461,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagents: List of subagent specs containing name, description, and runnable.
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
+        private_state_keys: State keys marked with `PrivateStateAttr` that
+            should be stripped from parent state before invoking subagents.
 
     Returns:
         A StructuredTool that can invoke subagents by type.

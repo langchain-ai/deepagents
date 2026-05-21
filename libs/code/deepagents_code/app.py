@@ -3446,7 +3446,13 @@ class DeepAgentsApp(App):
         Custom themes use their stored registry colors; built-in Textual themes
         resolve colors from the active app theme. Terminal write failures are
         logged and swallowed because the OSC background sync is cosmetic.
+
+        ANSI themes intentionally skip this step so the terminal's native
+        background is preserved.
         """
+        if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+
         from deepagents_code.terminal_escape import set_terminal_background
 
         entry = theme.get_registry().get(self.theme)
@@ -4486,10 +4492,18 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
-        from deepagents_code.command_registry import ALWAYS_IMMEDIATE
+        from deepagents_code.command_registry import (
+            ALWAYS_IMMEDIATE,
+            HIDDEN_COMMANDS,
+        )
+
+        # Hidden commands are recovery / power-user escape hatches and
+        # must work even when the app is busy or wedged — treat them as
+        # always-immediate.
+        always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
-            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+            mode == "command" and value.lower().strip() in always_bypass
         ):
             await self._process_message(value, mode)
             return
@@ -5305,7 +5319,7 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-        # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
+        # -- Hidden commands (not in COMMANDS / autocomplete) -----------------
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -5313,6 +5327,8 @@ class DeepAgentsApp(App):
                     " exited with code 3",
                 ),
             )
+        elif cmd == "/restart":
+            await self._handle_restart_command(command)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -5661,9 +5677,15 @@ class DeepAgentsApp(App):
 
             # Intentionally traced: the summarization event is a meaningful state
             # transition that should surface in LangSmith alongside real agent turns.
+            # The new `_context_tokens` count rides along on the same update so it
+            # shares a checkpoint with the offload and doesn't create a separate
+            # `UpdateState` run.
             await self._agent.aupdate_state(
                 config,
-                {"_summarization_event": result.new_event},
+                {
+                    "_summarization_event": result.new_event,
+                    "_context_tokens": result.tokens_after,
+                },
             )
 
             before = format_token_count(result.tokens_before)
@@ -5679,9 +5701,6 @@ class DeepAgentsApp(App):
             )
 
             self._on_tokens_update(result.tokens_after)
-            from deepagents_code.textual_adapter import _persist_context_tokens
-
-            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -8846,14 +8865,125 @@ class DeepAgentsApp(App):
         self._pending_mcp_disable_reconnect_servers.clear()
         self._sync_pending_mcp_reconnect()
 
-        server_proc = self._server_proc
-        if self._server_kwargs is None or server_proc is None:
+        if self._server_kwargs is None or self._server_proc is None:
             self.notify(
                 "Cannot restart the LangGraph server automatically; "
                 "relaunch dcode to pick up the new MCP token.",
                 severity="warning",
                 markup=False,
             )
+            return
+
+        await self._respawn_server(
+            log_message=(f"Server restart after MCP login for {server_name!r} failed"),
+            mcp_failure_log="MCP metadata preload after login refresh failed",
+            mcp_failure_toast=(
+                "MCP tool metadata could not be refreshed after login. "
+                "Your tool list may be stale — use /mcp to check."
+            ),
+        )
+
+    async def _handle_restart_command(self, command: str) -> None:
+        """Drive the hidden `/restart` slash command.
+
+        Superset of `/reload`: re-reads `.env` / environment, clears
+        configuration caches, then respawns the app-owned LangGraph
+        server subprocess. Used as a recovery escape hatch when the
+        server wedges; intentionally hidden from autocomplete and help.
+
+        Cancels any in-flight agent work and drops the queued message
+        backlog before respawning. The streaming HTTP connection to the
+        dying subprocess would otherwise raise into the Textual reactor
+        after the new server advertises ready, leaving the UI wedged.
+
+        Args:
+            command: Raw command string for echoing back to chat.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        await self._mount_message(UserMessage(command))
+
+        # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
+        # discards the queued backlog too — those messages would otherwise
+        # fire against the freshly respawned agent silently.
+        if self._agent_running and self._agent_worker:
+            self._cancel_worker(self._agent_worker)
+            self._agent_running = False
+        else:
+            self._discard_queue()
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+            logger.exception("Failed to reload configuration during /restart")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration "
+                    f"({type(exc).__name__}: {exc}). Check your .env "
+                    "file and environment variables for syntax errors, "
+                    "then try again.",
+                ),
+            )
+            return
+
+        if self._server_proc is None or self._server_kwargs is None:
+            await self._mount_message(
+                AppMessage(
+                    "Cannot restart: this app is connected to a remote "
+                    "LangGraph server (no owned subprocess). Configuration "
+                    "was reloaded; relaunch dcode to fully restart.",
+                ),
+            )
+            return
+
+        await self._restart_server_manual()
+
+    async def _restart_server_manual(self) -> None:
+        """Respawn the app-owned LangGraph server for `/restart`.
+
+        Shares the respawn/preload sequence with
+        `_restart_server_for_mcp_refresh` via `_respawn_server`. Failures
+        surface via `ServerStartFailed` so the existing recovery UI takes
+        over.
+        """
+        await self._respawn_server(
+            log_message="Manual /restart of server failed",
+            mcp_failure_log="MCP metadata preload after /restart failed",
+            mcp_failure_toast=(
+                "MCP tool metadata could not be refreshed. Use /mcp to check."
+            ),
+        )
+
+    async def _respawn_server(
+        self,
+        *,
+        log_message: str,
+        mcp_failure_log: str,
+        mcp_failure_toast: str,
+        restart_timeout: float = 30.0,
+    ) -> None:
+        """Stop the app-owned server subprocess and rebuild the agent.
+
+        Used by `_restart_server_manual` (the `/restart` command) and
+        `_restart_server_for_mcp_refresh` (post-OAuth-login refresh).
+
+        Args:
+            log_message: Error log written when `server_proc.restart()`
+                raises or times out.
+            mcp_failure_log: Error log written when post-restart MCP
+                metadata preload raises.
+            mcp_failure_toast: User-facing toast shown when MCP preload
+                fails. Restart still succeeds; the agent comes up with
+                `mcp_info=None`.
+            restart_timeout: Seconds to wait for the subprocess restart
+                before giving up. Bounded so a wedged shutdown — the very
+                condition `/restart` exists to recover from — cannot
+                deadlock the handler.
+        """
+        server_proc = self._server_proc
+        if self._server_kwargs is None or server_proc is None:
             return
 
         try:
@@ -8866,13 +8996,10 @@ class DeepAgentsApp(App):
                 pass
 
             try:
-                await server_proc.restart()
-            except Exception as exc:
+                await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
+            except (Exception, TimeoutError) as exc:
                 self._connecting = False
-                logger.exception(
-                    "Server restart after MCP login for %r failed",
-                    server_name,
-                )
+                logger.exception(log_message)
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
 
@@ -8884,23 +9011,15 @@ class DeepAgentsApp(App):
                 mcp_info = await _preload_session_mcp_server_info(
                     **self._mcp_preload_kwargs,  # type: ignore[arg-type]
                 )
-            except Exception:
-                logger.warning(
-                    "MCP metadata preload after login refresh failed",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception(mcp_failure_log)
                 self.notify(
-                    "MCP tool metadata could not be refreshed after login. "
-                    "Your tool list may be stale — use /mcp to check.",
+                    f"{mcp_failure_toast} ({type(exc).__name__})",
                     severity="warning",
                     markup=False,
                 )
 
-            # `RemoteAgent` is intentionally exposed as `Any` so attribute
-            # access (`aget_state`, etc.) stays aligned with the union type
-            # the startup path assigns elsewhere — same pattern as
-            # `_restart_server_for_agent_swap._build_agent`.
-            def _build_agent(url: str) -> Any:  # noqa: ANN401  # see comment
+            def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
                 return _RemoteAgent(url=url, graph_name="agent")
 
             self._agent = _build_agent(server_proc.url)
@@ -8912,8 +9031,6 @@ class DeepAgentsApp(App):
                 ),
             )
         except BaseException:
-            # Cancellation or unexpected error — ensure _connecting is reset
-            # so the app does not remain stuck in connecting state.
             self._connecting = False
             raise
         finally:

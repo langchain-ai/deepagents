@@ -15,10 +15,13 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
-import traceback
 from typing import Any
 
 from deepagents_code._server_config import ServerConfig
+from deepagents_code._startup_error import (
+    STARTUP_ERROR_MARKER as _STARTUP_ERROR_MARKER,
+    emit_startup_failure,
+)
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 
 logger = logging.getLogger(__name__)
@@ -26,7 +29,6 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
-_STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
 
 
 def _print_startup_error(message: str) -> None:
@@ -163,6 +165,7 @@ def make_graph() -> Any:  # noqa: ANN401
             _sandbox_cm = create_sandbox(
                 config.sandbox_type,
                 sandbox_id=config.sandbox_id,
+                snapshot_name=config.sandbox_snapshot_name,
                 setup_script_path=config.sandbox_setup,
             )
             _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime
@@ -187,6 +190,12 @@ def make_graph() -> Any:  # noqa: ANN401
                 f"Sandbox type '{config.sandbox_type}' is not supported"
             )
             sys.exit(1)
+        except ValueError as exc:
+            logger.exception(
+                "Invalid sandbox configuration for '%s'", config.sandbox_type
+            )
+            _print_startup_error(f"Invalid sandbox configuration: {exc}")
+            sys.exit(1)
         except Exception as exc:
             logger.exception("Sandbox creation failed for '%s'", config.sandbox_type)
             _print_startup_error(
@@ -195,6 +204,13 @@ def make_graph() -> Any:  # noqa: ANN401
             sys.exit(1)
 
     async_subagents = load_async_subagents() or None
+
+    if config.interpreter_ptc is not None:
+        settings.interpreter_ptc = config.interpreter_ptc
+    if config.interpreter_ptc_acknowledge_unsafe:
+        settings.interpreter_ptc_acknowledge_unsafe = True
+    if config.enable_interpreter:
+        settings.enable_interpreter = True
 
     agent, _ = create_cli_agent(
         model=result.model,
@@ -211,6 +227,7 @@ def make_graph() -> Any:  # noqa: ANN401
         enable_memory=config.enable_memory,
         enable_skills=config.enable_skills,
         enable_shell=config.enable_shell,
+        enable_interpreter=config.enable_interpreter,
         mcp_server_info=mcp_server_info,
         cwd=project_context.user_cwd if project_context is not None else config.cwd,
         project_context=project_context,
@@ -221,10 +238,6 @@ def make_graph() -> Any:  # noqa: ANN401
 
 try:
     graph = make_graph()
-except Exception as exc:
-    logger.critical("Failed to initialize server graph", exc_info=True)
-    print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-        f"Failed to initialize server graph: {exc}\n{traceback.format_exc()}",
-        file=sys.stderr,
-    )
+except Exception as exc:  # noqa: BLE001  # top-level barrier: any failure must surface to parent
+    emit_startup_failure(exc)
     sys.exit(1)

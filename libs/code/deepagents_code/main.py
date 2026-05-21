@@ -113,6 +113,44 @@ def _normalize_cwd_filter(cwd: str | None) -> str | None:
     return os.path.normpath(str(Path(cwd).expanduser().absolute()))
 
 
+def _parse_interpreter_tools_flag(
+    raw: str | None,
+) -> str | list[str] | None:
+    """Parse the `--interpreter-tools` argument into the PTC option shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"safe"`, `"all"`, or a
+            comma-separated list of tool names.
+
+    Returns:
+        `None` when the flag is absent, the literal string `"safe"`/`"all"`,
+        or a list of trimmed tool names.
+
+        Calls `sys.exit(2)` when the value is empty or contains only blank
+        tokens — the CLI treats that as a usage error.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --interpreter-tools requires a value: 'safe', 'all', or a "
+            "comma-separated list of tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized in {"safe", "all"}:
+        return normalized
+    names = [token.strip() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --interpreter-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    return names
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -879,6 +917,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--sandbox-snapshot-name",
+        metavar="NAME",
+        help="Sandbox snapshot name to use or create (langsmith only)",
+    )
+
+    parser.add_argument(
         "--sandbox-setup",
         metavar="PATH",
         help="Path to setup script to run in sandbox after creation",
@@ -894,7 +938,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mcp-config",
         help="Path to MCP servers JSON configuration file (Claude Desktop format). "
-        "Merged on top of auto-discovered configs (highest precedence).",
+        "Merged on top of auto-discovered configs (highest precedence). "
+        "Run `dcode mcp config` to see discovery paths.",
     )
     parser.add_argument(
         "--no-mcp",
@@ -906,6 +951,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Trust project-level MCP configs with stdio servers "
         "(skip interactive approval prompt)",
+    )
+    parser.add_argument(
+        "--interpreter",
+        action="store_true",
+        help="Enable the JS interpreter (`js_eval`) middleware on the main agent. "
+        "Local mode only; requires the `quickjs` optional extra.",
+    )
+    parser.add_argument(
+        "--interpreter-tools",
+        dest="interpreter_tools",
+        metavar="VALUE",
+        help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
+        "list of tool names. Default is no PTC (pure REPL).",
     )
 
     try:
@@ -965,7 +1023,10 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    return args
 
 
 async def run_textual_cli_async(
@@ -974,6 +1035,7 @@ async def run_textual_cli_async(
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
@@ -986,6 +1048,9 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -998,6 +1063,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -1030,6 +1097,12 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level stdio server trust.
 
             `True` to allow, `False` to deny, `None` to check trust store.
+        enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
+            the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
+            for `js_eval`).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -1098,8 +1171,12 @@ async def run_textual_cli_async(
         "model_params": model_params,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
+        "sandbox_snapshot_name": sandbox_snapshot_name,
         "sandbox_setup": sandbox_setup,
         "enable_ask_user": True,
+        "enable_interpreter": enable_interpreter,
+        "interpreter_ptc": interpreter_ptc,
+        "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -1567,6 +1644,26 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     return False
 
 
+def _verify_interpreter_or_exit() -> None:
+    """Run the `--interpreter` pre-flight check; print and exit on failure.
+
+    Called before spawning the langgraph dev server subprocess so a missing
+    `langchain-quickjs` extra surfaces a one-line install hint instead of an
+    opaque "Server process exited with code N" downstream.
+    """
+    from deepagents_code.extras_info import verify_interpreter_deps
+
+    try:
+        verify_interpreter_deps()
+    except ImportError as exc:
+        from rich.markup import escape
+
+        from deepagents_code.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        sys.exit(1)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -1985,25 +2082,26 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command == "mcp":
-            from deepagents_code.mcp_commands import run_mcp_login
+            from deepagents_code.mcp_commands import run_mcp_config, run_mcp_login
             from deepagents_code.ui import show_mcp_help
 
             if args.mcp_command == "login":
-                if getattr(args, "mcp_config", None) and not args.config_path:
+                config_path = args.config_path or args.mcp_config
+                if config_path and not args.config_path:
                     print(  # noqa: T201
-                        "--mcp-config is not supported for 'mcp login'. "
-                        "Use: dcode mcp login <server> --config <path>",
+                        f"Using --mcp-config from top-level: {config_path}",
                         file=sys.stderr,
                     )
-                    sys.exit(2)
                 sys.exit(
                     asyncio.run(
                         run_mcp_login(
                             server=args.server,
-                            config_path=args.config_path,
+                            config_path=config_path,
                         )
                     )
                 )
+            if args.mcp_command == "config":
+                sys.exit(run_mcp_config())
             show_mcp_help()
         elif args.command == "threads":
             from deepagents_code.sessions import (
@@ -2091,8 +2189,15 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
+
             # Non-interactive mode - execute single task and exit
             from deepagents_code.non_interactive import run_non_interactive
+
+            interpreter_ptc = _parse_interpreter_tools_flag(
+                getattr(args, "interpreter_tools", None)
+            )
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2106,6 +2211,7 @@ def cli_main() -> None:
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
                             sandbox_id=args.sandbox_id,
+                            sandbox_snapshot_name=args.sandbox_snapshot_name,
                             sandbox_setup=getattr(args, "sandbox_setup", None),
                             initial_skill=getattr(args, "initial_skill", None),
                             startup_cmd=getattr(args, "startup_cmd", None),
@@ -2114,6 +2220,8 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                            enable_interpreter=getattr(args, "interpreter", False),
+                            interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
                         ),
                         timeout=timeout,
@@ -2173,6 +2281,9 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
+
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(
                 trust_flag=getattr(args, "trust_project_mcp", False),
@@ -2183,12 +2294,17 @@ def cli_main() -> None:
             # Run Textual TUI
             return_code = 0
             try:
+                interpreter_ptc = _parse_interpreter_tools_flag(
+                    getattr(args, "interpreter_tools", None)
+                )
+
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_snapshot_name=args.sandbox_snapshot_name,
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
@@ -2201,6 +2317,8 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        enable_interpreter=getattr(args, "interpreter", False),
+                        interpreter_ptc=interpreter_ptc,
                     )
                 )
                 return_code = result.return_code

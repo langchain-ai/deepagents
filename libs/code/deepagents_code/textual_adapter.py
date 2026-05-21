@@ -1151,15 +1151,22 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        # Hide shell tool widgets while the approval renders the
-                        # same command; restore before processing the decision
-                        # so subsequent status updates render on the visible
-                        # widget.
-                        suppressed_tool_msgs = [
-                            tool_msg
-                            for tool_msg in adapter._current_tool_messages.values()
-                            if tool_msg.tool_name == "execute"
-                        ]
+                        # Hide shell tool widgets while the approval renders
+                        # the same command; restore before processing the
+                        # decision so subsequent status updates render on the
+                        # visible widget. Only applies to single-tool
+                        # approvals — the batch dialog doesn't render
+                        # per-tool commands, so hiding the rows would leave
+                        # the user with no preview of what's being approved.
+                        suppressed_tool_msgs = (
+                            [
+                                tool_msg
+                                for tool_msg in adapter._current_tool_messages.values()
+                                if tool_msg.tool_name == "execute"
+                            ]
+                            if len(action_requests) == 1
+                            else []
+                        )
                         for tool_msg in suppressed_tool_msgs:
                             tool_msg.set_awaiting_approval()
                         try:
@@ -1306,13 +1313,13 @@ async def execute_task_textual(
                     )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
-                    await _report_and_persist_tokens(
+                    # Model call already completed (HITL interrupt fires after
+                    # the model node); `TokenStateMiddleware.after_model`
+                    # persisted the count, so only refresh UI here.
+                    _report_tokens(
                         adapter,
-                        agent,
-                        config,
                         captured_input_tokens,
                         captured_output_tokens,
-                        shield=True,
                     )
                     return turn_stats
 
@@ -1334,12 +1341,11 @@ async def execute_task_textual(
         )
         return turn_stats
 
-    # Update token count and return stats
+    # Update token count and return stats. Persistence is handled inside the
+    # graph by `TokenStateMiddleware.after_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_and_persist_tokens(
+    _report_tokens(
         adapter,
-        agent,
-        config,
         captured_input_tokens,
         captured_output_tokens,
     )
@@ -1408,7 +1414,15 @@ async def _handle_interrupt_cleanup(
                 content="[SYSTEM] Task interrupted by user. "
                 "Previous operation was cancelled."
             )
-            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+            cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+            # Piggy-back the latest token count on this already-required write
+            # instead of issuing a separate `aupdate_state`. `after_model` never
+            # ran on the partial turn, so without this the count would be stale
+            # on resume.
+            captured_total = captured_input_tokens + captured_output_tokens
+            if captured_total:
+                cancellation_values["_context_tokens"] = captured_total
+            await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception as exc:  # interrupt cleanup must not propagate
@@ -1435,102 +1449,37 @@ async def _handle_interrupt_cleanup(
     approximate = interrupted_msg is not None
 
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_and_persist_tokens(
+    _report_tokens(
         adapter,
-        agent,
-        config,
         captured_input_tokens,
         captured_output_tokens,
-        shield=True,
         approximate=approximate,
     )
 
 
-async def _persist_context_tokens(
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
-    config: RunnableConfig,
-    tokens: int,
-) -> None:
-    """Best-effort persist of the context token count into graph state.
-
-    For local agents, the `aupdate_state` call is wrapped in
-    `tracing_context(enabled=False)` so this purely-internal bookkeeping write
-    does not surface as a separate `UpdateState` run in LangSmith.
-    `_context_tokens` is already marked `PrivateStateAttr`, but `aupdate_state`
-    itself creates its own traced run that would otherwise clutter the project's
-    traces.
-
-    For remote agents (e.g. a `langgraph dev` server), `aupdate_state` goes
-    over HTTP and the server creates its own LangSmith trace that the client
-    cannot suppress with `tracing_context`. Skipping the call is safe because
-    persistence is best-effort — a stale count on resume is acceptable.
-
-    Args:
-        agent: The LangGraph agent (must support `aupdate_state`).
-        config: Runnable config with `thread_id`.
-        tokens: Total context tokens to persist.
-    """
-    from deepagents_code.remote_client import RemoteAgent
-
-    if isinstance(agent, RemoteAgent):
-        return
-
-    from langsmith import tracing_context
-
-    try:
-        with tracing_context(enabled=False):
-            await agent.aupdate_state(config, {"_context_tokens": tokens})
-    except (httpx.TransportError, httpx.TimeoutException) as e:
-        logger.warning(
-            "Could not persist _context_tokens=%d (network): %s; "
-            "token count may be stale on resume",
-            tokens,
-            e,
-        )
-    except Exception:  # non-critical; stale count on resume is acceptable
-        logger.warning(
-            "Failed to persist _context_tokens=%d; token count may be stale on resume",
-            tokens,
-            exc_info=True,
-        )
-
-
-async def _report_and_persist_tokens(
+def _report_tokens(
     adapter: TextualUIAdapter,
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
-    config: RunnableConfig,
     captured_input_tokens: int,
     captured_output_tokens: int,
     *,
-    shield: bool = False,
     approximate: bool = False,
 ) -> None:
-    """Update the token display and best-effort persist to graph state.
+    """Refresh the token-count UI display.
+
+    Persistence into graph state is owned by `TokenStateMiddleware.after_model`
+    (normal turns), `_handle_offload` (offload turns), and the interrupt-cleanup
+    `aupdate_state` write (partial turns) — never this helper.
 
     Args:
         adapter: UI adapter with token callbacks.
-        agent: The LangGraph agent.
-        config: Runnable config with `thread_id` in its configurable dict.
         captured_input_tokens: Total input tokens captured during the turn.
         captured_output_tokens: Total output tokens captured during the turn.
-        shield: When `True`, suppress exceptions and `CancelledError` from the
-            persist call so that interrupt handlers can safely await this.
         approximate: When `True`, signal to the UI that the count is stale
             (e.g. after an interrupted generation) by appending "+".
     """
     if captured_input_tokens or captured_output_tokens:
         if adapter._on_tokens_update:
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
-        if shield:
-            try:
-                await _persist_context_tokens(agent, config, captured_input_tokens)
-            except (Exception, asyncio.CancelledError):
-                logger.debug(
-                    "Token persist suppressed during interrupt cleanup",
-                    exc_info=True,
-                )
-        else:
-            await _persist_context_tokens(agent, config, captured_input_tokens)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
 

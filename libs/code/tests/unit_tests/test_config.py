@@ -3008,3 +3008,71 @@ class TestDetectModePrefix:
     def test_double_bang_wins_over_single_bang(self) -> None:
         """Regression guard: `!!` must beat `!` even if iteration order changes."""
         assert detect_mode_prefix("!!whoami") == ("!!", "shell_incognito")
+
+
+class TestInterpreterSettings:
+    """Tests for `[interpreter]` config.toml loading and validation."""
+
+    def test_defaults_when_config_absent(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"  # does not exist
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.enable_interpreter is False
+        assert settings_obj.interpreter_timeout_seconds == 5.0
+        assert settings_obj.interpreter_memory_limit_mb == 64
+        assert settings_obj.interpreter_max_ptc_calls == 256
+        assert settings_obj.interpreter_max_result_chars == 4000
+        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
+
+    def test_round_trip_through_toml(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+enable_interpreter = true
+timeout_seconds = 12.5
+memory_limit_mb = 128
+max_ptc_calls = 64
+max_result_chars = 8000
+ptc = "safe"
+ptc_acknowledge_unsafe = true
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.enable_interpreter is True
+        assert settings_obj.interpreter_timeout_seconds == 12.5
+        assert settings_obj.interpreter_memory_limit_mb == 128
+        assert settings_obj.interpreter_max_ptc_calls == 64
+        assert settings_obj.interpreter_max_result_chars == 8000
+        assert settings_obj.interpreter_ptc == "safe"
+        assert settings_obj.interpreter_ptc_acknowledge_unsafe is True
+
+    def test_ptc_explicit_list_round_trip(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = ["grep", "read_file"]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc == ["grep", "read_file"]
+
+    def test_invalid_ptc_list_entry_falls_back(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = [""]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc is False

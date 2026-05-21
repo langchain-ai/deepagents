@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class TestResolveMcpConfigExplicit:
-    """Explicit `--config <path>` resolution path."""
+    """Explicit `--mcp-config <path>` resolution path."""
 
     def test_loads_valid_config_file(self, tmp_path: Path) -> None:
         """A valid explicit config returns a `ConfigResolution`."""
@@ -288,4 +288,4 @@ class TestFormatUntrustedProjectNotice:
         notice = format_untrusted_project_notice((a, b))
         assert str(a) in notice
         assert str(b) in notice
-        assert "pass --config <path> to use it explicitly" in notice
+        assert "pass --mcp-config <path> to use it explicitly" in notice

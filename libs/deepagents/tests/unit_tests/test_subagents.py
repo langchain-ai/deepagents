@@ -2545,7 +2545,7 @@ class TestSubAgents:
         assert tool_messages[0].content == "Override response."
 
     def test_ls_agent_type_is_trace_only_metadata(self) -> None:
-        """``ls_agent_type`` must reach LangSmith but not streamed callback metadata.
+        """`ls_agent_type` must reach LangSmith but not streamed callback metadata.
 
         The task tool wraps each subagent invocation in a langsmith
         `tracing_context` with `metadata={"ls_agent_type": "subagent"}` so

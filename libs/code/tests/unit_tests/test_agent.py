@@ -2404,3 +2404,354 @@ class TestGetAvailableAgentNames:
             patch.object(Path, "iterdir", boom),
         ):
             assert get_available_agent_names() == []
+
+
+class TestCreateCliAgentInterpreterWiring:
+    """Tests for `create_cli_agent` interpreter middleware wiring."""
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = None
+        mock_settings.user_langchain_project = None
+        mock_settings.interpreter_timeout_seconds = 5.0
+        mock_settings.interpreter_memory_limit_mb = 64
+        mock_settings.interpreter_max_ptc_calls = 256
+        mock_settings.interpreter_max_result_chars = 4000
+        mock_settings.interpreter_ptc = False
+        mock_settings.interpreter_ptc_acknowledge_unsafe = False
+        return mock_settings
+
+    def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
+        from langchain_quickjs import CodeInterpreterMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert CodeInterpreterMiddleware in middleware_types
+
+    def test_no_interpreter_middleware_when_disabled(self, tmp_path: Path) -> None:
+        from langchain_quickjs import CodeInterpreterMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=False,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert CodeInterpreterMiddleware not in middleware_types
+
+    def test_raises_when_sandbox_present(self, tmp_path: Path) -> None:
+        mock_settings = self._build_mock_settings(tmp_path)
+        fake_model = _make_fake_chat_model()
+        fake_sandbox = Mock()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            pytest.raises(ValueError, match="remote sandbox"),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=True,
+                sandbox=fake_sandbox,
+            )
+
+    def test_raises_on_unknown_ptc_tool_name(self, tmp_path: Path) -> None:
+        from langchain_core.tools import tool
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_settings.interpreter_ptc = ["nope", "grep"]
+        fake_model = _make_fake_chat_model()
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search for a pattern."""
+            return ""
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            pytest.raises(ValueError, match="nope") as exc_info,
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=True,
+                tools=[grep],
+            )
+
+        assert "Unknown tool names" in str(exc_info.value)
+
+    def test_raises_on_ptc_all_without_acknowledge(self, tmp_path: Path) -> None:
+        from langchain_core.tools import tool
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_settings.interpreter_ptc = "all"
+        mock_settings.interpreter_ptc_acknowledge_unsafe = False
+        fake_model = _make_fake_chat_model()
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            pytest.raises(ValueError, match="acknowledge_unsafe"),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                auto_approve=False,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=True,
+                tools=[grep],
+            )
+
+    def test_safe_preset_drops_unknown_members(self, tmp_path: Path) -> None:
+        """`'safe'` ∩ live toolset; missing preset members are silently dropped."""
+        from langchain_core.tools import tool
+        from langchain_quickjs import CodeInterpreterMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_settings.interpreter_ptc = "safe"
+        fake_model = _make_fake_chat_model()
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        @tool
+        def read_file(path: str) -> str:  # noqa: ARG001
+            """Read."""
+            return ""
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                enable_interpreter=True,
+                tools=[grep, read_file],
+            )
+
+        _, kwargs = mock_create.call_args
+        middlewares = [
+            m for m in kwargs["middleware"] if isinstance(m, CodeInterpreterMiddleware)
+        ]
+        assert len(middlewares) == 1
+        # Names beyond the live set should be dropped, leaving exactly grep+read_file
+        assert sorted(middlewares[0]._ptc) == ["grep", "read_file"]
+
+
+class TestResolvePtcOption:
+    """Direct tests for the `_resolve_ptc_option` helper."""
+
+    @staticmethod
+    def _tools() -> list:
+        from langchain_core.tools import tool
+
+        @tool
+        def read_file(path: str) -> str:  # noqa: ARG001
+            """Read."""
+            return ""
+
+        @tool
+        def write_file(path: str, content: str) -> str:  # noqa: ARG001
+            """Write."""
+            return ""
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        return [read_file, write_file, grep]
+
+    def test_false_returns_none(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        assert (
+            _resolve_ptc_option(
+                False,
+                tools=self._tools(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+            is None
+        )
+
+    def test_empty_list_returns_none(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        assert (
+            _resolve_ptc_option(
+                [],
+                tools=self._tools(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+            is None
+        )
+
+    def test_safe_intersects_with_live_toolset(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            "safe",
+            tools=self._tools(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["grep", "read_file"]
+
+    def test_all_with_auto_approve_skips_ack_check(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            "all",
+            tools=self._tools(),
+            acknowledge_unsafe=False,
+            auto_approve=True,
+        )
+        assert result is not None
+        assert sorted(result) == ["grep", "read_file", "write_file"]
+
+    def test_safe_excludes_hitl_gated_tools(self) -> None:
+        """`"safe"` must never expose tools that are HITL-gated outside the REPL.
+
+        Including network or subagent tools in the preset would silently
+        bypass `_add_interrupt_on()` gating via PTC. Locking the contents
+        of `INTERPRETER_PTC_SAFE_PRESET` against the live HITL map here is
+        the forcing function for that invariant.
+        """
+        from deepagents_code.agent import _add_interrupt_on
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        gated = set(_add_interrupt_on().keys())
+        overlap = INTERPRETER_PTC_SAFE_PRESET & gated
+        assert not overlap, (
+            f"INTERPRETER_PTC_SAFE_PRESET must not include HITL-gated tools; "
+            f"found: {sorted(overlap)}"
+        )
+
+    def test_safe_preset_contents_are_locked(self) -> None:
+        """Lock the literal contents of the `"safe"` preset.
+
+        A reviewer flagged the original `"safe"` choice (network + subagent
+        tools) as a silent HITL bypass. The current preset is intentionally
+        restricted to non-gated, read-only file inspection; widening it
+        without re-auditing the HITL surface should fail this test.
+        """
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        assert frozenset({"read_file", "glob", "grep"}) == INTERPRETER_PTC_SAFE_PRESET

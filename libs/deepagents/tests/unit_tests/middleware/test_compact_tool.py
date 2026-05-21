@@ -54,7 +54,7 @@ def _make_messages(n: int, *, total_tokens: int = 120_000) -> list[Any]:
     """Create a list of mock messages with unique IDs.
 
     The last message is a real AIMessage with usage_metadata so that
-    ``_is_eligible_for_compaction`` can evaluate reported token usage.
+    `_is_eligible_for_compaction` can evaluate reported token usage.
     """
     messages: list[Any] = []
     for i in range(n - 1):

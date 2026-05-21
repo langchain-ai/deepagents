@@ -60,7 +60,7 @@ def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
 
 @contextmanager
 def _runtime_context(assistant_id: str | None = None):
-    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    """Set a LangGraph Runtime in the current context so `get_runtime()` resolves."""
     server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
     runtime = Runtime(server_info=server_info)
     token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})

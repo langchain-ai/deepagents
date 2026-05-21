@@ -200,12 +200,12 @@ def _derive_source_label(source: SkillSource) -> str:
 
     - A leaf of `built_in_skills` collapses to `Built-in`.
     - A leaf of literal `skills` climbs one level and title-cases the
-      parent with `_`/`-` normalized to spaces, so paths like
-      `~/.claude/skills` render as `Claude` rather than the duplicative
-      `Skills Skills`. If the parent is empty, `/`, or `.`, the climb
-      is skipped and the leaf (`Skills`) is used as-is.
+        parent with `_`/`-` normalized to spaces, so paths like
+        `~/.claude/skills` render as `Claude` rather than the duplicative
+        `Skills Skills`. If the parent is empty, `/`, or `.`, the climb
+        is skipped and the leaf (`Skills`) is used as-is.
 
-    Root-anchored or empty inputs (`/`, ``) fall back to `Unnamed`; this
+    Root-anchored or empty inputs (`/`, `""`) fall back to `Unnamed`; this
     is a programmer error but is tolerated to avoid crashing prompt
     rendering.
     """

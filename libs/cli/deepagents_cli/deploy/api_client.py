@@ -131,3 +131,39 @@ class ApiClient:
             detail=str(payload.get("detail") or response.text[:500]),
             type_=str(payload.get("type") or ""),
         )
+
+    # --- agents ----------------------------------------------------------
+
+    def create_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"{_DEPLOY_PATH}/agents", json=payload)
+
+    def get_agent(self, agent_id: str, *, include_files: bool = False) -> dict[str, Any]:
+        params = {"include_files": "true"} if include_files else None
+        return self._request("GET", f"{_DEPLOY_PATH}/agents/{agent_id}", params=params)
+
+    def iter_agents(
+        self,
+        *,
+        page_size: int = 50,
+        name: str | None = None,
+    ):  # type: ignore[no-untyped-def]
+        """Yield AgentSummary objects across all pages."""
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"page_size": page_size}
+            if cursor:
+                params["cursor"] = cursor
+            if name:
+                params["name"] = name
+            body = self._request("GET", f"{_DEPLOY_PATH}/agents", params=params)
+            for item in body.get("items", []):
+                yield item
+            cursor = body.get("next_cursor")
+            if not cursor:
+                return
+
+    def patch_agent(self, agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", f"{_DEPLOY_PATH}/agents/{agent_id}", json=payload)
+
+    def delete_agent(self, agent_id: str) -> None:
+        self._request("DELETE", f"{_DEPLOY_PATH}/agents/{agent_id}")

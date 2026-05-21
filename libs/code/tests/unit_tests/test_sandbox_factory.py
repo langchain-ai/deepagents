@@ -74,8 +74,29 @@ def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
             "deepagents_code.integrations.sandbox_factory._get_provider",
             return_value=provider,
         ),
-        pytest.raises(ValueError, match="only supported for langsmith"),
+        pytest.raises(ValueError, match="only supported for provider='langsmith'"),
         create_sandbox("modal", snapshot_name="custom-snap"),
+    ):
+        pass
+
+    provider.get_or_create.assert_not_called()
+
+
+def test_create_sandbox_rejects_snapshot_name_with_sandbox_id() -> None:
+    """Snapshots are only meaningful for fresh sandboxes, not re-attach."""
+    provider = MagicMock()
+
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._get_provider",
+            return_value=provider,
+        ),
+        pytest.raises(ValueError, match="cannot be combined with sandbox_id"),
+        create_sandbox(
+            "langsmith",
+            sandbox_id="sb-existing",
+            snapshot_name="custom-snap",
+        ),
     ):
         pass
 

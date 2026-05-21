@@ -231,3 +231,14 @@ class TestServerConfigEdgeCases:
 
         assert restored.sandbox_type == "langsmith"
         assert restored.sandbox_snapshot_name == "customer-image"
+
+    def test_sandbox_snapshot_name_empty_env_normalizes_to_none(self) -> None:
+        """An empty `SANDBOX_SNAPSHOT_NAME` env var must not trip the validator."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}SANDBOX_SNAPSHOT_NAME": ""},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.sandbox_snapshot_name is None

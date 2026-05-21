@@ -190,6 +190,12 @@ def make_graph() -> Any:  # noqa: ANN401
                 f"Sandbox type '{config.sandbox_type}' is not supported"
             )
             sys.exit(1)
+        except ValueError as exc:
+            logger.exception(
+                "Invalid sandbox configuration for '%s'", config.sandbox_type
+            )
+            _print_startup_error(f"Invalid sandbox configuration: {exc}")
+            sys.exit(1)
         except Exception as exc:
             logger.exception("Sandbox creation failed for '%s'", config.sandbox_type)
             _print_startup_error(

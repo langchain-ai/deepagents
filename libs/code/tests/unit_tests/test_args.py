@@ -78,7 +78,13 @@ class TestSandboxSnapshotNameArg:
         with patch.object(
             sys,
             "argv",
-            ["deepagents", "--sandbox-snapshot-name", "custom-snap"],
+            [
+                "deepagents",
+                "--sandbox",
+                "langsmith",
+                "--sandbox-snapshot-name",
+                "custom-snap",
+            ],
         ):
             args = parse_args()
         assert args.sandbox_snapshot_name == "custom-snap"
@@ -88,6 +94,21 @@ class TestSandboxSnapshotNameArg:
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
         assert args.sandbox_snapshot_name is None
+
+    def test_snapshot_name_without_langsmith_errors(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--sandbox-snapshot-name` without `--sandbox langsmith` errors out."""
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--sandbox-snapshot-name", "custom-snap"],
+            ),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        assert "requires --sandbox langsmith" in capsys.readouterr().err
 
 
 class TestStartupCmdArg:

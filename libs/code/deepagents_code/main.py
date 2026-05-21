@@ -919,7 +919,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="LangSmith sandbox snapshot name to use or create",
+        help="Sandbox snapshot name to use or create (langsmith only)",
     )
 
     parser.add_argument(
@@ -1022,7 +1022,10 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    return args
 
 
 async def run_textual_cli_async(
@@ -1059,7 +1062,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Optional LangSmith snapshot name to use or create.
+        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -2205,9 +2209,7 @@ def cli_main() -> None:
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
                             sandbox_id=args.sandbox_id,
-                            sandbox_snapshot_name=getattr(
-                                args, "sandbox_snapshot_name", None
-                            ),
+                            sandbox_snapshot_name=args.sandbox_snapshot_name,
                             sandbox_setup=getattr(args, "sandbox_setup", None),
                             initial_skill=getattr(args, "initial_skill", None),
                             startup_cmd=getattr(args, "startup_cmd", None),
@@ -2300,9 +2302,7 @@ def cli_main() -> None:
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
-                        sandbox_snapshot_name=getattr(
-                            args, "sandbox_snapshot_name", None
-                        ),
+                        sandbox_snapshot_name=args.sandbox_snapshot_name,
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,

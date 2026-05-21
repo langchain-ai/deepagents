@@ -180,7 +180,8 @@ class ServerConfig:
     """Existing sandbox ID to attach to; `None` creates a fresh sandbox."""
 
     sandbox_snapshot_name: str | None = None
-    """LangSmith snapshot name to use or create when creating a fresh sandbox."""
+    """Sandbox snapshot name to use or create. LangSmith-only; must be `None`
+    when `sandbox_id` is set."""
 
     sandbox_setup: str | None = None
     """Absolute path to a setup script executed inside the sandbox on first attach."""
@@ -308,7 +309,7 @@ class ServerConfig:
             ),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
-            sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME"),
+            sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
             sandbox_setup=_read_env_str("SANDBOX_SETUP"),
             cwd=_read_env_str("CWD"),
             project_root=_read_env_str("PROJECT_ROOT"),
@@ -364,7 +365,8 @@ class ServerConfig:
                 server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
-            sandbox_snapshot_name: LangSmith snapshot name to use or create.
+            sandbox_snapshot_name: Sandbox snapshot name to use or create
+                (langsmith only).
             sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.

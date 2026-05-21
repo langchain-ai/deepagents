@@ -97,17 +97,29 @@ def create_sandbox(
         provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
-        snapshot_name: Optional LangSmith snapshot name to use or create.
+        snapshot_name: Optional sandbox snapshot name to use or create.
+            Currently only honored by the `'langsmith'` provider; must be
+            `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         `SandboxBackendProtocol` instance
 
     Raises:
-        ValueError: If `snapshot_name` is provided for a non-LangSmith provider.
+        ValueError: If `snapshot_name` is provided for a non-LangSmith provider,
+            or combined with `sandbox_id` (snapshots only apply to fresh sandboxes).
     """
     if snapshot_name is not None and provider != "langsmith":
-        msg = "--sandbox-snapshot-name is only supported for langsmith sandboxes"
+        msg = (
+            f"snapshot_name is only supported for provider='langsmith' "
+            f"(got provider={provider!r})"
+        )
+        raise ValueError(msg)
+    if snapshot_name is not None and sandbox_id is not None:
+        msg = (
+            "snapshot_name cannot be combined with sandbox_id; "
+            "snapshots only apply when creating a fresh sandbox"
+        )
         raise ValueError(msg)
 
     # Get provider instance

@@ -246,10 +246,7 @@ class TestAfterAgentDirect:
         # The synthetic message is tagged so downstream consumers can
         # distinguish grader-injected turns from real user input.
         assert msgs[0].name == OUTCOME_GRADER_MESSAGE_SOURCE
-        assert (
-            msgs[0].additional_kwargs.get("lc_source")
-            == OUTCOME_GRADER_MESSAGE_SOURCE
-        )
+        assert msgs[0].additional_kwargs.get("lc_source") == OUTCOME_GRADER_MESSAGE_SOURCE
 
     def test_max_iterations_terminates_without_jump(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # iteration=2 is the third (final) attempt under max_iterations=3.

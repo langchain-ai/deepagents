@@ -31,11 +31,9 @@ dependencies = [
 
     # Bundling & deploy server
     "langgraph-sdk>=0.3.13,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.24,<1.0.0",
-    "langgraph-runtime-inmem>=0.28.1,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
-    # LangSmith hub integration (context_hub.py)
+    # LangSmith
     "langsmith>=0.8.0",
 
     # Utilities
@@ -43,14 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Sandbox providers
-agentcore = ["langchain-agentcore-codeinterpreter>=0.0.2"]
-daytona = ["langchain-daytona>=0.0.5"]
-modal = ["langchain-modal>=0.0.3"]
-runloop = ["langchain-runloop>=0.0.4"]
-all-sandboxes = [
-    "deepagents-cli[agentcore,daytona,modal,runloop]",
-]
+# (Sandbox extras dropped — managed runtime handles sandboxing.)
 
 
 [project.scripts]
@@ -86,25 +77,13 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_cli"]
-include = [
-    "deepagents_cli/**/*.py",
-    "deepagents_cli/deploy/frontend_dist/**/*",
-]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
-langchain-daytona = { path = "../partners/daytona", editable = true }
-langchain-modal = { path = "../partners/modal", editable = true }
-langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = [
-    "../deepagents",
-    "../partners/daytona",
-    "../partners/modal",
-    "../partners/runloop",
-]
+extra-paths = ["../deepagents"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

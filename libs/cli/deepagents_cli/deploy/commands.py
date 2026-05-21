@@ -145,7 +145,96 @@ def _add_deploy_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN0
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
-    raise NotImplementedError("filled in Task 14")
+    from deepagents_cli.config import _load_dotenv  # existing helper
+    from deepagents_cli.deploy.api_client import ApiClient, ApiError
+    from deepagents_cli.deploy.mcp_resolver import (
+        UnresolvedServersError,
+        resolve_referenced_servers,
+    )
+    from deepagents_cli.deploy.payload import build_payload
+    from deepagents_cli.deploy.project import Project, ProjectError
+    from deepagents_cli.deploy.state import State
+
+    print(_BETA_WARNING)
+    root = Path(args.dir).resolve() if args.dir else Path.cwd().resolve()
+    _load_dotenv(start_path=root)
+
+    try:
+        project = Project.load(root)
+    except ProjectError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
+
+    state = State.load(root, reset=args.reset)
+    payload = build_payload(project, mode="patch" if state.agent_id else "create")
+
+    if args.dry_run:
+        print(json.dumps(payload, indent=2))
+        return
+
+    client = ApiClient.from_env()
+    state.endpoint = client.endpoint
+
+    try:
+        state.mcp_servers = resolve_referenced_servers(
+            client, payload, cache=state.mcp_servers
+        )
+    except UnresolvedServersError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
+
+    try:
+        agent = _upsert_agent(client, state.agent_id, payload)
+    except ApiError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
+
+    state.save(agent_id=agent["id"], revision=agent.get("revision"))
+    _print_deploy_result(agent, client.endpoint, detach=args.detach, client=client)
+
+
+def _upsert_agent(
+    client,  # type: ignore[no-untyped-def]
+    agent_id: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    from deepagents_cli.deploy.api_client import ApiError
+
+    if agent_id:
+        try:
+            return client.patch_agent(agent_id, payload)
+        except ApiError as exc:
+            if exc.status == 404:
+                print(
+                    f"Note: agent {agent_id} no longer exists — creating a new one."
+                )
+            else:
+                raise
+    return client.create_agent(payload)
+
+
+def _print_deploy_result(
+    agent: dict[str, Any],
+    endpoint: str,
+    *,
+    detach: bool,
+    client,  # type: ignore[no-untyped-def]
+) -> None:
+    name = agent.get("name", "?")
+    agent_id = agent.get("id", "?")
+    revision = agent.get("revision", "")[:8]
+    smith_endpoint = endpoint.replace("api.smith.langchain.com", "smith.langchain.com")
+    print(f"\nDeployed: {name}")
+    print(f"  agent_id: {agent_id}")
+    print(f"  revision: {revision}")
+    print(f"  {smith_endpoint}/o/-/agents/{agent_id}")
+    if detach:
+        return
+    try:
+        health = client._request("GET", f"/v1/deepagents/agents/{agent_id}/health")
+        print(f"  health:   {health}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  health check skipped: {exc}")
 
 
 def _add_agents_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001

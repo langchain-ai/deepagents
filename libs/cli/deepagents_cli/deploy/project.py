@@ -88,6 +88,8 @@ class Project:
             msg = f"Project root is not a directory: {root}"
             raise ProjectError(msg)
 
+        _check_no_legacy_files(root)
+
         agent_data = _read_agent_json(root)
         system_prompt = _read_agents_md(root)
 
@@ -306,3 +308,33 @@ def _read_subagents(root: Path) -> list[Subagent]:
             )
         )
     return result
+
+
+_LEGACY_TOML_HINT = """\
+Found legacy deepagents.toml in {root}. The migrated `deepagents deploy`
+expects the new layout. Quick mapping:
+
+  [agent]                       → agent.json (top-level keys: name, description)
+  [agent].model                 → agent.json runtime.model.model_id
+  [sandbox].scope               → agent.json runtime.backend_type
+                                  ("thread_scoped_sandbox" or "agent_scoped_sandbox")
+  [auth], [memories], [frontend]→ remove; managed by the platform now
+
+Then run `deepagents init --force` to refresh scaffolding or migrate by hand.
+"""
+
+
+_LEGACY_MCP_HINT = """\
+Found legacy `mcp.json` in {root}. MCP servers are now workspace-level resources:
+
+  deepagents mcp-servers add --url <url> --header KEY=VALUE [--name <name>]
+
+Then reference the server in tools.json by mcp_server_url.
+"""
+
+
+def _check_no_legacy_files(root: Path) -> None:
+    if (root / "deepagents.toml").is_file():
+        raise ProjectError(_LEGACY_TOML_HINT.format(root=root))
+    if (root / "mcp.json").is_file():
+        raise ProjectError(_LEGACY_MCP_HINT.format(root=root))

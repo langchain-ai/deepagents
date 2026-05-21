@@ -199,3 +199,20 @@ def test_subagent_duplicate_names_raises(tmp_path: Path) -> None:
     (sa2 / "AGENTS.md").write_text("hi")
     with pytest.raises(ProjectError, match="duplicate"):
         _read_subagents(tmp_path)
+
+
+def test_legacy_deepagents_toml_raises_migration_hint(tmp_path: Path) -> None:
+    (tmp_path / "deepagents.toml").write_text(
+        '[agent]\nname = "x"\n'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="legacy deepagents.toml"):
+        Project.load(tmp_path)
+
+
+def test_legacy_mcp_json_raises_migration_hint(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    (tmp_path / "mcp.json").write_text('{"mcpServers": {}}')
+    with pytest.raises(ProjectError, match="mcp.json"):
+        Project.load(tmp_path)

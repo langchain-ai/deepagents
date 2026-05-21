@@ -1526,16 +1526,40 @@ class TestExecuteTaskTextualHITLShellSuppression:
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
 
-    async def test_mixed_batch_only_shell_suppressed(self) -> None:
-        """Parallel shell + non-shell tools: only the shell row is hidden."""
+    async def test_batch_approval_keeps_all_widgets_visible(self) -> None:
+        """Batched approvals (>1 request) must not hide any tool widget.
+
+        The approval dialog only renders a per-tool command preview for
+        single-tool approvals. For batches it shows just a count header,
+        so suppressing the streamed rows would leave the user with no
+        preview of what's being approved.
+        """
         _adapter, _mounted, snapshots = await self._run_with_decision(
             tool_call_name="execute",
             tool_call_id="tool-shell",
             approval_decision={"type": "approve"},
             extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
         )
-        assert snapshots["tool-shell"] == (False, True)
+        assert snapshots["tool-shell"] == (True, False)
         assert snapshots["tool-read"] == (True, False)
+
+    async def test_batch_of_shell_tools_keeps_all_widgets_visible(self) -> None:
+        """Multiple parallel `execute` calls: all rows stay visible.
+
+        Regression guard: the batch approval dialog does not render
+        per-tool commands, so hiding every `execute` row left users with
+        only a generic "N Tool Calls Require Approval" header.
+        """
+        _adapter, _mounted, snapshots = await self._run_with_decision(
+            tool_call_name="execute",
+            tool_call_id="tool-shell-1",
+            approval_decision={"type": "approve"},
+            extra_tool_calls=[
+                ("execute", {"command": "echo bye"}, "tool-shell-2"),
+            ],
+        )
+        assert snapshots["tool-shell-1"] == (True, False)
+        assert snapshots["tool-shell-2"] == (True, False)
 
     async def test_shell_widget_restored_when_approval_raises(self) -> None:
         """`finally` must restore the widget even if approval raises."""

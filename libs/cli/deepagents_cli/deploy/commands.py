@@ -294,4 +294,51 @@ def _add_mcp_servers_parser(subparsers: Any, make_help_action) -> None:  # noqa:
 
 
 def execute_mcp_servers_command(args: argparse.Namespace) -> None:
-    raise NotImplementedError("filled in Task 17")
+    from urllib.parse import urlparse
+
+    from deepagents_cli.deploy.api_client import ApiClient, ApiError
+
+    client = ApiClient.from_env()
+    try:
+        if args.mcp_cmd == "list":
+            for srv in client.list_mcp_servers():
+                print(f"{srv.get('id')}\t{srv.get('name', '')}\t{srv.get('url', '')}")
+        elif args.mcp_cmd == "add":
+            headers = _parse_header_args(args.header)
+            name = args.name or urlparse(args.url).hostname or args.url
+            srv = client.create_mcp_server(
+                name=name,
+                url=args.url,
+                headers=headers,
+                auth_type=args.auth_type,
+            )
+            print(f"Created mcp_server {srv.get('id')}: {srv.get('name')} → {srv.get('url')}")
+        elif args.mcp_cmd == "get":
+            print(json.dumps(client.get_mcp_server(args.mcp_server_id), indent=2))
+        elif args.mcp_cmd == "delete":
+            if not args.yes:
+                try:
+                    answer = input(f"Delete MCP server {args.mcp_server_id}? [y/N]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    print("Aborted.")
+                    return
+                if answer not in {"y", "yes"}:
+                    print("Aborted.")
+                    return
+            client.delete_mcp_server(args.mcp_server_id)
+            print(f"Deleted {args.mcp_server_id}")
+    except ApiError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
+
+
+def _parse_header_args(raw: list[str]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        if "=" not in entry:
+            print(f"Error: --header must be KEY=VALUE, got {entry!r}")
+            raise SystemExit(1)
+        key, _, value = entry.partition("=")
+        out.append({"key": key.strip(), "value": value})
+    return out

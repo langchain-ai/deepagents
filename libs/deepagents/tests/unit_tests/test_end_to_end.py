@@ -78,11 +78,11 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
 
 
 def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
-    """Write a file to the backend, returning starter ``files`` for StateBackend.
+    """Write a file to the backend, returning starter `files` for StateBackend.
 
     For external backends (filesystem, store) the write happens immediately.
     For StateBackend, the file data is returned as a dict that should be
-    passed via ``agent.invoke({"files": ...})`` since StateBackend requires
+    passed via `agent.invoke({"files": ...})` since StateBackend requires
     a LangGraph execution context.
     """
     if isinstance(backend, StateBackend):
@@ -2053,12 +2053,12 @@ class TestLargeHumanMessageEviction:
     """Test that oversized HumanMessages are evicted to the filesystem."""
 
     def test_large_human_message_evicted_before_model_call(self) -> None:
-        """An oversized HumanMessage is evicted and tagged with ``lc_evicted_to``.
+        """An oversized HumanMessage is evicted and tagged with `lc_evicted_to`.
 
         The agent receives a HumanMessage (no id) whose text content exceeds
-        the eviction threshold. The filesystem middleware's ``wrap_model_call``
+        the eviction threshold. The filesystem middleware's `wrap_model_call`
         should write the full content to the backend and tag the message in
-        state via ``lc_evicted_to``, while preserving the original content.
+        state via `lc_evicted_to`, while preserving the original content.
         The model should see a truncated preview, not the full content.
         """
         threshold = 50_000
@@ -2157,10 +2157,10 @@ class TestSummarizationOffloadToState:
     def test_offloaded_file_persisted_in_state(self) -> None:
         """Summarization should write the offloaded history to state via files_update.
 
-        Uses ``create_deep_agent`` with default ``StateBackend`` so that
-        ``backend.write`` returns a ``files_update`` dict. The ``Command``
-        produced by ``wrap_model_call`` must propagate that dict so the file
-        is persisted in graph state under the ``files`` channel.
+        Uses `create_deep_agent` with default `StateBackend` so that
+        `backend.write` returns a `files_update` dict. The `Command`
+        produced by `wrap_model_call` must propagate that dict so the file
+        is persisted in graph state under the `files` channel.
         """
         fake_model = FakeChatModelWithHistory(
             messages=iter(
@@ -2221,9 +2221,9 @@ class TestCompactConversationTool:
     def test_compact_conversation_tool_invocation(self) -> None:
         """Agent invokes compact_conversation and conversation is compacted.
 
-        Uses ``create_summarization_tool_middleware`` with a fake model that
+        Uses `create_summarization_tool_middleware` with a fake model that
         has a profile so fraction-based defaults are used. Input messages
-        carry ``usage_metadata`` and ``response_metadata`` so the eligibility
+        carry `usage_metadata` and `response_metadata` so the eligibility
         gate passes. The summarization model (same fake instance) returns a
         summary, and the agent model emits the tool call then a final response.
         """
@@ -2431,7 +2431,7 @@ class TestStateBackendConfigKeys:
         assert "/data/notes.md" in ls_msg.content
 
     def test_backward_compat_lambda_factory(self) -> None:
-        """The old ``lambda rt: StateBackend(rt)`` factory pattern still works."""
+        """The old `lambda rt: StateBackend(rt)` factory pattern still works."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -2923,10 +2923,10 @@ class TestArtifactsRoot:
 class TestAsyncSubagentEndToEnd:
     """End-to-end tests for async (non-blocking) subagent tools.
 
-    These tests wire up ``create_deep_agent`` with ``AsyncSubAgent`` specs and
+    These tests wire up `create_deep_agent` with `AsyncSubAgent` specs and
     mock the LangGraph SDK client to verify the full agent loop: model emits a
     tool call → tool executes against the (mocked) remote server → state is
-    updated with ``async_tasks`` → model sees the result and responds.
+    updated with `async_tasks` → model sees the result and responds.
     """
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -3583,7 +3583,7 @@ class TestDeltaChannels:
 
 def test_invalid_tool_call_patched_on_next_turn() -> None:
     # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
-    # will be produced because agents only route on ``tool_calls``).
+    # will be produced because agents only route on `tool_calls`).
     # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
     fake_model = FakeChatModelWithHistory(
         messages=iter(

@@ -768,7 +768,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -776,7 +776,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
         path = self._get_history_path()
 
@@ -842,7 +842,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -850,7 +850,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
         path = self._get_history_path()
 
@@ -1448,8 +1448,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or ``None``.
-            event: The prior `_summarization_event`, or ``None``.
+            file_path: Backend path where history was offloaded, or `None`.
+            event: The prior `_summarization_event`, or `None`.
             cutoff: The cutoff index within the effective message list.
 
         Returns:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -310,7 +311,12 @@ class TestAuthManagerScreen:
     async def test_only_installed_well_known_providers_listed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Hardcoded providers without an installed package are hidden."""
+        """Hardcoded providers without an installed package are hidden.
+
+        When `openai` is "installed", `openai_codex` rides along — it shares
+        the same `langchain-openai` package, so the manager surfaces the
+        OAuth-backed twin alongside the API-key entry.
+        """
         # Pretend only `openai` and `anthropic` are installed.
         monkeypatch.setattr(
             "deepagents_code.widgets.auth.get_available_models",
@@ -324,7 +330,7 @@ class TestAuthManagerScreen:
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        assert ids == {"openai", "anthropic"}
+        assert ids == {"openai", "openai_codex", "anthropic"}
 
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -388,3 +394,154 @@ class TestAuthManagerScreen:
             assert warnings, "expected a corruption warning banner to render"
             text = " ".join(str(w.render()) for w in warnings)
         assert "unreadable" in text
+
+
+class TestCodexAuthInManager:
+    """`/auth` -> `openai_codex` routes to the OAuth screen, not the API key prompt.
+
+    These tests cover the dispatch in `AuthManagerScreen` itself; the
+    behavior of the OAuth flow (PKCE, callback, token exchange) is covered
+    by `test_openai_codex_integration.py` so we don't repeat the network /
+    fake-`webbrowser` plumbing here.
+    """
+
+    async def test_codex_option_visible_when_openai_installed(self) -> None:
+        """`langchain-openai` is a hard dep, so `openai_codex` is always shown."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+        assert "openai_codex" in ids
+
+    async def test_codex_badge_reflects_signed_out_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing token store renders the "[sign in to chatgpt]" badge."""
+        import langchain_openai.chatgpt_oauth as o
+
+        from deepagents_code.model_config import clear_caches
+
+        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", tmp_path / "missing.json")
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target = None
+            for i in range(options.option_count):
+                opt = options.get_option_at_index(i)
+                if opt.id == "openai_codex":
+                    target = opt
+                    break
+        assert target is not None
+        assert "sign in to chatgpt" in str(target.prompt).lower()
+
+    async def test_codex_selection_pushes_oauth_screen_when_signed_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Choosing `openai_codex` while signed out opens the OAuth modal."""
+        import langchain_openai.chatgpt_oauth as o
+
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        # Stub the OAuth flow so the modal does not try to bind a real
+        # loopback port or run a token exchange when it mounts.
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(
+                logged_in=False, store_path=tmp_path / "missing.json"
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+
+        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", tmp_path / "missing.json")
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index: int | None = None
+            for i in range(options.option_count):
+                if options.get_option_at_index(i).id == "openai_codex":
+                    target_index = i
+                    break
+            assert target_index is not None
+            options.highlighted = target_index
+            # We just need to observe that the screen is pushed *before* the
+            # fake worker finishes; capture the screen class via the
+            # `screen_stack` instead of asserting on `app.screen` (which the
+            # fast fake worker may have already popped).
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexAuthScreen in pushed
+
+    async def test_codex_selection_when_signed_in_shows_signout_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A logged-in user sees the sign-out / re-auth overlay instead."""
+        import json
+        from datetime import datetime, timedelta
+
+        import langchain_openai.chatgpt_oauth as o
+
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.auth import CodexSignedInScreen
+
+        path = tmp_path / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": "fake",
+                    "refresh_token": "fake",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct",
+                    "plan_type": "plus",
+                    "user_id": "u",
+                    "id_token": None,
+                }
+            )
+        )
+        path.chmod(0o600)
+        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", path)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index: int | None = None
+            for i in range(options.option_count):
+                if options.get_option_at_index(i).id == "openai_codex":
+                    target_index = i
+                    break
+            assert target_index is not None
+            options.highlighted = target_index
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexSignedInScreen in pushed

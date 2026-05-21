@@ -173,6 +173,12 @@ langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
+# Temporary: pin `langchain-openai` to the open-swe/chatgpt-oauth branch of
+# langchain-ai/langchain so we can use `ChatOpenAICodex` and the
+# `chatgpt_oauth` module before they are released to PyPI. Drop this entry
+# (and revert the >=1.2.1 bound to whatever release ships `ChatOpenAICodex`)
+# once https://github.com/langchain-ai/langchain/pull/37569 is merged.
+langchain-openai = { git = "https://github.com/langchain-ai/langchain.git", subdirectory = "libs/partners/openai", branch = "open-swe/chatgpt-oauth" }
 
 [tool.ty.environment]
 python-version = "3.11"

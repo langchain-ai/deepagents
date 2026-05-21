@@ -7,16 +7,16 @@ Pregel's `tasks` event names a child task by its parent's node name
 transformer does two things:
 
 1. At parent scope, intercept `tasks` start events whose `name ==
-   "tools"` and `input` is a list containing one or more `task` tool
-   calls. For each such tool call, record
-   ``parent_task_id → (subagent_type, tool_call_id)``.
-2. When a direct-child `tasks` start fires (segment ``"tools:<id>"``),
-   look up `id` in the pending map. If it resolves to a declared
-   subagent name, build a `SubagentRunStream` (or async variant)
-   wrapping a child mini-mux and push it onto the `subagents` log.
-   The handle reports `graph_name` as the subagent's declared type
-   (e.g. ``"researcher"``) and `trigger_call_id` as the user-facing
-   tool call id (e.g. ``"call-parent-1"``).
+    "tools"` and `input` is a list containing one or more `task` tool
+    calls. For each such tool call, record
+    `parent_task_id → (subagent_type, tool_call_id)`.
+2. When a direct-child `tasks` start fires (segment `"tools:<id>"`),
+    look up `id` in the pending map. If it resolves to a declared
+    subagent name, build a `SubagentRunStream` (or async variant)
+    wrapping a child mini-mux and push it onto the `subagents` log.
+    The handle reports `graph_name` as the subagent's declared type
+    (e.g. `"researcher"`) and `trigger_call_id` as the user-facing
+    tool call id (e.g. `"call-parent-1"`).
 
 A subagent therefore shows up on **both** `run.subgraphs` (untyped,
 superset, keyed by the raw Pregel segment) and `run.subagents`
@@ -137,9 +137,9 @@ class SubagentTransformer(_TasksLifecycleBase):
         """Record subagent metadata from a parent-scope `tools`-task start.
 
         Pregel emits a `tasks` start at the parent ns whose `input` is
-        the list of tool calls being dispatched. Each ``task`` tool
-        call carries the user-visible ``tool_call_id``, the declared
-        ``subagent_type``, and the ``description`` we need at
+        the list of tool calls being dispatched. Each `task` tool
+        call carries the user-visible `tool_call_id`, the declared
+        `subagent_type`, and the `description` we need at
         child-task time.
         """
         ns = tuple(event["params"]["namespace"])

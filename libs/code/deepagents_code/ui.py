@@ -125,7 +125,8 @@ def show_help() -> None:
     )
     console.print(
         "  --mcp-config PATH          Load MCP tools from config file"
-        " (merged on top of auto-discovered configs)"
+        " (merged on top of auto-discovered configs;"
+        " run `dcode mcp config` to list discovery paths)"
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
@@ -446,19 +447,21 @@ def show_mcp_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print("  config            Show MCP config discovery paths")
     console.print()
     _print_option_section()
     console.print()
     _print_mcp_discovery_paths()
     console.print()
     console.print(
-        "  Pass --config <path> to any subcommand to bypass discovery.",
+        "  Pass --mcp-config <path> to any subcommand to bypass discovery.",
         style=theme.MUTED,
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
     console.print()
 
 
@@ -466,10 +469,10 @@ def show_mcp_login_help() -> None:
     """Show help information for the `mcp login` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode mcp login <server> [--config PATH]")
+    console.print("  dcode mcp login <server> [--mcp-config PATH]")
     console.print()
     _print_option_section(
-        "  --config PATH           Path to an MCP config JSON file "
+        "  --mcp-config PATH       Path to an MCP config JSON file "
         "(default: auto-discovered)",
     )
     console.print()
@@ -480,7 +483,22 @@ def show_mcp_login_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_config_help() -> None:
+    """Show help information for the `mcp config` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
+    console.print()
+    console.print(
+        "Print the MCP config discovery paths in precedence order, marking"
+        " which files exist on disk.",
+    )
+    console.print()
+    _print_mcp_discovery_paths()
     console.print()
 
 

@@ -938,7 +938,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mcp-config",
         help="Path to MCP servers JSON configuration file (Claude Desktop format). "
-        "Merged on top of auto-discovered configs (highest precedence).",
+        "Merged on top of auto-discovered configs (highest precedence). "
+        "Run `dcode mcp config` to see discovery paths.",
     )
     parser.add_argument(
         "--no-mcp",
@@ -2081,25 +2082,26 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command == "mcp":
-            from deepagents_code.mcp_commands import run_mcp_login
+            from deepagents_code.mcp_commands import run_mcp_config, run_mcp_login
             from deepagents_code.ui import show_mcp_help
 
             if args.mcp_command == "login":
-                if getattr(args, "mcp_config", None) and not args.config_path:
+                config_path = args.config_path or args.mcp_config
+                if config_path and not args.config_path:
                     print(  # noqa: T201
-                        "--mcp-config is not supported for 'mcp login'. "
-                        "Use: dcode mcp login <server> --config <path>",
+                        f"Using --mcp-config from top-level: {config_path}",
                         file=sys.stderr,
                     )
-                    sys.exit(2)
                 sys.exit(
                     asyncio.run(
                         run_mcp_login(
                             server=args.server,
-                            config_path=args.config_path,
+                            config_path=config_path,
                         )
                     )
                 )
+            if args.mcp_command == "config":
+                sys.exit(run_mcp_config())
             show_mcp_help()
         elif args.command == "threads":
             from deepagents_code.sessions import (

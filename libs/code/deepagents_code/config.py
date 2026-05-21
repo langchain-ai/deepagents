@@ -796,15 +796,18 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     return unique
 
 
-INTERPRETER_PTC_SAFE_PRESET: frozenset[str] = frozenset(
-    {"read_file", "glob", "grep", "task", "web_search", "web_fetch"}
-)
-"""Curated read-only PTC allowlist for `interpreter_ptc="safe"`.
+INTERPRETER_PTC_SAFE_PRESET: frozenset[str] = frozenset({"read_file", "glob", "grep"})
+"""Strictly read-only PTC allowlist for `interpreter_ptc="safe"`.
 
-Excludes any tool that writes to disk or shells out (`execute`, `write_file`,
-`edit_file`, MCP write tools). The exclusion is by design — PTC bypasses
-`interrupt_on`/HITL approval, so the allowlist is the only safety boundary
-on `tools.*` calls from inside `js_eval`.
+Limited to tools that are **not** in `_add_interrupt_on()` to begin with, so
+exposing them through PTC does not introduce a new HITL bypass. Network
+tools (`web_search`, `fetch_url`), subagent dispatch (`task`), shell
+execution (`execute`), and file writes (`write_file`, `edit_file`, MCP
+write tools) are deliberately excluded — they are HITL-gated outside the
+REPL, and PTC bypasses `interrupt_on`, so including them would silently
+escalate privileges. Users who need network or subagent access from inside
+the REPL must list those tools explicitly (which signals intent at config
+time) or use `interpreter_ptc="all"` with the unsafe acknowledgement.
 """
 
 INTERPRETER_PTC_ALL_SENTINEL = "all"

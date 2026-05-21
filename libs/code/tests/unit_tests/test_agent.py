@@ -2725,3 +2725,33 @@ class TestResolvePtcOption:
         )
         assert result is not None
         assert sorted(result) == ["grep", "read_file", "write_file"]
+
+    def test_safe_excludes_hitl_gated_tools(self) -> None:
+        """`"safe"` must never expose tools that are HITL-gated outside the REPL.
+
+        Including network or subagent tools in the preset would silently
+        bypass `_add_interrupt_on()` gating via PTC. Locking the contents
+        of `INTERPRETER_PTC_SAFE_PRESET` against the live HITL map here is
+        the forcing function for that invariant.
+        """
+        from deepagents_code.agent import _add_interrupt_on
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        gated = set(_add_interrupt_on().keys())
+        overlap = INTERPRETER_PTC_SAFE_PRESET & gated
+        assert not overlap, (
+            f"INTERPRETER_PTC_SAFE_PRESET must not include HITL-gated tools; "
+            f"found: {sorted(overlap)}"
+        )
+
+    def test_safe_preset_contents_are_locked(self) -> None:
+        """Lock the literal contents of the `"safe"` preset.
+
+        A reviewer flagged the original `"safe"` choice (network + subagent
+        tools) as a silent HITL bypass. The current preset is intentionally
+        restricted to non-gated, read-only file inspection; widening it
+        without re-auditing the HITL surface should fail this test.
+        """
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        assert frozenset({"read_file", "glob", "grep"}) == INTERPRETER_PTC_SAFE_PRESET

@@ -1108,7 +1108,12 @@ def create_cli_agent(
             control over which host tools can be invoked from inside the
             REPL. `js_eval` itself is intentionally not gated by HITL —
             per-call approval would be unusably noisy and would not block
-            PTC fan-out anyway.
+            PTC fan-out anyway. The `"safe"` preset is therefore restricted
+            to tools that are already non-HITL outside the REPL (read-only
+            file inspection); exposing HITL-gated tools — network fetch,
+            subagent dispatch, shell, file writes — requires an explicit
+            list or `interpreter_ptc="all"` with
+            `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the `quickjs` optional extra
             (`langchain-quickjs>=0.1.2,<0.2.0`).

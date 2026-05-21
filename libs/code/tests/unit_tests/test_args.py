@@ -414,10 +414,8 @@ class TestNoMcpArg:
 class TestMcpCommandDispatch:
     """Tests for `cli_main()` dispatch of `dcode mcp` subcommands."""
 
-    def test_mcp_login_rejects_global_mcp_config(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """`dcode mcp login` errors if only top-level `--mcp-config` is set."""
+    def test_mcp_login_uses_top_level_mcp_config_as_fallback(self) -> None:
+        """`dcode --mcp-config PATH mcp login NAME` propagates PATH to login."""
         from deepagents_code.main import cli_main
 
         with (
@@ -443,13 +441,14 @@ class TestMcpCommandDispatch:
         ):
             cli_main()
 
-        assert exc_info.value.code == 2
-        mock_login.assert_not_awaited()
-        err = capsys.readouterr().err
-        assert "--mcp-config is not supported for 'mcp login'" in err
+        assert exc_info.value.code == 0
+        mock_login.assert_awaited_once_with(
+            server="notion",
+            config_path="/global/config.json",
+        )
 
-    def test_mcp_login_accepts_subcommand_config_with_global(self) -> None:
-        """Subcommand `--config` is used even if top-level `--mcp-config` is set."""
+    def test_mcp_login_subcommand_mcp_config_wins_over_top_level(self) -> None:
+        """Subcommand `--mcp-config` overrides the top-level value."""
         from deepagents_code.main import cli_main
 
         with (
@@ -463,7 +462,7 @@ class TestMcpCommandDispatch:
                     "mcp",
                     "login",
                     "notion",
-                    "--config",
+                    "--mcp-config",
                     "/subcommand/config.json",
                 ],
             ),
@@ -482,6 +481,149 @@ class TestMcpCommandDispatch:
             server="notion",
             config_path="/subcommand/config.json",
         )
+
+    def test_mcp_config_subcommand_prints_discovery_paths(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`dcode mcp config` prints each discovery path."""
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "mcp", "config"]),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.main.apply_stdin_pipe"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "~/.deepagents/.mcp.json" in out
+        assert "<project-root>/.deepagents/.mcp.json" in out
+        assert "<project-root>/.mcp.json" in out
+
+    def test_mcp_login_subcommand_mcp_config_only(self) -> None:
+        """`dcode mcp login NAME --mcp-config PATH` passes PATH through.
+
+        Covers the subcommand-only path (no top-level value) so a future
+        reorder of the `or`-precedence in dispatch fails loudly.
+        """
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "mcp",
+                    "login",
+                    "notion",
+                    "--mcp-config",
+                    "/sub/config.json",
+                ],
+            ),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_code.mcp_commands.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        mock_login.assert_awaited_once_with(
+            server="notion",
+            config_path="/sub/config.json",
+        )
+
+    def test_mcp_login_rejects_old_config_flag(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The renamed `--config` flag is rejected by argparse.
+
+        Documents the intentional backcompat break (renamed to
+        `--mcp-config`) and prevents a stealth re-introduction of the
+        alias.
+        """
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "mcp",
+                    "login",
+                    "notion",
+                    "--config",
+                    "/some/path.json",
+                ],
+            ),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.main.apply_stdin_pipe"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "unrecognized arguments" in err
+        assert "--config" in err
+
+    def test_mcp_config_marker_reflects_filesystem(
+        self,
+        tmp_path: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`run_mcp_config()` marks files [found] / [missing] accurately.
+
+        Points `Path.home()` and `find_project_root()` at an isolated
+        tmp_path, creates the user-level file only, then asserts the
+        marker on each row.
+        """
+        import pathlib
+
+        from deepagents_code.mcp_commands import run_mcp_config
+
+        fake_home = pathlib.Path(str(tmp_path)) / "home"
+        fake_project = pathlib.Path(str(tmp_path)) / "project"
+        (fake_home / ".deepagents").mkdir(parents=True)
+        (fake_home / ".deepagents" / ".mcp.json").write_text("{}")
+        fake_project.mkdir()
+
+        monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+        monkeypatch.chdir(fake_project)
+        monkeypatch.setattr(
+            "deepagents_code.project_utils.find_project_root",
+            lambda: fake_project,
+        )
+
+        exit_code = run_mcp_config()
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        user_line = next(
+            line for line in out.splitlines() if "~/.deepagents/.mcp.json" in line
+        )
+        project_root_line = next(
+            line
+            for line in out.splitlines()
+            if "<project-root>/.mcp.json" in line
+            and "<project-root>/.deepagents" not in line
+        )
+        project_subdir_line = next(
+            line
+            for line in out.splitlines()
+            if "<project-root>/.deepagents/.mcp.json" in line
+        )
+        assert "found" in user_line
+        assert "missing" in project_root_line
+        assert "missing" in project_subdir_line
 
 
 class TestAutoUpdateArg:

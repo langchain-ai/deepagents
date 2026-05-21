@@ -4669,6 +4669,7 @@ class TestTerminalBackgroundSync:
         )
 
         app = DeepAgentsApp()
+        calls.clear()
         app.theme = "ansi-dark"
         app.sync_terminal_background()
 
@@ -4687,6 +4688,7 @@ class TestTerminalBackgroundSync:
         )
 
         app = DeepAgentsApp()
+        calls.clear()
         app.theme = "ansi-light"
         app.sync_terminal_background()
 

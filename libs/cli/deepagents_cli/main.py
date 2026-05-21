@@ -151,10 +151,10 @@ def cli_main() -> None:
             from deepagents_cli.deploy import execute_init_command
 
             execute_init_command(args)
-        elif args.command == "dev":
-            from deepagents_cli.deploy import execute_dev_command
-
-            execute_dev_command(args)
+        # TODO(Task 18): remove the "dev" branch — execute_dev_command is gone
+        # elif args.command == "dev":
+        #     from deepagents_cli.deploy import execute_dev_command
+        #     execute_dev_command(args)
         elif args.command == "deploy":
             from deepagents_cli.deploy import execute_deploy_command
 

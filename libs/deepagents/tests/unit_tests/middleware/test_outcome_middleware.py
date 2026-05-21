@@ -447,9 +447,9 @@ class TestGraderPlumbing:
             return SimpleNamespace()
 
         monkeypatch.setattr("deepagents.middleware.outcomes.create_agent", fake_create_agent)
-        mw = OutcomeMiddleware(evaluator_model="anthropic:claude-sonnet-4-6")
+        mw = OutcomeMiddleware(evaluator_model="custom-evaluator-model")
         mw._ensure_grader()
-        assert seen["model"] == "anthropic:claude-sonnet-4-6"
+        assert seen["model"] == "custom-evaluator-model"
 
     def test_grader_payload_isolates_rubric_from_transcript(self) -> None:
         mw = OutcomeMiddleware()
@@ -534,10 +534,10 @@ class TestIntegration:
     """
 
     @pytest.fixture(autouse=True)
-    def _set_anthropic_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The default evaluator model uses Anthropic; even though we stub
-        # `_grade`, lazy `_ensure_grader` in the failed-path test calls
-        # `create_agent` which may try to instantiate the model. Setting a
+    def _set_evaluator_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The default evaluator model may require a provider API key. Even
+        # though `_grade` is stubbed, lazy `_ensure_grader` calls
+        # `create_agent`, which may try to instantiate the model. Setting a
         # dummy key avoids env-var errors in environments without one.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 

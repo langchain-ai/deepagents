@@ -7,13 +7,6 @@ deepagent is looped back to the model with the grader's feedback injected
 as a `HumanMessage`. The loop terminates on `satisfied`, on
 `max_iterations_reached`, on grader `failed`, or on `interrupted`.
 
-The design mirrors two existing products:
-
-- Claude Code's `/goal` --- a session-scoped completion condition checked
-  by a small fast model after every "done" turn.
-- Anthropic Managed Agents `user.define_outcome` --- a richer, rubric-based
-  variant with per-criterion structured evaluation.
-
 The rubric is supplied per invocation via the `rubric` state field; it is
 sticky across invocations on a checkpointed thread. If no rubric is ever
 supplied the middleware is a no-op, so it is safe to include
@@ -69,10 +62,7 @@ OutcomeResult = Literal[
 
 
 _DEFAULT_EVALUATOR_MODEL = "anthropic:claude-haiku-4-5"
-"""Default grader model when `evaluator_model` is not supplied.
-
-Mirrors the "small fast model" pattern from Claude Code `/goal`.
-"""
+"""Default grader model when `evaluator_model` is not supplied."""
 
 _MAX_TRANSCRIPT_MESSAGES = 30
 """Default upper bound on transcript messages forwarded to the grader.
@@ -85,7 +75,7 @@ _MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 4_000
 """Per-message character budget for transcript snippets."""
 
 _MAX_ITERATIONS_HARD_CAP = 20
-"""Hard upper bound for `max_iterations`, matching Managed Agents `define_outcome`."""
+"""Hard upper bound for `max_iterations`."""
 
 OUTCOME_GRADER_MESSAGE_SOURCE = "outcome_grader"
 """Tag stored on synthetic revision messages this middleware injects.
@@ -94,7 +84,7 @@ The revision message is injected as a `HumanMessage` (the role the model
 follows most reliably), but it carries:
 
 - `name="outcome_grader"` -- visible at the wire on providers that round-trip
-  the `name` field (OpenAI); ignored elsewhere.
+  the `name` field; ignored elsewhere.
 - `additional_kwargs={"lc_source": OUTCOME_GRADER_MESSAGE_SOURCE}` -- visible
   to in-process consumers (evals, UIs, observability) so they can attribute
   the turn to the grader instead of treating it as a real user message.
@@ -696,7 +686,7 @@ def _role_label(msg: AnyMessage) -> str:
 def _coerce_text(msg: AnyMessage) -> str:
     """Best-effort conversion of a message body to a plain string.
 
-    Anthropic-style content blocks are rendered to text; tool calls on the
+    Structured content blocks are rendered to text; tool calls on the
     `AIMessage` are appended so the grader can see what the agent did even
     when there's no natural-language content.
     """

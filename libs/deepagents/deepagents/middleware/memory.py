@@ -101,7 +101,6 @@ class MemoryStateUpdate(TypedDict):
 
     memory_contents: dict[str, str]
 
-
 MEMORY_SYSTEM_PROMPT = """<agent_memory>
 {agent_memory}
 

@@ -718,22 +718,40 @@ async def _populate_checkpoint_fields(
 
     # Phase 2: batch-fetch all uncached threads.
     uncached_ids = [t["thread_id"] for t in uncached]
-    batch_results = await _load_latest_checkpoint_summaries_batch(
-        conn, uncached_ids, serde
-    )
+    batch_results: dict[str, _CheckpointSummary] = {}
+    if include_message_count or include_initial_prompt:
+        batch_results = await _load_latest_checkpoint_summaries_batch(
+            conn, uncached_ids, serde
+        )
+    # `initial_prompt` cannot be recovered from the latest checkpoint alone:
+    # `after_model` middleware (e.g., `TokenStateMiddleware`) writes partial
+    # checkpoints whose `channel_values` omit `messages`. Read the very first
+    # write to the `messages` channel from the `writes` table instead — that
+    # row holds the user's original input.
+    prompt_results: dict[str, str | None] = {}
+    if include_initial_prompt:
+        prompt_results = await _load_initial_prompts_from_writes_batch(
+            conn, uncached_ids, serde
+        )
 
     # Phase 3: apply results and update caches.
     for thread in uncached:
         thread_id = thread["thread_id"]
         freshness = _thread_freshness(thread)
-        summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
 
         if include_message_count and "message_count" not in thread:
+            summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
             thread["message_count"] = summary.message_count
             _cache_message_count(thread_id, freshness, summary.message_count)
         if include_initial_prompt and "initial_prompt" not in thread:
-            thread["initial_prompt"] = summary.initial_prompt
-            _cache_initial_prompt(thread_id, freshness, summary.initial_prompt)
+            if thread_id in prompt_results:
+                prompt = prompt_results[thread_id]
+            else:
+                prompt = batch_results.get(
+                    thread_id, _CheckpointSummary(0, None)
+                ).initial_prompt
+            thread["initial_prompt"] = prompt
+            _cache_initial_prompt(thread_id, freshness, prompt)
 
 
 _SQLITE_MAX_VARIABLE_NUMBER = 500
@@ -808,6 +826,74 @@ async def _load_latest_checkpoint_summaries_batch(
     return results
 
 
+async def _load_initial_prompts_from_writes_batch(
+    conn: aiosqlite.Connection,
+    thread_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, str | None]:
+    """Batch-load initial prompts from the LangGraph `writes` table.
+
+    For each thread, returns the first human/user message extracted from the
+    earliest write to the `messages` channel (ordered by `checkpoint_id` ASC,
+    then `idx` ASC).
+
+    Args:
+        conn: Database connection.
+        thread_ids: Thread IDs to look up.
+        serde: Serializer for decoding write blobs.
+
+    Returns:
+        Dict mapping thread IDs to their initial prompt text. Threads with no
+        write to the `messages` channel are absent from the result; threads
+        whose first such write decoded but contained no human/user entry map
+        to `None`.
+    """
+    if not thread_ids:
+        return {}
+
+    results: dict[str, str | None] = {}
+    loop = asyncio.get_running_loop()
+    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
+        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
+        placeholders = ",".join("?" * len(chunk))
+        query = f"""
+            SELECT thread_id, type, value FROM (
+                SELECT thread_id, type, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY thread_id
+                           ORDER BY checkpoint_id ASC, idx ASC
+                       ) AS rn
+                FROM writes
+                WHERE thread_id IN ({placeholders}) AND channel = 'messages'
+            ) WHERE rn = 1
+        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
+        async with conn.execute(query, chunk) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            tid, type_str, value_blob = row
+            if not type_str or not value_blob:
+                continue
+            try:
+                messages = await loop.run_in_executor(
+                    None, serde.loads_typed, (type_str, value_blob)
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to deserialize initial messages write for thread %s",
+                    tid,
+                    exc_info=True,
+                )
+                continue
+            if not isinstance(messages, list):
+                continue
+            results[tid] = _initial_prompt_from_messages(
+                cast("list[object]", messages)
+            )
+
+    return results
+
+
 async def _load_latest_checkpoint_summary(
     conn: aiosqlite.Connection,
     thread_id: str,
@@ -877,10 +963,23 @@ def _checkpoint_messages(data: object) -> list[object]:
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a checkpoint message list."""
+    """Return the first human message content from a message list.
+
+    Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
+    plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
+    first write to the `messages` channel is the raw user input passed to the
+    agent, which is preserved verbatim as a dict; subsequent writes are
+    serialized `BaseMessage` instances produced after the model runs.
+    """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
             return _coerce_prompt_text(getattr(msg, "content", None))
+        if isinstance(msg, dict):
+            msg_dict = cast("dict[str, object]", msg)
+            role = msg_dict.get("role")
+            type_ = msg_dict.get("type")
+            if role in {"user", "human"} or type_ == "human":
+                return _coerce_prompt_text(msg_dict.get("content"))
     return None
 
 

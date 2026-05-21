@@ -887,9 +887,7 @@ async def _load_initial_prompts_from_writes_batch(
                 continue
             if not isinstance(messages, list):
                 continue
-            results[tid] = _initial_prompt_from_messages(
-                cast("list[object]", messages)
-            )
+            results[tid] = _initial_prompt_from_messages(cast("list[object]", messages))
 
     return results
 

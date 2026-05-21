@@ -167,3 +167,32 @@ class ApiClient:
 
     def delete_agent(self, agent_id: str) -> None:
         self._request("DELETE", f"{_DEPLOY_PATH}/agents/{agent_id}")
+
+    # --- mcp-servers -----------------------------------------------------
+
+    def list_mcp_servers(self) -> list[dict[str, Any]]:
+        body = self._request("GET", f"{_DEPLOY_PATH}/mcp-servers")
+        return list(body.get("servers", []))
+
+    def get_mcp_server(self, mcp_server_id: str) -> dict[str, Any]:
+        return self._request("GET", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")
+
+    def create_mcp_server(
+        self,
+        *,
+        name: str,
+        url: str,
+        headers: list[dict[str, str]] | None = None,
+        auth_type: str = "headers",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name,
+            "url": url,
+            "auth_type": auth_type,
+        }
+        if headers:
+            payload["headers"] = headers
+        return self._request("POST", f"{_DEPLOY_PATH}/mcp-servers", json=payload)
+
+    def delete_mcp_server(self, mcp_server_id: str) -> None:
+        self._request("DELETE", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")

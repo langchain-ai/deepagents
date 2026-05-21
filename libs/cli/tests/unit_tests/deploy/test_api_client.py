@@ -178,3 +178,53 @@ def test_delete_agent_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     client = ApiClient.from_env(transport=_transport(handler))
     assert client.delete_agent("a") is None
+
+
+def test_list_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = {"servers": [{"id": "s1", "url": "https://tools.langchain.com"}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/deepagents/mcp-servers"
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    assert client.list_mcp_servers() == body["servers"]
+
+
+def test_create_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            201,
+            json={"id": "s1", "name": "Fleet", "url": "https://tools.langchain.com"},
+        )
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    out = client.create_mcp_server(
+        name="Fleet",
+        url="https://tools.langchain.com",
+        headers=[{"key": "X-Api-Key", "value": "secret"}],
+        auth_type="headers",
+    )
+    assert out["id"] == "s1"
+    assert captured["body"] == {
+        "name": "Fleet",
+        "url": "https://tools.langchain.com",
+        "headers": [{"key": "X-Api-Key", "value": "secret"}],
+        "auth_type": "headers",
+    }
+
+
+def test_delete_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert request.url.path == "/v1/deepagents/mcp-servers/s1"
+        return httpx.Response(204)
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    assert client.delete_mcp_server("s1") is None

@@ -371,8 +371,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     def model(self) -> BaseChatModel:
         """The construction-time language model used for generating summaries.
 
-        Note that the effective summarizer model at any given request may be
-        overridden via `runtime.context` — see `_resolve_models`.
+        At request time, the effective summarizer may differ: a
+        `summarization_model` key in `runtime.context` overrides this, and if
+        absent, a `model` key in `runtime.context` is used for both threshold
+        decisions and summary generation. This property always returns the
+        model bound when the middleware was constructed.
         """
         return self._lc_helper.model
 

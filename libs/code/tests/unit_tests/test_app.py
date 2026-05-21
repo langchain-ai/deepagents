@@ -5198,7 +5198,7 @@ class TestDeferredActions:
             await pilot.pause()
             # `_server_kwargs is not None` gates the hint — emulate a startup
             # path where the user has a model selected.
-            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "fireworks:fake"}
             app._connecting = True
 
             error = MissingProviderPackageError(
@@ -5242,7 +5242,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "fireworks:fake"}
             app._server_startup_error = "stale"
             app._server_startup_missing_provider_package = MissingProviderPackageError(
                 "stale",
@@ -5284,7 +5284,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._server_kwargs = {"model_name": "openai:gpt-4o"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "openai:gpt-4o"}
             # Seed a prior package failure so we can assert the next failure
             # clears it.
             app._server_startup_missing_provider_package = MissingProviderPackageError(

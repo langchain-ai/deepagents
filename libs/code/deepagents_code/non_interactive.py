@@ -928,6 +928,9 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
@@ -983,6 +986,12 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
+        enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
+            on the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
+            allowlist for `js_eval`).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
 
@@ -1155,6 +1164,9 @@ async def run_non_interactive(
             sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=False,
+            enable_interpreter=enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

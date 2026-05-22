@@ -219,7 +219,9 @@ async def test_subdirectory_entrypoint_with_js_imports(
             "a: number, b: number): number { return a + b; }\n",
         },
     )
-    meta = _metadata("subdir", path=f"{skill_dir}/SKILL.md", entrypoint="scripts/index.ts")
+    meta = _metadata(
+        "subdir", path=f"{skill_dir}/SKILL.md", entrypoint="scripts/index.ts",
+    )
 
     repl = registry.get("t1")
     import_outcome = await repl.eval_async(

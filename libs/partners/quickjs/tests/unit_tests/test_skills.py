@@ -373,7 +373,9 @@ def test_load_skill_subdirectory_entrypoint_relocates_siblings(tmp_path: Path) -
             f"{skill_dir}/scripts/lib/utils.ts": "export function read() {}",
         },
     )
-    meta = _metadata("swarm", path=f"{skill_dir}/SKILL.md", entrypoint="scripts/index.ts")
+    meta = _metadata(
+        "swarm", path=f"{skill_dir}/SKILL.md", entrypoint="scripts/index.ts",
+    )
 
     loaded = load_skill(meta, backend)
 

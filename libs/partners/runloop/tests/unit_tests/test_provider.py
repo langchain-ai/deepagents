@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from langchain_runloop.provider import RunloopProvider, _ensure_blueprint
+from langchain_runloop.provider import (
+    RunloopProvider,
+    _default_resolve_env,
+    _ensure_blueprint,
+)
 
 
 def _make_provider(*, env: dict[str, str] | None = None) -> RunloopProvider:
@@ -193,3 +197,63 @@ def test_ensure_blueprint_raises_when_in_flight() -> None:
 
     with pytest.raises(RuntimeError, match="in state 'building'"):
         _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+
+def test_ensure_blueprint_list_failure_raises_runtime_error() -> None:
+    """SDK error during blueprint listing surfaces as RuntimeError."""
+    client = MagicMock()
+    client.blueprints.list.side_effect = Exception("network down")
+
+    with pytest.raises(RuntimeError, match="Failed to list blueprints"):
+        _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+    client.blueprints.create_and_await_build_complete.assert_not_called()
+
+
+def test_ensure_blueprint_create_failure_raises_runtime_error() -> None:
+    """SDK error during blueprint creation surfaces as RuntimeError with context."""
+    client = MagicMock()
+    page = MagicMock(blueprints=[], has_more=False)
+    client.blueprints.list.return_value = page
+    client.blueprints.create_and_await_build_complete.side_effect = Exception(
+        "quota exceeded"
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to build blueprint 'new-bp'"):
+        _ensure_blueprint(client, "new-bp", dockerfile="FROM python:3\n")
+
+
+def test_default_resolve_env_returns_plain_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plain env var is returned when no DEEPAGENTS_CODE_ override exists."""
+    monkeypatch.setenv("RUNLOOP_API_KEY", "plain-key")
+    monkeypatch.delenv("DEEPAGENTS_CODE_RUNLOOP_API_KEY", raising=False)
+
+    assert _default_resolve_env("RUNLOOP_API_KEY") == "plain-key"
+
+
+def test_default_resolve_env_prefix_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEEPAGENTS_CODE_ prefixed var overrides the plain one."""
+    monkeypatch.setenv("RUNLOOP_API_KEY", "plain-key")
+    monkeypatch.setenv("DEEPAGENTS_CODE_RUNLOOP_API_KEY", "override-key")
+
+    assert _default_resolve_env("RUNLOOP_API_KEY") == "override-key"
+
+
+def test_default_resolve_env_empty_prefix_treated_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty DEEPAGENTS_CODE_ override is treated as unset (returns None)."""
+    monkeypatch.setenv("RUNLOOP_API_KEY", "plain-key")
+    monkeypatch.setenv("DEEPAGENTS_CODE_RUNLOOP_API_KEY", "")
+
+    assert _default_resolve_env("RUNLOOP_API_KEY") is None
+
+
+def test_default_resolve_env_missing_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing var with no prefix override returns None."""
+    monkeypatch.delenv("RUNLOOP_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_RUNLOOP_API_KEY", raising=False)
+
+    assert _default_resolve_env("RUNLOOP_API_KEY") is None

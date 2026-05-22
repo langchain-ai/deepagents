@@ -1028,9 +1028,7 @@ def parse_args() -> argparse.Namespace:
         "langsmith",
         "runloop",
     }:
-        parser.error(
-            "--sandbox-snapshot-name requires --sandbox langsmith or runloop"
-        )
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith or runloop")
     return args
 
 

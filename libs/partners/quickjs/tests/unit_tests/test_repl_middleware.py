@@ -782,18 +782,18 @@ def _make_skill_metadata(
     required_ptc_tools: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a minimal SkillMetadata dict for testing."""
-    meta: dict[str, Any] = {
+    inner_metadata: dict[str, str] = {}
+    if required_ptc_tools is not None:
+        inner_metadata["required-ptc-tools"] = " ".join(required_ptc_tools)
+    return {
         "name": name,
         "description": "test",
         "path": f"/skills/{name}/SKILL.md",
-        "metadata": {},
+        "metadata": inner_metadata,
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
     }
-    if required_ptc_tools is not None:
-        meta["required_ptc_tools"] = required_ptc_tools
-    return meta
 
 
 def _make_ptc_tool(name: str) -> StructuredTool:

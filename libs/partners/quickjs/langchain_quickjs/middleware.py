@@ -322,7 +322,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ptc_names = self._ptc_tool_names()
         result: dict[str, SkillMetadata] = {}
         for m in metadata_list:
-            required = m.get("required_ptc_tools", [])
+            raw = m.get("metadata", {}).get("required-ptc-tools", "")
+            required = str(raw).split() if raw else []
             missing = [t for t in required if t not in ptc_names]
             if missing:
                 logger.warning(
@@ -341,7 +342,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         metadata_list: list[SkillMetadata] = state.get("skills_metadata", [])  # type: ignore[assignment]
         ptc_names = self._ptc_tool_names()
         for skill in metadata_list:
-            required = skill.get("required_ptc_tools", [])
+            raw = skill.get("metadata", {}).get("required-ptc-tools", "")
+            required = str(raw).split() if raw else []
             missing = [t for t in required if t not in ptc_names]
             if missing:
                 msg = (

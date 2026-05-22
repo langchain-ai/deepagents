@@ -363,14 +363,6 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     return []
 
 
-def _parse_required_ptc_tools(metadata_obj: Any) -> list[str]:  # noqa: ANN401
-    """Extract `required-ptc-tools` from the metadata mapping."""
-    if not isinstance(metadata_obj, dict):
-        return []
-    raw = metadata_obj.get("required-ptc-tools")
-    return str(raw).split() if raw else []
-
-
 def _parse_skill_metadata(  # noqa: C901
     content: str,
     skill_path: str,

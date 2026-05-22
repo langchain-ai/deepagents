@@ -363,7 +363,7 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     return []
 
 
-def _parse_skill_metadata(  # noqa: C901
+def _parse_skill_metadata(
     content: str,
     skill_path: str,
     directory_name: str,

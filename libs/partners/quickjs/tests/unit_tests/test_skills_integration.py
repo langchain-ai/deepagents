@@ -21,19 +21,19 @@ if TYPE_CHECKING:
     from deepagents.middleware.skills import SkillMetadata
 
 
-def _metadata(name: str, *, path: str, module: str | None = None) -> SkillMetadata:
-    m: SkillMetadata = {
+def _metadata(name: str, *, path: str, entrypoint: str | None = None) -> SkillMetadata:
+    inner_metadata: dict[str, str] = {}
+    if entrypoint is not None:
+        inner_metadata["entrypoint"] = entrypoint
+    return {
         "name": name,
         "description": "x",
         "path": path,
-        "metadata": {},
+        "metadata": inner_metadata,
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
     }
-    if module is not None:
-        m["module"] = module
-    return m
 
 
 def _write(backend: FilesystemBackend, files: dict[str, str]) -> None:
@@ -43,7 +43,7 @@ def _write(backend: FilesystemBackend, files: dict[str, str]) -> None:
 
 
 def _cache_key(meta: SkillMetadata) -> tuple[str, str, str | None]:
-    return (meta["name"], meta["path"], meta.get("module"))
+    return (meta["name"], meta["path"], meta.get("metadata", {}).get("entrypoint"))
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
             ),
         },
     )
-    meta = _metadata("slugify", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("slugify", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     repl = registry.get("t1")
     outcome = await repl.eval_async(
@@ -100,7 +100,7 @@ def test_sync_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> N
             f"{skill_dir}/index.js": "export const v = 11;",
         },
     )
-    meta = _metadata("sync-skill", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("sync-skill", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     repl = registry.get("t1")
     import_outcome = repl.eval_sync(
@@ -128,7 +128,7 @@ async def test_dynamic_import_of_ts_skill_strips_types(
             ),
         },
     )
-    meta = _metadata("ts-skill", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("ts-skill", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     repl = registry.get("t1")
     import_outcome = await repl.eval_async(
@@ -158,7 +158,7 @@ async def test_multi_file_skill_relative_import(
             f"{skill_dir}/util.ts": "export const value = 7;\n",
         },
     )
-    meta = _metadata("multi", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("multi", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     repl = registry.get("t1")
     import_outcome = await repl.eval_async(
@@ -184,7 +184,7 @@ async def test_install_cache_avoids_second_fetch(
             f"{skill_dir}/index.js": "export const k = 1;",
         },
     )
-    meta = _metadata("cached", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("cached", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     repl = registry.get("t1")
     await repl.eval_async(
@@ -224,7 +224,7 @@ async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> N
                 f"{skill_dir}/index.js": "export const k = 7;",
             },
         )
-        meta = _metadata("persist", path=f"{skill_dir}/SKILL.md", module="index.js")
+        meta = _metadata("persist", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
         repl_a = reg.get("t1")
         await repl_a.eval_async(
@@ -269,7 +269,7 @@ async def test_skill_cache_isolated_across_threads(
             f"{skill_dir}/index.js": "export const k = 99;",
         },
     )
-    meta = _metadata("shared", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("shared", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     repl_a = registry.get("thread-a")
     await repl_a.eval_async(
@@ -324,10 +324,10 @@ async def test_broken_skill_failure_is_not_tracked_as_installed(
         backend,
         {
             f"{skill_dir}/SKILL.md": "---\nname: broken\ndescription: x\n---\n",
-            # `module` points at a file we never created.
+            # `entrypoint` points at a file we never created.
         },
     )
-    meta = _metadata("broken", path=f"{skill_dir}/SKILL.md", module="missing.ts")
+    meta = _metadata("broken", path=f"{skill_dir}/SKILL.md", entrypoint="missing.ts")
 
     repl = registry.get("t1")
     first = await repl.eval_async(

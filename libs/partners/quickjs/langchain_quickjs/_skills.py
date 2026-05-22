@@ -263,14 +263,14 @@ def _build_scope_modules(
 
 
 def _require_module_path(metadata: SkillMetadata) -> str:
-    entry_rel = metadata.get("module")
+    entry_rel = metadata.get("metadata", {}).get("entrypoint")
     if not entry_rel:
         msg = (
-            f"skill {metadata['name']!r} has no `module` frontmatter key; "
+            f"skill {metadata['name']!r} has no `entrypoint` in metadata; "
             "only skills with a declared entrypoint are installable"
         )
         raise InvalidSkillScopeError(msg)
-    return entry_rel
+    return str(entry_rel)
 
 
 def load_skill(

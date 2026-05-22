@@ -826,7 +826,7 @@ def _skill_cache_key(metadata: SkillMetadata) -> _SkillCacheKey:
     same-named skills from different sources do not collide inside a
     thread-local cache.
     """
-    return (metadata["name"], metadata["path"], metadata.get("module"))
+    return (metadata["name"], metadata["path"], metadata.get("metadata", {}).get("entrypoint"))
 
 
 @dataclass

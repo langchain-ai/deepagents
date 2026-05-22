@@ -216,7 +216,8 @@ async def test_repl_snapshot_persists_skill_usage_between_turns(
                 "---\n"
                 "name: inc\n"
                 "description: Increment numbers\n"
-                "module: index.js\n"
+                "metadata:\n"
+                "  entrypoint: index.js\n"
                 "---\n"
             ),
             "encoding": "utf-8",

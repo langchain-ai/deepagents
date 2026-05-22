@@ -269,7 +269,7 @@ def load_skill(
     """Load one skill into a ``LoadedSkill``.
 
     Raises:
-        InvalidSkillScopeError: Metadata has no ``entrypoint``, or the
+        InvalidSkillScopeError: Metadata has no `entrypoint`, or the
             entrypoint doesn't match any file in the skill directory.
         SkillInstallError: Backend fetch failed, content was
             non-UTF-8, or the bundle exceeded the size cap.

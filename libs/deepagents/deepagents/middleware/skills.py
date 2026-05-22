@@ -104,7 +104,7 @@ import json
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr

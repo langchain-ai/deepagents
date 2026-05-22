@@ -88,7 +88,7 @@ detect_os
 # ---------------------------------------------------------------------------
 # MDM tools run scripts as root in a minimal environment where HOME may be
 # unset or point to /var/root.  Resolve the real console user's home so uv
-# and deepagents install to the right place.
+# and dcode install to the right place.
 if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null)" || {
     log_warn "Could not determine console user via /dev/console. Falling back to directory scan."
@@ -255,11 +255,15 @@ PACKAGE="deepagents-code${EXTRAS}"
 
 # Capture pre-install version (if any) for messaging
 PRE_VERSION=""
-if command -v deepagents >/dev/null 2>&1; then
-  PRE_VERSION=$(deepagents -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
-elif [ -x "${HOME}/.local/bin/deepagents" ]; then
-  PRE_VERSION=$("${HOME}/.local/bin/deepagents" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
-fi
+for candidate in dcode deepagents-code; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    PRE_VERSION=$("$candidate" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+    break
+  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
+    PRE_VERSION=$("${HOME}/.local/bin/${candidate}" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+    break
+  fi
+done
 
 if [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
@@ -283,23 +287,30 @@ log_success "deepagents-code installed."
 # ---------------------------------------------------------------------------
 # Post-install verification
 # ---------------------------------------------------------------------------
-DEEPAGENTS_BIN=""
-if command -v deepagents >/dev/null 2>&1; then
-  DEEPAGENTS_BIN="deepagents"
-elif [ -x "${HOME}/.local/bin/deepagents" ]; then
-  DEEPAGENTS_BIN="${HOME}/.local/bin/deepagents"
-fi
+DCODE_BIN=""
+DCODE_NAME=""
+for candidate in dcode deepagents-code; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    DCODE_BIN="$candidate"
+    DCODE_NAME="$candidate"
+    break
+  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
+    DCODE_BIN="${HOME}/.local/bin/${candidate}"
+    DCODE_NAME="$candidate"
+    break
+  fi
+done
 
-if [ -n "$DEEPAGENTS_BIN" ]; then
-  if VERSION=$("$DEEPAGENTS_BIN" -v 2>&1); then
-    log_success "Verified: deepagents ${VERSION}"
+if [ -n "$DCODE_BIN" ]; then
+  if VERSION=$("$DCODE_BIN" -v 2>&1); then
+    log_success "Verified: ${DCODE_NAME} ${VERSION}"
   else
-    log_warn "deepagents binary found but 'deepagents -v' failed:"
+    log_warn "${DCODE_NAME} binary found but '${DCODE_NAME} -v' failed:"
     log_warn "  ${VERSION}"
-    log_warn "The installation may be broken. Try running: deepagents -v"
+    log_warn "The installation may be broken. Try running: ${DCODE_NAME} -v"
   fi
 else
-  log_warn "deepagents command not found in PATH. Restart your shell or run:"
+  log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
 fi
 
@@ -433,7 +444,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 # shellcheck disable=SC2059
-printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}deepagents${NC}\n"
+printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}dcode${NC}\n"
 echo ""
 echo "For help and support, see the Deep Agents Code docs:"
 echo "  https://docs.langchain.com/oss/python/deepagents/code/overview"

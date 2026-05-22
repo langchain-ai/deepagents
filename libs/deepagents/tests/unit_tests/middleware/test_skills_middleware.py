@@ -2102,3 +2102,41 @@ def test_modify_request_uses_custom_template() -> None:
     assert "WARN:" in appended
     assert "LIST:" in appended
     assert "## Skills System" not in appended  # default template marker absent
+
+
+# --- required-ptc-tools stays in metadata ----------------------------------
+
+
+def test_parse_skill_metadata_required_ptc_tools_in_metadata() -> None:
+    """required-ptc-tools is preserved in the metadata dict, not promoted."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata:
+  required-ptc-tools: swarm_task read_file write_file glob
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "required_ptc_tools" not in result
+    assert result["metadata"]["required-ptc-tools"] == "swarm_task read_file write_file glob"
+
+
+def test_parse_skill_metadata_entrypoint_stays_in_metadata() -> None:
+    """metadata.entrypoint is preserved in metadata, not promoted to a top-level field."""
+    content = """---
+name: swarm
+description: Dispatch tasks in parallel
+metadata:
+  entrypoint: scripts/index.ts
+---
+
+# Swarm
+"""
+    result = _parse_skill_metadata(content, "/skills/swarm/SKILL.md", "swarm")
+    assert result is not None
+    assert "module" not in result
+    assert result["metadata"]["entrypoint"] == "scripts/index.ts"

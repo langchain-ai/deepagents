@@ -350,7 +350,20 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(  # noqa: C901
+def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
+    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
+    if isinstance(raw_tools, str):
+        return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
+    if raw_tools is not None:
+        logger.warning(
+            "Ignoring non-string 'allowed-tools' in %s (got %s)",
+            skill_path,
+            type(raw_tools).__name__,
+        )
+    return []
+
+
+def _parse_skill_metadata(
     content: str,
     skill_path: str,
     directory_name: str,
@@ -419,21 +432,7 @@ def _parse_skill_metadata(  # noqa: C901
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
-    raw_tools = frontmatter_data.get("allowed-tools")
-    if isinstance(raw_tools, str):
-        allowed_tools = [
-            t.strip(",")  # Support commas for compatibility with skills created for Claude Code.
-            for t in raw_tools.split()
-            if t.strip(",")
-        ]
-    else:
-        if raw_tools is not None:
-            logger.warning(
-                "Ignoring non-string 'allowed-tools' in %s (got %s)",
-                skill_path,
-                type(raw_tools).__name__,
-            )
-        allowed_tools = []
+    allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"), skill_path)
 
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:

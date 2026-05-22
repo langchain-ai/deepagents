@@ -46,15 +46,24 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 
 ## Quickstart
 
+### Prerequisites
+
+- Python 3.10 or higher
+- [`uv`](https://github.com/astral-sh/uv) package manager
+
+### Installation
+
 ```bash
 uv add deepagents
 ```
+
+### Usage
 
 ```python
 from deepagents import create_deep_agent
 
 agent = create_deep_agent(
-    model="openai:gpt-5.5",
+    model="openai:gpt-4o",
     tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )

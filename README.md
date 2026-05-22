@@ -44,6 +44,43 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 > [!NOTE]
 > Deep Agents is available as a JavaScript/TypeScript library — see [deepagents.js](https://github.com/langchain-ai/deepagentsjs).
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Deep Agent                           │
+├─────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │   Planner    │  │   Tools     │  │   Memory     │       │
+│  │  (reasoning) │  │ (filesystem, │  │ (context,    │       │
+│  │              │  │  shell, MCP) │  │  retrieval)  │       │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
+│         │                 │                 │                │
+│         └────────────┬────┴────────────────┘                │
+│                      ▼                                      │
+│              ┌────────────────┐                             │
+│              │  Agent Core    │                             │
+│              │ (LangGraph)    │                             │
+│              └────────┬───────┘                             │
+│                       │                                     │
+│         ┌─────────────┼─────────────┐                       │
+│         ▼             ▼             ▼                       │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐               │
+│  │ Sub-Agents│  │  Skills   │  │  Model    │               │
+│  │           │  │           │  │  (LLM)    │               │
+│  └───────────┘  └───────────┘  └───────────┘               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Core components:**
+
+- **Planner** — decomposes tasks and decides next steps
+- **Tools** — filesystem, shell, MCP servers, custom functions
+- **Memory** — context window management and persistent storage
+- **Agent Core** — LangGraph-powered execution engine
+- **Sub-Agents** — isolated agents for delegated tasks
+- **Skills** — reusable behaviors loaded on demand
+
 ## Quickstart
 
 ```bash

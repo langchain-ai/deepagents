@@ -117,8 +117,8 @@ def show_help() -> None:
     )
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
-        "                             Sandbox snapshot name to use or create"
-        " (langsmith only)"
+        "                             Snapshot (langsmith) or blueprint (runloop)"
+        " name to use or create"
     )
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"

@@ -961,8 +961,7 @@ async def run_non_interactive(
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
-            (langsmith only).
+        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         initial_skill: Optional skill name whose `SKILL.md` instructions wrap

@@ -16,22 +16,27 @@ pip install langchain-runloop
 ```python
 import os
 
-from runloop_api_client import RunloopSDK
-
-from langchain_runloop import RunloopSandbox
+from langchain_runloop import RunloopProvider
 
 api_key = os.environ["RUNLOOP_API_KEY"]
-client = RunloopSDK(bearer_token=api_key)
+provider = RunloopProvider(api_key=api_key)
 
-devbox = client.devbox.create()
-sandbox = RunloopSandbox(devbox=devbox)
-
+sandbox = provider.get_or_create()
 try:
     result = sandbox.execute("echo hello")
     print(result.output)
 finally:
-    devbox.shutdown()
+    provider.delete(sandbox_id=sandbox.id)
 ```
+
+Boot from a named blueprint (create-if-missing, same idea as LangSmith snapshots):
+
+```python
+sandbox = provider.get_or_create(snapshot="my-blueprint")
+```
+
+Or pin via env: `RUNLOOP_SANDBOX_BLUEPRINT_NAME`, `RUNLOOP_SANDBOX_BLUEPRINT_ID`
+(ID wins; skips auto-build).
 
 ## 🤔 What is this?
 

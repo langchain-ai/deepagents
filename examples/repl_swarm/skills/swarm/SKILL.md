@@ -3,7 +3,6 @@ name: swarm
 description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency. Returns a summary object with {total, completed, failed, results[]} — iterate `.results` for per-task output.
 metadata:
   entrypoint: scripts/index.ts
-  required-ptc-tools: swarm_task read_file write_file
 ---
 
 # Swarm

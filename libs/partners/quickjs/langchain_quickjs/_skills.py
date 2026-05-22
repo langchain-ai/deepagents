@@ -262,17 +262,6 @@ def _build_scope_modules(
     return files
 
 
-def _require_module_path(metadata: SkillMetadata) -> str:
-    entry_rel = metadata.get("metadata", {}).get("entrypoint")
-    if not entry_rel:
-        msg = (
-            f"skill {metadata['name']!r} has no `entrypoint` in metadata; "
-            "only skills with a declared entrypoint are installable"
-        )
-        raise InvalidSkillScopeError(msg)
-    return str(entry_rel)
-
-
 def load_skill(
     metadata: SkillMetadata,
     backend: BackendProtocol,
@@ -280,13 +269,20 @@ def load_skill(
     """Load one skill into a ``LoadedSkill``.
 
     Raises:
-        InvalidSkillScopeError: Metadata has no `module` key, or the
+        InvalidSkillScopeError: Metadata has no ``entrypoint``, or the
             entrypoint doesn't match any file in the skill directory.
         SkillInstallError: Backend fetch failed, content was
             non-UTF-8, or the bundle exceeded the size cap.
     """
     name = metadata["name"]
-    entry_rel = _require_module_path(metadata)
+    entry_rel = metadata.get("metadata", {}).get("entrypoint")
+    if not entry_rel:
+        msg = (
+            f"skill {name!r} has no `entrypoint` in metadata; "
+            "only skills with a declared entrypoint are installable"
+        )
+        raise InvalidSkillScopeError(msg)
+    entry_rel = str(entry_rel)
     specifier = _skill_specifier(name)
     skill_dir = _skill_dir_from_metadata(metadata)
 
@@ -314,7 +310,14 @@ async def aload_skill(
 ) -> LoadedSkill:
     """Async sibling of :func:`load_skill`."""
     name = metadata["name"]
-    entry_rel = _require_module_path(metadata)
+    entry_rel = metadata.get("metadata", {}).get("entrypoint")
+    if not entry_rel:
+        msg = (
+            f"skill {name!r} has no `entrypoint` in metadata; "
+            "only skills with a declared entrypoint are installable"
+        )
+        raise InvalidSkillScopeError(msg)
+    entry_rel = str(entry_rel)
     specifier = _skill_specifier(name)
     skill_dir = _skill_dir_from_metadata(metadata)
 

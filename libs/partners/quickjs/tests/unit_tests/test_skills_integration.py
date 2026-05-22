@@ -188,7 +188,7 @@ async def test_multi_file_skill_js_import_specifiers_resolve_to_ts(
             f"{skill_dir}/util.ts": "export const value: number = 7;\n",
         },
     )
-    meta = _metadata("jsimport", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("jsimport", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     repl = registry.get("t1")
     import_outcome = await repl.eval_async(
@@ -219,7 +219,7 @@ async def test_subdirectory_entrypoint_with_js_imports(
             "a: number, b: number): number { return a + b; }\n",
         },
     )
-    meta = _metadata("subdir", path=f"{skill_dir}/SKILL.md", module="scripts/index.ts")
+    meta = _metadata("subdir", path=f"{skill_dir}/SKILL.md", entrypoint="scripts/index.ts")
 
     repl = registry.get("t1")
     import_outcome = await repl.eval_async(

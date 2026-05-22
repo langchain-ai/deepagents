@@ -353,7 +353,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
 def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     """Parse the `allowed-tools` frontmatter value into a list of tool names."""
     if isinstance(raw_tools, str):
-        return [t.strip(",") for t in raw_tools.split() if t.strip(",")]
+        return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
     if raw_tools is not None:
         logger.warning(
             "Ignoring non-string 'allowed-tools' in %s (got %s)",

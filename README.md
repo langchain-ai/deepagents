@@ -17,6 +17,9 @@
   <a href="https://pypistats.org/packages/deepagents" target="_blank"><img src="https://img.shields.io/pepy/dt/deepagents" alt="PyPI - Downloads"></a>
   <a href="https://pypi.org/project/deepagents/#history" target="_blank"><img src="https://img.shields.io/pypi/v/deepagents?label=%20" alt="Version"></a>
   <a href="https://x.com/langchain_oss" target="_blank"><img src="https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain" alt="Twitter / X"></a>
+  <br>
+  <a href="https://github.com/langchain-ai/deepagents/actions/workflows/ci.yml" target="_blank"><img src="https://github.com/langchain-ai/deepagents/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/langchain-ai/deepagents/actions/workflows/release.yml" target="_blank"><img src="https://github.com/langchain-ai/deepagents/actions/workflows/release.yml/badge.svg" alt="Release"></a>
 </div>
 
 <br>

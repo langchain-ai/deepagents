@@ -64,6 +64,10 @@ from deepagents.middleware._message_eviction import (
     _extract_text_from_message,
     _offload_tool_message_content,
 )
+from deepagents.middleware._secret_scrubber import (
+    SecretInCommandError,
+    scan_command_for_secrets,
+)
 from deepagents.middleware._utils import append_to_system_message
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
@@ -1433,6 +1437,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
 
+            # Defense-in-depth: refuse commands that inline literal API
+            # secret values. The sandbox already inherits the relevant
+            # env-vars, so the model never needs to paste the value.
+            try:
+                scan_command_for_secrets(command)
+            except SecretInCommandError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="execute",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -1522,6 +1539,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
+
+            # Defense-in-depth: refuse commands that inline literal API
+            # secret values. The sandbox already inherits the relevant
+            # env-vars, so the model never needs to paste the value.
+            try:
+                scan_command_for_secrets(command)
+            except SecretInCommandError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="execute",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
 
             resolved_backend = self._get_backend(runtime)
 

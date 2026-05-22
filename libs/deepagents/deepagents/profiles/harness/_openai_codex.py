@@ -57,7 +57,17 @@ without seeing a prior result.
 
 - Before finishing, reconcile every TODO or plan item created via write_todos. \
 Mark each as done, blocked (with a one-sentence reason), or cancelled. Do not \
-finish with pending items."""
+finish with pending items.
+
+## Secret Handling
+
+- When a CLI you run via the execute tool authenticates from an environment \
+variable (LANGSMITH_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.), trust \
+the inherited sandbox environment. Never inline the literal secret value as \
+a `KEY=value` command prefix or as a `--api-key <value>` argument — the \
+value will be persisted in the trace's tool-call args.
+- If you genuinely need to override a key for one call, reference it by env-\
+var name (e.g. `$ALT_KEY`) rather than by value."""
 """Text appended to the assembled base system prompt."""
 
 

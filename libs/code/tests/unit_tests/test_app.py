@@ -4561,6 +4561,10 @@ class TestTerminalBackgroundSync:
         )
 
         app = DeepAgentsApp()
+        # Force a known non-ANSI theme so the assertion is stable regardless
+        # of the test runner's saved preference (which may be ansi-dark).
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
         entry = theme.get_registry()[app.theme]
 
         assert calls[-1] == entry.colors.background
@@ -4639,6 +4643,7 @@ class TestTerminalBackgroundSync:
         from deepagents_code import terminal_escape
 
         app = DeepAgentsApp()
+        app.theme = "langchain"  # force non-ANSI so the error path runs
 
         def _raise(_color: str) -> bool:
             msg = "terminal unavailable"
@@ -4650,6 +4655,44 @@ class TestTerminalBackgroundSync:
             app.sync_terminal_background()
 
         assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_sync_terminal_background_skips_ansi_dark(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        calls.clear()
+        app.theme = "ansi-dark"
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_ansi_light(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        calls.clear()
+        app.theme = "ansi-light"
+        app.sync_terminal_background()
+
+        assert calls == []
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
@@ -5198,7 +5241,7 @@ class TestDeferredActions:
             await pilot.pause()
             # `_server_kwargs is not None` gates the hint — emulate a startup
             # path where the user has a model selected.
-            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "fireworks:fake"}
             app._connecting = True
 
             error = MissingProviderPackageError(
@@ -5242,7 +5285,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "fireworks:fake"}
             app._server_startup_error = "stale"
             app._server_startup_missing_provider_package = MissingProviderPackageError(
                 "stale",
@@ -5284,7 +5327,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._server_kwargs = {"model_name": "openai:gpt-4o"}  # type: ignore[typeddict-item]
+            app._server_kwargs = {"model_name": "openai:gpt-4o"}
             # Seed a prior package failure so we can assert the next failure
             # clears it.
             app._server_startup_missing_provider_package = MissingProviderPackageError(

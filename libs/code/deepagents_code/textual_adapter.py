@@ -1151,15 +1151,22 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        # Hide shell tool widgets while the approval renders the
-                        # same command; restore before processing the decision
-                        # so subsequent status updates render on the visible
-                        # widget.
-                        suppressed_tool_msgs = [
-                            tool_msg
-                            for tool_msg in adapter._current_tool_messages.values()
-                            if tool_msg.tool_name == "execute"
-                        ]
+                        # Hide shell tool widgets while the approval renders
+                        # the same command; restore before processing the
+                        # decision so subsequent status updates render on the
+                        # visible widget. Only applies to single-tool
+                        # approvals — the batch dialog doesn't render
+                        # per-tool commands, so hiding the rows would leave
+                        # the user with no preview of what's being approved.
+                        suppressed_tool_msgs = (
+                            [
+                                tool_msg
+                                for tool_msg in adapter._current_tool_messages.values()
+                                if tool_msg.tool_name == "execute"
+                            ]
+                            if len(action_requests) == 1
+                            else []
+                        )
                         for tool_msg in suppressed_tool_msgs:
                             tool_msg.set_awaiting_approval()
                         try:

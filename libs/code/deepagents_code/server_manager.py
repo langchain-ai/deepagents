@@ -277,9 +277,13 @@ async def start_server_and_get_agent(
     shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -298,9 +302,16 @@ async def start_server_and_get_agent(
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
+        sandbox_snapshot_name: Sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
+        enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
+            the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -338,9 +349,13 @@ async def start_server_and_get_agent(
         shell_allow_list=shell_allow_list,
         sandbox_type=sandbox_type,
         sandbox_id=sandbox_id,
+        sandbox_snapshot_name=sandbox_snapshot_name,
         sandbox_setup=sandbox_setup,
         enable_shell=enable_shell,
         enable_ask_user=enable_ask_user,
+        enable_interpreter=enable_interpreter,
+        interpreter_ptc=interpreter_ptc,
+        interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
@@ -384,9 +399,13 @@ async def server_session(
     shell_allow_list: list[str] | None = None,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -408,9 +427,16 @@ async def server_session(
         shell_allow_list: Restrictive shell allow-list for `ShellAllowListMiddleware`.
         sandbox_type: Sandbox type.
         sandbox_id: Existing sandbox ID to reuse.
+        sandbox_snapshot_name: Sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Path to setup script for the sandbox.
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
+        enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
+            the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -433,9 +459,13 @@ async def server_session(
             shell_allow_list=shell_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
+            enable_interpreter=enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

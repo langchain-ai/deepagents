@@ -1170,6 +1170,10 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
+    trim_tokens_to_summarize: int | None = None,
+    token_counter: TokenCounter = count_tokens_approximately,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1211,6 +1215,9 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
+        summary_prompt: Prompt template for generating summaries.
+        trim_tokens_to_summarize: Max tokens to include when generating summary.
+        token_counter: Function to count tokens in messages.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1230,7 +1237,9 @@ def create_summarization_middleware(
         backend=backend,
         trigger=defaults["trigger"],
         keep=defaults["keep"],
-        trim_tokens_to_summarize=None,
+        token_counter=token_counter,
+        summary_prompt=summary_prompt,
+        trim_tokens_to_summarize=trim_tokens_to_summarize,
         truncate_args_settings=defaults["truncate_args_settings"],
     )
 
@@ -1238,6 +1247,8 @@ def create_summarization_middleware(
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1269,6 +1280,8 @@ def create_summarization_tool_middleware(
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
+        system_prompt: System-prompt fragment nudging the model to call
+            `compact_conversation`. Pass `None` to skip appending the nudge.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1319,7 +1332,7 @@ def create_summarization_tool_middleware(
     if isinstance(model, str):
         model = resolve_model(model)
     summarization = create_summarization_middleware(model, backend)
-    return SummarizationToolMiddleware(summarization)
+    return SummarizationToolMiddleware(summarization, system_prompt=system_prompt)
 
 
 class SummarizationToolMiddleware(AgentMiddleware):

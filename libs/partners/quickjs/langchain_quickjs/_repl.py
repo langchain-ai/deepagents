@@ -888,6 +888,33 @@ class _Registry:
         if slot is not None:
             await self._aclose_slot(slot)
 
+    def reset_repl(self, thread_id: str) -> None:
+        """Replace the slot REPL while keeping its worker and runtime alive."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            return
+
+        with contextlib.suppress(Exception):
+            slot.repl.close()
+        new_repl = _ThreadREPL(
+            slot.worker,
+            slot.runtime,
+            timeout=self.timeout,
+            capture_console=self.capture_console,
+            max_stdout_chars=self.max_stdout_chars,
+            max_ptc_calls=self.max_ptc_calls,
+        )
+
+        with self._lock:
+            current = self._slots.get(thread_id)
+            if current is slot:
+                slot.repl = new_repl
+                return
+        # Slot was removed/replaced while rebuilding.
+        with contextlib.suppress(Exception):
+            new_repl.close()
+
     def _build_slot_locked(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"
         worker = ThreadWorker(name=name)

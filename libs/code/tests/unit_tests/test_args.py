@@ -304,6 +304,29 @@ class TestShortFlags:
             args = parse_args()
         assert args.model == "gpt-5.5"
 
+    def test_summarization_model_flag(self) -> None:
+        """`--summarization-model` is parsed independently from `--model`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "-M",
+                "anthropic:claude-sonnet-4-5",
+                "--summarization-model",
+                "openai:gpt-5.4-mini",
+            ],
+        ):
+            args = parse_args()
+        assert args.model == "anthropic:claude-sonnet-4-5"
+        assert args.summarization_model == "openai:gpt-5.4-mini"
+
+    def test_summarization_model_default_none(self) -> None:
+        """`--summarization-model` defaults to `None` when omitted."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert getattr(args, "summarization_model", "MISSING") is None
+
     def test_agent_default_value(self) -> None:
         """Verify -a is `None` when omitted so downstream fallback can run.
 

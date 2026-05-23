@@ -6,7 +6,7 @@ Canonical list of slash commands for `deepagents-code`, derived from
 regenerate after editing the registry.
 
 
-## Public (25)
+## Public (26)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ regenerate after editing the registry.
 | `/reload` |  | Reload config from environment variables and .env |
 | `/remember` |  | Update memory and skills from conversation |
 | `/skill-creator` |  | Guide for creating effective agent skills |
+| `/summarization-model` |  | Set the model used for context-compaction summaries (falls back to /model) |
 | `/theme` |  | Switch color theme |
 | `/threads` |  | Browse and resume previous threads |
 | `/tokens` |  | Token usage |

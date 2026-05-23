@@ -53,6 +53,7 @@ import asyncio
 import logging
 import uuid
 import warnings
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
@@ -241,6 +242,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        model_resolver: Callable[[str], BaseChatModel] | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -271,6 +273,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
+            model_resolver: Optional callable that turns a model spec string
+                into a `BaseChatModel`. Used to resolve runtime context
+                overrides (`runtime.context["model"]` and
+                `runtime.context["summarization_model"]`) without importing
+                CLI/host code into this module. When unset and a string
+                override is encountered at runtime, a `RuntimeError` is
+                raised.
 
         Example:
             ```python
@@ -310,6 +319,23 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
+        # Capture LC helper construction args so we can reconstitute the helper
+        # per-request when the runtime context swaps the effective model.
+        # `_lc_helper.model` is the construction-time fallback; runtime overrides
+        # produce a fresh helper without mutating the shared instance.
+        self._construction_model = self._lc_helper.model
+        self._helper_init_kwargs: dict[str, Any] = {
+            "trigger": trigger,
+            "keep": keep,
+            "token_counter": token_counter,
+            "summary_prompt": summary_prompt,
+            "trim_tokens_to_summarize": trim_tokens_to_summarize,
+            **deprecated_kwargs,
+        }
+        self._model_resolver: Callable[[str], BaseChatModel] | None = model_resolver
+        self._helper_cache: OrderedDict[int, LCSummarizationMiddleware] = OrderedDict()
+        self._helper_cache_max = 4
+
         # Deep Agents specific attributes
         self._backend = backend
 
@@ -336,7 +362,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     # Delegated properties and methods from langchain helper
     @property
     def model(self) -> BaseChatModel:
-        """The language model used for generating summaries."""
+        """The construction-time language model used for generating summaries.
+
+        Note that the effective summarizer model at any given request may be
+        overridden via `runtime.context` — see `_resolve_models`.
+        """
         return self._lc_helper.model
 
     @property
@@ -344,8 +374,93 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Function to count tokens in messages."""
         return self._lc_helper.token_counter
 
+    def _get_helper_for(self, model: BaseChatModel) -> LCSummarizationMiddleware:
+        """Return a `LCSummarizationMiddleware` configured against `model`.
+
+        Helpers are cached by `id(model)` with a small LRU bound so a graph
+        running under server-mode concurrency does not accumulate one helper
+        per request, but does avoid rebuilding on every turn.
+        """
+        if model is self._construction_model:
+            return self._lc_helper
+        key = id(model)
+        cached = self._helper_cache.get(key)
+        if cached is not None and cached.model is model:
+            self._helper_cache.move_to_end(key)
+            return cached
+        helper = LCSummarizationMiddleware(model=model, **self._helper_init_kwargs)
+        self._helper_cache[key] = helper
+        self._helper_cache.move_to_end(key)
+        while len(self._helper_cache) > self._helper_cache_max:
+            self._helper_cache.popitem(last=False)
+        return helper
+
+    def _resolve_model_from_context(
+        self,
+        runtime: Runtime | None,
+        key: str,
+    ) -> BaseChatModel | None:
+        """Resolve a model from `runtime.context[key]`, or `None` if absent.
+
+        For string specs, looks up a resolver in this order:
+
+        1. The constructor-level `model_resolver`.
+        2. `runtime.context["model_resolver"]` — a per-call resolver hosts
+            (e.g. `deepagents-code`) can inject without touching SDK API.
+
+        Raises `RuntimeError` when a string spec is found but no resolver is
+        available.
+        """
+        if runtime is None:
+            return None
+        ctx = getattr(runtime, "context", None)
+        if not isinstance(ctx, dict):
+            return None
+        spec = ctx.get(key)
+        if spec is None:
+            return None
+        if isinstance(spec, str):
+            resolver = self._model_resolver or ctx.get("model_resolver")
+            if resolver is None:
+                msg = (
+                    f"Runtime context provided a string model spec for "
+                    f"'{key}' but no `model_resolver` was configured. Either "
+                    "pass `model_resolver=...` to the summarization "
+                    "middleware, place a callable at "
+                    "`runtime.context['model_resolver']`, or supply a "
+                    "resolved `BaseChatModel` instance instead of a string."
+                )
+                raise RuntimeError(msg)
+            return resolver(spec)
+        return cast("BaseChatModel", spec)
+
+    def _resolve_models(
+        self,
+        runtime: Runtime | None,
+    ) -> tuple[BaseChatModel, BaseChatModel]:
+        """Resolve (threshold_model, summarizer_model) per the documented precedence.
+
+        Threshold model precedence:
+            1. `runtime.context["model"]` — follows `/model`.
+            2. Construction-time model — fallback.
+
+        Summarizer model precedence:
+            1. `runtime.context["summarization_model"]` — explicit override.
+            2. Threshold model (so summarizer follows the main model).
+            3. Construction-time model — fallback.
+
+        `summarization_model` does NOT influence thresholds.
+        """
+        ctx_main = self._resolve_model_from_context(runtime, "model")
+        threshold_model = ctx_main if ctx_main is not None else self._construction_model
+
+        ctx_summ = self._resolve_model_from_context(runtime, "summarization_model")
+        summarizer_model = ctx_summ if ctx_summ is not None else threshold_model
+
+        return threshold_model, summarizer_model
+
     def _get_profile_limits(self) -> int | None:
-        """Retrieve max input token limit from the model profile."""
+        """Retrieve max input token limit from the construction-time model profile."""
         return self._lc_helper._get_profile_limits()
 
     def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
@@ -587,12 +702,19 @@ A condensed summary follows:
             return effective_cutoff
         return prior_cutoff + effective_cutoff - 1
 
-    def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+    def _should_truncate_args(
+        self,
+        messages: list[AnyMessage],
+        total_tokens: int,
+        helper: LCSummarizationMiddleware | None = None,
+    ) -> bool:
         """Check if argument truncation should be triggered.
 
         Args:
             messages: Current message history.
             total_tokens: Total token count of messages.
+            helper: Optional LC helper to read profile limits from. Defaults
+                to the construction-time helper.
 
         Returns:
             True if truncation should occur, False otherwise.
@@ -601,13 +723,14 @@ A condensed summary follows:
             return False
 
         trigger_type, trigger_value = self._truncate_args_trigger
+        _helper = helper if helper is not None else self._lc_helper
 
         if trigger_type == "messages":
             return len(messages) >= trigger_value
         if trigger_type == "tokens":
             return total_tokens >= trigger_value
         if trigger_type == "fraction":
-            max_input_tokens = self._get_profile_limits()
+            max_input_tokens = _helper._get_profile_limits()
             if max_input_tokens is None:
                 return False
             threshold = int(max_input_tokens * trigger_value)
@@ -617,7 +740,11 @@ A condensed summary follows:
 
         return False
 
-    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:  # noqa: PLR0911
+    def _determine_truncate_cutoff_index(  # noqa: PLR0911
+        self,
+        messages: list[AnyMessage],
+        helper: LCSummarizationMiddleware | None = None,
+    ) -> int:
         """Determine the cutoff index for argument truncation based on keep policy.
 
         Messages at index >= cutoff should be preserved without truncation.
@@ -625,12 +752,15 @@ A condensed summary follows:
 
         Args:
             messages: Current message history.
+            helper: Optional LC helper to read profile limits from. Defaults
+                to the construction-time helper.
 
         Returns:
             Index where truncation cutoff occurs. Messages before this index
             should have args truncated, messages at/after should be preserved.
         """
         keep_type, keep_value = self._truncate_args_keep
+        _helper = helper if helper is not None else self._lc_helper
 
         if keep_type == "messages":
             # Keep the most recent N messages
@@ -641,7 +771,7 @@ A condensed summary follows:
         if keep_type in {"tokens", "fraction"}:
             # Calculate target token count
             if keep_type == "fraction":
-                max_input_tokens = self._get_profile_limits()
+                max_input_tokens = _helper._get_profile_limits()
                 if max_input_tokens is None:
                     # Fallback to message count if profile not available
                     messages_to_keep = 20
@@ -658,7 +788,7 @@ A condensed summary follows:
             # Keep recent messages up to token limit
             tokens_kept = 0
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = self._lc_helper._partial_token_counter([messages[i]])
+                msg_tokens = _helper._partial_token_counter([messages[i]])
                 if tokens_kept + msg_tokens > target_token_count:
                     return i + 1
                 tokens_kept += msg_tokens
@@ -699,6 +829,7 @@ A condensed summary follows:
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+        helper: LCSummarizationMiddleware | None = None,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
@@ -706,6 +837,8 @@ A condensed summary follows:
             messages: Messages to potentially truncate.
             system_message: Optional system message for token counting.
             tools: Optional tools for token counting.
+            helper: Optional LC helper used for fraction-based threshold
+                lookups. Defaults to the construction-time helper.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
@@ -716,10 +849,10 @@ A condensed summary follows:
             total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
-        if not self._should_truncate_args(messages, total_tokens):
+        if not self._should_truncate_args(messages, total_tokens, helper=helper):
             return messages, False
 
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
+        cutoff_index = self._determine_truncate_cutoff_index(messages, helper=helper)
         if cutoff_index >= len(messages):
             return messages, False
 
@@ -940,6 +1073,11 @@ A condensed summary follows:
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
         """
+        # Resolve effective threshold/summarizer models from runtime context.
+        threshold_model, summarizer_model = self._resolve_models(request.runtime)
+        threshold_helper = self._get_helper_for(threshold_model)
+        summarizer_helper = self._get_helper_for(summarizer_model)
+
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
@@ -948,6 +1086,7 @@ A condensed summary follows:
             effective_messages,
             request.system_message,
             request.tools,
+            helper=threshold_helper,
         )
 
         # Step 2: Check if summarization should happen
@@ -956,7 +1095,7 @@ A condensed summary follows:
             total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        should_summarize = threshold_helper._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
         overflow_triggered = False
@@ -968,12 +1107,12 @@ A condensed summary follows:
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
+        cutoff_index = threshold_helper._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # Can't summarize, return truncated messages
             return handler(request.override(messages=truncated_messages))
 
-        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
+        messages_to_summarize, preserved_messages = threshold_helper._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._get_backend(request.state, request.runtime)
         # On overflow, offload the large preserved tail TM batch to per-TM files.
@@ -982,8 +1121,8 @@ A condensed summary follows:
             preserved_messages, new_state_tail = _clip_overflow_tail(
                 preserved_messages,
                 backend,
-                keep=self._lc_helper.keep,
-                max_input_tokens=self._get_profile_limits(),
+                keep=threshold_helper.keep,
+                max_input_tokens=threshold_helper._get_profile_limits(),
                 token_counter=self.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
@@ -996,8 +1135,8 @@ A condensed summary follows:
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)
 
-        # Generate summary
-        summary = self._create_summary(messages_to_summarize)
+        # Generate summary using the resolved summarizer model
+        summary = summarizer_helper._create_summary(messages_to_summarize)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
@@ -1067,6 +1206,11 @@ A condensed summary follows:
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
         """
+        # Resolve effective threshold/summarizer models from runtime context.
+        threshold_model, summarizer_model = self._resolve_models(request.runtime)
+        threshold_helper = self._get_helper_for(threshold_model)
+        summarizer_helper = self._get_helper_for(summarizer_model)
+
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
@@ -1075,6 +1219,7 @@ A condensed summary follows:
             effective_messages,
             request.system_message,
             request.tools,
+            helper=threshold_helper,
         )
 
         # Step 2: Check if summarization should happen
@@ -1083,7 +1228,7 @@ A condensed summary follows:
             total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
         except TypeError:
             total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        should_summarize = threshold_helper._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
         overflow_triggered = False
@@ -1095,12 +1240,12 @@ A condensed summary follows:
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
+        cutoff_index = threshold_helper._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # Can't summarize, return truncated messages
             return await handler(request.override(messages=truncated_messages))
 
-        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
+        messages_to_summarize, preserved_messages = threshold_helper._partition_messages(truncated_messages, cutoff_index)
 
         backend = self._get_backend(request.state, request.runtime)
         # On overflow, offload the large preserved tail TM batch to per-TM files.
@@ -1109,8 +1254,8 @@ A condensed summary follows:
             preserved_messages, new_state_tail = await _aclip_overflow_tail(
                 preserved_messages,
                 backend,
-                keep=self._lc_helper.keep,
-                max_input_tokens=self._get_profile_limits(),
+                keep=threshold_helper.keep,
+                max_input_tokens=threshold_helper._get_profile_limits(),
                 token_counter=self.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
@@ -1119,7 +1264,7 @@ A condensed summary follows:
         # If offload fails, summarization still proceeds (with file_path=None).
         file_path, summary = await asyncio.gather(
             self._aoffload_to_backend(backend, messages_to_summarize),
-            self._acreate_summary(messages_to_summarize),
+            summarizer_helper._acreate_summary(messages_to_summarize),
         )
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
@@ -1170,6 +1315,8 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    model_resolver: Callable[[str], BaseChatModel] | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1211,6 +1358,13 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
+        model_resolver: Optional callable used by the middleware to resolve
+            runtime-context model spec strings (e.g.
+            `runtime.context["model"]` or
+            `runtime.context["summarization_model"]`) into
+            `BaseChatModel` instances. Hosts (such as the `deepagents-code`
+            CLI) plug their `create_model` factory here so the SDK does not
+            need to import host code.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1232,12 +1386,15 @@ def create_summarization_middleware(
         keep=defaults["keep"],
         trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
+        model_resolver=model_resolver,
     )
 
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    model_resolver: Callable[[str], BaseChatModel] | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1269,6 +1426,10 @@ def create_summarization_tool_middleware(
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
+        model_resolver: Optional callable used by the inner
+            `SummarizationMiddleware` to resolve runtime-context model spec
+            strings into `BaseChatModel` instances. See
+            [`create_summarization_middleware`][deepagents.middleware.summarization.create_summarization_middleware].
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1318,7 +1479,7 @@ def create_summarization_tool_middleware(
 
     if isinstance(model, str):
         model = resolve_model(model)
-    summarization = create_summarization_middleware(model, backend)
+    summarization = create_summarization_middleware(model, backend, model_resolver=model_resolver)
     return SummarizationToolMiddleware(summarization)
 
 

@@ -1715,6 +1715,14 @@ class ModelConfig:
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
+    summarization_default_model: str | None = None
+    """Default summarization model from config file `[models].summarization_default`.
+
+    Used as the initial value of `app._summarization_model_override` so the
+    SDK's `SummarizationMiddleware` resolves it for compaction. Falls back to
+    the main model when unset.
+    """
+
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
@@ -1777,6 +1785,7 @@ class ModelConfig:
         config = cls(
             default_model=models_section.get("default"),
             recent_model=models_section.get("recent"),
+            summarization_default_model=models_section.get("summarization_default"),
             providers=models_section.get("providers", {}),
         )
 

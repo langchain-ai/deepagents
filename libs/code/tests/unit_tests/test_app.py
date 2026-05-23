@@ -2489,22 +2489,26 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com/o/org/projects/p/proj",
                 ),
                 patch("deepagents_code.app.webbrowser.open") as mock_open,
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
 
-            mock_open.assert_called_once_with(
-                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+            expected_url = (
+                "https://smith.langchain.com/o/org/projects/p/proj"
+                "/t/test-thread-123?utm_source=deepagents-code"
             )
+            mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
             assert any(  # not a URL check—just verifying the link was rendered
-                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
-                in str(w._content)
-                for w in app_msgs
+                expected_url in str(w._content) for w in app_msgs
             )
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
@@ -2515,7 +2519,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState()
 
             with patch(
-                "deepagents_code.config.build_langsmith_thread_url",
+                "deepagents_code.config.get_langsmith_project_name",
                 return_value=None,
             ):
                 await app._handle_trace_command("/trace")
@@ -2523,6 +2527,113 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+
+    async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
+        """Should distinguish a network/timeout failure from a config gap.
+
+        When tracing is configured (project name resolves) but the URL fetch
+        raises `LangSmithLookupTimeoutError` (network unreachable, slow API),
+        the user should see a network-flavored error rather than the misleading
+        "not configured" message.
+        """
+        from deepagents_code.config import LangSmithLookupTimeoutError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithLookupTimeoutError("timed out"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "Check your network" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
+
+    async def test_trace_shows_import_error_when_langsmith_missing(self) -> None:
+        """Should tell the user to install `langsmith` when import fails."""
+        from deepagents_code.config import LangSmithImportError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithImportError("not installed"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "langsmith" in rendered.lower()
+            assert "install" in rendered.lower()
+            assert "network" not in rendered.lower()
+
+    async def test_trace_shows_api_error_when_lookup_rejected(self) -> None:
+        """Should surface the SDK error (auth, 404) rather than blame network."""
+        from deepagents_code.config import LangSmithApiError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithApiError("401 Unauthorized"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "401 Unauthorized" in rendered
+            assert "LANGSMITH_API_KEY" in rendered
+            assert "Check your network" not in rendered
+
+    async def test_trace_shows_error_when_project_name_raises(self) -> None:
+        """Should surface a friendly error if `get_langsmith_project_name` raises."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with patch(
+                "deepagents_code.config.get_langsmith_project_name",
+                side_effect=RuntimeError("env resolution failed"),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "project name" in rendered.lower()
 
     async def test_trace_shows_error_when_no_session(self) -> None:
         """Should show error when there is no active session."""
@@ -2546,8 +2657,12 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
                 ),
                 patch(
                     "deepagents_code.app.webbrowser.open",
@@ -2583,8 +2698,12 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
                 ),
                 patch("deepagents_code.app.webbrowser.open"),
             ):
@@ -2613,15 +2732,21 @@ class TestTraceCommand:
             )
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
-        """Should show error message when build_langsmith_thread_url raises."""
+        """Should show error message when the URL fetch raises."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="test-thread-123")
 
-            with patch(
-                "deepagents_code.config.build_langsmith_thread_url",
-                side_effect=RuntimeError("SDK error"),
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=RuntimeError("SDK error"),
+                ),
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()

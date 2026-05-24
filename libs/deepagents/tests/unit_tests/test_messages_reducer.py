@@ -17,3 +17,12 @@ def test_idless_message_gets_id_and_order_preserved() -> None:
     assert result[0].id == "existing-1"
     assert result[1] is new_msg
     assert result[1].id is not None
+
+
+def test_none_state_does_not_crash() -> None:
+    """Regression test for #3564: None base state must not TypeError."""
+    result = _messages_delta_reducer(None, [[HumanMessage(content="hi")]])
+
+    assert len(result) == 1
+    assert result[0].content == "hi"
+    assert result[0].id is not None

@@ -514,18 +514,27 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> GrepResult:
-        """Search for a literal text pattern in files.
+        """Search for a text pattern in files.
 
         Uses ripgrep if available, falling back to Python search.
 
         Args:
-            pattern: Literal string to search for (NOT regex).
+            pattern: String to search for. Literal substring by default;
+                pass ``regex=True`` to interpret as a regular expression.
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            regex: When True, ``pattern`` is passed to ripgrep without
+                ``-F`` and to the Python fallback without :func:`re.escape`,
+                so it is interpreted as a regular expression.
 
         Returns:
-            GrepResult with matches or error.
+            GrepResult with matches or error. When ``regex=True`` and the
+            pattern fails to compile in the Python fallback, the error is
+            surfaced via ``GrepResult.error`` (not raised) so tool callers
+            can relay it to the model.
         """
         # Resolve base path
         try:
@@ -543,11 +552,16 @@ class FilesystemBackend(BackendProtocol):
             search_path = path or "."
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
-        # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        # ripgrep happily accepts user regex; the `-F` flag is dropped for
+        # regex mode in `_ripgrep_search`. If ripgrep is unavailable the
+        # Python fallback compiles the pattern itself.
+        results = self._ripgrep_search(pattern, base_full, glob, regex=regex)
         if results is None:
-            # Python fallback needs escaped pattern for literal search
-            results = self._python_search(re.escape(pattern), base_full, glob)
+            try:
+                effective = pattern if regex else re.escape(pattern)
+                results = self._python_search(effective, base_full, glob)
+            except re.error as e:
+                return GrepResult(error=f"Invalid regex pattern: {e}", matches=[])
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -555,13 +569,16 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # C901: split except clauses for per-clause logging; PLR0912: dir/file cwd branch + containment check
-        """Search using ripgrep with fixed-string (literal) mode.
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None, *, regex: bool = False) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # C901: split except clauses for per-clause logging; PLR0912: dir/file cwd branch + containment check
+        """Search using ripgrep.
 
         Args:
-            pattern: Literal string to search for (unescaped).
+            pattern: String to search for. Literal by default; passed to
+                ripgrep without ``-F`` when ``regex=True``.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
+            regex: When True, drops the ``-F`` flag so ripgrep interprets
+                ``pattern`` as a regular expression.
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
@@ -569,7 +586,10 @@ class FilesystemBackend(BackendProtocol):
                 Results whose resolved path lies outside `base_full` are silently
                 filtered regardless of `virtual_mode`.
         """
-        cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
+        # Literal mode (`-F`) is the default to keep existing behavior; regex
+        # mode drops that flag so the caller's pattern is treated as a
+        # regular expression by ripgrep.
+        cmd = ["rg", "--json"] if regex else ["rg", "--json", "-F"]
         if include_glob:
             cmd.extend(["--glob", include_glob])
         # When rg is given an absolute search path, directory-component

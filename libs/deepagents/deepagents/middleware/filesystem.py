@@ -314,12 +314,25 @@ class GlobSchema(BaseModel):
 class GrepSchema(BaseModel):
     """Input schema for the `grep` tool."""
 
-    pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+    pattern: str = Field(
+        description=(
+            "Text pattern to search for. Literal substring by default; "
+            "pass `regex=true` to treat as a Python / ripgrep regular expression."
+        )
+    )
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
     glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+    )
+    regex: bool = Field(
+        default=False,
+        description=(
+            "When true, `pattern` is interpreted as a regular expression. "
+            "Use for things like `def (get|set)_\\w+` or `except\\s+\\w*Error`. "
+            "Default is literal substring matching."
+        ),
     )
 
 
@@ -1302,7 +1315,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
         def sync_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: Annotated[
+                str,
+                "Text pattern to search for. Literal substring by default; pass `regex=true` to treat as a regex.",
+            ],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
@@ -1310,6 +1326,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            regex: Annotated[
+                bool,
+                "When true, interpret `pattern` as a regular expression. Default is literal substring matching.",
+            ] = False,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -1330,7 +1350,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob, regex=regex)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,
@@ -1349,7 +1369,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: Annotated[
+                str,
+                "Text pattern to search for. Literal substring by default; pass `regex=true` to treat as a regex.",
+            ],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
@@ -1357,6 +1380,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            regex: Annotated[
+                bool,
+                "When true, interpret `pattern` as a regular expression. Default is literal substring matching.",
+            ] = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -1377,7 +1404,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob, regex=regex)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,

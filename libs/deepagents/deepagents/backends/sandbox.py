@@ -761,24 +761,33 @@ except PermissionError:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> GrepResult:
-        """Search file contents for a literal string using `grep -F`.
+        """Search file contents using sandbox ``grep``.
 
         Args:
-            pattern: Literal string to search for (not a regex).
+            pattern: String to search for. Literal by default; pass
+                ``regex=True`` to interpret as an extended regex (``grep -E``).
             path: Directory or file to search in.
 
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).
+            regex: When True, swap ``-F`` (fixed-strings) for ``-E``
+                (extended regex). The pattern itself is still shell-quoted
+                so the sandbox shell cannot interpret it.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
         search_path = shlex.quote(path or ".")
 
-        # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        # Recursive, with filename, with line number. Mode flag swaps in
+        # last per `regex`: ``-F`` keeps literal-string semantics (default);
+        # ``-E`` switches to extended regex so the agent can use
+        # ``def (get|set)_\w+``-style patterns.
+        grep_opts = "-rHnE" if regex else "-rHnF"
 
         # Add glob pattern if specified
         glob_pattern = ""

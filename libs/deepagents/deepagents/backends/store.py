@@ -688,8 +688,15 @@ class StoreBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> GrepResult:
-        """Search store files for a literal text pattern."""
+        """Search store files for a text pattern.
+
+        Passes ``regex`` through to :func:`grep_matches_from_files`, which
+        compiles the pattern with :mod:`re` when ``regex=True`` and falls
+        back to literal substring matching otherwise.
+        """
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
@@ -699,7 +706,7 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path, glob, regex=regex)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Find files matching a glob pattern in the store."""

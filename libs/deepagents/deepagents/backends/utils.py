@@ -697,10 +697,21 @@ def grep_matches_from_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    *,
+    regex: bool = False,
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
-    Performs literal text search (not regex).
+    Args:
+        files: Mapping of file path -> file data.
+        pattern: Search pattern. Literal substring by default; Python
+            regular expression when ``regex=True``.
+        path: Optional path filter.
+        glob: Optional glob filter on file basename.
+        regex: When True, ``pattern`` is compiled with :mod:`re` and matched
+            via :py:meth:`re.Pattern.search` against each line. An invalid
+            pattern is surfaced as a :class:`GrepResult` with ``error`` set
+            (no raise) so tool contexts can pass it back to the model.
 
     Returns a GrepResult with matches on success.
     We deliberately do not raise here to keep backends non-throwing in tool
@@ -716,11 +727,21 @@ def grep_matches_from_files(
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
 
+    compiled: re.Pattern[str] | None = None
+    if regex:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            return GrepResult(error=f"Invalid regex pattern: {exc}", matches=[])
+
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
         content_str = _normalize_content(file_data)
         for line_num, line in enumerate(content_str.split("\n"), 1):
-            if pattern in line:  # Simple substring search for literal matching
+            if compiled is not None:
+                if compiled.search(line):
+                    matches.append({"path": file_path, "line": int(line_num), "text": line})
+            elif pattern in line:  # Simple substring search for literal matching
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return GrepResult(matches=matches)
 

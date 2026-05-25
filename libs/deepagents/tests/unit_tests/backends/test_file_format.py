@@ -264,6 +264,34 @@ def test_grep_new_format():
 # ---------------------------------------------------------------------------
 
 
+def test_grep_regex_matches_meta_characters():
+    """`regex=True` switches `grep_matches_from_files` to `re.search`.
+
+    Pins the helper-side behavior for #3547 so the store / state / composite
+    backends that delegate here pick up regex semantics without each
+    needing its own regression test.
+    """
+    fd = create_file_data("get_user\nset_value\nrandom_helper\n")
+    files = {"/src/funcs.py": fd}
+
+    literal = grep_matches_from_files(files, r"(get|set)_\w+", path="/")
+    assert literal.matches == []  # literal mode treats `()` / `|` as text
+
+    regex = grep_matches_from_files(files, r"^(get|set)_\w+", path="/", regex=True)
+    assert regex.matches is not None
+    matched_lines = sorted(m["line"] for m in regex.matches)
+    assert matched_lines == [1, 2]
+
+
+def test_grep_regex_invalid_pattern_returns_error():
+    fd = create_file_data("anything")
+    files = {"/x.txt": fd}
+    result = grep_matches_from_files(files, "[unclosed", path="/", regex=True)
+    assert result.matches == []
+    assert result.error is not None
+    assert "Invalid regex" in result.error
+
+
 def test_grep_legacy_format():
     legacy_fd = {
         "content": ["def foo():", "    return 42", "def bar():", "    return 0"],

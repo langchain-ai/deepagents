@@ -402,15 +402,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> "GrepResult":
-        """Search for a literal text pattern in files.
+        """Search for a text pattern in files.
 
         Args:
-            pattern: Literal string to search for (NOT regex).
+            pattern: String to search for. By default this is a literal
+                substring; pass `regex=True` to interpret it as a Python /
+                ripgrep regular expression.
 
-                Performs exact substring matching within file content.
-
-                Example: "TODO" matches any line containing "TODO"
+                Example (literal): `"TODO"` matches any line containing `TODO`.
+                Example (regex): `r"def (get|set)_\\w+"` matches any
+                getter/setter definition.
 
             path: Optional directory path to search in.
 
@@ -428,6 +432,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `**` matches any directories recursively
                 - `?` matches single character
                 - `[abc]` matches one character from set
+
+            regex: When True, treat ``pattern`` as a regular expression
+                rather than a literal substring. Backends that compile the
+                pattern (the Python fallback in :class:`FilesystemBackend`,
+                :func:`grep_matches_from_files`, etc.) return a
+                :class:`GrepResult` with ``error`` set when the pattern is
+                not a valid regex, instead of raising.
 
         Examples:
             - `'*.py'` - only search Python files
@@ -449,6 +460,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 message=("`grep_raw` is deprecated and will be removed in deepagents==0.7.0; rename to `grep` instead."),
                 package="deepagents",
             )
+            # Legacy `grep_raw` predates the regex flag; callers requesting
+            # regex on a backend that only implements `grep_raw` would get
+            # silently literal matches, so surface that as an explicit error
+            # rather than mis-routing the search.
+            if regex:
+                return GrepResult(
+                    error=(
+                        "Backend implements the legacy `grep_raw` API and does not "
+                        "support regex search. Upgrade the backend to `grep` or pass "
+                        "`regex=False`."
+                    ),
+                    matches=[],
+                )
             result = self.grep_raw(pattern, path, glob)
             if isinstance(result, str):
                 return GrepResult(error=result)
@@ -461,9 +485,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> "GrepResult":
         """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        return await asyncio.to_thread(self.grep, pattern, path, glob, regex=regex)
 
     def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.

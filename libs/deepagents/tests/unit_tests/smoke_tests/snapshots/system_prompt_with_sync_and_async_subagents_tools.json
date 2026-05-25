@@ -209,8 +209,13 @@
             "description": "Directory to search in. Defaults to current working directory."
           },
           "pattern": {
-            "description": "Text pattern to search for (literal string, not regex).",
+            "description": "Text pattern to search for. Literal substring by default; pass `regex=true` to treat as a Python / ripgrep regular expression.",
             "type": "string"
+          },
+          "regex": {
+            "default": false,
+            "description": "When true, `pattern` is interpreted as a regular expression. Use for things like `def (get|set)_\\w+` or `except\\s+\\w*Error`. Default is literal substring matching.",
+            "type": "boolean"
           }
         },
         "required": [

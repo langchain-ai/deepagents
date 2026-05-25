@@ -295,10 +295,17 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> GrepResult:
-        """Search state files for a literal text pattern."""
+        """Search state files for a text pattern.
+
+        When ``regex=True``, ``pattern`` is compiled as a regular expression
+        via :func:`grep_matches_from_files`; otherwise it falls back to
+        literal substring matching for backwards compatibility.
+        """
         files = self._read_files()
-        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
+        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob, regex=regex)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Get FileInfo for files matching glob pattern."""

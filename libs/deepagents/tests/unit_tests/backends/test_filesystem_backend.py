@@ -560,6 +560,54 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+def test_grep_regex_mode_matches_meta_characters(tmp_path: Path) -> None:
+    """`regex=True` switches to ripgrep / Python-fallback regex semantics.
+
+    Pins the behavior added for #3547: with `regex=True`, meta characters
+    like alternation and word-boundary classes match instead of being
+    looked up as literal substrings.
+    """
+    root = tmp_path
+    (root / "code.py").write_text(
+        "def get_user():\n    pass\n\n"
+        "def set_value():\n    pass\n\n"
+        "def random_helper():\n    pass\n"
+    )
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Literal mode treats the parens / pipe as text and finds nothing.
+    literal = be.grep(r"def (get|set)_\w+", path="/").matches
+    assert literal == []
+
+    # Regex mode picks up both `get_user` and `set_value` but skips
+    # `random_helper`.
+    regex_matches = be.grep(r"def (get|set)_\w+", path="/", regex=True).matches
+    assert regex_matches is not None
+    matched_text = sorted(m["text"] for m in regex_matches)
+    assert matched_text == ["def get_user():", "def set_value():"]
+
+
+def test_grep_regex_mode_invalid_pattern_surfaces_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid regex on the Python fallback path must come back via
+    `GrepResult.error`, not raise.
+
+    Forces the Python fallback by pretending ripgrep is unavailable, so
+    this test pins the fallback-only branch even on machines where `rg`
+    is installed.
+    """
+    root = tmp_path
+    (root / "noop.txt").write_text("ignored")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: None)
+
+    result = be.grep("[unclosed", path="/", regex=True)
+    assert result.matches == []
+    assert result.error is not None
+    assert "Invalid regex" in result.error
+
+
 def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test for #2732.
 

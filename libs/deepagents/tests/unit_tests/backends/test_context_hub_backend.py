@@ -304,10 +304,34 @@ def test_grep_with_path_prefix() -> None:
 
 
 def test_grep_invalid_regex() -> None:
+    # The protocol default is literal substring matching, so a meta-char
+    # like `[unclosed` is just searched verbatim and produces no matches —
+    # not a compile error. The error path is only taken when the caller
+    # explicitly opts into regex mode with `regex=True`.
     backend, _ = _make_backend()
-    result = backend.grep("[unclosed")
-    assert result.error is not None
-    assert "Invalid regex" in result.error
+    literal_result = backend.grep("[unclosed")
+    assert literal_result.error is None
+    assert literal_result.matches == []
+
+    regex_result = backend.grep("[unclosed", regex=True)
+    assert regex_result.error is not None
+    assert "Invalid regex" in regex_result.error
+
+
+def test_grep_regex_opt_in() -> None:
+    # With `regex=True` the context-hub backend keeps the historical
+    # behavior of compiling the pattern with `re.compile`, so callers can
+    # use real regular expressions across the hub contents.
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="get_user\nset_value\nrandom\n"),
+        }
+    )
+    result = backend.grep(r"^(get|set)_\w+", regex=True)
+    assert result.error is None
+    assert result.matches is not None
+    matched_lines = {m["line"] for m in result.matches}
+    assert matched_lines == {1, 2}
 
 
 def test_glob_matches_pattern() -> None:

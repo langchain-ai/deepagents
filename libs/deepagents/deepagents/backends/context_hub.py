@@ -237,8 +237,17 @@ class ContextHubBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        regex: bool = False,
     ) -> GrepResult:
-        """Search contents for `pattern` (optional `path` / `glob` filters)."""
+        """Search contents for ``pattern`` (optional ``path`` / ``glob`` filters).
+
+        Historically this backend always compiled the input as a regular
+        expression. The protocol default is now literal substring matching,
+        so callers that pass meta-characters (``.``, ``*``, etc.) get the
+        substring semantics they expect from the other backends. Pass
+        ``regex=True`` to restore the regex behavior.
+        """
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
@@ -247,7 +256,7 @@ class ContextHubBackend(BackendProtocol):
         matches: list[GrepMatch] = []
 
         try:
-            regex = re.compile(pattern)
+            compiled = re.compile(pattern if regex else re.escape(pattern))
         except re.error as e:
             return GrepResult(error=f"Invalid regex pattern: {e}")
 
@@ -259,7 +268,7 @@ class ContextHubBackend(BackendProtocol):
             if glob and not fnmatch.fnmatch(file_path, glob):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
-                if regex.search(line):
+                if compiled.search(line):
                     matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
 
         return GrepResult(matches=matches)

@@ -340,6 +340,24 @@ class ChatTextArea(TextArea):
             "Delete left to start of word",
             show=False,
         ),
+        Binding(
+            "cmd+delete",
+            "delete_to_line_start",
+            "Delete to line start",
+            show=False,
+        ),
+        Binding(
+            "cmd+right",
+            "cursor_line_end",
+            "Go to line end",
+            show=False,
+        ),
+        Binding(
+            "cmd+left",
+            "cursor_line_start",
+            "Go to line start",
+            show=False,
+        ),
     ]
     """Key bindings for the chat text area.
 
@@ -631,6 +649,38 @@ class ChatTextArea(TextArea):
             self.post_message(self.HistoryNext())
             return
         super().action_cursor_down(select)
+
+    def action_delete_to_line_start(self) -> None:
+        """Delete all characters from cursor to the start of the line."""
+        row, col = self.cursor_location
+        line_start = (row, 0)
+        if col > 0:
+            self.delete(line_start, self.cursor_location)
+
+    def action_cursor_line_end(self, select: bool = False) -> None:
+        """Move cursor to the end of the current line.
+
+        When `select` is true, extends selection to line end rather than
+        moving the cursor; otherwise falls through to TextArea's default.
+        """
+        if not select and self.selection.is_empty:
+            row = self.cursor_location[0]
+            line_length = len(self.document.get_line(row))
+            self.cursor_location = (row, line_length)
+            return
+        super().action_cursor_line_end(select)
+
+    def action_cursor_line_start(self, select: bool = False) -> None:
+        """Move cursor to the start of the current line.
+
+        When `select` is true, extends selection to line start rather than
+        moving the cursor; otherwise falls through to TextArea's default.
+        """
+        if not select and self.selection.is_empty:
+            row = self.cursor_location[0]
+            self.cursor_location = (row, 0)
+            return
+        super().action_cursor_line_start(select)
 
     def _cancel_paste_burst_timer(self) -> None:
         """Cancel any scheduled paste-burst flush timer."""

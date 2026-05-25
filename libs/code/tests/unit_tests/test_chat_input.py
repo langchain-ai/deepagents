@@ -3011,3 +3011,129 @@ class TestSetCursorBlink:
             await pilot.pause()
 
             assert chat._text_area.has_focus is True
+
+
+class TestKeyboardShortcuts:
+    """Test CMD+key keyboard shortcuts for macOS-style navigation."""
+
+    async def test_cmd_delete_deletes_to_line_start(self) -> None:
+        """CMD+DEL should delete all characters to the left of cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # Type some text
+            await pilot.press("h", "e", "l", "l", "o")
+            assert text_area.text == "hello"
+
+            # Move cursor to end
+            await pilot.press("end")
+            assert text_area.cursor_location == (0, 5)
+
+            # Press CMD+DEL to delete all characters to line start
+            text_area.action_delete_to_line_start()
+            assert text_area.text == ""
+            assert text_area.cursor_location == (0, 0)
+
+    async def test_cmd_delete_partial_deletion(self) -> None:
+        """CMD+DEL should only delete from cursor to line start."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # Type some text
+            await pilot.press("h", "e", "l", "l", "o")
+            assert text_area.text == "hello"
+
+            # Move cursor to position 3
+            text_area.cursor_location = (0, 3)
+
+            # Press CMD+DEL to delete characters before cursor
+            text_area.action_delete_to_line_start()
+            assert text_area.text == "lo"
+            assert text_area.cursor_location == (0, 0)
+
+    async def test_cmd_right_goes_to_line_end(self) -> None:
+        """CMD+Right should move cursor to the end of the line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # Type some text
+            await pilot.press("h", "e", "l", "l", "o")
+            assert text_area.text == "hello"
+
+            # Move cursor to start
+            text_area.cursor_location = (0, 0)
+            assert text_area.cursor_location == (0, 0)
+
+            # Press CMD+Right to go to end
+            text_area.action_cursor_line_end()
+            assert text_area.cursor_location == (0, 5)
+
+    async def test_cmd_left_goes_to_line_start(self) -> None:
+        """CMD+Left should move cursor to the start of the line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # Type some text
+            await pilot.press("h", "e", "l", "l", "o")
+            assert text_area.text == "hello"
+
+            # Cursor should be at end
+            assert text_area.cursor_location == (0, 5)
+
+            # Press CMD+Left to go to start
+            text_area.action_cursor_line_start()
+            assert text_area.cursor_location == (0, 0)
+
+    async def test_cmd_shortcuts_on_empty_text(self) -> None:
+        """CMD+key shortcuts should handle empty text gracefully."""
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # All should work on empty text
+            text_area.action_delete_to_line_start()
+            assert text_area.text == ""
+            assert text_area.cursor_location == (0, 0)
+
+            text_area.action_cursor_line_end()
+            assert text_area.cursor_location == (0, 0)
+
+            text_area.action_cursor_line_start()
+            assert text_area.cursor_location == (0, 0)
+
+    async def test_cmd_shortcuts_multiline_text(self) -> None:
+        """CMD+key shortcuts should work correctly on specific lines."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.query_one(ChatTextArea)
+
+            # Type multi-line text
+            await pilot.press("h", "e", "l", "l", "o")
+            await pilot.press("shift+enter")  # New line
+            await pilot.press("w", "o", "r", "l", "d")
+
+            # Cursor should be at end of second line
+            assert text_area.cursor_location == (1, 5)
+
+            # CMD+Left should go to start of current line (line 1)
+            text_area.action_cursor_line_start()
+            assert text_area.cursor_location == (1, 0)
+
+            # Move to end
+            text_area.action_cursor_line_end()
+            assert text_area.cursor_location == (1, 5)
+
+            # Delete current line content
+            text_area.action_delete_to_line_start()
+            assert text_area.text == "hello\n"
+            assert text_area.cursor_location == (1, 0)

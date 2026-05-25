@@ -17,8 +17,12 @@ Examples:
     ```
 """
 
+import logging
+import shlex
 from collections import defaultdict
 from typing import cast
+
+logger = logging.getLogger(__name__)
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -81,6 +85,105 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
             "path": f"{route_prefix[:-1]}{fi['path']}",
         },
     )
+
+
+def _rewrite_virtual_paths_in_command(
+    command: str,
+    sorted_routes: list[tuple[str, BackendProtocol]],
+) -> str:
+    """Rewrite known virtual-route prefixes in a shell command to host paths.
+
+    Background (#3050): ``CompositeBackend.execute`` delegates the raw
+    command to the default backend, but file-system tools translate
+    virtual paths via routes. A command like
+    ``python /common/skills/main.py`` resolves the file ops correctly
+    (``/common/`` → ``FilesystemBackend(root_dir=...)``) but the shell
+    receives ``/common/...`` verbatim and fails.
+
+    Strategy: tokenize with :mod:`shlex`, rewrite each token that exactly
+    matches a route prefix or starts with one, when the routed backend
+    exposes a host-side ``root_dir`` we can substitute. The tokenizer
+    keeps quoted arguments intact, so a literal occurrence of the
+    virtual path inside ``grep -F "/common/x"`` is preserved as a single
+    token and rewritten correctly (the agent really does want that
+    rewritten — the underlying file isn't accessible at the virtual
+    path either).
+
+    Conservative behaviour by design:
+
+    - Routes are walked longest-first so nested prefixes resolve correctly.
+    - Backends without a ``root_dir`` attribute (e.g. ``StoreBackend``)
+      are left untouched — there is no host path to substitute, and
+      letting the original token through preserves the existing
+      "command fails loudly" diagnostic.
+    - If the command can't be tokenized cleanly (unbalanced quotes,
+      heredoc-only input), the unmodified command is returned so we
+      never corrupt complex shell syntax.
+
+    Args:
+        command: The shell command as the caller would pass it to
+            ``execute``.
+        sorted_routes: ``CompositeBackend.sorted_routes`` (longest
+            prefix first).
+
+    Returns:
+        The rewritten command string, or the original ``command`` if no
+        token matched a known route or the input couldn't be tokenised.
+    """
+    if not sorted_routes:
+        return command
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        # Unbalanced quotes / heredoc-only input — don't risk mutating
+        # something we don't fully understand.
+        logger.debug("CompositeBackend.execute: command not shlex-parseable, leaving unmodified")
+        return command
+
+    if not tokens:
+        return command
+
+    rewritten = False
+    for index, token in enumerate(tokens):
+        if not token.startswith("/"):
+            continue
+        for route_prefix, backend in sorted_routes:
+            prefix_with_slash = route_prefix if route_prefix.endswith("/") else f"{route_prefix}/"
+            prefix_no_slash = route_prefix.rstrip("/")
+            if token == prefix_no_slash:
+                suffix = ""
+            elif token.startswith(prefix_with_slash):
+                suffix = token[len(prefix_with_slash) :]
+            else:
+                continue
+
+            # `FilesystemBackend`-derived backends (incl. `LocalShellBackend`)
+            # expose the host root as `self.cwd: Path`. Other backends
+            # may expose `root_dir` as a plain string. Try both before
+            # giving up.
+            host_root: str | None = None
+            cwd_attr = getattr(backend, "cwd", None)
+            if cwd_attr is not None:
+                host_root = str(cwd_attr)
+            else:
+                raw = getattr(backend, "root_dir", None)
+                if isinstance(raw, str) and raw:
+                    host_root = raw
+
+            if not host_root:
+                # Backend (e.g. StoreBackend, StateBackend) has no
+                # host-side filesystem path we can substitute. Stop
+                # walking shorter routes for this token; leave it alone.
+                break
+
+            host_root_clean = host_root.rstrip("/")
+            tokens[index] = f"{host_root_clean}/{suffix}" if suffix else host_root_clean
+            rewritten = True
+            break
+
+    if not rewritten:
+        return command
+    return shlex.join(tokens)
 
 
 def _route_for_path(
@@ -542,11 +645,18 @@ class CompositeBackend(BackendProtocol):
     ) -> ExecuteResponse:
         """Execute a shell command via the default backend.
 
-        Unlike file operations, execution is not path-routable — it always
-        delegates to the default backend.
+        Execution always delegates to the default backend, but virtual
+        route prefixes in the command string are first rewritten to the
+        corresponding host paths so that shell commands like
+        ``python /common/skills/main.py`` resolve consistently with the
+        file-operation tools (#3050). The rewrite is best-effort: only
+        tokens that exactly match (or start with) a known route prefix
+        whose backend exposes a ``root_dir`` are substituted; anything
+        else is passed through unchanged.
 
         Args:
-            command: Shell command to execute.
+            command: Shell command to execute. Virtual route prefixes
+                (e.g. ``/common/...``) are rewritten to host paths.
             timeout: Maximum time in seconds to wait for the command to complete.
 
                 If None, uses the backend's default timeout.
@@ -560,9 +670,10 @@ class CompositeBackend(BackendProtocol):
                 (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            resolved_command = _rewrite_virtual_paths_in_command(command, self.sorted_routes)
             if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return self.default.execute(command, timeout=timeout)
-            return self.default.execute(command)
+                return self.default.execute(resolved_command, timeout=timeout)
+            return self.default.execute(resolved_command)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -585,9 +696,10 @@ class CompositeBackend(BackendProtocol):
         See `execute()` for detailed documentation on parameters and behavior.
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            resolved_command = _rewrite_virtual_paths_in_command(command, self.sorted_routes)
             if timeout is not None and execute_accepts_timeout(type(self.default)):
-                return await self.default.aexecute(command, timeout=timeout)
-            return await self.default.aexecute(command)
+                return await self.default.aexecute(resolved_command, timeout=timeout)
+            return await self.default.aexecute(resolved_command)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

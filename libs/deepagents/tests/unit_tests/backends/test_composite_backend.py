@@ -553,6 +553,106 @@ def test_composite_backend_execute_with_routed_backends():
     assert "persistent content" in persistent_result.file_data["content"]
 
 
+def test_composite_execute_rewrites_virtual_route_path(tmp_path: Path):
+    """Pins the #3050 fix: virtual route prefixes in the command string are
+    rewritten to the routed backend's host ``root_dir`` before delegation,
+    so a command like ``python /common/skills/main.py`` actually finds the
+    file the SkillsMiddleware loader resolved through the route."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    common = tmp_path / "common"
+    common.mkdir()
+    (common / "skills").mkdir()
+    (common / "skills" / "main.py").write_text("print('hi')")
+    fs_backend = FilesystemBackend(root_dir=str(common), virtual_mode=True)
+
+    comp = CompositeBackend(default=sandbox, routes={"/common/": fs_backend})
+
+    result = comp.execute("python /common/skills/main.py")
+    expected = f"Executed: python {str(common).rstrip('/')}/skills/main.py"
+    assert result.output == expected
+
+
+def test_composite_execute_leaves_non_matching_path_unchanged(tmp_path: Path):
+    """Tokens that don't sit under any route prefix are passed through as-is,
+    so existing host-shell commands (``ls /etc/hostname``) keep working."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    fs_backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    comp = CompositeBackend(default=sandbox, routes={"/common/": fs_backend})
+
+    result = comp.execute("ls /etc/hostname")
+    # The rewriter must not touch /etc/hostname; reconstructed command
+    # tokenises to the same shape.
+    assert result.output == "Executed: ls /etc/hostname"
+
+
+def test_composite_execute_skips_rewrite_for_backend_without_root_dir(tmp_path: Path):
+    """A routed backend without a host-side ``root_dir`` (e.g. StoreBackend)
+    has nothing to substitute, so the original virtual path is left alone
+    rather than being silently mis-rewritten."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))
+
+    comp = CompositeBackend(default=sandbox, routes={"/memories/": store_be})
+
+    result = comp.execute("cat /memories/note.txt")
+    assert result.output == "Executed: cat /memories/note.txt"
+
+
+def test_composite_execute_rewrites_quoted_argument(tmp_path: Path):
+    """A virtual path inside a quoted argument is one shlex token and must
+    still be rewritten — the quoted form was the original repro shape
+    (``python "/common/skills/main with spaces.py"``)."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    common = tmp_path / "common"
+    common.mkdir()
+    fs_backend = FilesystemBackend(root_dir=str(common), virtual_mode=True)
+
+    comp = CompositeBackend(default=sandbox, routes={"/common/": fs_backend})
+
+    result = comp.execute('python "/common/skills/main with spaces.py"')
+    host_clean = str(common).rstrip("/")
+    # shlex.join re-quotes the path because it contains a space.
+    assert f"{host_clean}/skills/main with spaces.py" in result.output
+
+
+def test_composite_execute_unparseable_command_passes_through(tmp_path: Path):
+    """If the command can't be shlex-parsed (unbalanced quote), the rewriter
+    must leave it alone rather than corrupt the input."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    fs_backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    comp = CompositeBackend(default=sandbox, routes={"/common/": fs_backend})
+
+    malformed = "echo /common/x 'unterminated"
+    result = comp.execute(malformed)
+    assert result.output == f"Executed: {malformed}"
+
+
+def test_composite_execute_resolves_exact_route_prefix(tmp_path: Path):
+    """``cd /common`` (no trailing slash, exact route base) should also
+    rewrite to the route's host root."""
+    mem_store = InMemoryStore()
+    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    common = tmp_path / "common"
+    common.mkdir()
+    fs_backend = FilesystemBackend(root_dir=str(common), virtual_mode=True)
+
+    comp = CompositeBackend(default=sandbox, routes={"/common/": fs_backend})
+
+    result = comp.execute("cd /common")
+    host_clean = str(common).rstrip("/")
+    assert result.output == f"Executed: cd {host_clean}"
+
+
 def test_composite_upload_routing(tmp_path: Path):
     """Test upload_files routing to different backends."""
     root = tmp_path

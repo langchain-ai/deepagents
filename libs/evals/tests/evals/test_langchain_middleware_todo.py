@@ -126,7 +126,7 @@ def test_density_rank_lands_in_final_message(model: BaseChatModel) -> None:
         ),
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps=6,
+            agent_steps=4,
             tool_call_requests=8,
             tool_calls=[tool_call(name="write_todos")],
         )
@@ -248,7 +248,7 @@ def test_rank_with_unknown_lookup_lands_in_final_message(model: BaseChatModel) -
         ),
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps=6,
+            agent_steps=4,
             tool_call_requests=8,
             tool_calls=[tool_call(name="write_todos")],
         )
@@ -303,8 +303,8 @@ def test_design_api_lands_in_final_message(model: BaseChatModel) -> None:
         ),
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps=5,
-            tool_call_requests=4,
+            agent_steps=3,
+            tool_call_requests=2,
             tool_calls=[tool_call(name="write_todos")],
         )
         .success(
@@ -341,7 +341,7 @@ def test_density_cairo_lands_in_final_message(model: BaseChatModel) -> None:
             "work."
         ),
         scorer=TrajectoryScorer()
-        .expect(agent_steps=5, tool_call_requests=5)
+        .expect(agent_steps=4, tool_call_requests=4)
         .success(
             final_text_contains("21,800,000"),
             final_text_contains("606"),

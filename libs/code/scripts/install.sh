@@ -45,7 +45,7 @@ cleanup() {
   if [ $exit_code -ne 0 ]; then
     echo "" >&2
     log_error "Installation failed (exit code ${exit_code}). See errors above."
-    log_error "For help, visit: https://docs.langchain.com/oss/python/deepagents/code/overview"
+    log_error "For help, visit: https://docs.langchain.com/deepagents-code"
   fi
 }
 trap cleanup EXIT
@@ -265,13 +265,58 @@ for candidate in dcode deepagents-code; do
   fi
 done
 
-if [ -n "$PRE_VERSION" ]; then
+# Detect editable installs (uv tool install -e <path>) so we can tell the user
+# why the environment will be rebuilt instead of upgraded in place.
+IS_EDITABLE=false
+EDITABLE_SRC=""
+UV_TOOL_DIR=""
+if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
+  UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
+fi
+if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
+  shopt -s nullglob
+  for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
+    if grep -q '"editable"[[:space:]]*:[[:space:]]*true' "$du" 2>/dev/null; then
+      IS_EDITABLE=true
+      EDITABLE_SRC=$(sed -nE 's|.*"url"[[:space:]]*:[[:space:]]*"file://([^"]*)".*|\1|p' "$du" | head -1)
+      # Guard against malformed JSON producing a bogus path.
+      [ -n "$EDITABLE_SRC" ] && [ ! -d "$EDITABLE_SRC" ] && EDITABLE_SRC=""
+      break
+    fi
+  done
+  shopt -u nullglob
+fi
+
+if [ "$IS_EDITABLE" = true ]; then
+  pre_label="${PRE_VERSION:-(version unknown)}"
+  if [ -n "$EDITABLE_SRC" ]; then
+    log_info "deepagents-code ${pre_label} found (editable install from ${EDITABLE_SRC})."
+  else
+    log_info "deepagents-code ${pre_label} found (editable install from local source)."
+  fi
+  log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
 else
   log_info "Installing ${PACKAGE}..."
 fi
 
-if ! "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE"; then
+# Capture uv stderr so we can rewrite its cryptic "Ignoring existing
+# environment …" warning into plain English. uv emits that line when it
+# rebuilds the tool venv instead of upgrading in place (e.g., Python
+# interpreter mismatch, or editable↔regular install swap). Using a tempfile
+# (vs. process substitution) ensures we see uv's full exit status and don't
+# race the warning past later log lines.
+uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
+uv_rc=0
+"$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
+if command -v sed >/dev/null 2>&1; then
+  sed -E 's/.*Ignoring existing environment.*/⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)./' "$uv_stderr" >&2
+else
+  cat "$uv_stderr" >&2
+fi
+rm -f "$uv_stderr"
+if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_PYTHON=3.12), or install manually."
   exit 1
@@ -446,5 +491,6 @@ echo ""
 # shellcheck disable=SC2059
 printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}dcode${NC}\n"
 echo ""
-echo "For help and support, see the Deep Agents Code docs:"
-echo "  https://docs.langchain.com/oss/python/deepagents/code/overview"
+echo "For help and support, see the docs:"
+echo ""
+echo "  https://docs.langchain.com/deepagents-code"

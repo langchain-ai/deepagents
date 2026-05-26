@@ -269,6 +269,51 @@ class TestGetCheckpointer:
 
         asyncio.run(_test())
 
+    def test_drains_worker_thread(self, tmp_path):
+        """`get_checkpointer` joins the aiosqlite worker thread on exit.
+
+        Prevents the daemon worker from outliving the surrounding event loop
+        and raising `RuntimeError: Event loop is closed` via
+        `call_soon_threadsafe` during interpreter / xdist worker shutdown.
+        """
+        captured: dict[str, object] = {}
+
+        async def _test() -> None:
+            db_path = tmp_path / "test.db"
+            with patch.object(sessions, "get_db_path", return_value=db_path):
+                async with sessions.get_checkpointer() as cp:
+                    captured["conn"] = cp.conn
+
+        asyncio.run(_test())
+        conn = cast("aiosqlite.Connection", captured["conn"])
+        worker = conn._thread
+        assert not worker.is_alive(), (
+            "aiosqlite worker thread should be joined after get_checkpointer exit"
+        )
+
+
+class TestConnectHelper:
+    """Tests for the internal `_connect` async context manager."""
+
+    def test_drains_worker_thread(self, tmp_path):
+        """`_connect` joins the aiosqlite worker thread on exit."""
+        db_path = tmp_path / "drain.db"
+        # Create empty file so aiosqlite has something to open.
+        sqlite3.connect(str(db_path)).close()
+        captured: dict[str, object] = {}
+
+        async def _test() -> None:
+            with patch.object(sessions, "get_db_path", return_value=db_path):
+                async with sessions._connect() as conn:
+                    captured["conn"] = conn
+
+        asyncio.run(_test())
+        conn = cast("aiosqlite.Connection", captured["conn"])
+        worker = conn._thread
+        assert not worker.is_alive(), (
+            "aiosqlite worker thread should be joined after _connect exit"
+        )
+
 
 class TestFormatTimestamp:
     """Tests for format_timestamp helper."""

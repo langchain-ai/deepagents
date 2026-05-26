@@ -900,26 +900,34 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
+        choices=[
+            "none",
+            "agentcore",
+            "modal",
+            "daytona",
+            "runloop",
+            "langsmith",
+            "vercel",
+        ],
         default="none",
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution "
             "(default: none - local only; langsmith is included, "
-            "agentcore/modal/daytona/runloop require downloading extras)"
+            "agentcore/modal/daytona/runloop/vercel require downloading extras)"
         ),
     )
 
     parser.add_argument(
         "--sandbox-id",
         metavar="ID",
-        help="Existing sandbox ID to reuse (skips creation and cleanup)",
+        help="Existing sandbox ID to attach to",
     )
 
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Sandbox snapshot name to use or create (langsmith only)",
+        help="LangSmith sandbox snapshot name to use or create",
     )
 
     parser.add_argument(
@@ -1025,7 +1033,7 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
     if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+        parser.error("--sandbox-snapshot-name is only supported with --sandbox langsmith")
     return args
 
 

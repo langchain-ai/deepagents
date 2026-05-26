@@ -12,10 +12,15 @@ import string
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rich.markup import escape as escape_markup
 
+from deepagents_code._env_vars import (
+    VERCEL_PROJECT_ID,
+    VERCEL_TEAM_ID,
+    VERCEL_TOKEN,
+)
 from deepagents_code.config import console, get_glyphs
 from deepagents_code.integrations.sandbox_provider import (
     SandboxNotFoundError,
@@ -76,6 +81,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
     "modal": "/workspace",
     "runloop": "/home/user",
+    "vercel": "/vercel/sandbox",
 }
 """Map of sandbox provider names to their default working directories."""
 
@@ -95,7 +101,7 @@ def create_sandbox(
 
     Args:
         provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+            `'modal'`, `'runloop'`, `'vercel'`)
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Currently only honored by the `'langsmith'` provider; must be
@@ -180,7 +186,7 @@ def get_default_working_dir(provider: str) -> str:
 
     Args:
         provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+            `'modal'`, `'runloop'`, `'vercel'`)
 
     Returns:
         Default working directory path as string
@@ -836,6 +842,144 @@ class _AgentCoreProvider(SandboxProvider):
             )
 
 
+_VERCEL_TERMINAL_STATUSES = {"aborted", "failed", "stopped"}
+"""Vercel sandbox statuses that cannot become ready without a new sandbox."""
+
+
+class _VercelSandboxHandle(Protocol):
+    """Minimal Vercel SDK sandbox surface used by the Phase 2 provider."""
+
+    sandbox_id: str
+    status: object
+
+    def wait_for_status(self, status: str, *, timeout: int) -> None:
+        """Wait for the sandbox to reach the requested status."""
+
+    def stop(self) -> None:
+        """Stop the sandbox."""
+
+
+class _VercelProvider(SandboxProvider):
+    """Vercel Sandbox provider implementation."""
+
+    def __init__(self) -> None:
+        self._sdk_kwargs = _vercel_sdk_kwargs()
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get or create a Vercel sandbox.
+
+        Args:
+            sandbox_id: Existing sandbox ID, or None to create.
+            timeout: Seconds to wait for startup.
+            **kwargs: Unused.
+
+        Returns:
+            `VercelSandbox` instance.
+
+        Raises:
+            RuntimeError: If the sandbox fails to start.
+            TypeError: If unsupported keyword arguments are provided.
+        """
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
+
+        vercel_backend = _import_provider_module(
+            "langchain_vercel_sandbox",
+            provider="vercel",
+            package="langchain-vercel-sandbox",
+        )
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+
+        try:
+            if sandbox_id:
+                sandbox = vercel_sandbox.Sandbox.get(
+                    sandbox_id=sandbox_id,
+                    **self._sdk_kwargs,
+                )
+            else:
+                sandbox = vercel_sandbox.Sandbox.create(
+                    runtime="python3.13",
+                    **self._sdk_kwargs,
+                )
+        except Exception as exc:
+            action = "connect to existing" if sandbox_id else "create"
+            msg = f"Failed to {action} Vercel sandbox: {exc}"
+            raise RuntimeError(msg) from exc
+
+        try:
+            self._wait_until_running(sandbox, timeout=timeout)
+        except Exception:
+            if sandbox_id is None:
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
+            raise
+
+        return vercel_backend.VercelSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Stop a Vercel sandbox by id."""
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+        sandbox = vercel_sandbox.Sandbox.get(
+            sandbox_id=sandbox_id,
+            **self._sdk_kwargs,
+        )
+        sandbox.stop()
+
+    @staticmethod
+    def _wait_until_running(
+        sandbox: _VercelSandboxHandle,
+        *,
+        timeout: int,
+    ) -> None:
+        """Wait for a Vercel sandbox to become ready.
+
+        Raises:
+            RuntimeError: If the sandbox reaches a terminal state or does not
+                become ready before the timeout.
+        """
+        status = str(sandbox.status)
+        if status == "running":
+            return
+        if status in _VERCEL_TERMINAL_STATUSES:
+            msg = f"Vercel sandbox {sandbox.sandbox_id} is in terminal state {status!r}"
+            raise RuntimeError(msg)
+
+        try:
+            sandbox.wait_for_status("running", timeout=timeout)
+        except TimeoutError as exc:
+            status = str(sandbox.status)
+            msg = (
+                f"Vercel sandbox {sandbox.sandbox_id} failed to start within "
+                f"{timeout} seconds; current status is {status!r}"
+            )
+            raise RuntimeError(msg) from exc
+
+
+def _vercel_sdk_kwargs() -> dict[str, str]:
+    """Return explicit Vercel SDK auth kwargs from non-empty prefixed env vars."""
+    values = {
+        "token": os.environ.get(VERCEL_TOKEN),
+        "project_id": os.environ.get(VERCEL_PROJECT_ID),
+        "team_id": os.environ.get(VERCEL_TEAM_ID),
+    }
+    return {key: value for key, value in values.items() if value}
+
+
 def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
@@ -859,6 +1003,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return _ModalProvider()
     if provider_name == "runloop":
         return _RunloopProvider()
+    if provider_name == "vercel":
+        return _VercelProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"
@@ -891,6 +1037,7 @@ def verify_sandbox_deps(provider: str) -> None:
         "daytona": ("langchain_daytona", "daytona"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),
+        "vercel": ("langchain_vercel_sandbox", "vercel"),
     }
 
     entry = backend_modules.get(provider)

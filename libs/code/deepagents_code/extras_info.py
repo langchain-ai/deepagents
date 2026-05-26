@@ -60,7 +60,9 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
 Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 """
 
-SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
+SANDBOX_EXTRAS: frozenset[str] = frozenset(
+    {"agentcore", "daytona", "modal", "runloop", "vercel"}
+)
 """Optional extras that add sandbox integrations."""
 
 STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})

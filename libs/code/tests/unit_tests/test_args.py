@@ -108,7 +108,18 @@ class TestSandboxSnapshotNameArg:
             pytest.raises(SystemExit),
         ):
             parse_args()
-        assert "requires --sandbox langsmith" in capsys.readouterr().err
+        error = capsys.readouterr().err
+        assert "only supported with --sandbox langsmith" in error
+
+
+class TestSandboxArg:
+    """Tests for `--sandbox` provider choices."""
+
+    def test_vercel_choice(self) -> None:
+        """Verify `--sandbox vercel` parses."""
+        with patch.object(sys, "argv", ["deepagents", "--sandbox", "vercel"]):
+            args = parse_args()
+        assert args.sandbox == "vercel"
 
 
 class TestStartupCmdArg:

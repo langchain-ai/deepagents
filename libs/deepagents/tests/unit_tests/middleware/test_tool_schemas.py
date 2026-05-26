@@ -1,5 +1,7 @@
 """Unit tests for tool schema validation."""
 
+import re
+
 from langchain_core.tools import StructuredTool
 
 from deepagents.backends.state import StateBackend
@@ -82,3 +84,50 @@ class TestFilesystemToolSchemas:
                 f"Sync schema: {sync_schema}\n"
                 f"Async schema: {async_schema}"
             )
+
+    def test_tool_description_examples_use_schema_arg_names(self) -> None:
+        """Verify every `<tool_name>(...)` example inside a tool description
+        references parameter names that exist in that tool's Pydantic schema.
+
+        Guards against drift where a description's inline example uses an
+        argument name (e.g. `path`) that the schema does not accept (e.g.
+        `file_path`), which causes the model to emit invalid tool calls that
+        Pydantic rejects before the tool body runs.
+        """
+        backend = StateBackend()
+        middleware = FilesystemMiddleware(backend=backend)
+        tools = middleware.tools
+
+        # Match `tool_name(...)` style snippets. Captures the args blob and
+        # supports nested parens by being non-greedy and stopping at the
+        # closing paren of the outermost call.
+        for tool in tools:
+            description = tool.description or ""
+            schema = tool.tool_call_schema.model_json_schema()
+            valid_args = set(schema.get("properties", {}).keys())
+
+            # Find all `<tool_name>(...)` example invocations in the description.
+            pattern = re.compile(rf"\b{re.escape(tool.name)}\(([^)]*)\)")
+            for match in pattern.finditer(description):
+                args_blob = match.group(1)
+                # Extract keyword argument names: `name=`, `name =`.
+                kwarg_names = re.findall(r"([A-Za-z_]\w*)\s*=", args_blob)
+                # Extract positional placeholders that look like identifiers
+                # (e.g. `read_file(file_path, limit=100)` — `file_path` is
+                # standing in for a positional reference to that named param).
+                positional_names: list[str] = []
+                for raw_token in args_blob.split(","):
+                    token = raw_token.strip()
+                    if not token or "=" in token:
+                        continue
+                    # Strip surrounding quotes / ellipses; only flag bare identifiers.
+                    if re.fullmatch(r"[A-Za-z_]\w*", token):
+                        positional_names.append(token)
+
+                for arg_name in (*kwarg_names, *positional_names):
+                    assert arg_name in valid_args, (
+                        f"Tool '{tool.name}' description contains example "
+                        f"`{match.group(0)}` referencing argument '{arg_name}', "
+                        f"which is not in the tool's schema. Valid args: "
+                        f"{sorted(valid_args)}."
+                    )

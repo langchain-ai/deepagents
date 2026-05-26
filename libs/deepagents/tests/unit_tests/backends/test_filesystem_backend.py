@@ -704,7 +704,7 @@ def _install_flaky_rglob(monkeypatch: pytest.MonkeyPatch, exc: Exception, after_
     real_rglob = Path.rglob
 
     def flaky_rglob(self: Path, pattern: str):
-        for idx, entry in enumerate(real_rglob(self, pattern), start=1):
+        for idx, entry in enumerate(sorted(real_rglob(self, pattern)), start=1):
             yield entry
             if idx >= after_yields:
                 raise exc

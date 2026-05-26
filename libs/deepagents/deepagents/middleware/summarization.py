@@ -1018,7 +1018,6 @@ A condensed summary follows:
 
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
             update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
@@ -1140,7 +1139,6 @@ A condensed summary follows:
 
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
             update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update

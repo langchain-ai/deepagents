@@ -511,11 +511,7 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    user_msg: dict[str, Any] = {
-        "role": "user",
-        "content": message_content,
-        "id": str(uuid.uuid4()),
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
     stream_input: dict | Command = {"messages": [user_msg]}

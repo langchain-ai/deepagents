@@ -2,10 +2,12 @@
 
 import base64
 import errno
+import functools
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +41,26 @@ from deepagents.backends.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _resolve_ripgrep_path() -> str | None:
+    """Locate the `rg` executable on `PATH`, cached for the process lifetime.
+
+    Logs an `INFO`-level message exactly once if ripgrep is not found so
+    operators can diagnose silent slow-path searches when `rg` is installed
+    but not visible on the agent's `PATH` (common in sandboxed or
+    stripped-environment launchers).
+
+    Returns:
+        Absolute path to `rg`, or `None` if not on `PATH`.
+    """
+    path = shutil.which("rg")
+    if path is None:
+        logger.info(
+            "ripgrep ('rg') not found on PATH; using Python grep fallback. Install ripgrep for faster searches and automatic .gitignore handling."
+        )
+    return path
 
 
 class FilesystemBackend(BackendProtocol):
@@ -556,7 +578,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(error=partial_error, matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # C901: split except clauses for per-clause logging; PLR0912: dir/file cwd branch + containment check
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -570,7 +592,11 @@ class FilesystemBackend(BackendProtocol):
                 Results whose resolved path lies outside `base_full` are silently
                 filtered regardless of `virtual_mode`.
         """
-        cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
+        rg_path = _resolve_ripgrep_path()
+        if rg_path is None:
+            return None
+
+        cmd = [rg_path, "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
         # When rg is given an absolute search path, directory-component
@@ -596,7 +622,26 @@ class FilesystemBackend(BackendProtocol):
                 check=False,
                 cwd=rg_cwd,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, NotADirectoryError):
+        except subprocess.TimeoutExpired:
+            logger.warning("ripgrep timed out after 30s; using Python grep fallback")
+            return None
+        except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
+            # `rg` resolved at cache time but failed at exec — treat as a
+            # runtime anomaly (uninstall, permission change, or `which`-vs-exec
+            # race) rather than a missing-tool config, hence WARNING instead
+            # of the INFO emitted by `_resolve_ripgrep_path`. Drop the cache
+            # so the next call re-probes `PATH`.
+            logger.warning("ripgrep subprocess failed (%s: %s); using Python grep fallback", type(e).__name__, e)
+            _resolve_ripgrep_path.cache_clear()
+            return None
+
+        # Ripgrep exits 0 on match, 1 on no-match (both expected), 2+ on a hard
+        # error (invalid pattern, unreadable directory, malformed glob, etc.).
+        # Silently parsing stdout on a hard error reports zero matches to the
+        # agent — exactly the silent failure this resolver is meant to avoid.
+        if proc.returncode not in (0, 1):
+            stderr = proc.stderr.strip()[:500] if proc.stderr else ""
+            logger.warning("ripgrep exited %d (stderr=%r); using Python grep fallback", proc.returncode, stderr)
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -606,7 +651,14 @@ class FilesystemBackend(BackendProtocol):
                 data = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if data.get("type") != "match":
+            data_type = data.get("type")
+            if data_type == "error":
+                # Per-file errors in `--json` mode (e.g., non-UTF-8 file
+                # ripgrep refused to read). Surface at DEBUG so debugging is
+                # possible without spamming WARNING for every binary file.
+                logger.debug("ripgrep per-file error frame: %s", data.get("data"))
+                continue
+            if data_type != "match":
                 continue
             pdata = data.get("data", {})
             ftext = pdata.get("path", {}).get("text")

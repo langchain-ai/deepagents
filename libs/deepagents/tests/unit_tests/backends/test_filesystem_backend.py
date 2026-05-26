@@ -848,6 +848,71 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
 
 
+def _install_flaky_rglob(monkeypatch: pytest.MonkeyPatch, exc: Exception, after_yields: int = 1) -> None:
+    """Replace `Path.rglob` with a generator that yields N entries then raises."""
+    real_rglob = Path.rglob
+
+    def flaky_rglob(self: Path, pattern: str):
+        for idx, entry in enumerate(sorted(real_rglob(self, pattern)), start=1):
+            yield entry
+            if idx >= after_yields:
+                raise exc
+
+    monkeypatch.setattr(Path, "rglob", flaky_rglob)
+
+
+@pytest.mark.parametrize("virtual_mode", [False, True])
+def test_grep_python_fallback_survives_mid_iteration_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, virtual_mode: bool) -> None:
+    """Python grep fallback returns accumulated matches when `rglob` aborts mid-walk.
+
+    `Path.rglob` can raise `FileNotFoundError` (or other `OSError` subclasses)
+    when a directory entry is unlinked or renamed while the walk is in
+    progress. The fallback must surface a partial result rather than letting
+    the exception escape and fail the whole tool invocation.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "first.txt").write_text("hello world\n")
+    (root / "second.txt").write_text("hello world\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=virtual_mode)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, FileNotFoundError("simulated mid-walk unlink"))
+
+    grep_path = "/" if virtual_mode else str(root)
+    result = be.grep("hello", path=grep_path)
+
+    assert result.matches is not None
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert str(root) in result.error if not virtual_mode else True
+
+    matched_paths = {m["path"] for m in result.matches}
+    if virtual_mode:
+        assert "/first.txt" in matched_paths
+        assert "/second.txt" not in matched_paths
+    else:
+        assert any(p.endswith("first.txt") for p in matched_paths)
+        assert not any(p.endswith("second.txt") for p in matched_paths)
+
+
+def test_grep_python_fallback_survives_runtime_error_mid_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`RuntimeError` from `rglob` (e.g. symlink-loop detection) is also recoverable."""
+    root = tmp_path
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, RuntimeError("symlink loop"))
+
+    result = be.grep("hello", path=str(root))
+
+    assert result.error is not None
+    assert "symlink loop" in result.error
+    assert result.matches
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 

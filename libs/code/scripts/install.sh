@@ -5,12 +5,15 @@
 #   curl -LsSf https://langch.in/dcode | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                        "ollama,groq", or "daytona"
-#                        (see pyproject.toml for available extras)
-#   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
-#   DEEPAGENTS_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   UV_BIN             — path to uv binary (auto-detected if unset)
+#   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
+#                             "ollama,groq", or "daytona"
+#                             (see pyproject.toml for available extras)
+#   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
+#                             lines, unfiltered package diff) instead of
+#                             the cleaned-up view; useful when debugging
+#   UV_BIN                  — path to uv binary (auto-detected if unset)
 #
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install
@@ -184,9 +187,10 @@ prompt_yn() {
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-EXTRAS="${DEEPAGENTS_EXTRAS:-}"
-PYTHON_VERSION="${DEEPAGENTS_PYTHON:-3.13}"
-SKIP_OPTIONAL="${DEEPAGENTS_SKIP_OPTIONAL:-0}"
+EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
+PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
+SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
+VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -194,7 +198,7 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
   if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
-    log_error "DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
+    log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"
@@ -316,7 +320,7 @@ fi
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
 "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
-if command -v awk >/dev/null 2>&1; then
+if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
   awk '
     /^Ignoring existing environment/ {
       print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
@@ -377,7 +381,7 @@ fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
-  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_PYTHON=3.12), or install manually."
+  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
 fix_owner "${HOME}/.local/bin" "${HOME}/.local/share/uv"  # uv binaries + tool data

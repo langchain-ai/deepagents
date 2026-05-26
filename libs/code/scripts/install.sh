@@ -301,17 +301,76 @@ else
   log_info "Installing ${PACKAGE}..."
 fi
 
-# Capture uv stderr so we can rewrite its cryptic "Ignoring existing
-# environment …" warning into plain English. uv emits that line when it
-# rebuilds the tool venv instead of upgrading in place (e.g., Python
-# interpreter mismatch, or editable↔regular install swap). Using a tempfile
-# (vs. process substitution) ensures we see uv's full exit status and don't
-# race the warning past later log lines.
+# Capture uv stderr so we can:
+#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#      plain English. uv emits that line when it rebuilds the tool venv
+#      instead of upgrading in place (e.g., Python interpreter mismatch, or
+#      editable↔regular install swap).
+#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
+#      and the trailing "Installed N executables:" line — we already show
+#      a Verified line with the binary name and version.
+#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
+#      "pkg  X → Y" table under a single header.
+# Using a tempfile (vs. process substitution) ensures we see uv's full exit
+# status and don't race the warning past later log lines.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
 "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
-if command -v sed >/dev/null 2>&1; then
-  sed -E 's/.*Ignoring existing environment.*/⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)./' "$uv_stderr" >&2
+if command -v awk >/dev/null 2>&1; then
+  awk '
+    /^Ignoring existing environment/ {
+      print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
+      next
+    }
+    /^Resolved [0-9]+ packages? in /    { next }
+    /^Prepared [0-9]+ packages? in /    { next }
+    /^Uninstalled [0-9]+ packages? in / { next }
+    /^Installed [0-9]+ packages? in /   { next }
+    /^Audited [0-9]+ packages? in /     { next }
+    /^Installed [0-9]+ executables?:/   { next }
+    /^ - / {
+      s = $0; sub(/^ - /, "", s); n = index(s, "==")
+      if (n > 0) {
+        pkg = substr(s, 1, n - 1); ver = substr(s, n + 2)
+        removed[pkg] = ver
+        if (!(pkg in seen)) { seen[pkg] = 1; order[++cnt] = pkg }
+      }
+      next
+    }
+    /^ \+ / {
+      s = $0; sub(/^ \+ /, "", s); n = index(s, "==")
+      if (n > 0) {
+        pkg = substr(s, 1, n - 1); ver = substr(s, n + 2)
+        added[pkg] = ver
+        if (!(pkg in seen)) { seen[pkg] = 1; order[++cnt] = pkg }
+      }
+      next
+    }
+    { print }
+    END {
+      if (cnt == 0) exit
+      maxw = 0
+      any_removed = 0
+      for (i = 1; i <= cnt; i++) {
+        p = order[i]
+        if (length(p) > maxw) maxw = length(p)
+        if (p in removed) any_removed = 1
+      }
+      print (any_removed ? "Updated packages:" : "Installed packages:")
+      for (i = 1; i <= cnt; i++) {
+        p = order[i]
+        pad = ""
+        for (j = length(p); j < maxw; j++) pad = pad " "
+        if ((p in removed) && (p in added)) {
+          printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
+        } else if (p in added) {
+          printf "  %s%s  %s (new)\n", p, pad, added[p]
+        } else {
+          printf "  %s%s  %s (removed)\n", p, pad, removed[p]
+        }
+      }
+    }
+  ' "$uv_stderr" >&2
 else
   cat "$uv_stderr" >&2
 fi
@@ -327,10 +386,8 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
-log_success "deepagents-code installed."
-
 # ---------------------------------------------------------------------------
-# Post-install verification
+# Post-install verification + contextual status
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
@@ -346,14 +403,34 @@ for candidate in dcode deepagents-code; do
   fi
 done
 
+NEW_VERSION=""
+VERIFY_OK=false
+VERIFY_OUTPUT=""
 if [ -n "$DCODE_BIN" ]; then
-  if VERSION=$("$DCODE_BIN" -v 2>&1); then
-    log_success "Verified: ${DCODE_NAME} ${VERSION}"
-  else
-    log_warn "${DCODE_NAME} binary found but '${DCODE_NAME} -v' failed:"
-    log_warn "  ${VERSION}"
-    log_warn "The installation may be broken. Try running: ${DCODE_NAME} -v"
+  if VERIFY_OUTPUT=$("$DCODE_BIN" -v 2>&1); then
+    NEW_VERSION=$(printf '%s\n' "$VERIFY_OUTPUT" | head -1 | awk '{print $NF}') || NEW_VERSION=""
+    VERIFY_OK=true
   fi
+fi
+
+if [ "$IS_EDITABLE" = true ]; then
+  log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} reinstalled from PyPI."
+elif [ -z "$PRE_VERSION" ]; then
+  log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
+elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
+  log_success "deepagents-code ${NEW_VERSION} already up to date."
+elif [ -n "$NEW_VERSION" ]; then
+  log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
+else
+  log_success "deepagents-code installed."
+fi
+
+if [ "$VERIFY_OK" = true ]; then
+  log_success "Verified: ${DCODE_NAME} ${VERIFY_OUTPUT}"
+elif [ -n "$DCODE_BIN" ]; then
+  log_warn "${DCODE_NAME} binary found but '${DCODE_NAME} -v' failed:"
+  log_warn "  ${VERIFY_OUTPUT}"
+  log_warn "The installation may be broken. Try running: ${DCODE_NAME} -v"
 else
   log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"

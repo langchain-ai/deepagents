@@ -170,6 +170,15 @@ THEME = "DEEPAGENTS_CODE_THEME"
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 
+VERCEL_PROJECT_ID = "DEEPAGENTS_CODE_VERCEL_PROJECT_ID"
+"""Override the Vercel project ID passed to the Vercel SDK."""
+
+VERCEL_TEAM_ID = "DEEPAGENTS_CODE_VERCEL_TEAM_ID"
+"""Override the Vercel team ID passed to the Vercel SDK."""
+
+VERCEL_TOKEN = "DEEPAGENTS_CODE_VERCEL_TOKEN"  # noqa: S105  # env var name, not a token value
+"""Override the Vercel token passed to the Vercel SDK."""
+
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})

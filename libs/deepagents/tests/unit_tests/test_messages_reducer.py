@@ -32,13 +32,7 @@ def _build_graph(checkpointer: object) -> object:
         turn[0] += 1
         return {"messages": [AIMessage(content=f"reply-{turn[0]}", id=f"ai-{turn[0]}")]}
 
-    return (
-        StateGraph(State)
-        .add_node("agent", agent)
-        .add_edge(START, "agent")
-        .add_edge("agent", END)
-        .compile(checkpointer=checkpointer)
-    )
+    return StateGraph(State).add_node("agent", agent).add_edge(START, "agent").add_edge("agent", END).compile(checkpointer=checkpointer)
 
 
 def test_get_state_messages_have_ids() -> None:
@@ -72,10 +66,7 @@ def test_dict_style_invoke_messages_have_stable_ids() -> None:
     assert human.id is not None, "dict-style HumanMessage should have a stable ID"
 
     # ID must be stable across repeated get_state() calls
-    ids = [
-        next(m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage))
-        for _ in range(3)
-    ]
+    ids = [next(m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage)) for _ in range(3)]
     assert len(set(ids)) == 1, f"dict-style HumanMessage id unstable: {ids}"
 
 
@@ -86,15 +77,11 @@ def test_human_message_id_stable_across_invocations_sync() -> None:
     config = {"configurable": {"thread_id": "stability-sync"}}
 
     graph.invoke({"messages": [HumanMessage(content="write a hello world script")]}, config)
-    id_turn1 = next(
-        m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage)
-    )
+    id_turn1 = next(m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage))
 
     graph.invoke({"messages": [HumanMessage(content="add error handling")]}, config)
     id_turn2 = next(
-        m.id
-        for m in graph.get_state(config).values["messages"]
-        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
+        m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script"
     )
 
     assert id_turn1 is not None
@@ -111,23 +98,13 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
     graph = _build_graph(saver)
     config = {"configurable": {"thread_id": "stability-async"}}
 
-    await graph.ainvoke(
-        {"messages": [HumanMessage(content="write a hello world script")]}, config
-    )
-    id_turn1 = next(
-        m.id for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, HumanMessage)
-    )
+    await graph.ainvoke({"messages": [HumanMessage(content="write a hello world script")]}, config)
+    id_turn1 = next(m.id for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, HumanMessage))
 
-    await graph.ainvoke(
-        {"messages": [HumanMessage(content="add error handling")]}, config
-    )
+    await graph.ainvoke({"messages": [HumanMessage(content="add error handling")]}, config)
     id_turn2 = next(
-        m.id
-        for m in (await graph.aget_state(config)).values["messages"]
-        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
+        m.id for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script"
     )
 
     assert id_turn1 is not None
-    assert id_turn1 == id_turn2, (
-        f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
-    )
+    assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"

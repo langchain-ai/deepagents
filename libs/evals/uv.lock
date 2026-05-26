@@ -531,7 +531,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.3"
+version = "0.1.4"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

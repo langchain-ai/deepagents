@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
@@ -61,6 +62,35 @@ def _patch_aiosqlite() -> None:
     _aiosqlite_patched = True
 
 
+async def _drain_aiosqlite_worker(conn: aiosqlite.Connection) -> None:
+    """Join the aiosqlite worker thread after its connection is closed.
+
+    `aiosqlite.Connection` wraps a daemon `Thread` (`conn._thread`) that
+    drains its tx queue independently of the caller's event loop. The
+    library's `close()` puts a stop sentinel on the queue and awaits the
+    sentinel's future, but does not explicitly join the worker thread.
+
+    If the connection is leaked (no explicit close) and the surrounding
+    event loop has already shut down, the worker can still pop a queued
+    item (typically from `Connection.__del__` calling `stop()`) and call
+    `future.get_loop().call_soon_threadsafe(...)` on the closed loop. That
+    raises `RuntimeError: Event loop is closed`, which pytest surfaces as
+    `PytestUnhandledThreadExceptionWarning` (and GitHub Actions then
+    surfaces as a workflow annotation).
+
+    Explicitly joining the worker thread after close guarantees it has
+    exited before this coroutine returns, eliminating the race for any
+    connection routed through `_connect` / `get_checkpointer`.
+    """
+    worker = getattr(conn, "_thread", None)
+    if worker is None or not worker.is_alive():
+        return
+    # `RuntimeError` covers the "thread was never started" case; treat as
+    # already drained.
+    with contextlib.suppress(RuntimeError):
+        await asyncio.to_thread(worker.join, 5.0)
+
+
 @asynccontextmanager
 async def _connect() -> AsyncIterator[aiosqlite.Connection]:
     """Import aiosqlite, apply the compatibility patch, and connect.
@@ -75,8 +105,14 @@ async def _connect() -> AsyncIterator[aiosqlite.Connection]:
 
     _patch_aiosqlite()
 
-    async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as conn:
-        yield conn
+    conn: aiosqlite.Connection | None = None
+    try:
+        async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as opened:
+            conn = opened
+            yield opened
+    finally:
+        if conn is not None:
+            await _drain_aiosqlite_worker(conn)
 
 
 class ThreadInfo(TypedDict):
@@ -1134,8 +1170,18 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
 
     _patch_aiosqlite()
 
-    async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
-        yield checkpointer
+    saver: AsyncSqliteSaver | None = None
+    try:
+        async with AsyncSqliteSaver.from_conn_string(
+            str(get_db_path())
+        ) as checkpointer:
+            saver = checkpointer
+            yield checkpointer
+    finally:
+        if saver is not None:
+            conn = getattr(saver, "conn", None)
+            if conn is not None:
+                await _drain_aiosqlite_worker(conn)
 
 
 _DEFAULT_THREAD_LIMIT = 20

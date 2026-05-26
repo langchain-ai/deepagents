@@ -52,12 +52,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sentinel returned by the formatter when the underlying value was a
-# function/circular ref that couldn't be auto-marshaled. We format it as
-# a handle-shaped result so the model sees "you got back a function" rather
-# than nothing.
-_HANDLE_PLACEHOLDER = "[unmarshalable value]"
-
 
 def _clear_exception_references(exc: BaseException) -> None:
     """Drop traceback links to avoid cross-thread GC finalizing QJS handles.
@@ -696,7 +690,7 @@ class _ThreadREPL:
                 self._installed_skills.add(cache_key)
         return errors
 
-    async def _aeval_async(  # noqa: C901
+    async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
         code: str,
         *,
@@ -739,19 +733,40 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
-            value = await ctx.eval_async(code, timeout=self._per_call_timeout)
-            outcome.result = stringify(value)
+            # Drive any final-expression Promise (e.g. a bare async
+            # IIFE) to its resolved value before marshaling. Without
+            # this the Promise object itself fails to marshal and
+            # the result surfaces as ``[object]`` rather than the
+            # awaited value.
+            handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
+            try:
+                if handle.is_promise():
+                    resolved = await handle.await_promise(
+                        timeout=self._per_call_timeout
+                    )
+                else:
+                    resolved = handle
+                try:
+                    try:
+                        value = resolved.to_python()
+                    except MarshalError as me:
+                        outcome.result_kind = "handle"
+                        outcome.result = format_handle(resolved)
+                        _clear_exception_references(me)
+                    else:
+                        outcome.result = stringify(value)
+                finally:
+                    if resolved is not handle:
+                        resolved.dispose()
+            finally:
+                handle.dispose()
         except _PTCCallBudgetExceededError as e:
             # Raised from inside the PTC bridge; quickjs-rs propagates the
-            # original exception out of eval_async. Surface it as a
-            # distinct, model-recoverable error so the agent can shorten
-            # its script rather than crash.
+            # original exception out of eval_handle_async / await_promise.
+            # Surface it as a distinct, model-recoverable error so the
+            # agent can shorten its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
-            _clear_exception_references(e)
-        except MarshalError as e:
-            outcome.result_kind = "handle"
-            outcome.result = await self._describe_via_handle_async(code)
             _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"
@@ -791,17 +806,6 @@ class _ThreadREPL:
         outcome.error_type = e.name
         outcome.error_message = e.message
         outcome.error_stack = e.stack
-
-    async def _describe_via_handle_async(self, code: str) -> str:
-        ctx = self._require_ctx()
-        try:
-            handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
-        except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
-            return _HANDLE_PLACEHOLDER
-        try:
-            return format_handle(handle)
-        finally:
-            handle.dispose()
 
     def close(self) -> None:
         self._worker.run_sync(self._aclose())

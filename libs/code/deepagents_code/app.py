@@ -4924,7 +4924,14 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
-        from deepagents_code.config import build_langsmith_thread_url
+        from deepagents_code.config import (
+            LangSmithApiError,
+            LangSmithImportError,
+            LangSmithLookupTimeoutError,
+            _assemble_langsmith_thread_url,
+            fetch_langsmith_project_url_or_raise,
+            get_langsmith_project_name,
+        )
 
         if not self._session_state:
             await self._mount_message(UserMessage(command))
@@ -4932,15 +4939,18 @@ class DeepAgentsApp(App):
             return
         thread_id = self._session_state.thread_id
         try:
-            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+            project_name = await asyncio.to_thread(get_langsmith_project_name)
         except Exception:
-            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            logger.exception(
+                "Failed to resolve LangSmith project name for thread %s",
+                thread_id,
+            )
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                AppMessage("Failed to resolve LangSmith thread URL."),
+                AppMessage("Failed to resolve LangSmith project name."),
             )
             return
-        if not url:
+        if not project_name:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
@@ -4949,6 +4959,61 @@ class DeepAgentsApp(App):
                 ),
             )
             return
+        try:
+            project_url = await asyncio.to_thread(
+                fetch_langsmith_project_url_or_raise, project_name
+            )
+        except LangSmithImportError:
+            logger.warning(
+                "langsmith package not installed; cannot resolve thread URL for %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "The `langsmith` package is not installed. "
+                    "Install it with `pip install langsmith` to enable `/trace`.",
+                ),
+            )
+            return
+        except LangSmithLookupTimeoutError:
+            logger.warning(
+                "LangSmith project URL lookup timed out for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Could not reach LangSmith to resolve the thread URL. "
+                    "Check your network connection and try again.",
+                ),
+            )
+            return
+        except LangSmithApiError as exc:
+            logger.warning(
+                "LangSmith API call failed while resolving thread URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"LangSmith rejected the project lookup: {exc}. "
+                    "Verify LANGSMITH_API_KEY and the project name are correct.",
+                ),
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Failed to fetch LangSmith project URL for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Failed to resolve LangSmith thread URL."),
+            )
+            return
+        url = _assemble_langsmith_thread_url(project_url, thread_id)
 
         def _open_browser() -> None:
             try:

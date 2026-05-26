@@ -7,7 +7,7 @@ Source of truth: [`tests/evals/`](tests/evals/).
 Categories (for `--eval-category` filtering):
 
 ```txt
-file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware/todo
+file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
 ```
 
 **118 evals** across **8 categories**
@@ -144,7 +144,7 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 - [`test_task_calls_general_purpose_subagent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_subagents.py#L79) — `tests/evals/test_subagents.py:79`
 - [`test_custom_system_prompt`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_system_prompt.py#L29) — `tests/evals/test_system_prompt.py:29`
 
-## Upstream Middleware (`langchain/middleware/todo`) (7 evals)
+## Upstream Middleware (`langchain/middleware`) (7 evals)
 
 - [`test_density_rank_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L105) — `tests/evals/test_langchain_middleware_todo.py:105`
 - [`test_population_compare_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L144) — `tests/evals/test_langchain_middleware_todo.py:144`

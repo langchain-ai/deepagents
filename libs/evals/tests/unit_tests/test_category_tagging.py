@@ -43,7 +43,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_subagents",
         "test_skills",
     ],
-    "langchain/middleware/todo": ["test_langchain_middleware_todo"],
+    "langchain/middleware": ["test_langchain_middleware_todo"],
 }
 
 

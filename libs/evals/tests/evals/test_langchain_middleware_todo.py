@@ -44,7 +44,7 @@ from tests.evals.utils import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-pytestmark = [pytest.mark.eval_category("langchain/middleware/todo")]
+pytestmark = [pytest.mark.eval_category("langchain/middleware")]
 
 
 # ---------------------------------------------------------------------------

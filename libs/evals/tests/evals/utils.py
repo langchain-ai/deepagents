@@ -391,9 +391,7 @@ class FinalTextMinLength(SuccessAssertion):
         """
         final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
         actual = len(final_text.strip())
-        return (
-            f"Expected final text length >= {self.n}, got {actual}: {final_text!r}"
-        )
+        return f"Expected final text length >= {self.n}, got {actual}: {final_text!r}"
 
 
 @dataclass(frozen=True)

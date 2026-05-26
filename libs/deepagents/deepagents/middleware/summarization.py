@@ -67,7 +67,7 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -1019,8 +1019,7 @@ A condensed summary follows:
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
-            original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
-            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail if msg.id is not None] + list(new_state_tail)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1142,8 +1141,7 @@ A condensed summary follows:
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
-            original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
-            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail if msg.id is not None] + list(new_state_tail)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(

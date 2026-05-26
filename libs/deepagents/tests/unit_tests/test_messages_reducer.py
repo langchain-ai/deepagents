@@ -43,13 +43,7 @@ def _build_graph(checkpointer: object) -> object:
         turn[0] += 1
         return {"messages": [AIMessage(content=f"reply-{turn[0]}", id=f"ai-{turn[0]}")]}
 
-    return (
-        StateGraph(State)
-        .add_node("agent", agent)
-        .add_edge(START, "agent")
-        .add_edge("agent", END)
-        .compile(checkpointer=checkpointer)
-    )
+    return StateGraph(State).add_node("agent", agent).add_edge(START, "agent").add_edge("agent", END).compile(checkpointer=checkpointer)
 
 
 def test_human_message_id_stable_across_invocations_sync() -> None:
@@ -70,11 +64,7 @@ def test_human_message_id_stable_across_invocations_sync() -> None:
 
     graph.invoke({"messages": [HumanMessage(content="add error handling")]}, config)
     state2 = graph.get_state(config)
-    id_turn2 = next(
-        m.id
-        for m in state2.values["messages"]
-        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
-    )
+    id_turn2 = next(m.id for m in state2.values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script")
 
     assert id_turn1 is not None, "HumanMessage should have been assigned an ID"
     assert id_turn1 == id_turn2, (
@@ -91,24 +81,13 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
     graph = _build_graph(saver)
     config = {"configurable": {"thread_id": "stability-async"}}
 
-    await graph.ainvoke(
-        {"messages": [HumanMessage(content="write a hello world script")]}, config
-    )
+    await graph.ainvoke({"messages": [HumanMessage(content="write a hello world script")]}, config)
     state1 = await graph.aget_state(config)
     id_turn1 = next(m.id for m in state1.values["messages"] if isinstance(m, HumanMessage))
 
-    await graph.ainvoke(
-        {"messages": [HumanMessage(content="add error handling")]}, config
-    )
+    await graph.ainvoke({"messages": [HumanMessage(content="add error handling")]}, config)
     state2 = await graph.aget_state(config)
-    id_turn2 = next(
-        m.id
-        for m in state2.values["messages"]
-        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
-    )
+    id_turn2 = next(m.id for m in state2.values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script")
 
     assert id_turn1 is not None
-    assert id_turn1 == id_turn2, (
-        f"Async: HumanMessage ID changed across invocations: "
-        f"turn 1={id_turn1!r}, turn 2={id_turn2!r}"
-    )
+    assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"

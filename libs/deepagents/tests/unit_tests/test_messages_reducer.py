@@ -1,4 +1,10 @@
-"""Unit tests for _messages_delta_reducer."""
+"""Tests for DeltaChannel message ID stability.
+
+IDs are assigned by LangGraph's ensure_message_ids() before writes are
+serialised to the checkpoint. These tests verify the end-to-end property:
+get_state() always returns messages with stable, non-None IDs — both within
+a single invocation and across resumed threads.
+"""
 
 from __future__ import annotations
 
@@ -14,25 +20,6 @@ from typing_extensions import TypedDict
 from deepagents._messages_reducer import _messages_delta_reducer
 
 
-def test_idless_message_is_appended_and_order_preserved() -> None:
-    """The reducer appends id=None messages as-is; ID assignment is handled
-    upstream by LangGraph's ensure_message_ids before the write is serialised."""
-    existing = [AIMessage(content="hello", id="existing-1")]
-    new_msg = HumanMessage(content="follow-up")  # no id — not assigned by reducer
-
-    result = _messages_delta_reducer(existing, [[new_msg]])
-
-    assert len(result) == 2
-    assert result[0].id == "existing-1"
-    assert result[1] is new_msg
-    assert result[1].id is None  # reducer no longer assigns IDs
-
-
-# ---------------------------------------------------------------------------
-# Cross-invocation ID stability
-# ---------------------------------------------------------------------------
-
-
 def _build_graph(checkpointer: object) -> object:
     State = TypedDict(  # noqa: UP013
         "State",
@@ -45,33 +32,49 @@ def _build_graph(checkpointer: object) -> object:
         turn[0] += 1
         return {"messages": [AIMessage(content=f"reply-{turn[0]}", id=f"ai-{turn[0]}")]}
 
-    return StateGraph(State).add_node("agent", agent).add_edge(START, "agent").add_edge("agent", END).compile(checkpointer=checkpointer)
+    return (
+        StateGraph(State)
+        .add_node("agent", agent)
+        .add_edge(START, "agent")
+        .add_edge("agent", END)
+        .compile(checkpointer=checkpointer)
+    )
+
+
+def test_get_state_messages_have_ids() -> None:
+    """Every message returned by get_state() must have a non-None id."""
+    saver = InMemorySaver()
+    graph = _build_graph(saver)
+    config = {"configurable": {"thread_id": "has-ids"}}
+
+    graph.invoke({"messages": [HumanMessage(content="hello")]}, config)
+
+    state = graph.get_state(config)
+    for msg in state.values["messages"]:
+        assert msg.id is not None, f"{type(msg).__name__} has id=None after get_state()"
 
 
 def test_human_message_id_stable_across_invocations_sync() -> None:
-    """The same HumanMessage must keep its ID when a thread is resumed.
-
-    Without the LangGraph fix (ensure_message_ids in put_writes), the
-    checkpoint stores id=None and every resumed invocation replays through
-    the reducer, assigning a fresh UUID — so the same human input appears
-    with a different ID in each LangSmith trace.
-    """
+    """The same HumanMessage must keep its ID when a thread is resumed."""
     saver = InMemorySaver()
     graph = _build_graph(saver)
     config = {"configurable": {"thread_id": "stability-sync"}}
 
     graph.invoke({"messages": [HumanMessage(content="write a hello world script")]}, config)
-    state1 = graph.get_state(config)
-    id_turn1 = next(m.id for m in state1.values["messages"] if isinstance(m, HumanMessage))
+    id_turn1 = next(
+        m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage)
+    )
 
     graph.invoke({"messages": [HumanMessage(content="add error handling")]}, config)
-    state2 = graph.get_state(config)
-    id_turn2 = next(m.id for m in state2.values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script")
+    id_turn2 = next(
+        m.id
+        for m in graph.get_state(config).values["messages"]
+        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
+    )
 
-    assert id_turn1 is not None, "HumanMessage should have been assigned an ID"
+    assert id_turn1 is not None
     assert id_turn1 == id_turn2, (
-        f"HumanMessage ID changed across invocations on the same thread: "
-        f"turn 1={id_turn1!r}, turn 2={id_turn2!r}. "
+        f"HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}. "
         "Checkpoint is storing id=None — see langchain-ai/langgraph#7913."
     )
 
@@ -83,13 +86,23 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
     graph = _build_graph(saver)
     config = {"configurable": {"thread_id": "stability-async"}}
 
-    await graph.ainvoke({"messages": [HumanMessage(content="write a hello world script")]}, config)
-    state1 = await graph.aget_state(config)
-    id_turn1 = next(m.id for m in state1.values["messages"] if isinstance(m, HumanMessage))
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="write a hello world script")]}, config
+    )
+    id_turn1 = next(
+        m.id for m in (await graph.aget_state(config)).values["messages"] if isinstance(m, HumanMessage)
+    )
 
-    await graph.ainvoke({"messages": [HumanMessage(content="add error handling")]}, config)
-    state2 = await graph.aget_state(config)
-    id_turn2 = next(m.id for m in state2.values["messages"] if isinstance(m, HumanMessage) and m.content == "write a hello world script")
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="add error handling")]}, config
+    )
+    id_turn2 = next(
+        m.id
+        for m in (await graph.aget_state(config)).values["messages"]
+        if isinstance(m, HumanMessage) and m.content == "write a hello world script"
+    )
 
     assert id_turn1 is not None
-    assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
+    assert id_turn1 == id_turn2, (
+        f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
+    )

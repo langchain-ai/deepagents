@@ -112,6 +112,9 @@ override-dependencies = [
 deepagents-code = { path = "../code" }
 deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
+# TEMPORARY: pin langchain to PR #37698 (nh/neutralize-write-todos-tool-message)
+# to test the tool-message-only fix in isolation. Do not merge this branch.
+langchain = { git = "https://github.com/langchain-ai/langchain.git", branch = "nh/neutralize-write-todos-tool-message", subdirectory = "libs/langchain_v1" }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../code"]

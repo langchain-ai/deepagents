@@ -53,6 +53,7 @@ For simple objectives that only require a few steps, it is better to just comple
 Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
 
 ## Important To-Do List Usage Notes to Remember
+
 - The `write_todos` tool should never be called multiple times in parallel.
 - Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
 

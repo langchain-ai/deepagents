@@ -1020,7 +1020,7 @@ A condensed summary follows:
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
             original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
-            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail] + list(new_state_tail)
+            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail if msg.id is not None] + list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1143,7 +1143,7 @@ A condensed summary follows:
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
             original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
-            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail] + list(new_state_tail)
+            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail if msg.id is not None] + list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(

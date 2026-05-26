@@ -722,7 +722,11 @@ async def _run_agent_loop(
     """
     spinner = None if quiet else _ConsoleSpinner(console)
     state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
-    user_msg: dict[str, Any] = {"role": "user", "content": message, "id": str(uuid.uuid4())}
+    user_msg: dict[str, Any] = {
+        "role": "user",
+        "content": message,
+        "id": str(uuid.uuid4()),
+    }
     if message_kwargs:
         user_msg.update(message_kwargs)
     stream_input: dict[str, Any] | Command = {"messages": [user_msg]}

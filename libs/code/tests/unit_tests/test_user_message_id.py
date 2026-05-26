@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import re
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.messages import HumanMessage, convert_to_messages
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -31,8 +34,10 @@ def _is_uuid4(value: str | None) -> bool:
 
 
 def test_convert_to_messages_preserves_id_field() -> None:
-    """A user-role dict with an explicit 'id' key should produce a HumanMessage
-    whose .id matches.  This is the mechanism the call-site fix relies on."""
+    """A user-role dict with an explicit 'id' key produces a matching HumanMessage.
+
+    This is the mechanism the call-site fix relies on.
+    """
     msg_id = str(uuid.uuid4())
     [msg] = convert_to_messages([{"role": "user", "content": "hello", "id": msg_id}])
     assert isinstance(msg, HumanMessage)
@@ -40,8 +45,11 @@ def test_convert_to_messages_preserves_id_field() -> None:
 
 
 def test_convert_to_messages_without_id_gives_none() -> None:
-    """Baseline: without the fix the user dict has no 'id', so the resulting
-    HumanMessage has id=None and the reducer assigns a fresh UUID each run."""
+    """Baseline: without the fix the user dict has no 'id'.
+
+    The resulting HumanMessage has id=None and the reducer assigns a fresh
+    UUID each run.
+    """
     [msg] = convert_to_messages([{"role": "user", "content": "hello"}])
     assert isinstance(msg, HumanMessage)
     assert msg.id is None, "pre-fix baseline: id should be None when not supplied"
@@ -54,18 +62,21 @@ def test_convert_to_messages_without_id_gives_none() -> None:
 
 @pytest.mark.asyncio
 async def test_run_agent_loop_user_msg_has_id() -> None:
-    """_run_agent_loop must include a UUID4 'id' in the user_msg dict it
-    passes to agent.astream so the LangGraph reducer receives an already-
-    identified HumanMessage rather than id=None."""
+    """_run_agent_loop must include a UUID4 'id' in the user_msg dict.
+
+    It passes the dict to agent.astream so the LangGraph reducer receives an
+    already-identified HumanMessage rather than id=None.
+    """
     from deepagents_code.non_interactive import _run_agent_loop
 
     captured: list[dict] = []
 
-    async def fake_astream(stream_input, **kwargs):
+    async def fake_astream(  # noqa: RUF029  # must be async to replace agent.astream
+        stream_input: dict, **_kwargs: Any
+    ) -> AsyncIterator[Any]:
         captured.append(stream_input)
-        # Yield nothing — we only care about what was passed in.
-        return
-        yield  # make it an async generator
+        for _ in ():
+            yield
 
     agent = MagicMock()
     agent.astream = fake_astream

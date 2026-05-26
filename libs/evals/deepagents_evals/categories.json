@@ -25,6 +25,6 @@
     "conversation": "Conversation",
     "summarization": "Summarization",
     "unit_test": "Unit Test",
-    "langchain/middleware/todo": "Todo Middleware"
+    "langchain/middleware/todo": "Upstream Middleware"
   }
 }

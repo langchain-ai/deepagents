@@ -311,6 +311,83 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
         assert "modified content" in content.file_data["content"]
 
 
+def test_local_shell_backend_executable_at_init() -> None:
+    """Test specifying executable at initialization."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, executable="bash", inherit_env=True)
+
+        # Execute a command that shows which shell is being used
+        result = backend.execute("echo $0")
+
+        assert result.exit_code == 0
+        # The output should contain 'bash' when using bash shell
+        assert "bash" in result.output.lower()
+
+
+def test_local_shell_backend_executable_per_command() -> None:
+    """Test overriding executable per-command."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create backend with default shell
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        # Override to use bash for this specific command
+        result = backend.execute("echo $0", executable="bash")
+
+        assert result.exit_code == 0
+        assert "bash" in result.output.lower()
+
+
+def test_local_shell_backend_executable_absolute_path() -> None:
+    """Test using absolute path for executable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Use absolute path to bash
+        backend = LocalShellBackend(root_dir=tmpdir, executable="/bin/bash", inherit_env=True)
+
+        result = backend.execute("echo $0")
+
+        assert result.exit_code == 0
+        assert "bash" in result.output.lower()
+
+
+def test_local_shell_backend_executable_per_command_override() -> None:
+    """Test that per-command executable overrides initialization executable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Initialize with bash
+        backend = LocalShellBackend(root_dir=tmpdir, executable="bash", inherit_env=True)
+
+        # Override with sh for this command
+        result = backend.execute("echo $0", executable="/bin/sh")
+
+        assert result.exit_code == 0
+        # When using /bin/sh, output should contain 'sh'
+        assert "sh" in result.output.lower()
+
+
+def test_local_shell_backend_no_executable_uses_default() -> None:
+    """Test that not specifying executable uses system default (/bin/sh)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        # Without executable parameter, should use system default
+        result = backend.execute("echo 'test'")
+
+        assert result.exit_code == 0
+        assert "test" in result.output
+
+
+def test_local_shell_backend_executable_with_shell_specific_features() -> None:
+    """Test using shell-specific features with the specified executable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Use bash which supports arrays
+        backend = LocalShellBackend(root_dir=tmpdir, executable="bash", inherit_env=True)
+
+        # Use bash array syntax (not supported in /bin/sh)
+        result = backend.execute("arr=(1 2 3); echo ${arr[1]}")
+
+        assert result.exit_code == 0
+        assert "2" in result.output
+
+
 class TestLocalShellVirtualModeDefaultDeprecation:
     """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
 

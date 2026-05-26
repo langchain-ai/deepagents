@@ -98,6 +98,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         # Inherit all environment variables
         backend = LocalShellBackend(root_dir="/home/user/project", inherit_env=True)
+
+        # Use zsh for all commands
+        backend = LocalShellBackend(root_dir="/home/user/project", executable="zsh")
+        result = backend.execute("echo $SHELL")
+
+        # Use absolute path to shell
+        backend = LocalShellBackend(executable="/opt/homebrew/bin/zsh")
+
+        # Override executable per-command
+        backend = LocalShellBackend()
+        result = backend.execute("ls", executable="/bin/zsh")
         ```
     """
 
@@ -110,6 +121,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
+        executable: str | None = None,
     ) -> None:
         """Initialize local shell backend with filesystem access.
 
@@ -158,6 +170,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 When False (default), only variables in `env` dict are available.
                 When True, inherits all `os.environ` variables and applies `env` overrides.
 
+            executable: Shell executable to use for command execution.
+
+                Accepts shell names ("zsh", "bash", "sh") or absolute paths
+                ("/bin/zsh", "/opt/homebrew/bin/zsh").
+
+                When None (default), uses the system default shell (`/bin/sh` on Unix).
+
+                Can be overridden per-command via the `executable` parameter on `execute()`.
+
         Raises:
             ValueError: If timeout is not positive.
         """
@@ -197,6 +218,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         # Store execution parameters
         self._default_timeout = timeout
         self._max_output_bytes = max_output_bytes
+        self._executable = executable
 
         # Build environment based on inherit_env setting
         if inherit_env:
@@ -223,6 +245,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         command: str,
         *,
         timeout: int | None = None,
+        executable: str | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
@@ -241,9 +264,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             **Always use Human-in-the-Loop (HITL) middleware when using this method.**
 
-        The command is executed using the system shell (`/bin/sh` or equivalent) with
-        the working directory set to the backend's `root_dir`. Stdout and stderr are
-        combined into a single output stream.
+        The command is executed using the configured shell (customizable via the
+        `executable` parameter, defaults to system shell `/bin/sh`) with the working
+        directory set to the backend's `root_dir`. Stdout and stderr are combined
+        into a single output stream.
 
         Args:
             command: Shell command string to execute.
@@ -257,6 +281,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 Overrides the default timeout set at init.
 
                 If None, uses the default.
+
+            executable: Shell executable to use for this command.
+
+                Accepts shell names ("zsh", "bash", "sh") or absolute paths
+                ("/bin/zsh", "/opt/homebrew/bin/zsh").
+
+                Overrides the default executable set at init.
+
+                If None, uses the executable set at init (or system default if not set).
 
         Returns:
             ExecuteResponse containing:
@@ -287,6 +320,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             # Override timeout for long-running commands
             result = backend.execute("make build", timeout=300)
 
+            # Use zsh for a specific command
+            result = backend.execute("echo $SHELL", executable="zsh")
+
+            # Use absolute path to shell
+            result = backend.execute("ls", executable="/bin/zsh")
+
             # Commands run in root_dir, but can access any path
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
@@ -303,6 +342,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
 
+        # Determine which executable to use (per-command override or instance default)
+        effective_executable = executable if executable is not None else self._executable
+
         try:
             result = subprocess.run(  # noqa: S602
                 command,
@@ -314,6 +356,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
+                executable=effective_executable,
             )
 
             # Combine stdout and stderr

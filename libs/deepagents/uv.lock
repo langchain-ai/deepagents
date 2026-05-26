@@ -419,7 +419,6 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
-    { name = "langgraph" },
     { name = "langsmith" },
     { name = "wcmatch" },
 ]
@@ -455,7 +454,6 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
-    { name = "langgraph", specifier = "==1.2.2" },
     { name = "langsmith", specifier = ">=0.8.3" },
     { name = "wcmatch" },
 ]

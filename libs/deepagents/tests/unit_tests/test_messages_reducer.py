@@ -54,6 +54,31 @@ def test_get_state_messages_have_ids() -> None:
         assert msg.id is not None, f"{type(msg).__name__} has id=None after get_state()"
 
 
+def test_dict_style_invoke_messages_have_stable_ids() -> None:
+    """Dict-style input (API / over-the-wire format) must also yield stable IDs.
+
+    When the graph is invoked with {"role": "user", "content": "..."} dicts
+    instead of BaseMessage objects, ensure_message_ids() coerces them before
+    serialisation so the checkpoint never stores id=None.
+    """
+    saver = InMemorySaver()
+    graph = _build_graph(saver)
+    config = {"configurable": {"thread_id": "dict-style"}}
+
+    graph.invoke({"messages": [{"role": "user", "content": "hello"}]}, config)
+
+    state = graph.get_state(config)
+    human = next(m for m in state.values["messages"] if isinstance(m, HumanMessage))
+    assert human.id is not None, "dict-style HumanMessage should have a stable ID"
+
+    # ID must be stable across repeated get_state() calls
+    ids = [
+        next(m.id for m in graph.get_state(config).values["messages"] if isinstance(m, HumanMessage))
+        for _ in range(3)
+    ]
+    assert len(set(ids)) == 1, f"dict-style HumanMessage id unstable: {ids}"
+
+
 def test_human_message_id_stable_across_invocations_sync() -> None:
     """The same HumanMessage must keep its ID when a thread is resumed."""
     saver = InMemorySaver()

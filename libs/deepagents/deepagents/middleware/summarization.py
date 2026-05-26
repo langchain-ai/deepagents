@@ -67,10 +67,10 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -1016,15 +1016,11 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
+            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail] + list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1143,15 +1139,11 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
             state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            original_tail = state_messages[len(state_messages) - len(new_state_tail) :]
+            update["messages"] = [RemoveMessage(id=msg.id) for msg in original_tail] + list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(

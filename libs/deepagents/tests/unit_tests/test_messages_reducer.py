@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated
 
 import pytest
@@ -46,7 +45,7 @@ def _build_graph(checkpointer: object) -> object:
 
     turn = [0]
 
-    def agent(state: dict) -> dict:  # type: ignore[type-arg]
+    def agent(_state: dict) -> dict:  # type: ignore[type-arg]
         turn[0] += 1
         return {"messages": [AIMessage(content=f"reply-{turn[0]}", id=f"ai-{turn[0]}")]}
 

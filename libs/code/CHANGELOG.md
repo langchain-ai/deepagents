@@ -1,5 +1,24 @@
 # Deep Agents Code Changelog
 
+## [0.1.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.4...deepagents-code==0.1.5) (2026-05-26)
+
+
+### Features
+
+* **code:** add macOS keyboard shortcuts for line navigation ([#3575](https://github.com/langchain-ai/deepagents/issues/3575)) ([2a3031d](https://github.com/langchain-ai/deepagents/commit/2a3031d7846572f91face567ffdd8976b9dda64d))
+* **code:** clarify install-script messaging for editable installs ([#3600](https://github.com/langchain-ai/deepagents/issues/3600)) ([5e4306f](https://github.com/langchain-ai/deepagents/commit/5e4306feed530e2b3bdc081ba703b591cbc53eac))
+
+
+### Bug Fixes
+
+* **code:** join aiosqlite worker thread after close ([#3585](https://github.com/langchain-ai/deepagents/issues/3585)) ([152cec0](https://github.com/langchain-ai/deepagents/commit/152cec04affed3508d4bfdffe7cae522b16d45e6))
+* **sdk:** stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
+
+
+### Reverted Changes
+
+* **code:** "add macOS keyboard shortcuts for line navigation" ([#3589](https://github.com/langchain-ai/deepagents/issues/3589)) ([73402e8](https://github.com/langchain-ai/deepagents/commit/73402e817340d1f5a643328a063129894be768e6))
+
 ## [0.1.4](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.3...deepagents-code==0.1.4) (2026-05-23)
 
 ### Features

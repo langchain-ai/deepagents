@@ -11,8 +11,10 @@
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
-#                             lines, unfiltered package diff) instead of
-#                             the cleaned-up view; useful when debugging
+#                             lines, unfiltered package diff) and the
+#                             quiet-by-default status lines (optional-tool
+#                             checks, post-install footer); useful when
+#                             debugging
 #   UV_BIN                  — path to uv binary (auto-detected if unset)
 #
 # Credits:
@@ -331,6 +333,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
     /^Uninstalled [0-9]+ packages? in / { next }
     /^Installed [0-9]+ packages? in /   { next }
     /^Audited [0-9]+ packages? in /     { next }
+    /^Checked [0-9]+ packages? in /     { next }
     /^Installed [0-9]+ executables?:/   { next }
     /^ - / {
       s = $0; sub(/^ - /, "", s); n = index(s, "==")
@@ -396,8 +399,8 @@ fi
 DCODE_BIN=""
 DCODE_NAME=""
 for candidate in dcode deepagents-code; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    DCODE_BIN="$candidate"
+  if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
+    DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
@@ -406,6 +409,15 @@ for candidate in dcode deepagents-code; do
     break
   fi
 done
+
+# Collapse $HOME prefix to ~ for a tidier display path. Used in user-facing
+# log lines only; DCODE_BIN keeps the absolute path for any exec needs.
+DCODE_BIN_DISPLAY="$DCODE_BIN"
+if [ -n "$DCODE_BIN" ] && [ -n "${HOME:-}" ]; then
+  case "$DCODE_BIN" in
+    "$HOME"/*) DCODE_BIN_DISPLAY="~${DCODE_BIN#"$HOME"}" ;;
+  esac
+fi
 
 NEW_VERSION=""
 VERIFY_OK=false
@@ -429,8 +441,22 @@ else
   log_success "deepagents-code installed."
 fi
 
+if [ "$VERBOSE" = "1" ] && [ -n "$DCODE_BIN_DISPLAY" ]; then
+  printf "  Location: %s\n" "$DCODE_BIN_DISPLAY"
+fi
+
 if [ "$VERIFY_OK" = true ]; then
-  log_success "Verified: ${DCODE_NAME} ${VERIFY_OUTPUT}"
+  # Skip the redundant "Verified" line on the already-up-to-date path —
+  # the prior log_success above already named the version. Only emit it on
+  # fresh install, upgrade, or editable→PyPI swap.
+  if [ -z "$NEW_VERSION" ] || [ "$PRE_VERSION" != "$NEW_VERSION" ] || [ "$IS_EDITABLE" = true ]; then
+    VERIFY_FIRST=$(printf '%s\n' "$VERIFY_OUTPUT" | head -1)
+    if [ -n "$VERIFY_FIRST" ]; then
+      log_success "Verified: ${DCODE_NAME} ${VERIFY_FIRST}"
+    else
+      log_warn "${DCODE_NAME} -v exited 0 but produced no output; installation may be incomplete."
+    fi
+  fi
 elif [ -n "$DCODE_BIN" ]; then
   log_warn "${DCODE_NAME} binary found but '${DCODE_NAME} -v' failed:"
   log_warn "  ${VERIFY_OUTPUT}"
@@ -536,13 +562,15 @@ ripgrep_manual_hint() {
 }
 
 if [ "$SKIP_OPTIONAL" != "1" ]; then
-  echo ""
-  log_info "Checking optional tools..."
-
   if command -v rg >/dev/null 2>&1; then
-    rg_version=$(rg --version 2>/dev/null | head -1 | awk '{print $2}') || rg_version="(version unknown)"
-    log_success "ripgrep ${rg_version} found"
+    if [ "$VERBOSE" = "1" ]; then
+      echo ""
+      log_info "Checking optional tools..."
+      rg_version=$(rg --version 2>/dev/null | head -1 | awk '{print $2}') || rg_version="(version unknown)"
+      log_success "ripgrep ${rg_version} found"
+    fi
   else
+    echo ""
     log_warn "ripgrep not found — recommended for faster file search."
 
     installed=false
@@ -566,12 +594,17 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done
+# Done — footer wording depends on whether anything changed:
+#   - already up to date  → "Already installed"
+#   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
+if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
+  footer_msg="Already installed."
+else
+  footer_msg="Setup complete."
+fi
 echo ""
 # shellcheck disable=SC2059
-printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}dcode${NC}\n"
-echo ""
-echo "For help and support, see the docs:"
-echo ""
-echo "  https://docs.langchain.com/deepagents-code"
+printf "${GREEN}✔${NC} %s Run: ${BOLD}dcode${NC}\n" "$footer_msg"
+echo "  Docs: https://docs.langchain.com/deepagents-code"

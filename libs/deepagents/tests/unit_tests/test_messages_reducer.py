@@ -14,16 +14,18 @@ from typing_extensions import TypedDict
 from deepagents._messages_reducer import _messages_delta_reducer
 
 
-def test_idless_message_gets_id_and_order_preserved() -> None:
+def test_idless_message_is_appended_and_order_preserved() -> None:
+    """The reducer appends id=None messages as-is; ID assignment is handled
+    upstream by LangGraph's ensure_message_ids before the write is serialised."""
     existing = [AIMessage(content="hello", id="existing-1")]
-    new_msg = HumanMessage(content="follow-up")  # no id
+    new_msg = HumanMessage(content="follow-up")  # no id — not assigned by reducer
 
     result = _messages_delta_reducer(existing, [[new_msg]])
 
     assert len(result) == 2
     assert result[0].id == "existing-1"
     assert result[1] is new_msg
-    assert result[1].id is not None
+    assert result[1].id is None  # reducer no longer assigns IDs
 
 
 # ---------------------------------------------------------------------------

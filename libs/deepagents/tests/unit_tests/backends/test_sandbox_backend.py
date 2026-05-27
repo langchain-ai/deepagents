@@ -775,6 +775,16 @@ def test_sandbox_grep_quotes_include_glob() -> None:
 # -- grep error propagation tests --------------------------------------------
 
 
+def _stub_execute(sandbox: MockSandbox, output: str, exit_code: int) -> None:
+    """Replace `sandbox.execute` with a stub returning a fixed `ExecuteResponse`."""
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+
 def test_sandbox_grep_returns_error_on_backend_exec_failure() -> None:
     """Test that grep surfaces a backend exec failure as `GrepResult.error`.
 
@@ -787,16 +797,11 @@ def test_sandbox_grep_returns_error_on_backend_exec_failure() -> None:
     `ValueError: invalid literal for int() with base 10: ' exec failed'`.
     """
     sandbox = MockSandbox()
-
-    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
-        sandbox.last_command = command
-        return ExecuteResponse(
-            output="OCI runtime exec failed: container not found: exec failed",
-            exit_code=126,
-            truncated=False,
-        )
-
-    sandbox.execute = mock_execute  # type: ignore[assignment]
+    _stub_execute(
+        sandbox,
+        output="OCI runtime exec failed: container not found: exec failed",
+        exit_code=126,
+    )
 
     result = sandbox.grep("TODO", path="/does-not-exist")
 
@@ -809,18 +814,25 @@ def test_sandbox_grep_returns_error_on_backend_exec_failure() -> None:
 def test_sandbox_grep_error_includes_exit_code_when_output_empty() -> None:
     """Test that grep falls back to the exit code when backend output is empty."""
     sandbox = MockSandbox()
-
-    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
-        sandbox.last_command = command
-        return ExecuteResponse(output="", exit_code=137, truncated=False)
-
-    sandbox.execute = mock_execute  # type: ignore[assignment]
+    _stub_execute(sandbox, output="", exit_code=137)
 
     result = sandbox.grep("TODO", path="/somewhere")
 
     assert result.matches is None
     assert result.error is not None
     assert "exit code 137" in result.error
+
+
+def test_sandbox_grep_error_uses_dot_when_path_omitted() -> None:
+    """Test that the error prefix falls back to `'.'` when `path` is not supplied."""
+    sandbox = MockSandbox()
+    _stub_execute(sandbox, output="boom", exit_code=126)
+
+    result = sandbox.grep("TODO")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "Path '.':" in result.error
 
 
 def test_sandbox_grep_returns_error_on_unparseable_match_line() -> None:
@@ -830,16 +842,11 @@ def test_sandbox_grep_returns_error_on_unparseable_match_line() -> None:
     but leaks error text into stdout, we refuse to fabricate matches.
     """
     sandbox = MockSandbox()
-
-    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
-        sandbox.last_command = command
-        return ExecuteResponse(
-            output="OCI runtime exec failed: container not found: exec failed",
-            exit_code=0,
-            truncated=False,
-        )
-
-    sandbox.execute = mock_execute  # type: ignore[assignment]
+    _stub_execute(
+        sandbox,
+        output="OCI runtime exec failed: container not found: exec failed",
+        exit_code=0,
+    )
 
     result = sandbox.grep("TODO", path="/test")
 
@@ -848,19 +855,60 @@ def test_sandbox_grep_returns_error_on_unparseable_match_line() -> None:
     assert "unexpected backend output" in result.error
 
 
+def test_sandbox_grep_returns_error_on_bare_non_colon_line() -> None:
+    """Test that a success-coded line with no colons is rejected, not silently dropped."""
+    sandbox = MockSandbox()
+    _stub_execute(sandbox, output="weird-backend-banner-no-colons", exit_code=0)
+
+    result = sandbox.grep("TODO", path="/test")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected backend output" in result.error
+
+
+def test_sandbox_grep_discards_partial_matches_on_malformed_line() -> None:
+    """Test that a malformed line after valid matches drops the partial results.
+
+    Mirrors `glob()`'s policy: a clean error beats ambiguous partial output.
+    """
+    sandbox = MockSandbox()
+    _stub_execute(
+        sandbox,
+        output="/test/a.py:1:hit one\nOCI runtime exec failed: exec failed",
+        exit_code=0,
+    )
+
+    result = sandbox.grep("hit", path="/test")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected backend output" in result.error
+
+
+def test_sandbox_grep_truncates_long_unparseable_line() -> None:
+    """Test that the unparseable-line error caps the offending line at 200 chars."""
+    sandbox = MockSandbox()
+    long_garbage = "x" * 1024
+    _stub_execute(sandbox, output=long_garbage, exit_code=0)
+
+    result = sandbox.grep("TODO", path="/test")
+
+    assert result.matches is None
+    assert result.error is not None
+    # Prefix ("Path '/test': unexpected backend output: ") plus a 200-char slice
+    # leaves the whole message well under 300 chars; pin that bound.
+    assert len(result.error) < 300
+
+
 def test_sandbox_grep_success_path_unaffected() -> None:
     """Test that grep still returns matches normally when the backend behaves."""
     sandbox = MockSandbox()
-
-    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
-        sandbox.last_command = command
-        return ExecuteResponse(
-            output="/test/a.py:1:hit one\n/test/b.py:42:hit two",
-            exit_code=0,
-            truncated=False,
-        )
-
-    sandbox.execute = mock_execute  # type: ignore[assignment]
+    _stub_execute(
+        sandbox,
+        output="/test/a.py:1:hit one\n/test/b.py:42:hit two",
+        exit_code=0,
+    )
 
     result = sandbox.grep("hit", path="/test")
 
@@ -874,12 +922,7 @@ def test_sandbox_grep_success_path_unaffected() -> None:
 def test_sandbox_grep_empty_output_returns_empty_matches() -> None:
     """Test that grep returns an empty match list when there are genuinely no matches."""
     sandbox = MockSandbox()
-
-    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
-        sandbox.last_command = command
-        return ExecuteResponse(output="", exit_code=0, truncated=False)
-
-    sandbox.execute = mock_execute  # type: ignore[assignment]
+    _stub_execute(sandbox, output="", exit_code=0)
 
     result = sandbox.grep("needle", path="/test")
 

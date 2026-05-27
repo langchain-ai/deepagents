@@ -794,8 +794,7 @@ except PermissionError:
         # `|| true` forces a 0 exit when the shell ran, so a non-zero code
         # here means the backend itself failed (e.g., container exec error
         # before the shell ever started). Surface that as an error instead
-        # of trying to parse backend-emitted text as grep output. Mirrors
-        # the error-surfacing convention used by ls/read/edit/glob.
+        # of trying to parse backend-emitted text as grep output.
         if result.exit_code != 0:
             detail = result.output.strip() or f"exit code {result.exit_code}"
             return GrepResult(error=f"Path '{path or '.'}': {detail}")
@@ -804,17 +803,17 @@ except PermissionError:
         if not output:
             return GrepResult(matches=[])
 
-        # Parse grep output into GrepMatch objects. A line whose
-        # second `:`-field is not an integer indicates malformed input
+        # Parse grep output into GrepMatch objects. Any line that doesn't
+        # fit the `path:line_number:text` shape indicates malformed input
         # (typically backend-leaked error text that escaped the exit-code
-        # check above) — abort with an error rather than silently dropping
-        # the line, which could mask the failure.
+        # check above) — abort with an error and discard any partial
+        # matches, matching `glob()`'s policy of preferring a clean error
+        # over ambiguous partial results.
         matches: list[GrepMatch] = []
         for line in output.split("\n"):
-            # Format is: path:line_number:text
             parts = line.split(":", 2)
-            if len(parts) < 3:  # noqa: PLR2004  # Grep output field count
-                continue
+            if len(parts) < 3:  # noqa: PLR2004  # path:line:text → 3 fields
+                return GrepResult(error=f"Path '{path or '.'}': unexpected backend output: {line[:200]}")
             try:
                 line_number = int(parts[1])
             except ValueError:

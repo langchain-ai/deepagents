@@ -290,10 +290,20 @@ def verify_interpreter_deps() -> None:
         found = False
 
     if not found:
-        msg = (
-            "Missing dependencies for --interpreter. "
-            "Install with: dcode --install quickjs"
-        )
+        from deepagents_code.config import _is_editable_install
+
+        if _is_editable_install():
+            from deepagents_code.update_check import editable_extra_hint
+
+            msg = (
+                "Missing dependencies for --interpreter. Editable install "
+                f"detected — {editable_extra_hint('quickjs')}"
+            )
+        else:
+            msg = (
+                "Missing dependencies for --interpreter. "
+                "Install with: dcode --install quickjs"
+            )
         raise ImportError(msg)
 
 

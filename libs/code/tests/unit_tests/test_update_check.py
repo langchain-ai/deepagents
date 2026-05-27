@@ -21,6 +21,7 @@ from deepagents_code.update_check import (
     clear_update_notified,
     create_update_log_path,
     detect_install_method,
+    editable_extra_hint,
     format_age_suffix,
     format_installed_age_suffix,
     format_release_age,
@@ -906,6 +907,21 @@ class TestInstallExtraCommand:
             install_extra_command("quickjs']; touch /tmp/pwned; '")
 
 
+class TestEditableExtraHint:
+    """`editable_extra_hint` is the shared editable-install action hint."""
+
+    def test_contains_uv_command_and_bracketed_extra(self) -> None:
+        hint = editable_extra_hint("quickjs")
+        assert "uv tool install --editable" in hint
+        assert "--with 'deepagents-code[quickjs]'" in hint
+
+    def test_extra_is_interpolated_into_brackets(self) -> None:
+        # The bracket fragment is load-bearing — Rich-markup call sites
+        # must `escape()` this output, so the bracketed extra must always
+        # be present in the hint (callers rely on this contract).
+        assert "[fireworks]" in editable_extra_hint("fireworks")
+
+
 class TestInstallPackageCommand:
     """`install_package_command` builds a uv tool package install string."""
 
@@ -938,7 +954,8 @@ class TestPerformInstallExtra:
             success, output = await perform_install_extra("quickjs")
         assert success is False
         assert "Editable install" in output
-        assert "uv sync --extra quickjs" in output
+        assert "uv tool install --editable" in output
+        assert "--with 'deepagents-code[quickjs]'" in output
 
     async def test_brew_install_refuses(self) -> None:
         """Homebrew formula doesn't expose extras."""

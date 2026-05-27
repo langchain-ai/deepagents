@@ -1988,6 +1988,7 @@ def cli_main() -> None:
             from deepagents_code.extras_info import KNOWN_EXTRAS
             from deepagents_code.update_check import (
                 create_update_log_path,
+                editable_extra_hint,
                 install_extra_command,
                 is_valid_extra_name,
                 perform_install_extra,
@@ -2011,9 +2012,9 @@ def cli_main() -> None:
                 if _is_editable_install():
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] "
-                        "--install is not supported on editable installs. "
-                        f"Run [cyan]uv sync --extra {extra}[/cyan] from the "
-                        "deepagents-code source directory instead."
+                        "--install is not supported on editable installs.\n"
+                        + escape(editable_extra_hint(extra)),
+                        highlight=False,
                     )
                     sys.exit(1)
 

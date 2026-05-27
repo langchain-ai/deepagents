@@ -34,6 +34,17 @@ def test_from_env_prefers_langsmith_key(monkeypatch: pytest.MonkeyPatch) -> None
     assert client.api_key == "lsv2_pt_a"
 
 
+def test_client_ignores_environment_proxy_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.example.invalid")
+    client = ApiClient.from_env(
+        transport=_transport(lambda _request: httpx.Response(200, json={}))
+    )
+    assert client._client.trust_env is False
+
+
 def test_endpoint_resolution_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://eu.example.invalid/")

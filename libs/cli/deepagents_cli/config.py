@@ -8,7 +8,20 @@ import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-_ENDPOINT_ENV_KEYS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+_PROJECT_DOTENV_BLOCKED_ENV_KEYS = (
+    "LANGSMITH_ENDPOINT",
+    "LANGCHAIN_ENDPOINT",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
 
 
 def _stderr(msg: str) -> None:
@@ -42,11 +55,11 @@ def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     return None
 
 
-def _snapshot_endpoint_env() -> dict[str, str | None]:
-    return {key: os.environ.get(key) for key in _ENDPOINT_ENV_KEYS}
+def _snapshot_blocked_project_env() -> dict[str, str | None]:
+    return {key: os.environ.get(key) for key in _PROJECT_DOTENV_BLOCKED_ENV_KEYS}
 
 
-def _restore_endpoint_env(snapshot: dict[str, str | None]) -> None:
+def _restore_env(snapshot: dict[str, str | None]) -> None:
     for key, value in snapshot.items():
         if value is None:
             os.environ.pop(key, None)
@@ -54,14 +67,15 @@ def _restore_endpoint_env(snapshot: dict[str, str | None]) -> None:
             os.environ[key] = value
 
 
-def _warn_if_project_endpoint_changed(snapshot: dict[str, str | None]) -> None:
+def _warn_if_project_blocked_env_changed(snapshot: dict[str, str | None]) -> None:
     changed = [key for key, value in snapshot.items() if os.environ.get(key) != value]
     if not changed:
         return
     keys = ", ".join(sorted(changed))
     _stderr(
         f"ignoring {keys} from project .env. Set endpoint overrides in your "
-        "shell environment or ~/.deepagents/.env.",
+        "shell environment or ~/.deepagents/.env; proxy/TLS settings are "
+        "ignored for managed API requests.",
     )
 
 
@@ -117,12 +131,12 @@ def _load_dotenv(*, start_path: Path) -> bool:
 
     dotenv_path = _find_dotenv_from_start_path(start_path)
     if dotenv_path is not None:
-        endpoint_env = _snapshot_endpoint_env()
+        blocked_env = _snapshot_blocked_project_env()
         try:
             loaded = (
                 dotenv.load_dotenv(dotenv_path=dotenv_path, override=False) or loaded
             )
-            _warn_if_project_endpoint_changed(endpoint_env)
+            _warn_if_project_blocked_env_changed(blocked_env)
         except (OSError, ValueError) as exc:
             _stderr(
                 f"could not read project .env at {dotenv_path}: {exc}. "
@@ -135,7 +149,7 @@ def _load_dotenv(*, start_path: Path) -> bool:
                 exc_info=True,
             )
         finally:
-            _restore_endpoint_env(endpoint_env)
+            _restore_env(blocked_env)
 
     try:
         if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(

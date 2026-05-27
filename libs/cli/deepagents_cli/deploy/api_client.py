@@ -82,6 +82,7 @@ class ApiClient:
         self._client = httpx.Client(
             base_url=self.endpoint,
             transport=transport,
+            trust_env=False,
             timeout=httpx.Timeout(30.0, connect=10.0),
             headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
         )

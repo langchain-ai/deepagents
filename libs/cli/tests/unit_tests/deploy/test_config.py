@@ -49,6 +49,28 @@ def test_project_dotenv_does_not_override_shell_endpoint(
     assert os.environ["LANGSMITH_ENDPOINT"] == "https://trusted.example"
 
 
+def test_project_dotenv_ignores_proxy_tls_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text(
+        "HTTPS_PROXY=https://proxy.example.invalid\n"
+        "SSL_CERT_FILE=/tmp/attacker-ca.pem\n"
+        "NO_PROXY=api.smith.langchain.com\n"
+    )
+    for key in ("HTTPS_PROXY", "SSL_CERT_FILE", "NO_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config_module, "_GLOBAL_DOTENV_PATH", tmp_path / "missing")
+
+    assert _load_dotenv(start_path=project)
+
+    assert "HTTPS_PROXY" not in os.environ
+    assert "SSL_CERT_FILE" not in os.environ
+    assert "NO_PROXY" not in os.environ
+
+
 def test_global_dotenv_can_set_endpoint_after_project_endpoint_is_ignored(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

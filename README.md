@@ -67,7 +67,7 @@ The agent can plan, read/write files, and manage its own context. Add your own t
 > For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
 
 > [!NOTE]
-> **Deep Agents Code** — a pre-built coding agent in your terminal, similar to Claude Code or Cursor, powered by any LLM. Install with `curl -LsSf https://langch.in/dcode | bash`. See the [documentation](https://docs.langchain.com/oss/python/deepagents/code/overview) for the full feature set.
+> **Deep Agents Code** — a pre-built coding agent in your terminal, similar to Claude Code or Cursor, powered by any LLM. Install with `curl -LsSf https://langch.in/dcode | bash`. See the [documentation](https://docs.langchain.com/deepagents-code) for the full feature set.
 
 ## FAQ
 
@@ -85,7 +85,7 @@ Yes! Deep Agents is built on LangGraph, designed for production agent deployment
 
 ### When should I use Deep Agents vs. LangChain or LangGraph directly?
 
-All three are layers in the same stack. Use **Deep Agents** when you want the full harness — planning, context management, delegation — out of the box. Use [**LangChain's `create_agent`**](https://docs.langchain.com/oss/python/langchain/agents) when you want a lighter harness without the bundled middleware. Drop to [**LangGraph**](https://docs.langchain.com/oss/python/langgraph/overview) when the agent loop itself isn't the right shape and you need a custom graph.
+All three are layers in the same stack — see the [LangChain ecosystem overview](https://docs.langchain.com/oss/python/concepts/products) for how they relate. Use **Deep Agents** when you want the full harness — planning, context management, delegation — out of the box. Use [**LangChain's `create_agent`**](https://docs.langchain.com/oss/python/langchain/agents) when you want a lighter harness without the bundled middleware. Drop to [**LangGraph**](https://docs.langchain.com/oss/python/langgraph/overview) when the agent loop itself isn't the right shape and you need a custom graph.
 
 The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub-agent to a Deep Agent, so custom orchestration plugs in alongside the harness's defaults.
 
@@ -95,6 +95,7 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 
 - [Examples](examples/) — working agents and patterns
 - [Documentation](https://docs.langchain.com/oss/python/deepagents/overview) — conceptual overviews and guides
+- [LangChain ecosystem overview](https://docs.langchain.com/oss/python/concepts/products) — how Deep Agents, LangChain, LangGraph, and LangSmith fit together
 - [API reference](https://reference.langchain.com/python/deepagents/) — complete reference for all public classes, functions, and types
 - [Discussions](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18) — community forum for technical questions, ideas, and feedback
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) — how to contribute and find good first issues

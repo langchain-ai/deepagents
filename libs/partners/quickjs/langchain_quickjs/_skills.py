@@ -1,14 +1,14 @@
 """Skill module loader for the REPL.
 
-Turns a skill's ``SkillMetadata`` (parsed by ``SkillsMiddleware``) plus a
-``BackendProtocol`` into a ``ModuleScope`` installable on a QuickJS
-context under the bare specifier ``@/skills/<name>``. The guest can
-then ``await import("@/skills/<name>")`` to pull the skill's entrypoint
+Turns a skill's `SkillMetadata` (parsed by `SkillsMiddleware`) plus a
+`BackendProtocol` into a `ModuleScope` installable on a QuickJS
+context under the bare specifier `@/skills/<name>`. The guest can
+then `await import("@/skills/<name>")` to pull the skill's entrypoint
 exports.
 
 This module is the enumeration + scope-build half; the install-cache
-and the pre-eval specifier scan live on ``_ThreadREPL`` in
-``_repl.py`` so they share the Context / Runtime locks.
+and the pre-eval specifier scan live on `_ThreadREPL` in
+`_repl.py` so they share the Context / Runtime locks.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class InvalidSkillScopeError(SkillLoadError):
     """Skill directory contains nothing installable.
 
     Either no module-extension files were found, or the frontmatter
-    ``module`` path doesn't match any of them.
+    `module` path doesn't match any of them.
     """
 
 
@@ -81,10 +81,10 @@ class LoadedSkill:
     Attributes:
         name: Spec-validated skill name (kebab-case).
         specifier: The bare specifier we install under. Always
-            ``"@/skills/<name>"``.
-        scope: A ``ModuleScope`` carrying every code file from the
+            `"@/skills/<name>"`.
+        scope: A `ModuleScope` carrying every code file from the
             skill directory, with the entrypoint renamed to
-            ``index.<ext>`` if the author picked a different name.
+            `index.<ext>` if the author picked a different name.
     """
 
     name: str
@@ -107,9 +107,9 @@ def _skill_specifier(name: str) -> str:
 
 
 def _skill_dir_from_metadata(metadata: SkillMetadata) -> str:
-    """Extract the skill directory from a ``SkillMetadata``.
+    """Extract the skill directory from a `SkillMetadata`.
 
-    ``path`` is the SKILL.md path; the skill dir is its parent.
+    `path` is the SKILL.md path; the skill dir is its parent.
     """
     return str(PurePosixPath(metadata["path"]).parent)
 
@@ -118,11 +118,11 @@ def _enumerate_code_files(
     backend: BackendProtocol,
     skill_dir: str,
 ) -> list[str]:
-    """List every code-extension file under ``skill_dir`` (recursive).
+    """List every code-extension file under `skill_dir` (recursive).
 
-    Makes one ``glob`` call per extension. We'd prefer one call with a
+    Makes one `glob` call per extension. We'd prefer one call with a
     brace-expansion pattern, but the backend protocol doesn't require
-    brace support and ``FilesystemBackend.glob`` uses ``pathlib.rglob``
+    brace support and `FilesystemBackend.glob` uses `pathlib.rglob`
     which doesn't expand them. Per-extension calls sidestep that cross-
     backend inconsistency. Paths are deduped (a single file can only
     match one extension) and sorted for determinism so the model's
@@ -216,7 +216,7 @@ def _build_scope_modules(
     file_pairs: list[tuple[str, bytes]],
     skill_name: str,
 ) -> dict[str, str | ModuleScope]:
-    """Build the ``ModuleScope`` contents dict for one skill.
+    """Build the `ModuleScope` contents dict for one skill.
 
     The dict has only `str` entries — no nested subscopes. That's the
     isolation guarantee from the spec: a skill scope can see only its
@@ -230,6 +230,14 @@ def _build_scope_modules(
     installed_index = _pick_installed_index_name(entry_rel)
     entry_installed = False
 
+    # When the entrypoint lives in a subdirectory (e.g. "scripts/index.ts"),
+    # it gets flattened to root-level "index.<ext>" for quickjs-rs bare-
+    # specifier resolution.  All sibling files must be relocated the same
+    # way so that relative imports (e.g. `import "./table.js"` from the
+    # now-root-level index) still resolve.
+    entry_parent = str(PurePosixPath(entry_rel).parent)
+    strip_prefix = entry_parent + "/" if entry_parent != "." else ""
+
     for abs_path, raw in file_pairs:
         rel = _relative(skill_dir, abs_path)
         try:
@@ -239,19 +247,20 @@ def _build_scope_modules(
             raise SkillInstallError(msg) from exc
 
         if rel == entry_rel:
-            # Always install the entrypoint under the canonical
-            # `index.<ext>` key. If the author already named it
-            # `index.<ext>` at the root, this is a no-op rename.
             files[installed_index] = source
             entry_installed = True
-            # Also expose the file at its original key so relative
-            # imports (e.g. `import "./index.ts"` from inside a sub-
-            # directory) still resolve. Skipped when entry_rel already
-            # equals installed_index.
             if rel != installed_index:
                 files[rel] = source
         else:
-            files[rel] = source
+            relocated = rel.removeprefix(strip_prefix) if strip_prefix else rel
+            if relocated.startswith(("/", "../")) or "/../" in relocated:
+                msg = (
+                    f"skill {skill_name!r}: relocated path {relocated!r} escapes scope"
+                )
+                raise SkillInstallError(msg)
+            files[relocated] = source
+            if relocated != rel:
+                files[rel] = source
 
     if not entry_installed:
         msg = (
@@ -259,34 +268,73 @@ def _build_scope_modules(
             "did not match any file in the skill directory"
         )
         raise InvalidSkillScopeError(msg)
+
+    _rewrite_js_imports_to_ts(files)
     return files
 
 
-def _require_module_path(metadata: SkillMetadata) -> str:
-    entry_rel = metadata.get("module")
-    if not entry_rel:
-        msg = (
-            f"skill {metadata['name']!r} has no `module` frontmatter key; "
-            "only skills with a declared entrypoint are installable"
-        )
-        raise InvalidSkillScopeError(msg)
-    return entry_rel
+# Matches relative import specifiers ending in .js:
+#   from "./table.js"  /  from '../lib/utils.js'  /  import("./foo.js")
+_JS_IMPORT_RE = re.compile(
+    r"""((?:from\s+|import\s*\()\s*["'])(\.\.?/[^"']*?)\.js(["'])"""
+)
+
+
+def _rewrite_js_imports_to_ts(files: dict[str, str | ModuleScope]) -> None:
+    """Rewrite `.js` import specifiers to `.ts` when only the `.ts` key exists.
+
+    TypeScript convention uses `.js` extensions in import specifiers even
+    when the source files are `.ts`. Quickjs-rs does exact key matching,
+    so `import "./table.js"` won't find `table.ts`. This rewrites
+    specifiers in-place for cases where the `.js` key is missing but the
+    `.ts` key is present.
+    """
+    all_keys = set(files)
+
+    for key in list(files):
+        source = files[key]
+        if not isinstance(source, str):
+            continue
+
+        def _replace(
+            m: re.Match[str], _dir: str = str(PurePosixPath(key).parent)
+        ) -> str:
+            prefix, rel_stem, suffix = m.group(1), m.group(2), m.group(3)
+            if _dir == ".":
+                resolved = rel_stem.lstrip("./") + ".js"
+            else:
+                resolved = str(PurePosixPath(_dir) / (rel_stem + ".js"))
+            ts_resolved = resolved[:-3] + ".ts"
+            if resolved not in all_keys and ts_resolved in all_keys:
+                return f"{prefix}{rel_stem}.ts{suffix}"
+            return m.group(0)
+
+        new_source = _JS_IMPORT_RE.sub(_replace, source)
+        if new_source is not source:
+            files[key] = new_source
 
 
 def load_skill(
     metadata: SkillMetadata,
     backend: BackendProtocol,
 ) -> LoadedSkill:
-    """Load one skill into a ``LoadedSkill``.
+    """Load one skill into a `LoadedSkill`.
 
     Raises:
-        InvalidSkillScopeError: Metadata has no `module` key, or the
+        InvalidSkillScopeError: Metadata has no `entrypoint`, or the
             entrypoint doesn't match any file in the skill directory.
         SkillInstallError: Backend fetch failed, content was
             non-UTF-8, or the bundle exceeded the size cap.
     """
     name = metadata["name"]
-    entry_rel = _require_module_path(metadata)
+    entry_rel = metadata.get("metadata", {}).get("entrypoint")
+    if not entry_rel:
+        msg = (
+            f"skill {name!r} has no `entrypoint` in metadata; "
+            "only skills with a declared entrypoint are installable"
+        )
+        raise InvalidSkillScopeError(msg)
+    entry_rel = str(entry_rel)
     specifier = _skill_specifier(name)
     skill_dir = _skill_dir_from_metadata(metadata)
 
@@ -314,7 +362,14 @@ async def aload_skill(
 ) -> LoadedSkill:
     """Async sibling of :func:`load_skill`."""
     name = metadata["name"]
-    entry_rel = _require_module_path(metadata)
+    entry_rel = metadata.get("metadata", {}).get("entrypoint")
+    if not entry_rel:
+        msg = (
+            f"skill {name!r} has no `entrypoint` in metadata; "
+            "only skills with a declared entrypoint are installable"
+        )
+        raise InvalidSkillScopeError(msg)
+    entry_rel = str(entry_rel)
     specifier = _skill_specifier(name)
     skill_dir = _skill_dir_from_metadata(metadata)
 
@@ -351,9 +406,9 @@ _SKILL_SPECIFIER_RE = re.compile(
 def scan_skill_references(source: str) -> frozenset[str]:
     """Return the set of skill names the source imports from.
 
-    Extracts every literal ``"@/skills/<name>"`` specifier the source
+    Extracts every literal `"@/skills/<name>"` specifier the source
     contains. The caller is responsible for rejecting unknown names
-    with a ``SkillNotAvailable``-style error — this is a scan, not a
+    with a `SkillNotAvailable`-style error — this is a scan, not a
     validator.
 
     A returned name is not proof the skill exists or installs cleanly.

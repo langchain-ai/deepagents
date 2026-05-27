@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.3...deepagents==0.6.4) (2026-05-26)
+
+### Bug Fixes
+
+* Grep crashing when files vanish mid-walk ([#3592](https://github.com/langchain-ai/deepagents/issues/3592)) ([0b8301b](https://github.com/langchain-ai/deepagents/commit/0b8301b2067f7dbbc83ebcf05c52e91413260fd1))
+* Stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
+
 ## [0.6.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.2...deepagents==0.6.3) (2026-05-20)
 
 ### Bug Fixes

@@ -1311,6 +1311,15 @@ class DeepAgentsApp(App):
         )
         """MCP servers that failed to load (config or network error)."""
 
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (mcp_server_info or []) if s.status == "awaiting_reconnect"
+        )
+        """MCP servers that completed OAuth login but are blocked on
+        `/mcp reconnect` before their tools can load.
+
+        See `MCPServerStatus` for the underlying state machine.
+        """
+
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
@@ -1734,6 +1743,7 @@ class DeepAgentsApp(App):
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -2514,6 +2524,9 @@ class DeepAgentsApp(App):
         self._mcp_errored = sum(
             1 for s in (event.mcp_server_info or []) if s.status == "error"
         )
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "awaiting_reconnect"
+        )
 
         # Update welcome banner to show ready state
         try:
@@ -2522,6 +2535,7 @@ class DeepAgentsApp(App):
                 self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
@@ -7721,6 +7735,7 @@ class DeepAgentsApp(App):
                         self._mcp_tool_count,
                         mcp_unauthenticated=self._mcp_unauthenticated,
                         mcp_errored=self._mcp_errored,
+                        mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
                 except NoMatches:
                     pass
@@ -8504,7 +8519,22 @@ class DeepAgentsApp(App):
             self._mcp_tool_count,
             mcp_unauthenticated=self._mcp_unauthenticated,
             mcp_errored=self._mcp_errored,
+            mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
         )
+
+    def _clear_mcp_login_reconnect_banner_counts(self, server_name: str) -> None:
+        """Optimistically clear splash login/reconnect prompts before restart.
+
+        Args:
+            server_name: Server whose successful login triggered the reconnect.
+        """
+        self._mcp_unauthenticated = sum(
+            1
+            for s in self._mcp_server_info or []
+            if s.name != server_name and s.needs_attention()
+        )
+        self._mcp_awaiting_reconnect = 0
+        self._refresh_welcome_banner_mcp_counts()
 
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
@@ -8794,6 +8824,9 @@ class DeepAgentsApp(App):
             1 for s in self._mcp_server_info if s.needs_attention()
         )
         self._mcp_errored = sum(1 for s in self._mcp_server_info if s.status == "error")
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in self._mcp_server_info if s.status == "awaiting_reconnect"
+        )
         if not matched:
             logger.warning(
                 "MCP login completed for unknown server %r; pending state unchanged",
@@ -9072,6 +9105,7 @@ class DeepAgentsApp(App):
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
+            self._clear_mcp_login_reconnect_banner_counts(server_name)
             await self._restart_server_for_mcp_refresh(server_name)
             return
 

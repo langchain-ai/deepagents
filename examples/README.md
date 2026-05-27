@@ -35,7 +35,7 @@ curl -LsSf https://langch.in/dcode | bash
 
 An open-source, async coding agent for your org's internal workflows. Runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end.
 
-```bash
+```text
 @open-swe fix this user-reported bug plz!
 ```
 

@@ -26,6 +26,13 @@ from deepagents import create_deep_agent
 from deepagents.middleware.outcomes import RubricMiddleware
 from langchain_core.tools import tool
 
+from tests.evals.utils import (
+    AgentTrajectory,
+    SuccessAssertion,
+    TrajectoryScorer,
+    run_agent,
+)
+
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
@@ -39,12 +46,6 @@ def count_words(text: str) -> int:
     """
     return len(text.split())
 
-from tests.evals.utils import (
-    AgentTrajectory,
-    SuccessAssertion,
-    TrajectoryScorer,
-    run_agent,
-)
 
 pytestmark = [pytest.mark.eval_category("conversation")]
 
@@ -68,9 +69,7 @@ def _sentences(text: str) -> list[str]:
     """Split into sentences and drop empty fragments + wrapper chars."""
     return [
         cleaned
-        for cleaned in (
-            s.strip().strip(_WRAPPER_CHARS) for s in _SENTENCE_SPLIT_RE.split(text)
-        )
+        for cleaned in (s.strip().strip(_WRAPPER_CHARS) for s in _SENTENCE_SPLIT_RE.split(text))
         if cleaned
     ]
 
@@ -145,8 +144,7 @@ class ExactWordCountAndZStarts(SuccessAssertion):
 TARGET_WORDS = 72
 
 _QUERY = (
-    "Write a story about a bear that's 72 words and has every sentence "
-    "starting with the letter Z."
+    "Write a story about a bear that's 72 words and has every sentence starting with the letter Z."
 )
 
 _RUBRIC = """The story must be 72 words and every sentence must start with the letter Z"""
@@ -181,7 +179,5 @@ def test_exact_word_count_and_z_starts(model: BaseChatModel) -> None:
         model=model,
         query=_QUERY,
         extra_state={"rubric": _RUBRIC},
-        scorer=TrajectoryScorer().success(
-            ExactWordCountAndZStarts(target_words=TARGET_WORDS)
-        ),
+        scorer=TrajectoryScorer().success(ExactWordCountAndZStarts(target_words=TARGET_WORDS)),
     )

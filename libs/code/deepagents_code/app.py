@@ -1302,7 +1302,7 @@ class DeepAgentsApp(App):
         """Total tool count across MCP servers, displayed in the status bar."""
 
         self._mcp_unauthenticated = sum(
-            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (mcp_server_info or []) if s.needs_attention()
         )
         """MCP servers awaiting a `dcode mcp login` run."""
 
@@ -1310,6 +1310,15 @@ class DeepAgentsApp(App):
             1 for s in (mcp_server_info or []) if s.status == "error"
         )
         """MCP servers that failed to load (config or network error)."""
+
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (mcp_server_info or []) if s.status == "awaiting_reconnect"
+        )
+        """MCP servers that completed OAuth login but are blocked on
+        `/mcp reconnect` before their tools can load.
+
+        See `MCPServerStatus` for the underlying state machine.
+        """
 
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
@@ -1478,7 +1487,7 @@ class DeepAgentsApp(App):
         """The exception itself when startup failed with
         `MissingProviderPackageError`; `None` otherwise. Stashing the exception
         rather than a tuple gives the hint builder named access to `.provider`
-        and `.package`, and gates the `pip install` / `/model` recovery hint
+        and `.package`, and gates the `/install` / `/model` recovery hint
         without string-matching on the formatted error.
         """
 
@@ -1734,6 +1743,7 @@ class DeepAgentsApp(App):
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -2509,10 +2519,13 @@ class DeepAgentsApp(App):
             task.add_done_callback(_log_task_exception)
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
         self._mcp_unauthenticated = sum(
-            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (event.mcp_server_info or []) if s.needs_attention()
         )
         self._mcp_errored = sum(
             1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "awaiting_reconnect"
         )
 
         # Update welcome banner to show ready state
@@ -2522,6 +2535,7 @@ class DeepAgentsApp(App):
                 self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
@@ -2653,12 +2667,29 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             missing = self._server_startup_missing_provider_package
-            text += (
-                f"\n\nHint: install the package with "
-                f"`pip install {missing.package}`, then run "
-                f"`/model {missing.provider}:<model>` to retry. "
-                f"Or pick a different provider with `/model`."
-            )
+            from deepagents_code.extras_info import extra_for_package
+
+            extra = extra_for_package(missing.package)
+            if extra is not None:
+                text += (
+                    f"\n\nHint: install the package with `/install {extra}`, "
+                    f"then run `/model {missing.provider}:<model>` to retry. "
+                    "Or pick a different provider with `/model`."
+                )
+            else:
+                from deepagents_code.update_check import install_package_command
+
+                try:
+                    install_cmd = install_package_command(missing.package)
+                except ValueError:
+                    install_hint = f"install the `{missing.package}` package manually"
+                else:
+                    install_hint = f"run `{install_cmd}`"
+                text += (
+                    f"\n\nHint: {install_hint}, then run "
+                    f"`/model {missing.provider}:<model>` "
+                    "to retry. Or pick a different provider with `/model`."
+                )
 
         async def _mount_failure() -> None:
             # Drop any prior failure widget (re-entrant on retry-then-fail).
@@ -3122,6 +3153,136 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}"),
             )
 
+    async def _handle_install_command(self, command: str) -> None:
+        """Handle the `/install <extra>` slash command.
+
+        Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
+        dcode tool by re-running `uv tool install -U 'deepagents-code[<extra>]'`.
+        Refuses unknown extras unless the user passes a `--force` token.
+
+        Args:
+            command: The full slash command line (e.g. `'/install quickjs'`
+                or `'/install foo --force'`).
+        """
+        parts = command.split()
+        force = "--force" in parts[1:]
+        extras = [p for p in parts[1:] if not p.startswith("-")]
+        if not extras:
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /install <extra> [--force]\nExample: /install quickjs",
+                ),
+            )
+            return
+        if len(extras) > 1:
+            await self._mount_message(
+                AppMessage(
+                    "Only one extra may be installed per /install command. "
+                    f"Got: {', '.join(extras)}",
+                ),
+            )
+            return
+        extra = extras[0].lower()
+        await self._mount_message(UserMessage(command))
+
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import (
+                KNOWN_EXTRAS,
+                MODEL_PROVIDER_EXTRAS,
+                SANDBOX_EXTRAS,
+            )
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_extra_hint,
+                install_extra_command,
+                is_valid_extra_name,
+                perform_install_extra,
+            )
+        except ImportError as exc:
+            logger.warning("/install command import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if not is_valid_extra_name(extra):
+            await self._mount_message(
+                AppMessage(
+                    "Invalid extra name. Extra names must be "
+                    "alphanumeric with `-`, `_`, or `.` (PEP 508).",
+                ),
+            )
+            return
+
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot install extras.\n"
+                    + editable_extra_hint(extra),
+                ),
+            )
+            return
+
+        if extra not in KNOWN_EXTRAS and not force:
+            known = ", ".join(sorted(KNOWN_EXTRAS))
+            await self._mount_message(
+                AppMessage(
+                    f"'{extra}' is not a known extra.\n"
+                    f"Known extras: {known}\n\n"
+                    f"This would run: `{install_extra_command(extra)}`\n"
+                    f"Re-run with `--force` to install anyway: "
+                    f"`/install {extra} --force`",
+                ),
+            )
+            return
+
+        log_path = create_update_log_path()
+        await self._mount_message(
+            AppMessage(f"Installing extra '{extra}'..."),
+        )
+        manual_cmd = install_extra_command(extra)
+        try:
+            success, output = await perform_install_extra(extra, log_path=log_path)
+        except (OSError, asyncio.CancelledError) as exc:
+            logger.warning("/install command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        if not success:
+            # Tail the last 200 chars — uv resolver prints the resolved
+            # error at the end, not the beginning.
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed{detail}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        # Model-provider and sandbox extras are imported by the langgraph
+        # server subprocess; `/restart` respawns that subprocess and picks
+        # them up without exiting the TUI. `quickjs` (and other
+        # STANDALONE_EXTRAS) are wired into the parent process at startup
+        # (`verify_interpreter_deps` gates `--interpreter`), so a full
+        # relaunch is required.
+        if extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS:
+            next_step = "Run `/restart` to load it now, or relaunch dcode."
+        else:
+            next_step = "Exit and relaunch dcode to use the new dependencies."
+
+        await self._mount_message(
+            AppMessage(f"Installed extra '{extra}'. {next_step}"),
+        )
+
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.
 
@@ -3174,7 +3335,7 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.warning(
                     "Could not resolve upgrade command for /version; "
-                    "falling back to generic pip hint",
+                    "falling back to generic upgrade hint",
                     exc_info=True,
                 )
                 from deepagents_code.update_check import FALLBACK_UPGRADE_COMMAND
@@ -4924,7 +5085,14 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
-        from deepagents_code.config import build_langsmith_thread_url
+        from deepagents_code.config import (
+            LangSmithApiError,
+            LangSmithImportError,
+            LangSmithLookupTimeoutError,
+            _assemble_langsmith_thread_url,
+            fetch_langsmith_project_url_or_raise,
+            get_langsmith_project_name,
+        )
 
         if not self._session_state:
             await self._mount_message(UserMessage(command))
@@ -4932,15 +5100,18 @@ class DeepAgentsApp(App):
             return
         thread_id = self._session_state.thread_id
         try:
-            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+            project_name = await asyncio.to_thread(get_langsmith_project_name)
         except Exception:
-            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            logger.exception(
+                "Failed to resolve LangSmith project name for thread %s",
+                thread_id,
+            )
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                AppMessage("Failed to resolve LangSmith thread URL."),
+                AppMessage("Failed to resolve LangSmith project name."),
             )
             return
-        if not url:
+        if not project_name:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
@@ -4949,6 +5120,63 @@ class DeepAgentsApp(App):
                 ),
             )
             return
+        try:
+            project_url = await asyncio.to_thread(
+                fetch_langsmith_project_url_or_raise, project_name
+            )
+        except LangSmithImportError:
+            logger.warning(
+                "langsmith package not installed; cannot resolve thread URL for %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "The `langsmith` package is not installed. "
+                    "Install it with "
+                    "`uv tool install -U deepagents-code --with langsmith` "
+                    "to enable `/trace`.",
+                ),
+            )
+            return
+        except LangSmithLookupTimeoutError:
+            logger.warning(
+                "LangSmith project URL lookup timed out for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Could not reach LangSmith to resolve the thread URL. "
+                    "Check your network connection and try again.",
+                ),
+            )
+            return
+        except LangSmithApiError as exc:
+            logger.warning(
+                "LangSmith API call failed while resolving thread URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"LangSmith rejected the project lookup: {exc}. "
+                    "Verify LANGSMITH_API_KEY and the project name are correct.",
+                ),
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Failed to fetch LangSmith project URL for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Failed to resolve LangSmith thread URL."),
+            )
+            return
+        url = _assemble_langsmith_thread_url(project_url, thread_id)
 
         def _open_browser() -> None:
             try:
@@ -5005,7 +5233,8 @@ class DeepAgentsApp(App):
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
-                "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
+                "/update, /auto-update, /install, /changelog, /docs, "
+                "/feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -5115,6 +5344,8 @@ class DeepAgentsApp(App):
             await self._handle_update_command()
         elif cmd == "/auto-update":
             await self._handle_auto_update_toggle()
+        elif cmd == "/install" or cmd.startswith("/install "):
+            await self._handle_install_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -7504,6 +7735,7 @@ class DeepAgentsApp(App):
                         self._mcp_tool_count,
                         mcp_unauthenticated=self._mcp_unauthenticated,
                         mcp_errored=self._mcp_errored,
+                        mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
                 except NoMatches:
                     pass
@@ -8276,6 +8508,34 @@ class DeepAgentsApp(App):
             self._pending_mcp_disable_reconnect_servers
         )
 
+    def _refresh_welcome_banner_mcp_counts(self) -> None:
+        """Push current MCP counts into the welcome banner when it is mounted."""
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            logger.debug("Welcome banner not mounted during MCP count refresh")
+            return
+        banner.set_connected(
+            self._mcp_tool_count,
+            mcp_unauthenticated=self._mcp_unauthenticated,
+            mcp_errored=self._mcp_errored,
+            mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
+        )
+
+    def _clear_mcp_login_reconnect_banner_counts(self, server_name: str) -> None:
+        """Optimistically clear splash login/reconnect prompts before restart.
+
+        Args:
+            server_name: Server whose successful login triggered the reconnect.
+        """
+        self._mcp_unauthenticated = sum(
+            1
+            for s in self._mcp_server_info or []
+            if s.name != server_name and s.needs_attention()
+        )
+        self._mcp_awaiting_reconnect = 0
+        self._refresh_welcome_banner_mcp_counts()
+
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
@@ -8530,6 +8790,50 @@ class DeepAgentsApp(App):
                     )
         self._mcp_server_info = updated
 
+    def _apply_optimistic_mcp_login_pending_state(self, server_name: str) -> None:
+        """Mark a just-authenticated server as waiting for reconnect.
+
+        OAuth tokens are already persisted at this point, but the running
+        LangGraph server still has the old MCP tool set. This keeps `/mcp`
+        from continuing to label the server as unauthenticated after the
+        user explicitly chose to defer the reconnect.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            return
+
+        updated: list[MCPServerInfo] = []
+        matched = False
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            matched = True
+            updated.append(
+                MCPServerInfo(
+                    name=entry.name,
+                    transport=entry.transport,
+                    status="awaiting_reconnect",
+                    error="Authenticated — run `/mcp reconnect` to load tools.",
+                ),
+            )
+        self._mcp_server_info = updated
+        self._mcp_unauthenticated = sum(
+            1 for s in self._mcp_server_info if s.needs_attention()
+        )
+        self._mcp_errored = sum(1 for s in self._mcp_server_info if s.status == "error")
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in self._mcp_server_info if s.status == "awaiting_reconnect"
+        )
+        if not matched:
+            logger.warning(
+                "MCP login completed for unknown server %r; pending state unchanged",
+                server_name,
+            )
+        self._refresh_welcome_banner_mcp_counts()
+
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Surface login worker failures that escaped the inner error handling."""
         from textual.worker import WorkerState
@@ -8746,6 +9050,7 @@ class DeepAgentsApp(App):
             )
             self._pending_mcp_login_reconnect = True
             self._sync_pending_mcp_reconnect()
+            self._apply_optimistic_mcp_login_pending_state(server_name)
             self.notify(
                 f"Logged in to {server_name!r} but the reconnect prompt "
                 "failed. Run `/mcp reconnect` when ready to load the new tools.",
@@ -8800,6 +9105,7 @@ class DeepAgentsApp(App):
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
+            self._clear_mcp_login_reconnect_banner_counts(server_name)
             await self._restart_server_for_mcp_refresh(server_name)
             return
 
@@ -8811,6 +9117,7 @@ class DeepAgentsApp(App):
         # an action they didn't take.
         self._pending_mcp_login_reconnect = True
         self._sync_pending_mcp_reconnect()
+        self._apply_optimistic_mcp_login_pending_state(server_name)
         if choice == "later":
             self.notify(
                 f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "

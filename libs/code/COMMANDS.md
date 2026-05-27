@@ -6,7 +6,7 @@ Canonical list of slash commands for `deepagents-code`, derived from
 regenerate after editing the registry.
 
 
-## Public (25)
+## Public (26)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ regenerate after editing the registry.
 | `/feedback` |  | Submit a bug report or feature request |
 | `/force-clear` |  | Interrupt active work, clear chat, and start new thread |
 | `/help` |  | Show help |
+| `/install` |  | Install an optional extra (e.g. quickjs, daytona, fireworks) |
 | `/mcp` |  | Show MCP servers; `/mcp login <server>` to authenticate, `/mcp reconnect` to load deferred logins, F2 in the viewer to disable/enable a server |
 | `/model` |  | Switch or configure model (--model-params, --default) |
 | `/notifications` |  | Configure startup warning preferences |

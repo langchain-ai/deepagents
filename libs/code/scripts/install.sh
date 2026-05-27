@@ -5,12 +5,17 @@
 #   curl -LsSf https://langch.in/dcode | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                        "ollama,groq", or "daytona"
-#                        (see pyproject.toml for available extras)
-#   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
-#   DEEPAGENTS_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   UV_BIN             — path to uv binary (auto-detected if unset)
+#   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
+#                             "ollama,groq", or "daytona"
+#                             (see pyproject.toml for available extras)
+#   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
+#                             lines, unfiltered package diff) and the
+#                             quiet-by-default status lines (optional-tool
+#                             checks, post-install footer); useful when
+#                             debugging
+#   UV_BIN                  — path to uv binary (auto-detected if unset)
 #
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install
@@ -45,7 +50,7 @@ cleanup() {
   if [ $exit_code -ne 0 ]; then
     echo "" >&2
     log_error "Installation failed (exit code ${exit_code}). See errors above."
-    log_error "For help, visit: https://docs.langchain.com/oss/python/deepagents/code/overview"
+    log_error "For help, visit: https://docs.langchain.com/deepagents-code"
   fi
 }
 trap cleanup EXIT
@@ -88,7 +93,7 @@ detect_os
 # ---------------------------------------------------------------------------
 # MDM tools run scripts as root in a minimal environment where HOME may be
 # unset or point to /var/root.  Resolve the real console user's home so uv
-# and deepagents install to the right place.
+# and dcode install to the right place.
 if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null)" || {
     log_warn "Could not determine console user via /dev/console. Falling back to directory scan."
@@ -184,9 +189,10 @@ prompt_yn() {
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-EXTRAS="${DEEPAGENTS_EXTRAS:-}"
-PYTHON_VERSION="${DEEPAGENTS_PYTHON:-3.13}"
-SKIP_OPTIONAL="${DEEPAGENTS_SKIP_OPTIONAL:-0}"
+EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
+PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
+SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
+VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -194,7 +200,7 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
   if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
-    log_error "DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
+    log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"
@@ -255,21 +261,130 @@ PACKAGE="deepagents-code${EXTRAS}"
 
 # Capture pre-install version (if any) for messaging
 PRE_VERSION=""
-if command -v deepagents >/dev/null 2>&1; then
-  PRE_VERSION=$(deepagents -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
-elif [ -x "${HOME}/.local/bin/deepagents" ]; then
-  PRE_VERSION=$("${HOME}/.local/bin/deepagents" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+for candidate in dcode deepagents-code; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    PRE_VERSION=$("$candidate" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+    break
+  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
+    PRE_VERSION=$("${HOME}/.local/bin/${candidate}" -v 2>/dev/null | head -1 | awk '{print $NF}') || PRE_VERSION=""
+    break
+  fi
+done
+
+# Detect editable installs (uv tool install -e <path>) so we can tell the user
+# why the environment will be rebuilt instead of upgraded in place.
+IS_EDITABLE=false
+EDITABLE_SRC=""
+UV_TOOL_DIR=""
+if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
+  UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
+fi
+if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
+  shopt -s nullglob
+  for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
+    if grep -q '"editable"[[:space:]]*:[[:space:]]*true' "$du" 2>/dev/null; then
+      IS_EDITABLE=true
+      EDITABLE_SRC=$(sed -nE 's|.*"url"[[:space:]]*:[[:space:]]*"file://([^"]*)".*|\1|p' "$du" | head -1)
+      # Guard against malformed JSON producing a bogus path.
+      [ -n "$EDITABLE_SRC" ] && [ ! -d "$EDITABLE_SRC" ] && EDITABLE_SRC=""
+      break
+    fi
+  done
+  shopt -u nullglob
 fi
 
-if [ -n "$PRE_VERSION" ]; then
+if [ "$IS_EDITABLE" = true ]; then
+  pre_label="${PRE_VERSION:-(version unknown)}"
+  if [ -n "$EDITABLE_SRC" ]; then
+    log_info "deepagents-code ${pre_label} found (editable install from ${EDITABLE_SRC})."
+  else
+    log_info "deepagents-code ${pre_label} found (editable install from local source)."
+  fi
+  log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
 else
   log_info "Installing ${PACKAGE}..."
 fi
 
-if ! "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE"; then
+# Capture uv stderr so we can:
+#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#      plain English. uv emits that line when it rebuilds the tool venv
+#      instead of upgrading in place (e.g., Python interpreter mismatch, or
+#      editable↔regular install swap).
+#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
+#      and the trailing "Installed N executables:" line — we already show
+#      a Verified line with the binary name and version.
+#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
+#      "pkg  X → Y" table under a single header.
+# Using a tempfile (vs. process substitution) ensures we see uv's full exit
+# status and don't race the warning past later log lines.
+uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
+uv_rc=0
+"$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
+if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
+  awk '
+    /^Ignoring existing environment/ {
+      print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
+      next
+    }
+    /^Resolved [0-9]+ packages? in /    { next }
+    /^Prepared [0-9]+ packages? in /    { next }
+    /^Uninstalled [0-9]+ packages? in / { next }
+    /^Installed [0-9]+ packages? in /   { next }
+    /^Audited [0-9]+ packages? in /     { next }
+    /^Checked [0-9]+ packages? in /     { next }
+    /^Installed [0-9]+ executables?:/   { next }
+    /^ - / {
+      s = $0; sub(/^ - /, "", s); n = index(s, "==")
+      if (n > 0) {
+        pkg = substr(s, 1, n - 1); ver = substr(s, n + 2)
+        removed[pkg] = ver
+        if (!(pkg in seen)) { seen[pkg] = 1; order[++cnt] = pkg }
+      }
+      next
+    }
+    /^ \+ / {
+      s = $0; sub(/^ \+ /, "", s); n = index(s, "==")
+      if (n > 0) {
+        pkg = substr(s, 1, n - 1); ver = substr(s, n + 2)
+        added[pkg] = ver
+        if (!(pkg in seen)) { seen[pkg] = 1; order[++cnt] = pkg }
+      }
+      next
+    }
+    { print }
+    END {
+      if (cnt == 0) exit
+      maxw = 0
+      any_removed = 0
+      for (i = 1; i <= cnt; i++) {
+        p = order[i]
+        if (length(p) > maxw) maxw = length(p)
+        if (p in removed) any_removed = 1
+      }
+      print (any_removed ? "Updated packages:" : "Installed packages:")
+      for (i = 1; i <= cnt; i++) {
+        p = order[i]
+        pad = ""
+        for (j = length(p); j < maxw; j++) pad = pad " "
+        if ((p in removed) && (p in added)) {
+          printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
+        } else if (p in added) {
+          printf "  %s%s  %s (new)\n", p, pad, added[p]
+        } else {
+          printf "  %s%s  %s (removed)\n", p, pad, removed[p]
+        }
+      }
+    }
+  ' "$uv_stderr" >&2
+else
+  cat "$uv_stderr" >&2
+fi
+rm -f "$uv_stderr"
+if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
-  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_PYTHON=3.12), or install manually."
+  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
 fix_owner "${HOME}/.local/bin" "${HOME}/.local/share/uv"  # uv binaries + tool data
@@ -278,28 +393,76 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
-log_success "deepagents-code installed."
+# ---------------------------------------------------------------------------
+# Post-install verification + contextual status
+# ---------------------------------------------------------------------------
+DCODE_BIN=""
+DCODE_NAME=""
+for candidate in dcode deepagents-code; do
+  if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
+    DCODE_BIN="$resolved"
+    DCODE_NAME="$candidate"
+    break
+  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
+    DCODE_BIN="${HOME}/.local/bin/${candidate}"
+    DCODE_NAME="$candidate"
+    break
+  fi
+done
 
-# ---------------------------------------------------------------------------
-# Post-install verification
-# ---------------------------------------------------------------------------
-DEEPAGENTS_BIN=""
-if command -v deepagents >/dev/null 2>&1; then
-  DEEPAGENTS_BIN="deepagents"
-elif [ -x "${HOME}/.local/bin/deepagents" ]; then
-  DEEPAGENTS_BIN="${HOME}/.local/bin/deepagents"
+# Collapse $HOME prefix to ~ for a tidier display path. Used in user-facing
+# log lines only; DCODE_BIN keeps the absolute path for any exec needs.
+DCODE_BIN_DISPLAY="$DCODE_BIN"
+if [ -n "$DCODE_BIN" ] && [ -n "${HOME:-}" ]; then
+  case "$DCODE_BIN" in
+    "$HOME"/*) DCODE_BIN_DISPLAY="~${DCODE_BIN#"$HOME"}" ;;
+  esac
 fi
 
-if [ -n "$DEEPAGENTS_BIN" ]; then
-  if VERSION=$("$DEEPAGENTS_BIN" -v 2>&1); then
-    log_success "Verified: deepagents ${VERSION}"
-  else
-    log_warn "deepagents binary found but 'deepagents -v' failed:"
-    log_warn "  ${VERSION}"
-    log_warn "The installation may be broken. Try running: deepagents -v"
+NEW_VERSION=""
+VERIFY_OK=false
+VERIFY_OUTPUT=""
+if [ -n "$DCODE_BIN" ]; then
+  if VERIFY_OUTPUT=$("$DCODE_BIN" -v 2>&1); then
+    NEW_VERSION=$(printf '%s\n' "$VERIFY_OUTPUT" | head -1 | awk '{print $NF}') || NEW_VERSION=""
+    VERIFY_OK=true
   fi
+fi
+
+if [ "$IS_EDITABLE" = true ]; then
+  log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} reinstalled from PyPI."
+elif [ -z "$PRE_VERSION" ]; then
+  log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
+elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
+  log_success "deepagents-code ${NEW_VERSION} already up to date."
+elif [ -n "$NEW_VERSION" ]; then
+  log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else
-  log_warn "deepagents command not found in PATH. Restart your shell or run:"
+  log_success "deepagents-code installed."
+fi
+
+if [ "$VERBOSE" = "1" ] && [ -n "$DCODE_BIN_DISPLAY" ]; then
+  printf "  Location: %s\n" "$DCODE_BIN_DISPLAY"
+fi
+
+if [ "$VERIFY_OK" = true ]; then
+  # Skip the redundant "Verified" line on the already-up-to-date path —
+  # the prior log_success above already named the version. Only emit it on
+  # fresh install, upgrade, or editable→PyPI swap.
+  if [ -z "$NEW_VERSION" ] || [ "$PRE_VERSION" != "$NEW_VERSION" ] || [ "$IS_EDITABLE" = true ]; then
+    VERIFY_FIRST=$(printf '%s\n' "$VERIFY_OUTPUT" | head -1)
+    if [ -n "$VERIFY_FIRST" ]; then
+      log_success "Verified: ${DCODE_NAME} ${VERIFY_FIRST}"
+    else
+      log_warn "${DCODE_NAME} -v exited 0 but produced no output; installation may be incomplete."
+    fi
+  fi
+elif [ -n "$DCODE_BIN" ]; then
+  log_warn "${DCODE_NAME} binary found but '${DCODE_NAME} -v' failed:"
+  log_warn "  ${VERIFY_OUTPUT}"
+  log_warn "The installation may be broken. Try running: ${DCODE_NAME} -v"
+else
+  log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
 fi
 
@@ -399,13 +562,15 @@ ripgrep_manual_hint() {
 }
 
 if [ "$SKIP_OPTIONAL" != "1" ]; then
-  echo ""
-  log_info "Checking optional tools..."
-
   if command -v rg >/dev/null 2>&1; then
-    rg_version=$(rg --version 2>/dev/null | head -1 | awk '{print $2}') || rg_version="(version unknown)"
-    log_success "ripgrep ${rg_version} found"
+    if [ "$VERBOSE" = "1" ]; then
+      echo ""
+      log_info "Checking optional tools..."
+      rg_version=$(rg --version 2>/dev/null | head -1 | awk '{print $2}') || rg_version="(version unknown)"
+      log_success "ripgrep ${rg_version} found"
+    fi
   else
+    echo ""
     log_warn "ripgrep not found — recommended for faster file search."
 
     installed=false
@@ -429,11 +594,17 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done
+# Done — footer wording depends on whether anything changed:
+#   - already up to date  → "Already installed"
+#   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
+if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
+  footer_msg="Already installed."
+else
+  footer_msg="Setup complete."
+fi
 echo ""
 # shellcheck disable=SC2059
-printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}deepagents${NC}\n"
-echo ""
-echo "For help and support, see the Deep Agents Code docs:"
-echo "  https://docs.langchain.com/oss/python/deepagents/code/overview"
+printf "${GREEN}✔${NC} %s Run: ${BOLD}dcode${NC}\n" "$footer_msg"
+echo "  Docs: https://docs.langchain.com/deepagents-code"

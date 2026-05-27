@@ -6,7 +6,7 @@
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain_oss)
 
 > [!IMPORTANT]
-> **The interactive coding agent moved.** As of `deepagents-cli==0.1.0`, this package contains only the deployment subcommands (`init`, `dev`, `deploy`). The interactive REPL — previously launched via `deepagents` — now ships as [`deepagents-code`](https://docs.langchain.com/oss/python/deepagents/code/overview) (`dcode`).
+> **The interactive coding agent moved.** As of `deepagents-cli==0.1.0`, this package contains only the deployment subcommands (`init`, `dev`, `deploy`). The interactive REPL — previously launched via `deepagents` — now ships as [`deepagents-code`](https://docs.langchain.com/deepagents-code) (`dcode`).
 >
 > ```bash
 > curl -LsSf https://langch.in/dcode | bash

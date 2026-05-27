@@ -201,10 +201,10 @@ def check_cli_dependencies() -> None:
         print("\nThe following packages are required to use Deep Agents Code:")  # noqa: T201  # App output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
-        print("\nPlease install them with:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install deepagents[cli]")  # noqa: T201  # CLI output for missing dependencies
-        print("\nOr install all dependencies:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install 'deepagents[cli]'")  # noqa: T201  # CLI output for missing dependencies
+        print("\nReinstall dcode with the recommended installer:")  # noqa: T201  # CLI output for missing dependencies
+        print("  curl -LsSf https://langch.in/dcode | bash")  # noqa: T201  # CLI output for missing dependencies
+        print("\nOr install the tool directly via uv:")  # noqa: T201  # CLI output for missing dependencies
+        print("  uv tool install -U deepagents-code")  # noqa: T201  # CLI output for missing dependencies
         sys.exit(1)
 
 
@@ -988,6 +988,16 @@ def parse_args() -> argparse.Namespace:
         "--auto-update",
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
+    )
+    parser.add_argument(
+        "--install",
+        metavar="EXTRA",
+        help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation prompts (e.g., for --install)",
     )
     parser.add_argument(
         "--acp",
@@ -1780,7 +1790,8 @@ def cli_main() -> None:
             except ImportError as exc:
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: pip install deepagents-acp\n"
+                    "Install with: uv tool install -U deepagents-code "
+                    "--with deepagents-acp\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -1966,6 +1977,111 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] Update failed.\n"
                     "Run manually: [cyan]uv tool upgrade "
                     "deepagents-code[/cyan]"
+                )
+                sys.exit(1)
+
+        # Handle --install <extra> flag (headless, no session)
+        if args.install:
+            from rich.markup import escape
+
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import KNOWN_EXTRAS
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_extra_hint,
+                install_extra_command,
+                is_valid_extra_name,
+                perform_install_extra,
+            )
+
+            extra: str = args.install
+            log_path: Path | None = None
+            try:
+                if not is_valid_extra_name(extra):
+                    # Defense in depth — the extra is interpolated into a
+                    # shell command. Reject malformed names before any
+                    # confirmation prompt, even with --yes.
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"Invalid extra name '{escape(extra)}'. "
+                        "Extra names must be alphanumeric with `-`, `_`, "
+                        "or `.` (PEP 508).",
+                        highlight=False,
+                    )
+                    sys.exit(2)
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "--install is not supported on editable installs.\n"
+                        + escape(editable_extra_hint(extra)),
+                        highlight=False,
+                    )
+                    sys.exit(1)
+
+                if extra not in KNOWN_EXTRAS:
+                    known = ", ".join(sorted(KNOWN_EXTRAS))
+                    console.print(
+                        f"[bold yellow]Warning:[/bold yellow] "
+                        f"'{extra}' is not a known extra.\n"
+                        f"Known extras: {known}",
+                        highlight=False,
+                    )
+                    console.print(
+                        f"This will run: [cyan]{install_extra_command(extra)}[/cyan]"
+                    )
+                    if not args.yes:
+                        if not sys.stdin.isatty():
+                            console.print(
+                                "[bold red]Error:[/bold red] "
+                                "Refusing unknown extra in non-interactive "
+                                "mode. Pass --yes to override."
+                            )
+                            sys.exit(2)
+                        reply = input("Continue anyway? [y/N] ").strip().lower()
+                        if reply not in {"y", "yes"}:
+                            console.print("Aborted.", style="dim")
+                            sys.exit(1)
+
+                console.print(f"Installing extra '{extra}'...")
+                log_path = create_update_log_path()
+                console.print(
+                    f"Install log: {log_path}\nTail progress: tail -f {log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(
+                    perform_install_extra(extra, log_path=log_path)
+                )
+                if success:
+                    console.print(f"[green]Installed extra '{extra}'.[/green]")
+                    sys.exit(0)
+                # Tail the last 200 chars — uv resolver prints the resolved
+                # error at the end, not the beginning.
+                detail = f": {output[-200:]}" if output else ""
+                console.print(
+                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: [cyan]{install_extra_command(extra)}[/cyan]",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\nAborted.", style="dim")
+                sys.exit(130)
+            except Exception as exc:
+                logger.warning("--install failed", exc_info=True)
+                log_line = f"\nLog: {log_path}" if log_path else ""
+                console.print(
+                    f"[bold red]Error:[/bold red] "
+                    f"{type(exc).__name__}: {escape(str(exc))}"
+                    f"{escape(log_line)}\n"
+                    "Run manually: [cyan]"
+                    f"uv tool install -U 'deepagents-code[{escape(extra)}]'"
+                    "[/cyan]",
+                    markup=True,
+                    highlight=False,
                 )
                 sys.exit(1)
 

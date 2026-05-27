@@ -223,7 +223,8 @@ def _import_provider_module(
     except ImportError as exc:
         msg = (
             f"The '{provider}' sandbox provider requires the '{package}' package. "
-            f"Install it with: pip install 'deepagents-code[{provider}]'"
+            f"Install it with: /install {provider} (in-app) or "
+            f"dcode --install {provider} (CLI)"
         )
         raise ImportError(msg) from exc
 
@@ -910,7 +911,8 @@ def verify_sandbox_deps(provider: str) -> None:
     if not found:
         msg = (
             f"Missing dependencies for '{provider}' sandbox. "
-            f"Install with: pip install 'deepagents-code[{extra}]'"
+            f"Install with: /install {extra} (in-app) or "
+            f"dcode --install {extra} (CLI)"
         )
         raise ImportError(msg)
 

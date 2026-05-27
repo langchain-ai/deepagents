@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
@@ -34,6 +34,20 @@ server name returned by `MCPServerInfo.name`, so callers can branch on
 this exact string without weakening the existing server-name dispatch.
 """
 
+MCP_RECONNECT_KEY = "ctrl+r"
+"""Textual `Binding` key for the in-viewer reconnect action.
+
+Kept as a module constant so the footer hint and the help-text rendered
+in server headers stay in sync with the bound chord.
+"""
+
+MCP_RECONNECT_KEY_LABEL = "Ctrl+R"
+"""Display label for `MCP_RECONNECT_KEY`.
+
+Shown in the footer hint chip and inline header prompts so the user
+sees the same chord text the binding will fire on.
+"""
+
 
 def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     """Return the glyph character for a server `status`.
@@ -42,7 +56,8 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error` / `disabled`.
+        status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
+            `error` / `disabled`.
         glyphs: Active `Glyphs` table (Unicode or ASCII).
 
     Returns:
@@ -52,9 +67,13 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
         return glyphs.checkmark
     if status == "unauthenticated":
         return glyphs.warning
+    if status == "awaiting_reconnect":
+        return glyphs.circle_empty
     if status == "disabled":
         return glyphs.pause
-    return glyphs.error
+    if status == "error":
+        return glyphs.error
+    assert_never(status)
 
 
 def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
@@ -67,7 +86,8 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     without code changes.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error` / `disabled`.
+        status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
+            `error` / `disabled`.
         colors: Active theme palette (typically from `theme.get_theme_colors`).
 
     Returns:
@@ -77,9 +97,13 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
         return colors.success
     if status == "unauthenticated":
         return colors.warning
+    if status == "awaiting_reconnect":
+        return colors.warning
     if status == "disabled":
         return colors.muted
-    return colors.error
+    if status == "error":
+        return colors.error
+    assert_never(status)
 
 
 def _styled(inner: str, style: str) -> str:
@@ -148,13 +172,15 @@ def _sanitize_inline(text: str, *, max_length: int = 200) -> str:
 def _sort_servers_for_display(
     server_info: list[MCPServerInfo],
 ) -> list[MCPServerInfo]:
-    """Return `server_info` with `unauthenticated` servers floated to the top.
+    """Return `server_info` with attention-needed servers floated to the top.
 
     Stable sort so the user's config order is preserved within each group.
-    Surfacing unauthenticated servers first makes the auth prompt visible
-    without scrolling on configs with many `ok` servers.
+    Surfacing unauthenticated and awaiting-reconnect servers first makes
+    the next action visible without scrolling on configs with many `ok`
+    servers.
     """
-    return sorted(server_info, key=lambda s: 0 if s.status == "unauthenticated" else 1)
+    priority = {"unauthenticated": 0, "awaiting_reconnect": 1}
+    return sorted(server_info, key=lambda s: priority.get(s.status, 2))
 
 
 def _visible_tools_for(
@@ -440,7 +466,7 @@ def _render_server_header(
     dim_style = "" if selected else "dim"
     tool_count = len(visible_tools)
     t_label = "tool" if tool_count == 1 else "tools"
-    if server.status == "ok":
+    if server.is_loaded():
         summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
@@ -448,7 +474,7 @@ def _render_server_header(
             (summary, dim_style),
         )
     error_text = _sanitize_inline(server.error or "")
-    if server.status == "unauthenticated":
+    if server.needs_attention():
         login_hint = " — Enter to log in"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
@@ -457,13 +483,23 @@ def _render_server_header(
             (f" {glyphs.bullet} {server.status}", indicator_color),
             (login_hint, dim_style),
         )
-    return Content.assemble(
-        (f"{indicator_glyph} ", indicator_color),
-        (server.name, "bold"),
-        (f" {server.transport}", dim_style),
-        (f" {glyphs.bullet} {server.status}", indicator_color),
-        (f" — {error_text}", dim_style) if error_text else "",
-    )
+    if server.status == "awaiting_reconnect":
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} ready to load", indicator_color),
+            (f" — {MCP_RECONNECT_KEY_LABEL} to load tools", dim_style),
+        )
+    if server.status in {"error", "disabled"}:
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (f" — {error_text}", dim_style) if error_text else "",
+        )
+    assert_never(server.status)
 
 
 class MCPServerHeaderItem(Static):
@@ -598,7 +634,7 @@ class MCPServerHeaderItem(Static):
         screen = self.screen
         if not isinstance(screen, MCPViewerScreen):
             return
-        if self._selected and self._server.status == "unauthenticated":
+        if self._selected and self._server.needs_attention():
             screen.dismiss(self._server.name)
             return
         screen._move_to(self.index)
@@ -633,7 +669,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Binding("ctrl+e", "toggle_all", "Toggle all", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
-        Binding("ctrl+r", "reconnect", "Reconnect", show=False, priority=True),
+        Binding(MCP_RECONNECT_KEY, "reconnect", "Reconnect", show=False, priority=True),
         Binding("f2", "toggle_disable", "Toggle disable", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
@@ -1070,7 +1106,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             "Ctrl+E expand all",
         ]
         if self._pending_reconnect:
-            help_parts.append("Ctrl+R reconnect")
+            help_parts.append(f"{MCP_RECONNECT_KEY_LABEL} reconnect")
         help_parts.extend(["type to filter", "Esc close"])
         return f" {glyphs.bullet} ".join(help_parts)
 
@@ -1086,7 +1122,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
         if not self._server_info:
             placeholder = (
-                "Loading MCP tools — server is starting up..."
+                "Loading MCP tools..."
                 if self._connecting
                 else ("No MCP servers configured.\nUse `--mcp-config` to load servers.")
             )
@@ -1311,7 +1347,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Tool rows expand/collapse as before; activating a header row for
         a server in `unauthenticated` state dismisses the viewer with the
         server name so the app can drive in-TUI OAuth login. Headers for
-        other states (ok, error) remain no-ops.
+        other states (ok, awaiting reconnect, error, disabled) remain no-ops.
         """
         if not self._row_widgets:
             return
@@ -1324,7 +1360,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             self.call_after_refresh(row.scroll_visible)
             return
         server = row.server
-        if server.status == "unauthenticated":
+        if server.needs_attention():
             self.dismiss(server.name)
 
     def action_toggle_all(self) -> None:

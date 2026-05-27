@@ -362,16 +362,6 @@ class ChatTextArea(TextArea):
     the counter.
     """
 
-    _in_history: bool
-    """Persistent flag that stays `True` while the user is browsing history.
-
-    Relaxes cursor-boundary checks so Up/Down work from either end of
-    the text.
-
-    Reset to `False` when navigating past the newest entry, submitting,
-    or clearing.
-    """
-
     class Submitted(Message):
         """Message sent when text is submitted."""
 
@@ -416,7 +406,6 @@ class ChatTextArea(TextArea):
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
         self._skip_history_change_events = 0
-        self._in_history = False
         self._completion_active = False
         # Buffer quote-prefixed high-frequency key bursts from terminals that
         # emulate paste via rapid key events instead of dispatching a paste
@@ -594,6 +583,54 @@ class ChatTextArea(TextArea):
     def action_insert_newline(self) -> None:
         """Insert a newline character."""
         self.insert("\n")
+        # TextArea's built-in cursor-visible scroll runs before the widget
+        # reflows for the new row, so it sees stale dimensions and is a no-op
+        # when the cursor would land below `max-height`. Re-issue after
+        # refresh so it stays in view.
+        self.call_after_refresh(self.scroll_cursor_visible)
+
+    def _cursor_at_visual_top(self) -> bool:
+        """Return whether the cursor cannot move up further."""
+        try:
+            return self.get_cursor_up_location() == self.cursor_location
+        except ValueError:
+            # `WrappedDocument.location_to_offset` can raise during a brief
+            # text/cursor desync window (see `scroll_cursor_visible` guard).
+            # Treat as "not at top" so TextArea moves the cursor instead of
+            # firing history navigation on a transient state.
+            return False
+
+    def _cursor_at_visual_bottom(self) -> bool:
+        """Return whether the cursor cannot move down further."""
+        try:
+            return self.get_cursor_down_location() == self.cursor_location
+        except ValueError:
+            return False
+
+    def action_cursor_up(self, select: bool = False) -> None:
+        """Move cursor up, or navigate to the previous history entry at top.
+
+        When `select` is true or a selection is active, falls through to
+        TextArea's default so shift+up extends selection rather than
+        triggering navigation. History fires only when moving up cannot
+        advance the cursor — handled via the wrapped-document navigator so
+        soft-wrap is respected.
+        """
+        if not select and self.selection.is_empty and self._cursor_at_visual_top():
+            self.post_message(self.HistoryPrevious(self.text))
+            return
+        super().action_cursor_up(select)
+
+    def action_cursor_down(self, select: bool = False) -> None:
+        """Move cursor down, or navigate to the next history entry at bottom.
+
+        Mirrors `action_cursor_up`: defers to TextArea on selection or when
+        the cursor still has somewhere to move; otherwise fires history.
+        """
+        if not select and self.selection.is_empty and self._cursor_at_visual_bottom():
+            self.post_message(self.HistoryNext())
+            return
+        super().action_cursor_down(select)
 
     def _cancel_paste_burst_timer(self) -> None:
         """Cancel any scheduled paste-burst flush timer."""
@@ -757,7 +794,7 @@ class ChatTextArea(TextArea):
             if self._delete_preceding_backslash():
                 event.prevent_default()
                 event.stop()
-                self.insert("\n")
+                self.action_insert_newline()
                 return
         self._backslash_pending_time = None
 
@@ -768,7 +805,7 @@ class ChatTextArea(TextArea):
         if event.key in self._NEWLINE_KEYS:
             event.prevent_default()
             event.stop()
-            self.insert("\n")
+            self.action_insert_newline()
             return
 
         if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
@@ -807,30 +844,6 @@ class ChatTextArea(TextArea):
             if value:
                 self.post_message(self.Submitted(value))
             return
-
-        # Up/Down arrow: only navigate history at input boundaries.
-        # Up requires cursor at position (0, 0); Down requires cursor at
-        # the very end.  When already browsing history, either boundary
-        # allows navigation in both directions.
-        if event.key in {"up", "down"}:
-            row, col = self.cursor_location
-            text = self.text
-            lines = text.split("\n")
-            last_row = len(lines) - 1
-            at_start = row == 0 and col == 0
-            at_end = row == last_row and col == len(lines[last_row])
-            navigate = (
-                event.key == "up" and (at_start or (self._in_history and at_end))
-            ) or (event.key == "down" and (at_end or (self._in_history and at_start)))
-
-            if navigate:
-                event.prevent_default()
-                event.stop()
-                if event.key == "up":
-                    self.post_message(self.HistoryPrevious(self.text))
-                else:
-                    self.post_message(self.HistoryNext())
-                return
 
         await super()._on_key(event)
 
@@ -913,23 +926,33 @@ class ChatTextArea(TextArea):
         event.stop()
         self.post_message(self.PastedPaths(event.text, parsed.paths))
 
-    def set_text_from_history(self, text: str) -> None:
-        """Set text from history navigation."""
+    def set_text_from_history(self, text: str, *, cursor_at_end: bool = True) -> None:
+        """Set text from history navigation.
+
+        Args:
+            text: The history entry text to load.
+            cursor_at_end: Place the cursor at the end of the loaded text
+                (use for down-navigation, so the next down press continues
+                forward through history). When `False`, place at the start
+                so the next up press continues backward. Defaults to `True`
+                to preserve historical cursor-at-end behavior for callers
+                that don't specify a direction.
+        """
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
         self._skip_history_change_events += 1
         self.text = text
-        # Move cursor to end
-        lines = text.split("\n")
-        last_row = len(lines) - 1
-        last_col = len(lines[last_row])
-        self.move_cursor((last_row, last_col))
+        if cursor_at_end:
+            lines = text.split("\n")
+            last_row = len(lines) - 1
+            self.move_cursor((last_row, len(lines[last_row])))
+        else:
+            self.move_cursor((0, 0))
 
     def clear_text(self) -> None:
         """Clear the text area."""
-        self._in_history = False
         # Increment (not reset) so any pending Changed event from a prior
         # set_text_from_history is still suppressed, plus one for the
         # self.text = "" assignment below.
@@ -1612,12 +1635,13 @@ class ChatInput(Vertical):
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
-            self._text_area.set_text_from_history(display_text)
-        # No-match path: don't reset the counter — a pending Changed event
-        # from a prior set_text_from_history call may still be in flight.
-        # Keep text area's _in_history in sync with the history manager.
-        if self._text_area:
-            self._text_area._in_history = self._history.in_history
+            # Cursor at top so pressing up again continues backward through
+            # history without the user having to navigate to the first row.
+            self._text_area.set_text_from_history(display_text, cursor_at_end=False)
+        else:
+            # No matching older entry — surface the boundary so the user
+            # doesn't think their keypress was lost.
+            self.app.bell()
 
     def on_chat_text_area_history_next(
         self,
@@ -1628,14 +1652,11 @@ class ChatInput(Vertical):
         if entry is not None and self._text_area:
             mode, display_text = self._history_entry_mode_and_text(entry)
             self.mode = mode
-            self._text_area.set_text_from_history(display_text)
-        # No-match path: don't reset the counter — a pending Changed event
-        # from a prior set_text_from_history call may still be in flight.
-        # Keep text area's _in_history in sync with the history manager.
-        # When the user presses Down past the newest entry, get_next()
-        # resets navigation internally, so in_history becomes False.
-        if self._text_area:
-            self._text_area._in_history = self._history.in_history
+            # Cursor at end so pressing down again continues forward through
+            # history.
+            self._text_area.set_text_from_history(display_text, cursor_at_end=True)
+        else:
+            self.app.bell()
 
     def on_chat_text_area_pasted_paths(self, event: ChatTextArea.PastedPaths) -> None:
         """Handle paste payloads that resolve to dropped file paths."""

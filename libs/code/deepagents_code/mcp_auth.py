@@ -325,6 +325,61 @@ class FileTokenStorage(TokenStorage):
             )
             return None
 
+    def stored_loopback_port(self) -> int | None:
+        """Return the stored loopback redirect URI port, if one is reusable.
+
+        DCR registers `client_id` against a specific `redirect_uri`. If the
+        callback server binds a fresh random port on a later launch, the
+        authorize request will carry a `redirect_uri` that no longer matches
+        the one registered with the persisted `client_id`, and the
+        authorization server will reject it ("invalid or missing redirect_uri").
+        Reusing the persisted port keeps the registration valid across runs.
+
+        Returns:
+            The integer port parsed from a stored
+                `http://localhost:<port>/callback` redirect URI, or `None` if
+                no usable port is on disk.
+        """
+        try:
+            data = self._read()
+        except RuntimeError as exc:
+            logger.warning(
+                "MCP token file for %s is unreadable during loopback port "
+                "lookup; falling back to a fresh random port. Delete the file "
+                "and log in again if OAuth authorization fails: %s",
+                self.path,
+                exc,
+            )
+            return None
+        if data is None:
+            return None
+        client_info = data.get("client_info") or {}
+        redirect_uris = client_info.get("redirect_uris") or []
+        if not redirect_uris:
+            return None
+        uri = str(redirect_uris[0])
+        parsed = urlparse(uri)
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != _LOOPBACK_URI_HOST
+            or parsed.path != _LOOPBACK_CALLBACK_PATH
+            or port is None
+        ):
+            logger.warning(
+                "Stored MCP OAuth redirect URI for %s is not a reusable "
+                "loopback callback URI; falling back to a fresh random port. "
+                "OAuth authorization may fail if the server requires the "
+                "persisted client registration redirect URI: %s",
+                self.path,
+                uri,
+            )
+            return None
+        return port
+
     def _read(self) -> dict | None:
         path = self.path
         if not path.exists():
@@ -559,7 +614,8 @@ class _LoopbackOAuthCallbackServer:
                     handler,
                     200,
                     _oauth_success_html(
-                        "MCP authorization complete. You can close this browser tab.",
+                        "MCP authorization complete. "
+                        "This tab will close automatically.",
                     ),
                 )
             else:
@@ -603,7 +659,7 @@ class _LoopbackOAuthCallbackServer:
             handler,
             200,
             _oauth_success_html(
-                "MCP authorization complete. You can close this browser tab.",
+                "MCP authorization complete. This tab will close automatically.",
             ),
         )
 
@@ -652,6 +708,16 @@ def _oauth_result_html(
     escaped_title = html.escape(title)
     escaped_heading = html.escape(heading)
     escaped = html.escape(message)
+    # `window.close()` is only honored for tabs the script itself opened
+    # (browser policy), but for the common case where the auth flow was
+    # launched via `window.open` / `target=_blank` from another page, the
+    # tab closes cleanly. When the browser refuses, the user still sees the
+    # static success page and the message text remains accurate.
+    auto_close = (
+        "<script>setTimeout(function(){window.close();},2000);</script>"
+        if status == "success"
+        else ""
+    )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -672,6 +738,7 @@ def _oauth_result_html(
         f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
         f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
         "</main>"
+        f"{auto_close}"
         "</body></html>"
     )
 
@@ -960,9 +1027,21 @@ def build_oauth_provider(
     if interactive:
         if policy.supports_loopback_callback():
             fixed = policy.loopback_port()
-            callback_server = _LoopbackOAuthCallbackServer(
-                port=fixed if fixed is not None else _choose_loopback_port()
-            )
+            if fixed is not None:
+                port = fixed
+            else:
+                # Reuse the port from a prior DCR registration when available,
+                # so the authorize request's redirect_uri matches what was
+                # registered against the persisted client_id. A fresh random
+                # port on every launch would otherwise invalidate the URI on
+                # the second run and force the server to reject the request.
+                stored = (
+                    storage.stored_loopback_port()
+                    if isinstance(storage, FileTokenStorage)
+                    else None
+                )
+                port = stored if stored is not None else _choose_loopback_port()
+            callback_server = _LoopbackOAuthCallbackServer(port=port)
             redirect_uri = callback_server.redirect_uri
             redirect, callback = _make_loopback_handlers(
                 callback_server=callback_server,

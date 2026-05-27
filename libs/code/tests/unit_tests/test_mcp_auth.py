@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -87,6 +88,17 @@ def _make_client_info():
     return OAuthClientInformationFull(
         client_id="client-id",
         redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+    )
+
+
+def _make_client_info_with_loopback(port: int):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        redirect_uris=[AnyUrl(f"http://localhost:{port}/callback")],
         grant_types=["authorization_code", "refresh_token"],
         response_types=["code"],
     )
@@ -664,6 +676,137 @@ class TestBuildOAuthProvider:
         # Slack-only `token_endpoint_auth_method="none"` override must not
         # leak into this branch.
         assert metadata.token_endpoint_auth_method != "none"
+
+    def test_generic_branch_reuses_stored_loopback_port(self, fake_home: Path) -> None:
+        """A persisted DCR redirect URI pins the callback port across launches."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(51208)))
+        first = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        second = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        first_metadata = first.context.client_metadata
+        second_metadata = second.context.client_metadata
+        assert first_metadata.redirect_uris is not None
+        assert second_metadata.redirect_uris is not None
+        assert str(first_metadata.redirect_uris[0]) == "http://localhost:51208/callback"
+        assert (
+            str(second_metadata.redirect_uris[0]) == "http://localhost:51208/callback"
+        )
+
+    def test_fixed_loopback_port_wins_over_stored_port(self, fake_home: Path) -> None:
+        """Provider-fixed callback ports take precedence over stored DCR ports."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
+
+        storage = FileTokenStorage("slack")
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(51208)))
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://slack.com/mcp",
+            storage=storage,
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == _SLACK_REDIRECT_URI
+
+    def test_generic_branch_random_port_when_stored_uri_non_loopback(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-loopback stored URI falls back to a fresh random port."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        monkeypatch.setattr(
+            "deepagents_code.mcp_auth._choose_loopback_port", lambda: 60001
+        )
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info()))  # localhost, no port
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == "http://localhost:60001/callback"
+        assert "http://localhost/callback" in caplog.text
+        assert "not a reusable loopback callback URI" in caplog.text
+
+    def test_stored_loopback_port(self, fake_home: Path) -> None:
+        """The storage helper extracts ports only from valid loopback URIs."""
+        del fake_home
+
+        storage = FileTokenStorage("notion")
+        # No token file on disk yet.
+        assert storage.stored_loopback_port() is None
+        # Loopback URI with explicit port — reused.
+        asyncio.run(storage.set_client_info(_make_client_info_with_loopback(54321)))
+        assert storage.stored_loopback_port() == 54321
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "https://localhost:5000/callback",
+            "http://127.0.0.1:5000/callback",
+            "http://localhost:5000/cb",
+            "http://localhost:notaport/callback",
+        ],
+    )
+    def test_stored_loopback_port_rejects_non_reusable_uris(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture, uri: str
+    ) -> None:
+        """Stored ports are reused only for the exact loopback callback shape."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": {
+                        "client_id": "client-id",
+                        "redirect_uris": [uri],
+                        "grant_types": ["authorization_code", "refresh_token"],
+                        "response_types": ["code"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert storage.stored_loopback_port() is None
+        assert uri in caplog.text
+        assert "not a reusable loopback callback URI" in caplog.text
+
+    def test_stored_loopback_port_warns_when_token_file_unreadable(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unreadable token files fall back with a warning breadcrumb."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_bytes(b"{not json")
+
+        assert storage.stored_loopback_port() is None
+        assert "unreadable during loopback port lookup" in caplog.text
+        assert "Failed to read MCP token file" in caplog.text
 
     async def test_non_interactive_reauth_handlers_raise(self) -> None:
         """In non-interactive mode, both OAuth handlers raise re-auth errors."""

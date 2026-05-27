@@ -191,9 +191,9 @@ class MissingProviderPackageError(ModelConfigError):
 
     Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
     keep working. Carries the `provider` name and the `package` to install so
-    callers can render targeted recovery hints (e.g., suggest
-    `pip install langchain-fireworks` or the `/model` slash command) without
-    string-matching on the formatted exception message.
+    callers can render targeted recovery hints (e.g., suggest `/install fireworks`
+    or the `/model` slash command) without string-matching on the formatted
+    exception message.
     """
 
     def __init__(self, message: str, *, provider: str, package: str) -> None:

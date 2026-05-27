@@ -307,7 +307,7 @@ async def perform_offload(
     if offload_backend is None:
         from deepagents.backends.filesystem import FilesystemBackend
 
-        offload_backend = FilesystemBackend()
+        offload_backend = FilesystemBackend(virtual_mode=False)
         logger.info("Using local FilesystemBackend for offload")
 
     middleware = SummarizationMiddleware(

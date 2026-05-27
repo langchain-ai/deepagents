@@ -167,6 +167,10 @@ def show_help() -> None:
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
+    console.print(
+        "  --install EXTRA            Install an optional extra (e.g. quickjs)"
+    )
+    console.print("  --yes                      Skip --install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show dcode and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")

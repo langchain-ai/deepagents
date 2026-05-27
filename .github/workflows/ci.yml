@@ -38,6 +38,7 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
       evals: ${{ steps.filter.outputs.evals }}
+      cubesandbox: ${{ steps.filter.outputs.cubesandbox }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
@@ -85,6 +86,12 @@ jobs:
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            cubesandbox:
+              - 'libs/partners/cubesandbox/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -150,6 +157,15 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-version: "3.13"
+
+  lint-cubesandbox:
+    name: "🧹 Lint cubesandbox"
+    needs: changes
+    if: needs.changes.outputs.cubesandbox == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/cubesandbox"
+      python-version: "3.11"
 
   lint-daytona:
     name: "🧹 Lint daytona"
@@ -227,6 +243,16 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-versions: '["3.12", "3.13"]'
+      coverage-python-version: "3.12"
+
+  test-cubesandbox:
+    name: "🧪 Test cubesandbox"
+    needs: changes
+    if: needs.changes.outputs.cubesandbox == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/cubesandbox"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
   test-daytona:
@@ -327,6 +353,7 @@ jobs:
       - lint-cli
       - lint-code
       - lint-evals
+      - lint-cubesandbox
       - lint-daytona
       - lint-modal
       - lint-runloop
@@ -335,6 +362,7 @@ jobs:
       - test-cli
       - test-code
       - test-evals
+      - test-cubesandbox
       - test-daytona
       - test-modal
       - test-runloop

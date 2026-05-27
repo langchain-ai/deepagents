@@ -51,6 +51,7 @@ body:
         - label: acp
         - label: evals
         - label: harbor
+        - label: cubesandbox
         - label: daytona
         - label: modal
         - label: quickjs

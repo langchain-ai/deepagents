@@ -10,6 +10,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
+| `langchain-cubesandbox` | `libs/partners/cubesandbox` | `langchain-cubesandbox` | [`langchain-cubesandbox`](https://pypi.org/project/langchain-cubesandbox/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |

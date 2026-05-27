@@ -23,6 +23,7 @@ updates:
       - "/libs/code"
       - "/libs/evals"
       - "/libs/acp"
+      - "/libs/partners/cubesandbox"
       - "/libs/partners/daytona"
       - "/libs/partners/modal"
       - "/libs/partners/quickjs"

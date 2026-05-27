@@ -51,6 +51,7 @@
     "cli": "cli",
     "cli-gha": "github_actions",
     "code": "dcode",
+    "cubesandbox": "cubesandbox",
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
@@ -62,6 +63,7 @@
     "examples": "examples",
     "harbor": "harbor",
     "infra": "infra",
+    "langchain-cubesandbox": "cubesandbox",
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
@@ -102,6 +104,11 @@
     {
       "label": "evals",
       "prefix": "libs/evals/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cubesandbox",
+      "prefix": "libs/partners/cubesandbox/",
       "skipExcludedFiles": true
     },
     {

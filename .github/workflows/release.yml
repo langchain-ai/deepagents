@@ -32,6 +32,7 @@ on:
           - deepagents-acp
           - deepagents-code
           - deepagents-evals
+          - langchain-cubesandbox
           - langchain-daytona
           - langchain-modal
           - langchain-quickjs
@@ -120,6 +121,9 @@ jobs:
             deepagents-evals)
               echo "working-dir=libs/evals" >> $GITHUB_OUTPUT
               ;;
+            langchain-cubesandbox)
+              echo "working-dir=libs/partners/cubesandbox" >> $GITHUB_OUTPUT
+              ;;
             langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
               ;;
@@ -134,7 +138,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-evals, langchain-cubesandbox, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
               exit 1
               ;;
           esac
@@ -791,6 +795,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # deepagents SDK: LangSmith sandbox tests
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # langchain-cubesandbox integration tests require access to a private
+          # CubeSandbox instance (CUBE_API_URL, CUBE_TEMPLATE_ID, CUBE_PROXY_NODE_IP,
+          # CUBE_API_KEY) and are not run in upstream CI; the integration test
+          # suite is verified locally by the package maintainer.
           # langchain-daytona, CLI test_sandbox_operations.py
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           # langchain-modal

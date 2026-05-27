@@ -103,6 +103,18 @@
       ],
       "changelog-path": "CHANGELOG.md"
     },
+    "libs/partners/cubesandbox": {
+      "release-type": "python",
+      "package-name": "langchain-cubesandbox",
+      "component": "langchain-cubesandbox",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_cubesandbox/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
     "libs/partners/daytona": {
       "release-type": "python",
       "package-name": "langchain-daytona",

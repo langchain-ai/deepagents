@@ -8,6 +8,7 @@ state snapshots in the server's serialized form.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,15 @@ from deepagents_code._debug import configure_debug_logging
 
 logger = logging.getLogger(__name__)
 configure_debug_logging(logger)
+
+_RUN_CANCEL_WAIT_SECONDS = 10.0
+"""Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
+Esc for more than ~10s, while leaving room for an actually-cancelling run to
+finish its in-flight tool call.
+
+Concurrent cancels keep aggregate wall time bounded by this value regardless of
+how many runs are active.
+"""
 
 
 def _require_thread_id(config: dict[str, Any] | None) -> str:
@@ -240,9 +250,18 @@ class RemoteAgent:
     ) -> None:
         """Update the state of a thread.
 
-        Exceptions from the underlying graph (server/network errors) are logged
-        at DEBUG level and then re-raised so callers can decide how to surface
-        them (callers typically log at WARNING with a friendlier message).
+        On HTTP 409 (`ConflictError`) the server still considers the thread
+        busy — typically because the client cancelled the SSE stream before
+        the server finished the run. In that case, cancel any pending/running
+        runs with `wait=True` and retry the state update once. Per-run cancel
+        waits are bounded by `_RUN_CANCEL_WAIT_SECONDS` and run concurrently,
+        so callers cannot block indefinitely regardless of how many runs were
+        active.
+
+        Other exceptions from the underlying graph (server/network errors) are
+        logged at DEBUG level and re-raised so callers can decide how to
+        surface them (callers typically log at WARNING with a friendlier
+        message).
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -251,14 +270,33 @@ class RemoteAgent:
         Raises:
             ValueError: If `thread_id` is not present in `config`.
         """  # noqa: DOC502 — raised by _require_thread_id
-        thread_id = _require_thread_id(config)
+        from langgraph_sdk.errors import ConflictError
 
+        thread_id = _require_thread_id(config)
+        prepared = _prepare_config(config)
         graph = self._get_graph()
+
         try:
-            await graph.aupdate_state(_prepare_config(config), values)
+            await graph.aupdate_state(prepared, values)
+        except ConflictError:
+            pass
         except Exception:
             logger.debug(
                 "Failed to update state for thread %s", thread_id, exc_info=True
+            )
+            raise
+        else:
+            return
+
+        await _cancel_active_runs(graph, thread_id)
+
+        try:
+            await graph.aupdate_state(prepared, values)
+        except Exception:
+            logger.debug(
+                "Retry of update_state still failed for thread %s",
+                thread_id,
+                exc_info=True,
             )
             raise
 
@@ -315,6 +353,93 @@ class RemoteAgent:
             Self.
         """
         return self
+
+
+async def _cancel_active_runs(graph: Any, thread_id: str) -> None:  # noqa: ANN401
+    """Cancel pending/running runs on a thread and wait for them to settle.
+
+    Best-effort: per-run cancellation failures are logged at DEBUG and
+    swallowed. Conditions that imply the retry will likely still 409 — failing
+    to obtain the SDK client, or failing to list runs in every status — are
+    logged at WARNING so they show up in default logs.
+
+    The SDK client is reached via `graph._validate_client()`, a private
+    attribute on `langgraph.pregel.remote.RemoteGraph`. If upstream renames
+    or removes it, this helper degrades to no-op and the caller's retry will
+    re-raise the original `ConflictError`.
+
+    Per-run cancels run concurrently and are bounded by
+    `_RUN_CANCEL_WAIT_SECONDS`, so aggregate wall time stays near that bound
+    regardless of how many runs are active.
+
+    Args:
+        graph: Underlying `RemoteGraph` instance.
+        thread_id: Server-side thread identifier.
+    """
+    try:
+        client = graph._validate_client()
+    except Exception:
+        logger.warning(
+            "Could not obtain SDK client for thread %s; retry will likely "
+            "still see the conflict",
+            thread_id,
+            exc_info=True,
+        )
+        return
+
+    run_ids: list[str] = []
+    listed_any = False
+    for status in ("running", "pending"):
+        try:
+            runs = await client.runs.list(thread_id, status=status, limit=10)
+        except Exception:
+            logger.debug(
+                "Failed to list %s runs for thread %s",
+                status,
+                thread_id,
+                exc_info=True,
+            )
+            continue
+        listed_any = True
+        for run in runs:
+            run_id = run.get("run_id") if isinstance(run, dict) else None
+            if run_id:
+                run_ids.append(run_id)
+
+    if not listed_any:
+        logger.warning(
+            "Could not list active runs for thread %s; retry will likely "
+            "still see the conflict",
+            thread_id,
+        )
+        return
+
+    if not run_ids:
+        return
+
+    async def _cancel_one(run_id: str) -> None:
+        try:
+            await asyncio.wait_for(
+                client.runs.cancel(thread_id, run_id, wait=True, action="interrupt"),
+                timeout=_RUN_CANCEL_WAIT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Timed out after %.1fs waiting for run %s on thread %s to "
+                "cancel; retry may still see the conflict",
+                _RUN_CANCEL_WAIT_SECONDS,
+                run_id,
+                thread_id,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel run %s on thread %s",
+                run_id,
+                thread_id,
+                exc_info=True,
+            )
+
+    await asyncio.gather(*(_cancel_one(rid) for rid in run_ids))
 
 
 # ---------------------------------------------------------------------------

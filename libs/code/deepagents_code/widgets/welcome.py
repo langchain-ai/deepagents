@@ -49,6 +49,7 @@ _TIPS: dict[str, int] = {
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
+    "Use /install <extra> to add optional dependencies (e.g. /install quickjs)": 1,
     "Use /theme to customize the TUI's colors": 1,
     "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,

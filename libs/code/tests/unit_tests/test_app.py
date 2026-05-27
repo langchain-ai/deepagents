@@ -2489,22 +2489,26 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com/o/org/projects/p/proj",
                 ),
                 patch("deepagents_code.app.webbrowser.open") as mock_open,
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
 
-            mock_open.assert_called_once_with(
-                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+            expected_url = (
+                "https://smith.langchain.com/o/org/projects/p/proj"
+                "/t/test-thread-123?utm_source=deepagents-code"
             )
+            mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
             assert any(  # not a URL check—just verifying the link was rendered
-                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
-                in str(w._content)
-                for w in app_msgs
+                expected_url in str(w._content) for w in app_msgs
             )
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
@@ -2515,7 +2519,7 @@ class TestTraceCommand:
             app._session_state = TextualSessionState()
 
             with patch(
-                "deepagents_code.config.build_langsmith_thread_url",
+                "deepagents_code.config.get_langsmith_project_name",
                 return_value=None,
             ):
                 await app._handle_trace_command("/trace")
@@ -2523,6 +2527,113 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+
+    async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
+        """Should distinguish a network/timeout failure from a config gap.
+
+        When tracing is configured (project name resolves) but the URL fetch
+        raises `LangSmithLookupTimeoutError` (network unreachable, slow API),
+        the user should see a network-flavored error rather than the misleading
+        "not configured" message.
+        """
+        from deepagents_code.config import LangSmithLookupTimeoutError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithLookupTimeoutError("timed out"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "Check your network" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
+
+    async def test_trace_shows_import_error_when_langsmith_missing(self) -> None:
+        """Should tell the user to install `langsmith` when import fails."""
+        from deepagents_code.config import LangSmithImportError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithImportError("not installed"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "langsmith" in rendered.lower()
+            assert "install" in rendered.lower()
+            assert "network" not in rendered.lower()
+
+    async def test_trace_shows_api_error_when_lookup_rejected(self) -> None:
+        """Should surface the SDK error (auth, 404) rather than blame network."""
+        from deepagents_code.config import LangSmithApiError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithApiError("401 Unauthorized"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "401 Unauthorized" in rendered
+            assert "LANGSMITH_API_KEY" in rendered
+            assert "Check your network" not in rendered
+
+    async def test_trace_shows_error_when_project_name_raises(self) -> None:
+        """Should surface a friendly error if `get_langsmith_project_name` raises."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with patch(
+                "deepagents_code.config.get_langsmith_project_name",
+                side_effect=RuntimeError("env resolution failed"),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "project name" in rendered.lower()
 
     async def test_trace_shows_error_when_no_session(self) -> None:
         """Should show error when there is no active session."""
@@ -2546,8 +2657,12 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
                 ),
                 patch(
                     "deepagents_code.app.webbrowser.open",
@@ -2583,8 +2698,12 @@ class TestTraceCommand:
 
             with (
                 patch(
-                    "deepagents_code.config.build_langsmith_thread_url",
-                    return_value="https://smith.langchain.com/t/test-thread-123",
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
                 ),
                 patch("deepagents_code.app.webbrowser.open"),
             ):
@@ -2613,15 +2732,21 @@ class TestTraceCommand:
             )
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
-        """Should show error message when build_langsmith_thread_url raises."""
+        """Should show error message when the URL fetch raises."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="test-thread-123")
 
-            with patch(
-                "deepagents_code.config.build_langsmith_thread_url",
-                side_effect=RuntimeError("SDK error"),
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=RuntimeError("SDK error"),
+                ),
             ):
                 await app._handle_trace_command("/trace")
                 await pilot.pause()
@@ -4561,6 +4686,10 @@ class TestTerminalBackgroundSync:
         )
 
         app = DeepAgentsApp()
+        # Force a known non-ANSI theme so the assertion is stable regardless
+        # of the test runner's saved preference (which may be ansi-dark).
+        app.theme = theme.DEFAULT_THEME
+        app.sync_terminal_background()
         entry = theme.get_registry()[app.theme]
 
         assert calls[-1] == entry.colors.background
@@ -4639,6 +4768,7 @@ class TestTerminalBackgroundSync:
         from deepagents_code import terminal_escape
 
         app = DeepAgentsApp()
+        app.theme = "langchain"  # force non-ANSI so the error path runs
 
         def _raise(_color: str) -> bool:
             msg = "terminal unavailable"
@@ -4650,6 +4780,44 @@ class TestTerminalBackgroundSync:
             app.sync_terminal_background()
 
         assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_sync_terminal_background_skips_ansi_dark(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        calls.clear()
+        app.theme = "ansi-dark"
+        app.sync_terminal_background()
+
+        assert calls == []
+
+    def test_sync_terminal_background_skips_ansi_light(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code import terminal_escape
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        calls.clear()
+        app.theme = "ansi-light"
+        app.sync_terminal_background()
+
+        assert calls == []
 
     def test_exit_resets_terminal_background(
         self, monkeypatch: pytest.MonkeyPatch
@@ -5202,8 +5370,7 @@ class TestDeferredActions:
             app._connecting = True
 
             error = MissingProviderPackageError(
-                "Missing package for provider 'fireworks'. "
-                "Install: pip install langchain-fireworks",
+                "Missing package for provider 'fireworks'. Install: /install fireworks",
                 provider="fireworks",
                 package="langchain-fireworks",
             )
@@ -5223,14 +5390,87 @@ class TestDeferredActions:
             widget = app._startup_failure_widget
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
-            assert "pip install langchain-fireworks" in rendered
+            # `fireworks` is a known extra → /install hint, not the raw uv form.
+            assert "/install fireworks" in rendered
             assert "/model fireworks:<model>" in rendered
+
+    async def test_server_failure_missing_vertexai_package_uses_declared_extra(
+        self,
+    ) -> None:
+        """Startup hint should resolve extras from missing packages."""
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "google_vertexai:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'google_vertexai'. "
+                "Install: /install vertex",
+                provider="google_vertexai",
+                package="langchain-google-vertexai",
+            )
+            with patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value="vertex",
+            ) as mock_extra_for_package:
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "/install vertex" in rendered
+            assert "/install google-vertexai" not in rendered
+            assert "/model google_vertexai:<model>" in rendered
+
+    async def test_server_failure_missing_unknown_package_shows_uv_command(
+        self,
+    ) -> None:
+        """Manual fallback should include the default uv tool command."""
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "custom_provider:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'custom_provider'.",
+                provider="custom_provider",
+                package="langchain-custom_provider",
+            )
+            with patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value=None,
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert (
+                "uv tool install -U deepagents-code --with langchain-custom_provider"
+                in rendered
+            )
+            assert "/model custom_provider:<model>" in rendered
 
     async def test_retry_startup_clears_missing_package_slot(self) -> None:
         """`_retry_startup_with_model` must clear the package recovery slot.
 
         Mirrors the credentials-slot reset directly above it. A regression
-        that drops the reset would leave a stale `pip install` hint visible
+        that drops the reset would leave a stale `/install` hint visible
         after a successful retry, or render the wrong hint on the next failure.
         """
         from deepagents_code.model_config import (
@@ -6226,7 +6466,9 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
             NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),
             NotificationAction(ActionId.SKIP_VERSION, "Skip this version"),
         ),
-        payload=UpdateAvailablePayload(latest=latest, upgrade_cmd="pip install"),
+        payload=UpdateAvailablePayload(
+            latest=latest, upgrade_cmd="uv tool upgrade deepagents-code"
+        ),
     )
 
 
@@ -6239,7 +6481,7 @@ def test_build_update_notification_uses_release_and_installed_age_copy() -> None
         cli_version="1.0.0",
         release_age=" (released 3d ago)",
         installed_age=" (8 days old)",
-        upgrade_cmd="pip install",
+        upgrade_cmd="uv tool upgrade deepagents-code",
     )
 
     assert notification.body == (
@@ -7121,7 +7363,7 @@ class TestNotificationCenterIntegration:
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
-                return_value="pip install -U deepagents-code",
+                return_value="uv tool upgrade deepagents-code",
             ),
         ):
             async with app.run_test() as pilot:
@@ -7170,7 +7412,7 @@ class TestNotificationCenterIntegration:
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
-                return_value="pip install -U deepagents-code",
+                return_value="uv tool upgrade deepagents-code",
             ),
         ):
             async with app.run_test() as pilot:

@@ -513,6 +513,214 @@ class TestRemoteAgentUpdateState:
         uuid.UUID(call_config["configurable"]["thread_id"])
 
 
+def _conflict_error() -> Exception:
+    """Build a `ConflictError` (HTTP 409) for tests."""
+    import httpx
+    from langgraph_sdk.errors import ConflictError
+
+    request = httpx.Request("POST", "http://localhost:8123/threads/x/state")
+    response = httpx.Response(409, request=request)
+    return ConflictError("Thread busy", response=response, body=None)
+
+
+class TestRemoteAgentUpdateStateConflictRecovery:
+    """`aupdate_state` cancels in-flight runs on 409 and retries once."""
+
+    def _agent_with_client(
+        self,
+        *,
+        runs_list: AsyncMock,
+        runs_cancel: AsyncMock,
+        update_side_effect: list[Any],
+    ) -> tuple[RemoteAgent, MagicMock]:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock(side_effect=update_side_effect)
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+        return agent, mock_graph
+
+    async def test_cancels_all_active_runs_then_retries(self) -> None:
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}, {"run_id": "run-2"}],  # running
+                [{"run_id": "run-3"}],  # pending
+            ]
+        )
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 3
+        cancelled_ids = {call.args[1] for call in runs_cancel.await_args_list}
+        assert cancelled_ids == {"run-1", "run-2", "run-3"}
+        # wait=True + action="interrupt" are contractual — `wait` is what
+        # actually settles the thread before the retry.
+        for call in runs_cancel.await_args_list:
+            assert call.kwargs == {"wait": True, "action": "interrupt"}
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_no_active_runs_still_retries(self) -> None:
+        runs_list = AsyncMock(return_value=[])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 0
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_retry_still_conflict_raises(self) -> None:
+        runs_list = AsyncMock(return_value=[])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), _conflict_error()],
+        )
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_cancel_timeout_still_retries(self) -> None:
+        import asyncio
+
+        async def slow_cancel(*_args: Any, **_kwargs: Any) -> None:
+            await asyncio.sleep(60)  # exceeds wait_for timeout
+
+        runs_list = AsyncMock(return_value=[{"run_id": "run-1"}])
+        runs_cancel = AsyncMock(side_effect=slow_cancel)
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        with patch("deepagents_code.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01):
+            await agent.aupdate_state(_config(), {"messages": []})
+
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_cancel_non_timeout_exception_is_swallowed(self) -> None:
+        runs_list = AsyncMock(side_effect=[[{"run_id": "run-1"}], []])
+        runs_cancel = AsyncMock(side_effect=RuntimeError("server hiccup"))
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 1
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_list_partial_failure_still_retries(self) -> None:
+        # First status list raises; second returns runs. Recovery should still
+        # cancel what it can find and retry.
+        runs_list = AsyncMock(side_effect=[RuntimeError("boom"), [{"run_id": "run-2"}]])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 1
+        assert runs_cancel.await_args_list[0].args[1] == "run-2"
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_list_total_failure_skips_cancel(self) -> None:
+        # Both status calls raise. With nothing listed, no cancels happen and
+        # the retry surfaces the persistent conflict.
+        runs_list = AsyncMock(side_effect=[RuntimeError("boom"), RuntimeError("boom")])
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), _conflict_error()],
+        )
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        runs_cancel.assert_not_called()
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_validate_client_raises_skips_cancel_and_retries(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock(
+            side_effect=[_conflict_error(), _conflict_error()]
+        )
+        mock_graph._validate_client.side_effect = RuntimeError("no client")
+        agent._graph = mock_graph
+
+        from langgraph_sdk.errors import ConflictError
+
+        with pytest.raises(ConflictError):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_runs_without_run_id_are_skipped(self) -> None:
+        runs_list = AsyncMock(
+            side_effect=[
+                # Mixed shapes: missing key, None id, non-dict — all skipped.
+                [{"run_id": "ok"}, {"run_id": None}, {"status": "running"}, "garbage"],
+                [],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[_conflict_error(), None],
+        )
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        assert runs_cancel.await_count == 1
+        assert runs_cancel.await_args_list[0].args[1] == "ok"
+        assert mock_graph.aupdate_state.await_count == 2
+
+    async def test_non_conflict_exception_does_not_retry(self) -> None:
+        runs_list = AsyncMock()
+        runs_cancel = AsyncMock()
+        agent, mock_graph = self._agent_with_client(
+            runs_list=runs_list,
+            runs_cancel=runs_cancel,
+            update_side_effect=[ConnectionError("down")],
+        )
+
+        with pytest.raises(ConnectionError, match="down"):
+            await agent.aupdate_state(_config(), {"messages": []})
+        assert mock_graph.aupdate_state.await_count == 1
+        runs_list.assert_not_called()
+        runs_cancel.assert_not_called()
+
+
 class TestRemoteAgentEnsureThread:
     """Verify remote thread registration before state writes."""
 

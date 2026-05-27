@@ -177,6 +177,7 @@ class UserMessage(_TimestampClickMixin, Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $primary;
+        pointer: text;
     }
     """
 
@@ -267,6 +268,7 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
+        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -605,6 +607,7 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     AssistantMessage Markdown {
         padding: 0;
         margin: 0;
+        pointer: text;
     }
 
     AssistantMessage MarkdownFence {
@@ -1876,6 +1879,7 @@ class DiffMessage(_TimestampClickMixin, Static):
         margin: 0 0 1 0;
         background: $surface;
         border: solid $primary;
+        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -1949,6 +1953,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
+        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -2059,6 +2064,7 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
+        pointer: text;
     }
     """
 
@@ -2115,6 +2121,7 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
+        pointer: text;
     }
     """
 

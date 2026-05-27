@@ -9485,6 +9485,55 @@ class TestMCPLoginCommand:
             restart.assert_awaited_once_with("notion")
             assert app._pending_mcp_reconnect is False
 
+    async def test_prompt_mcp_reconnect_restart_choice_clears_splash_prompts(
+        self,
+    ) -> None:
+        """Choosing `reconnect` clears stale login/reconnect splash counters."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="github",
+                    transport="http",
+                    status="awaiting_reconnect",
+                    error="Authenticated — run `/mcp reconnect` to load tools.",
+                ),
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="unauthenticated",
+                    error="needs re-authentication",
+                ),
+            ],
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+
+            banner = MagicMock(spec=WelcomeBanner)
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("reconnect")
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(app, "query_one", return_value=banner),
+                patch.object(app, "_restart_server_for_mcp_refresh", new=AsyncMock()),
+            ):
+                await app._prompt_mcp_reconnect("notion")
+
+            assert app._mcp_unauthenticated == 0
+            assert app._mcp_awaiting_reconnect == 0
+            banner.set_connected.assert_called_once_with(
+                0,
+                mcp_unauthenticated=0,
+                mcp_errored=0,
+                mcp_awaiting_reconnect=0,
+            )
+
     async def test_prompt_mcp_reconnect_later_choice_defers(self) -> None:
         """Choosing `later` marks the reconnect pending and reopens the switcher.
 

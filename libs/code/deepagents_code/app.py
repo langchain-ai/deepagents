@@ -8522,6 +8522,20 @@ class DeepAgentsApp(App):
             mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
         )
 
+    def _clear_mcp_login_reconnect_banner_counts(self, server_name: str) -> None:
+        """Optimistically clear splash login/reconnect prompts before restart.
+
+        Args:
+            server_name: Server whose successful login triggered the reconnect.
+        """
+        self._mcp_unauthenticated = sum(
+            1
+            for s in self._mcp_server_info or []
+            if s.name != server_name and s.needs_attention()
+        )
+        self._mcp_awaiting_reconnect = 0
+        self._refresh_welcome_banner_mcp_counts()
+
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
@@ -9091,6 +9105,7 @@ class DeepAgentsApp(App):
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
+            self._clear_mcp_login_reconnect_banner_counts(server_name)
             await self._restart_server_for_mcp_refresh(server_name)
             return
 

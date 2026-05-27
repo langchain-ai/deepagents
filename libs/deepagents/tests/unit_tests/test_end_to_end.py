@@ -1221,6 +1221,16 @@ class TestDeepAgentEndToEnd:
         combined = tool_messages[0].content + tool_messages[1].content
         assert "important instruction" in combined
         assert "line4" in combined
+        # All three continuation chunks of the wrapped line 2 must render in
+        # order, before `important instruction`, with nothing dropped at the
+        # page boundary.
+        for marker in ("2\t", "2.1\t", "2.2\t"):
+            assert marker in combined, f"missing continuation marker {marker!r}"
+        idx_first = combined.index("2\t")
+        idx_cont1 = combined.index("2.1\t")
+        idx_cont2 = combined.index("2.2\t")
+        idx_next = combined.index("important instruction")
+        assert idx_first < idx_cont1 < idx_cont2 < idx_next
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

@@ -8940,10 +8940,12 @@ class TestMCPLoginCommand:
         )
         assert app._mcp_unauthenticated == 0
         assert app._mcp_errored == 1
+        assert app._mcp_awaiting_reconnect == 1
         banner.set_connected.assert_called_once_with(
             1,
             mcp_unauthenticated=0,
             mcp_errored=1,
+            mcp_awaiting_reconnect=1,
         )
 
     def test_optimistic_mcp_login_pending_state_warns_for_unknown_server(
@@ -8985,6 +8987,66 @@ class TestMCPLoginCommand:
         assert any(
             "Welcome banner not mounted during MCP count refresh" in record.message
             for record in caplog.records
+        )
+
+    def test_init_counts_awaiting_reconnect_servers(self) -> None:
+        """Constructor seeds `_mcp_awaiting_reconnect` from initial server info."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        waiting = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="awaiting_reconnect",
+            error="Authenticated — run `/mcp reconnect` to load tools.",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[waiting])
+
+        assert app._mcp_awaiting_reconnect == 1
+
+    async def test_server_ready_drops_awaiting_reconnect_after_reconnect(
+        self,
+    ) -> None:
+        """A successful reconnect clears the awaiting-reconnect counter.
+
+        Locks in the contract that `MCPServerReady` recomputes the new counter
+        from authoritative server info, so the splash line disappears as soon
+        as the LangGraph server reloads tools.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        waiting = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="awaiting_reconnect",
+            error="Authenticated — run `/mcp reconnect` to load tools.",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[waiting])
+        assert app._mcp_awaiting_reconnect == 1
+
+        banner = MagicMock(spec=WelcomeBanner)
+        app.query_one = MagicMock(return_value=banner)  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+
+        loaded = MCPServerInfo(
+            name="github",
+            transport="http",
+            tools=(MCPToolInfo(name="search_repos", description="Search repos"),),
+        )
+        app.on_deep_agents_app_server_ready(
+            app.ServerReady(
+                agent=MagicMock(), server_proc=None, mcp_server_info=[loaded]
+            ),
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+        assert app._mcp_awaiting_reconnect == 0
+        banner.set_connected.assert_called_once_with(
+            1,
+            mcp_unauthenticated=0,
+            mcp_errored=0,
+            mcp_awaiting_reconnect=0,
         )
 
     async def test_disable_then_reenable_before_reconnect_clears_pending_notice(

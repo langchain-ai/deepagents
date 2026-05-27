@@ -108,3 +108,12 @@ async def test_human_message_id_stable_across_invocations_async() -> None:
 
     assert id_turn1 is not None
     assert id_turn1 == id_turn2, f"Async: HumanMessage ID changed across invocations: turn 1={id_turn1!r}, turn 2={id_turn2!r}"
+
+
+def test_none_state_does_not_crash() -> None:
+    """Regression test for #3564: None base state must not TypeError."""
+    result = _messages_delta_reducer(None, [[HumanMessage(content="hi")]])
+
+    assert len(result) == 1
+    assert result[0].content == "hi"
+    assert result[0].id is not None

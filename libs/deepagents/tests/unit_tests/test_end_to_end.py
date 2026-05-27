@@ -417,28 +417,23 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test line count limiting in read_file tool with very long lines."""
-        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
-        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
-        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
-
-        # Add some normal lines before and after
+        """`limit` bounds source lines; wrapped continuations don't displace later lines."""
+        # 18k chars wraps into 4 rows (2, 2.1, 2.2, 2.3) but still counts as one
+        # source line against `limit`.
+        very_long_line = "x" * 18000
         lines = [
             "short line 0",
-            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            very_long_line,
             "short line 2",
             "short line 3",
             "short line 4",
         ]
         content = "\n".join(lines)
 
-        # Create backend and write file
-
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # Create a fake model that calls read_file with limit=3
-        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        # `limit=3` source lines → lines 1, 2 (all 4 wrapped chunks), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -460,41 +455,28 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Should have the first short line
         assert "short line 0" in file_content
-
-        # Should have the beginning of the very long line (line 2 with continuation)
-        assert "xxx" in file_content  # The very long line should be present
-
-        # Should NOT have the later short lines because the limit cuts off after 3 output lines
-        # (line 1, line 2, line 2.1)
-        assert "short line 2" not in file_content
+        assert "xxx" in file_content
+        # All four wrapped chunks of source line 2 render in order.
+        for marker in ("2\t", "2.1\t", "2.2\t", "2.3\t"):
+            assert marker in file_content, f"missing continuation marker {marker!r}"
+        # Source line 3 is the third source line and must be included.
+        assert "short line 2" in file_content
+        # Source lines 4 and 5 fall outside `limit=3`.
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
-
-        # Count actual lines in the output (excluding empty lines from formatting)
-        output_lines = [line for line in file_content.split("\n") if line.strip()]
-        # Should be at most 3 lines (the limit we specified)
-        # This includes continuation lines as separate lines
-        assert len(output_lines) <= 3
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""

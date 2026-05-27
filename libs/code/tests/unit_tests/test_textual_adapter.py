@@ -309,6 +309,179 @@ class TestInterruptCleanup:
         )
 
 
+class TestInterruptCleanupTokenPersist:
+    """`_context_tokens` rides on the cancellation `aupdate_state` write."""
+
+    async def test_includes_context_tokens_in_cancellation_update(self) -> None:
+        """The cancellation HumanMessage write carries the latest token count."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=4321,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        # Only the cancellation write happens (no partial AI message in this test);
+        # it carries both `messages` and `_context_tokens`.
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 4321
+        assert "messages" in captured[0]
+
+    async def test_omits_context_tokens_when_no_usage_captured(self) -> None:
+        """Zero tokens means we never saw `usage_metadata`; preserve the prior value."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert "_context_tokens" not in captured[0]
+
+    async def test_includes_context_tokens_for_output_only_turn(self) -> None:
+        """Output-only AI turns (no input usage) still persist a count."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=500,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 500
+
+    async def test_remote_agent_interrupt_write_carries_context_tokens(self) -> None:
+        """Remote agents are not skipped on the interrupt-cleanup write.
+
+        Locks in the deletion of the old `_persist_context_tokens` `RemoteAgent`
+        short-circuit so a future refactor cannot silently re-introduce it.
+        """
+        from deepagents_code.remote_client import RemoteAgent
+
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aupdate_state = AsyncMock(side_effect=_capture)
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=1234,
+            captured_output_tokens=88,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert isinstance(agent, RemoteAgent)
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 1322
+
+    async def test_partial_ai_message_write_does_not_carry_tokens(self) -> None:
+        """Only the cancellation write carries `_context_tokens`."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=7777,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 2
+        # First write is the interrupted AI message; should not be polluted.
+        assert "_context_tokens" not in captured[0]
+        # Second write is the cancellation HumanMessage; carries the token count.
+        assert captured[1]["_context_tokens"] == 7777
+
+
 class TestBuildStreamConfig:
     """Tests for `build_stream_config` metadata construction."""
 
@@ -1353,16 +1526,40 @@ class TestExecuteTaskTextualHITLShellSuppression:
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
 
-    async def test_mixed_batch_only_shell_suppressed(self) -> None:
-        """Parallel shell + non-shell tools: only the shell row is hidden."""
+    async def test_batch_approval_keeps_all_widgets_visible(self) -> None:
+        """Batched approvals (>1 request) must not hide any tool widget.
+
+        The approval dialog only renders a per-tool command preview for
+        single-tool approvals. For batches it shows just a count header,
+        so suppressing the streamed rows would leave the user with no
+        preview of what's being approved.
+        """
         _adapter, _mounted, snapshots = await self._run_with_decision(
             tool_call_name="execute",
             tool_call_id="tool-shell",
             approval_decision={"type": "approve"},
             extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
         )
-        assert snapshots["tool-shell"] == (False, True)
+        assert snapshots["tool-shell"] == (True, False)
         assert snapshots["tool-read"] == (True, False)
+
+    async def test_batch_of_shell_tools_keeps_all_widgets_visible(self) -> None:
+        """Multiple parallel `execute` calls: all rows stay visible.
+
+        Regression guard: the batch approval dialog does not render
+        per-tool commands, so hiding every `execute` row left users with
+        only a generic "N Tool Calls Require Approval" header.
+        """
+        _adapter, _mounted, snapshots = await self._run_with_decision(
+            tool_call_name="execute",
+            tool_call_id="tool-shell-1",
+            approval_decision={"type": "approve"},
+            extra_tool_calls=[
+                ("execute", {"command": "echo bye"}, "tool-shell-2"),
+            ],
+        )
+        assert snapshots["tool-shell-1"] == (True, False)
+        assert snapshots["tool-shell-2"] == (True, False)
 
     async def test_shell_widget_restored_when_approval_raises(self) -> None:
         """`finally` must restore the widget even if approval raises."""

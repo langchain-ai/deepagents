@@ -23,8 +23,11 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "REPL.\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "
-    "no `fetch`, no `require`.\n"
+    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
+    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
+    "unavailable or stubbed). External side effects from inside the REPL are "
+    "only reachable via the `tools.*` namespace when it is exposed (see "
+    "below); without it, the REPL is pure computation.\n"
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )

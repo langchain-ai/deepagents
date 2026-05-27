@@ -10,7 +10,7 @@ from deepagents_code.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
-    HIDDEN_DEBUG,
+    HIDDEN_COMMANDS,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
@@ -69,7 +69,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
-            | HIDDEN_DEBUG
+            | HIDDEN_COMMANDS
         )
 
     def test_aliases_in_correct_tier(self) -> None:
@@ -116,6 +116,23 @@ class TestSlashCommands:
             assert cmd.to_entry() == entry
 
 
+class TestHiddenCommands:
+    """`HIDDEN_COMMANDS` membership and autocomplete absence."""
+
+    def test_restart_is_hidden(self) -> None:
+        assert "/restart" in HIDDEN_COMMANDS
+
+    def test_debug_error_is_hidden(self) -> None:
+        assert "/debug-error" in HIDDEN_COMMANDS
+
+    def test_hidden_not_in_autocomplete(self) -> None:
+        names = {entry.name for entry in SLASH_COMMANDS}
+        for hidden in HIDDEN_COMMANDS:
+            assert hidden not in names, (
+                f"Hidden command {hidden!r} leaked into SLASH_COMMANDS"
+            )
+
+
 class TestAgentsCommand:
     """Validate the `/agents` entry specifically.
 
@@ -135,6 +152,37 @@ class TestAgentsCommand:
 
     def test_agents_classified_as_immediate_ui(self) -> None:
         assert "/agents" in IMMEDIATE_UI
+
+
+class TestMCPCommand:
+    """Validate the `/mcp` entry specifically.
+
+    `/mcp` now accepts an optional `login <server>` subcommand, so the
+    entry must expose an argument hint that surfaces this in autocomplete
+    without breaking the bare-form viewer invocation.
+    """
+
+    def test_mcp_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/mcp" in names
+
+    def test_mcp_argument_hint_advertises_login(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "login" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_oauth(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "oauth" in keywords or "authenticate" in keywords
+
+    def test_mcp_argument_hint_advertises_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "reconnect" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "reconnect" in keywords
 
 
 class TestCopyCommand:

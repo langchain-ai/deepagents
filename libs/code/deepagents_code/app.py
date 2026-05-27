@@ -136,6 +136,7 @@ if TYPE_CHECKING:
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.remote_client import RemoteAgent
     from deepagents_code.server import ServerProcess
     from deepagents_code.skills.load import ExtendedSkillMetadata
@@ -423,7 +424,8 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
             ui["theme"] = name
 
             fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp"
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
             )
             try:
                 with os.fdopen(fd, "wb") as f:
@@ -463,7 +465,8 @@ def save_theme_preference(name: str) -> bool:
 
 
 def _save_terminal_theme_mapping_result(
-    term_program: str, name: str
+    term_program: str,
+    name: str,
 ) -> _ConfigWriteResult:
     """Persist a terminal theme mapping and return TUI-facing status details.
 
@@ -514,14 +517,15 @@ def _save_terminal_theme_mapping_result(
                     )
                     repair_messages.append(
                         "Existing [ui.terminal_themes] was not a table and was "
-                        "replaced while saving this terminal default."
+                        "replaced while saving this terminal default.",
                     )
                 terminal_themes_table = {}
                 ui["terminal_themes"] = terminal_themes_table
             terminal_themes_table[term_program] = name
 
             fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp"
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
             )
             try:
                 with os.fdopen(fd, "wb") as f:
@@ -679,6 +683,30 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
 
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
+_RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
+
+
+def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
+    """Parse the argument tail of `/mcp reconnect [force]`.
+
+    Trailing tokens after `force` reject because the user's intent is
+    unclear.
+
+    Args:
+        rest: Everything after `/mcp reconnect` (already stripped).
+
+    Returns:
+        `(force, valid)`. `valid=False` means the caller should surface
+        the usage message and skip the handler.
+    """
+    tokens = rest.split()
+    if not tokens:
+        return False, True
+    if len(tokens) == 1 and tokens[0].lower() in _RECONNECT_FORCE_TOKENS:
+        return True, True
+    return False, False
+
+
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
 """Seconds since the last keystroke after which the user is considered idle and
 a pending approval widget can be shown.
@@ -721,6 +749,7 @@ DeferredActionKind = Literal[
     "thread_switch",
     "chat_output",
     "agent_switch",
+    "mcp_login",
 ]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
@@ -1260,11 +1289,20 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
+        """Pre-disable server metadata for optimistic viewer toggles."""
+
+        self._pending_mcp_login_reconnect = False
+        """Whether a successful MCP login is waiting for reconnect."""
+
+        self._pending_mcp_disable_reconnect_servers: set[str] = set()
+        """MCP servers with disable-state changes waiting for reconnect."""
+
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
         self._mcp_unauthenticated = sum(
-            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (mcp_server_info or []) if s.needs_attention()
         )
         """MCP servers awaiting a `dcode mcp login` run."""
 
@@ -1273,8 +1311,22 @@ class DeepAgentsApp(App):
         )
         """MCP servers that failed to load (config or network error)."""
 
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (mcp_server_info or []) if s.status == "awaiting_reconnect"
+        )
+        """MCP servers that completed OAuth login but are blocked on
+        `/mcp reconnect` before their tools can load.
+
+        See `MCPServerStatus` for the underlying state machine.
+        """
+
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
+        self._pending_mcp_reconnect: bool = False
+        """Set after a successful MCP login when the user defers the server
+        restart. Cleared by the next reconnect or restart so multiple deferred
+        logins coalesce into a single user-driven restart."""
 
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
@@ -1331,7 +1383,8 @@ class DeepAgentsApp(App):
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
-                self._sandbox_type, self._sandbox_type.title()
+                self._sandbox_type,
+                self._sandbox_type.title(),
             )
             self.sub_title = f"Sandbox: {display}"
 
@@ -1426,6 +1479,16 @@ class DeepAgentsApp(App):
         """Set to the offending provider name when startup failed with
         `MissingCredentialsError`; `None` otherwise. Gates the `/model`
         recovery hint without string-matching on the formatted error.
+        """
+
+        self._server_startup_missing_provider_package: (
+            MissingProviderPackageError | None
+        ) = None
+        """The exception itself when startup failed with
+        `MissingProviderPackageError`; `None` otherwise. Stashing the exception
+        rather than a tuple gives the hint builder named access to `.provider`
+        and `.package`, and gates the `/install` / `/model` recovery hint
+        without string-matching on the formatted error.
         """
 
         self._retry_status_widget: AppMessage | None = None
@@ -1658,7 +1721,7 @@ class DeepAgentsApp(App):
             suppress=[rich],
         )
         self._exit_renderables.append(
-            Segments(self.console.render(traceback, self.console.options))
+            Segments(self.console.render(traceback, self.console.options)),
         )
         self._close_messages_no_wait()
 
@@ -1680,6 +1743,7 @@ class DeepAgentsApp(App):
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -1768,7 +1832,7 @@ class DeepAgentsApp(App):
         # the filesystem probe is already done. _post_paint_init fires the
         # heavier workers (server, model creation) afterward.
         self._startup_task = asyncio.create_task(
-            self._resolve_git_branch_and_continue()
+            self._resolve_git_branch_and_continue(),
         )
         self._maybe_start_external_event_source()
 
@@ -1790,7 +1854,7 @@ class DeepAgentsApp(App):
         source = UnixSocketEventSource(path)
         self._external_event_source = source
         self._external_event_source_task = asyncio.create_task(
-            self._run_external_event_source(source)
+            self._run_external_event_source(source),
         )
 
     async def _run_external_event_source(self, source: EventSource) -> None:
@@ -1892,7 +1956,7 @@ class DeepAgentsApp(App):
         # Unusual repo layout — hop to a thread for `git rev-parse`.
         self._cancel_git_branch_refresh_task()
         refresh_task = asyncio.create_task(
-            self._refresh_git_branch_subprocess_fallback(cwd)
+            self._refresh_git_branch_subprocess_fallback(cwd),
         )
         self._git_branch_refresh_task = refresh_task
 
@@ -2040,7 +2104,7 @@ class DeepAgentsApp(App):
         # serializes startup against user input.
         if not self._connecting and not self._server_startup_deferred:
             self.call_after_refresh(
-                lambda: asyncio.create_task(self._run_session_start_sequence())
+                lambda: asyncio.create_task(self._run_session_start_sequence()),
             )
 
     async def _init_session_state(self) -> None:
@@ -2326,7 +2390,8 @@ class DeepAgentsApp(App):
             from deepagents_code.model_config import save_recent_agent
 
             saved = await asyncio.to_thread(
-                save_recent_agent, self._default_assistant_id
+                save_recent_agent,
+                self._default_assistant_id,
             )
             if not saved:
                 logger.warning(
@@ -2390,7 +2455,7 @@ class DeepAgentsApp(App):
                     error=server_result
                     if isinstance(server_result, Exception)
                     else RuntimeError(str(server_result)),
-                )
+                ),
             )
             return
 
@@ -2416,7 +2481,7 @@ class DeepAgentsApp(App):
                 agent=agent,
                 server_proc=server_proc,
                 mcp_server_info=mcp_info,
-            )
+            ),
         )
 
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
@@ -2426,6 +2491,10 @@ class DeepAgentsApp(App):
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
+        self._mcp_optimistic_original_server_info.clear()
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._sync_pending_mcp_reconnect()
 
         # Drop transient failure-state widgets — banner state and the agent
         # response now convey "connected", so the prior error and breadcrumb
@@ -2450,10 +2519,13 @@ class DeepAgentsApp(App):
             task.add_done_callback(_log_task_exception)
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
         self._mcp_unauthenticated = sum(
-            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (event.mcp_server_info or []) if s.needs_attention()
         )
         self._mcp_errored = sum(
             1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "awaiting_reconnect"
         )
 
         # Update welcome banner to show ready state
@@ -2463,13 +2535,47 @@ class DeepAgentsApp(App):
                 self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
+        # Refresh the status bar model so a successful retry after a failed
+        # startup (e.g. `/model` switching providers after `ModelConfigError`)
+        # surfaces the now-active model. `StatusBar.on_mount` only runs once,
+        # and `_retry_startup_with_model` updates `settings` via
+        # `apply_to_settings` without pushing into the widget.
+        if self._status_bar is None:
+            logger.warning("Status bar not found during server ready transition")
+        else:
+            from deepagents_code.config import settings
+
+            provider = settings.model_provider or ""
+            model = settings.model_name or ""
+            if not provider or not model:
+                logger.warning(
+                    "Settings missing model identity at server ready "
+                    "(provider=%r, model=%r); status bar will render blank",
+                    provider,
+                    model,
+                )
+            self._status_bar.set_model(provider=provider, model=model)
+
         if self._active_mcp_viewer is not None:
-            with suppress(Exception):
-                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
+            viewer = self._active_mcp_viewer
+
+            async def _refresh_viewer() -> None:
+                # No local `suppress` — the `_log_task_exception` done
+                # callback is the single error sink. Silencing here
+                # would make that callback dead code (its `task.result()`
+                # call could never see a raised exception) and a real
+                # `DuplicateIds` / `AttributeError` would leave the
+                # viewer stuck on the connecting placeholder with no
+                # signal in the logs.
+                await viewer.refresh_server_info(self._mcp_server_info or [])
+
+            task = asyncio.create_task(_refresh_viewer())
+            task.add_done_callback(_log_task_exception)
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -2477,7 +2583,7 @@ class DeepAgentsApp(App):
         # startup command always resolves before the agent sees any user
         # input.
         self.call_after_refresh(
-            lambda: asyncio.create_task(self._run_session_start_sequence())
+            lambda: asyncio.create_task(self._run_session_start_sequence()),
         )
 
         # Drain deferred actions (e.g. model/thread switch queued during connection)
@@ -2494,8 +2600,8 @@ class DeepAgentsApp(App):
                         await self._mount_message(
                             ErrorMessage(
                                 "A deferred action failed during startup. "
-                                "You may need to retry the operation."
-                            )
+                                "You may need to retry the operation.",
+                            ),
                         )
 
             self.call_after_refresh(lambda: asyncio.create_task(_safe_drain()))
@@ -2503,7 +2609,10 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         from deepagents_code.mcp_tools import MCPConfigError
-        from deepagents_code.model_config import MissingCredentialsError
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+        )
 
         self._connecting = False
         self._connection_ready_event.set()
@@ -2518,6 +2627,11 @@ class DeepAgentsApp(App):
         self._server_startup_missing_credentials_provider = (
             event.error.provider
             if isinstance(event.error, MissingCredentialsError)
+            else None
+        )
+        self._server_startup_missing_provider_package = (
+            event.error
+            if isinstance(event.error, MissingProviderPackageError)
             else None
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
@@ -2548,6 +2662,34 @@ class DeepAgentsApp(App):
                 "`/model <provider>:<model>` to retry startup. Or pick a "
                 "different provider directly with `/model`."
             )
+        elif (
+            self._server_startup_missing_provider_package is not None
+            and self._server_kwargs is not None
+        ):
+            missing = self._server_startup_missing_provider_package
+            from deepagents_code.extras_info import extra_for_package
+
+            extra = extra_for_package(missing.package)
+            if extra is not None:
+                text += (
+                    f"\n\nHint: install the package with `/install {extra}`, "
+                    f"then run `/model {missing.provider}:<model>` to retry. "
+                    "Or pick a different provider with `/model`."
+                )
+            else:
+                from deepagents_code.update_check import install_package_command
+
+                try:
+                    install_cmd = install_package_command(missing.package)
+                except ValueError:
+                    install_hint = f"install the `{missing.package}` package manually"
+                else:
+                    install_hint = f"run `{install_cmd}`"
+                text += (
+                    f"\n\nHint: {install_hint}, then run "
+                    f"`/model {missing.provider}:<model>` "
+                    "to retry. Or pick a different provider with `/model`."
+                )
 
         async def _mount_failure() -> None:
             # Drop any prior failure widget (re-entrant on retry-then-fail).
@@ -2690,7 +2832,8 @@ class DeepAgentsApp(App):
 
             await asyncio.to_thread(get_available_models)
             await asyncio.to_thread(
-                get_model_profiles, cli_override=self._profile_override
+                get_model_profiles,
+                cli_override=self._profile_override,
             )
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
@@ -2731,7 +2874,8 @@ class DeepAgentsApp(App):
             )
 
             available, latest = await asyncio.to_thread(
-                is_update_available, bypass_cache=periodic
+                is_update_available,
+                bypass_cache=periodic,
             )
             if not available or latest is None:
                 return
@@ -2807,10 +2951,12 @@ class DeepAgentsApp(App):
 
                 cmd = upgrade_command()
                 release_age = await asyncio.to_thread(
-                    format_release_age_parenthetical, latest
+                    format_release_age_parenthetical,
+                    latest,
                 )
                 installed_age = await asyncio.to_thread(
-                    format_installed_age_suffix, cli_version
+                    format_installed_age_suffix,
+                    cli_version,
                 )
                 notification = self._build_update_notification(
                     latest=latest,
@@ -2940,67 +3086,202 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(
                         "Updates are not available for editable installs. "
-                        f"Currently on v{cli_version}{age_suffix}."
-                    )
+                        f"Currently on v{cli_version}{age_suffix}.",
+                    ),
                 )
                 return
 
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
-                is_update_available, bypass_cache=True
+                is_update_available,
+                bypass_cache=True,
             )
             if latest is None:
                 await self._mount_message(
                     AppMessage(
                         "Could not determine the latest version. "
-                        "Check your network and try again."
-                    )
+                        "Check your network and try again.",
+                    ),
                 )
                 return
             if not available:
                 age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
                 await self._mount_message(
                     AppMessage(
-                        f"Already on the latest version (v{cli_version}{age_suffix})."
-                    )
+                        f"Already on the latest version (v{cli_version}{age_suffix}).",
+                    ),
                 )
                 return
 
             release_age = await asyncio.to_thread(
-                format_release_age_parenthetical, latest
+                format_release_age_parenthetical,
+                latest,
             )
             installed_age = await asyncio.to_thread(
-                format_installed_age_suffix, cli_version
+                format_installed_age_suffix,
+                cli_version,
             )
             await self._mount_message(
                 AppMessage(
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Upgrading..."
-                )
+                    "Upgrading...",
+                ),
             )
             if os.environ.get(DEBUG_UPDATE):
                 await self._mount_message(
-                    AppMessage("Skipped update install (debug mode).")
+                    AppMessage("Skipped update install (debug mode)."),
                 )
                 return
             success, output = await perform_upgrade()
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
-                    AppMessage(f"Updated to v{latest}. Restart to use the new version.")
+                    AppMessage(
+                        f"Updated to v{latest}. Restart to use the new version."
+                    ),
                 )
             else:
                 cmd = upgrade_command()
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
-                    AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}")
+                    AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
                 )
         except Exception as exc:
             logger.warning("/update command failed", exc_info=True)
             await self._mount_message(
-                ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
+                ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}"),
             )
+
+    async def _handle_install_command(self, command: str) -> None:
+        """Handle the `/install <extra>` slash command.
+
+        Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
+        dcode tool by re-running `uv tool install -U 'deepagents-code[<extra>]'`.
+        Refuses unknown extras unless the user passes a `--force` token.
+
+        Args:
+            command: The full slash command line (e.g. `'/install quickjs'`
+                or `'/install foo --force'`).
+        """
+        parts = command.split()
+        force = "--force" in parts[1:]
+        extras = [p for p in parts[1:] if not p.startswith("-")]
+        if not extras:
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /install <extra> [--force]\nExample: /install quickjs",
+                ),
+            )
+            return
+        if len(extras) > 1:
+            await self._mount_message(
+                AppMessage(
+                    "Only one extra may be installed per /install command. "
+                    f"Got: {', '.join(extras)}",
+                ),
+            )
+            return
+        extra = extras[0].lower()
+        await self._mount_message(UserMessage(command))
+
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import (
+                KNOWN_EXTRAS,
+                MODEL_PROVIDER_EXTRAS,
+                SANDBOX_EXTRAS,
+            )
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_extra_hint,
+                install_extra_command,
+                is_valid_extra_name,
+                perform_install_extra,
+            )
+        except ImportError as exc:
+            logger.warning("/install command import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if not is_valid_extra_name(extra):
+            await self._mount_message(
+                AppMessage(
+                    "Invalid extra name. Extra names must be "
+                    "alphanumeric with `-`, `_`, or `.` (PEP 508).",
+                ),
+            )
+            return
+
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot install extras.\n"
+                    + editable_extra_hint(extra),
+                ),
+            )
+            return
+
+        if extra not in KNOWN_EXTRAS and not force:
+            known = ", ".join(sorted(KNOWN_EXTRAS))
+            await self._mount_message(
+                AppMessage(
+                    f"'{extra}' is not a known extra.\n"
+                    f"Known extras: {known}\n\n"
+                    f"This would run: `{install_extra_command(extra)}`\n"
+                    f"Re-run with `--force` to install anyway: "
+                    f"`/install {extra} --force`",
+                ),
+            )
+            return
+
+        log_path = create_update_log_path()
+        await self._mount_message(
+            AppMessage(f"Installing extra '{extra}'..."),
+        )
+        manual_cmd = install_extra_command(extra)
+        try:
+            success, output = await perform_install_extra(extra, log_path=log_path)
+        except (OSError, asyncio.CancelledError) as exc:
+            logger.warning("/install command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        if not success:
+            # Tail the last 200 chars — uv resolver prints the resolved
+            # error at the end, not the beginning.
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed{detail}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        # Model-provider and sandbox extras are imported by the langgraph
+        # server subprocess; `/restart` respawns that subprocess and picks
+        # them up without exiting the TUI. `quickjs` (and other
+        # STANDALONE_EXTRAS) are wired into the parent process at startup
+        # (`verify_interpreter_deps` gates `--interpreter`), so a full
+        # relaunch is required.
+        if extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS:
+            next_step = "Run `/restart` to load it now, or relaunch dcode."
+        else:
+            next_step = "Exit and relaunch dcode to use the new dependencies."
+
+        await self._mount_message(
+            AppMessage(f"Installed extra '{extra}'. {next_step}"),
+        )
 
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.
@@ -3054,7 +3335,7 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.warning(
                     "Could not resolve upgrade command for /version; "
-                    "falling back to generic pip hint",
+                    "falling back to generic upgrade hint",
                     exc_info=True,
                 )
                 from deepagents_code.update_check import FALLBACK_UPGRADE_COMMAND
@@ -3073,7 +3354,8 @@ class DeepAgentsApp(App):
             extras_markdown = format_extras_status(get_extras_status())
         except Exception:
             logger.warning(
-                "Failed to collect optional dependency status", exc_info=True
+                "Failed to collect optional dependency status",
+                exc_info=True,
             )
             extras_markdown = ""
         if extras_markdown:
@@ -3325,7 +3607,13 @@ class DeepAgentsApp(App):
         Custom themes use their stored registry colors; built-in Textual themes
         resolve colors from the active app theme. Terminal write failures are
         logged and swallowed because the OSC background sync is cosmetic.
+
+        ANSI themes intentionally skip this step so the terminal's native
+        background is preserved.
         """
+        if self.theme in {"ansi-dark", "ansi-light"}:
+            return
+
         from deepagents_code.terminal_escape import set_terminal_background
 
         entry = theme.get_registry().get(self.theme)
@@ -3414,7 +3702,7 @@ class DeepAgentsApp(App):
             # code path. Log so the desync is visible instead of silently
             # leaving the spinner in the wrong place.
             logger.debug(
-                "Spinner widget not in container children; skipping reposition"
+                "Spinner widget not in container children; skipping reposition",
             )
             return
         first_queued = self._queued_widgets[0] if self._queued_widgets else None
@@ -3483,7 +3771,7 @@ class DeepAgentsApp(App):
                     messages = self.query_one("#messages", Container)
                     for command in approved_commands:
                         auto_msg = AppMessage(
-                            f"✓ Auto-approved shell command (allow-list): {command}"
+                            f"✓ Auto-approved shell command (allow-list): {command}",
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     with suppress(NoMatches, ScreenStackError):
@@ -3586,7 +3874,7 @@ class DeepAgentsApp(App):
         while self._is_user_typing():  # Simple polling
             if _monotonic() > deadline:
                 logger.warning(
-                    "Timed out waiting for user to stop typing; showing approval now"
+                    "Timed out waiting for user to stop typing; showing approval now",
                 )
                 break
             await asyncio.sleep(0.2)
@@ -3672,7 +3960,7 @@ class DeepAgentsApp(App):
                 if _monotonic() > deadline:
                     logger.error(
                         "Timed out waiting for previous ask-user widget to "
-                        "clear. Forcefully cleaning up."
+                        "clear. Forcefully cleaning up.",
                     )
                     old_widget = self._pending_ask_user_widget
                     if old_widget is not None:
@@ -3757,11 +4045,12 @@ class DeepAgentsApp(App):
         """
         if mode == "shell_incognito":
             await self._handle_shell_command(
-                self._strip_mode_value(value, "!!", "!", mode), incognito=True
+                self._strip_mode_value(value, "!!", "!", mode),
+                incognito=True,
             )
         elif mode == "shell":
             await self._handle_shell_command(
-                self._strip_mode_value(value, "!", "!!", mode)
+                self._strip_mode_value(value, "!", "!!", mode),
             )
         elif mode == "command":
             await self._handle_command(value)
@@ -3772,18 +4061,22 @@ class DeepAgentsApp(App):
             # unrecognized mode, since that would silently leak `!!`/`!`
             # prefixed text to the LLM if the mode literal is ever wrong.
             logger.error(
-                "Unrecognized input mode %r; refusing to forward to agent", mode
+                "Unrecognized input mode %r; refusing to forward to agent",
+                mode,
             )
             await self._mount_message(
                 ErrorMessage(
                     f"Internal error: unknown input mode {mode!r}. "
-                    "Message was not sent."
-                )
+                    "Message was not sent.",
+                ),
             )
 
     @staticmethod
     def _strip_mode_value(
-        value: str, prefix: str, conflicting_prefix: str, mode: InputMode
+        value: str,
+        prefix: str,
+        conflicting_prefix: str,
+        mode: InputMode,
     ) -> str:
         """Strip `prefix` from `value`, logging if a wrong prefix was supplied.
 
@@ -3835,7 +4128,7 @@ class DeepAgentsApp(App):
     def _has_initial_submission(self) -> bool:
         """Return whether startup should auto-submit a prompt or skill."""
         return self._initial_skill is not None or bool(
-            self._initial_prompt and self._initial_prompt.strip()
+            self._initial_prompt and self._initial_prompt.strip(),
         )
 
     async def _run_session_start_sequence(self) -> None:
@@ -3883,14 +4176,14 @@ class DeepAgentsApp(App):
             await self._maybe_drain_deferred()
         except Exception:
             logger.exception(
-                "Failed to drain deferred actions after startup sequencing"
+                "Failed to drain deferred actions after startup sequencing",
             )
             with suppress(Exception):
                 await self._mount_message(
                     ErrorMessage(
                         "A deferred action failed during startup. "
-                        "You may need to retry the operation."
-                    )
+                        "You may need to retry the operation.",
+                    ),
                 )
 
         if self._pending_messages:
@@ -3934,8 +4227,8 @@ class DeepAgentsApp(App):
         try:
             await self._mount_message(
                 AppMessage(
-                    Content.from_markup("Running startup command: $cmd", cmd=command)
-                )
+                    Content.from_markup("Running startup command: $cmd", cmd=command),
+                ),
             )
         except Exception:
             logger.warning("Failed to mount startup-command header", exc_info=True)
@@ -3956,7 +4249,9 @@ class DeepAgentsApp(App):
                 self._chat_input.set_cursor_active(active=True)
             with suppress(Exception):
                 await self._mount_message(
-                    ErrorMessage("Failed to start startup command; continuing session.")
+                    ErrorMessage(
+                        "Failed to start startup command; continuing session."
+                    ),
                 )
             return
 
@@ -3973,7 +4268,8 @@ class DeepAgentsApp(App):
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(
-                    self._initial_skill, self._initial_prompt or ""
+                    self._initial_skill,
+                    self._initial_prompt or "",
                 )
                 return
             if self._initial_prompt and self._initial_prompt.strip():
@@ -3984,8 +4280,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "Failed to submit startup prompt. "
-                        "Try running the command manually in the session."
-                    )
+                        "Try running the command manually in the session.",
+                    ),
                 )
 
     def _push_screen_result_future(
@@ -4048,7 +4344,7 @@ class DeepAgentsApp(App):
             task = asyncio.create_task(self._run_launch_init_sequence())
         else:
             task = asyncio.create_task(
-                self._run_launch_init_sequence(name_result=name_result)
+                self._run_launch_init_sequence(name_result=name_result),
             )
         self._launch_init_task = task
 
@@ -4085,7 +4381,7 @@ class DeepAgentsApp(App):
             if name:
                 self._launch_user_name = name
                 name_memory_task = asyncio.create_task(
-                    self._write_launch_name_memory(name)
+                    self._write_launch_name_memory(name),
                 )
 
             (
@@ -4180,7 +4476,7 @@ class DeepAgentsApp(App):
     async def _mount_launch_welcome(self, name: str) -> None:
         """Mount the personalized onboarding welcome message."""
         await self._mount_message(
-            AppMessage(Content.from_markup("Welcome, $name.", name=name))
+            AppMessage(Content.from_markup("Welcome, $name.", name=name)),
         )
 
     @staticmethod
@@ -4357,10 +4653,18 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
-        from deepagents_code.command_registry import ALWAYS_IMMEDIATE
+        from deepagents_code.command_registry import (
+            ALWAYS_IMMEDIATE,
+            HIDDEN_COMMANDS,
+        )
+
+        # Hidden commands are recovery / power-user escape hatches and
+        # must work even when the app is busy or wedged — treat them as
+        # always-immediate.
+        always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
-            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+            mode == "command" and value.lower().strip() in always_bypass
         ):
             await self._process_message(value, mode)
             return
@@ -4396,7 +4700,8 @@ class DeepAgentsApp(App):
             if self._connecting:
                 with suppress(NoMatches):
                     self.query_one(
-                        "#welcome-banner", WelcomeBanner
+                        "#welcome-banner",
+                        WelcomeBanner,
                     ).reveal_connecting_footer()
             return
 
@@ -4554,7 +4859,8 @@ class DeepAgentsApp(App):
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=60
+                    proc.communicate(),
+                    timeout=60,
                 )
             except TimeoutError:
                 await self._kill_shell_process()
@@ -4577,7 +4883,7 @@ class DeepAgentsApp(App):
             if output:
                 if incognito:
                     await self._mount_message(
-                        AppMessage(f"```\n{output}\n```", markdown=True)
+                        AppMessage(f"```\n{output}\n```", markdown=True),
                     )
                 else:
                     msg = AssistantMessage(f"```\n{output}\n```")
@@ -4604,11 +4910,13 @@ class DeepAgentsApp(App):
             # Surface a local-only error and re-raise so the worker layer
             # records the failure.
             logger.exception(
-                "Shell task crashed (incognito=%s): %s", incognito, command
+                "Shell task crashed (incognito=%s): %s",
+                incognito,
+                command,
             )
             with suppress(Exception):
                 await self._mount_message(
-                    ErrorMessage("Shell command crashed; see logs.")
+                    ErrorMessage("Shell command crashed; see logs."),
                 )
             raise
         finally:
@@ -4644,8 +4952,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "A deferred action failed after task completion. "
-                        "You may need to retry the operation."
-                    )
+                        "You may need to retry the operation.",
+                    ),
                 )
         if not self._startup_sequence_running:
             await self._process_next_from_queue()
@@ -4671,7 +4979,9 @@ class DeepAgentsApp(App):
             return
         except OSError:
             logger.warning(
-                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True
+                "Failed to terminate shell process (pid=%s)",
+                proc.pid,
+                exc_info=True,
             )
             return
 
@@ -4723,7 +5033,7 @@ class DeepAgentsApp(App):
 
             # Append directly — no dedup; each URL command gets its own output.
             self._deferred_actions.append(
-                DeferredAction(kind="chat_output", execute=_mount_output)
+                DeferredAction(kind="chat_output", execute=_mount_output),
             )
             return
 
@@ -4775,7 +5085,14 @@ class DeepAgentsApp(App):
         Args:
             command: The raw command text (displayed as user message).
         """
-        from deepagents_code.config import build_langsmith_thread_url
+        from deepagents_code.config import (
+            LangSmithApiError,
+            LangSmithImportError,
+            LangSmithLookupTimeoutError,
+            _assemble_langsmith_thread_url,
+            fetch_langsmith_project_url_or_raise,
+            get_langsmith_project_name,
+        )
 
         if not self._session_state:
             await self._mount_message(UserMessage(command))
@@ -4783,23 +5100,83 @@ class DeepAgentsApp(App):
             return
         thread_id = self._session_state.thread_id
         try:
-            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+            project_name = await asyncio.to_thread(get_langsmith_project_name)
         except Exception:
-            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            logger.exception(
+                "Failed to resolve LangSmith project name for thread %s",
+                thread_id,
+            )
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                AppMessage("Failed to resolve LangSmith thread URL.")
+                AppMessage("Failed to resolve LangSmith project name."),
             )
             return
-        if not url:
+        if not project_name:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
-                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable."
-                )
+                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable.",
+                ),
             )
             return
+        try:
+            project_url = await asyncio.to_thread(
+                fetch_langsmith_project_url_or_raise, project_name
+            )
+        except LangSmithImportError:
+            logger.warning(
+                "langsmith package not installed; cannot resolve thread URL for %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "The `langsmith` package is not installed. "
+                    "Install it with "
+                    "`uv tool install -U deepagents-code --with langsmith` "
+                    "to enable `/trace`.",
+                ),
+            )
+            return
+        except LangSmithLookupTimeoutError:
+            logger.warning(
+                "LangSmith project URL lookup timed out for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Could not reach LangSmith to resolve the thread URL. "
+                    "Check your network connection and try again.",
+                ),
+            )
+            return
+        except LangSmithApiError as exc:
+            logger.warning(
+                "LangSmith API call failed while resolving thread URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"LangSmith rejected the project lookup: {exc}. "
+                    "Verify LANGSMITH_API_KEY and the project name are correct.",
+                ),
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Failed to fetch LangSmith project URL for thread %s",
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Failed to resolve LangSmith thread URL."),
+            )
+            return
+        url = _assemble_langsmith_thread_url(project_url, thread_id)
 
         def _open_browser() -> None:
             try:
@@ -4828,7 +5205,7 @@ class DeepAgentsApp(App):
 
             # Append directly — no dedup; each /trace invocation gets its own output.
             self._deferred_actions.append(
-                DeferredAction(kind="chat_output", execute=_mount_output)
+                DeferredAction(kind="chat_output", execute=_mount_output),
             )
             return
 
@@ -4856,7 +5233,8 @@ class DeepAgentsApp(App):
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
-                "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
+                "/update, /auto-update, /install, /changelog, /docs, "
+                "/feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -4944,7 +5322,7 @@ class DeepAgentsApp(App):
             success, error = copy_text_to_clipboard(self, content)
             if success:
                 await self._mount_message(
-                    AppMessage("Copied latest assistant message to clipboard.")
+                    AppMessage("Copied latest assistant message to clipboard."),
                 )
             else:
                 fail_msg = (
@@ -4966,6 +5344,8 @@ class DeepAgentsApp(App):
             await self._handle_update_command()
         elif cmd == "/auto-update":
             await self._handle_auto_update_toggle()
+        elif cmd == "/install" or cmd.startswith("/install "):
+            await self._handle_install_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -5019,8 +5399,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(
                         "Nothing to remember yet. Start a conversation first,"
-                        " then use /remember to capture learnings."
-                    )
+                        " then use /remember to capture learnings.",
+                    ),
                 )
                 return
             args = command.strip()[len("/remember") :].strip()
@@ -5036,6 +5416,10 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd.startswith("/mcp "):
+            args = command.strip()[len("/mcp ") :].strip()
+            await self._mount_message(UserMessage(command))
+            await self._handle_mcp_subcommand(args)
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
@@ -5067,8 +5451,8 @@ class DeepAgentsApp(App):
                         ErrorMessage(
                             "--model-params cannot be used with --default. "
                             "Model params are applied per-session, not "
-                            "persisted."
-                        )
+                            "persisted.",
+                        ),
                     )
                 elif model_arg == "--clear":
                     await self._clear_default_model()
@@ -5078,8 +5462,8 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage(
                             "Usage: /model --default provider:model\n"
-                            "       /model --default --clear"
-                        )
+                            "       /model --default --clear",
+                        ),
                     )
             elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
@@ -5105,8 +5489,8 @@ class DeepAgentsApp(App):
                     AppMessage(
                         "Failed to reload configuration. Check your .env "
                         "file and environment variables for syntax errors, "
-                        "then try again."
-                    )
+                        "then try again.",
+                    ),
                 )
                 return
 
@@ -5166,14 +5550,16 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-        # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
+        # -- Hidden commands (not in COMMANDS / autocomplete) -----------------
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
                     "Server failed to start: RuntimeError: Server process"
-                    " exited with code 3"
-                )
+                    " exited with code 3",
+                ),
             )
+        elif cmd == "/restart":
+            await self._handle_restart_command(command)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -5230,7 +5616,7 @@ class DeepAgentsApp(App):
         if cached is None:
             try:
                 skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots
+                    self._discover_skills_and_roots,
                 )
                 # Backfill cache so subsequent invocations are fast
                 self._discovered_skills = skills
@@ -5238,19 +5624,23 @@ class DeepAgentsApp(App):
                 cached = next((s for s in skills if s["name"] == normalized_name), None)
             except OSError as exc:
                 logger.warning(
-                    "Filesystem error loading skill %r", normalized_name, exc_info=True
+                    "Filesystem error loading skill %r",
+                    normalized_name,
+                    exc_info=True,
                 )
                 await _mount_error(
-                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
+                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
                 )
                 return
             except Exception as exc:
                 logger.warning(
-                    "Error searching for skill %r", normalized_name, exc_info=True
+                    "Error searching for skill %r",
+                    normalized_name,
+                    exc_info=True,
                 )
                 await _mount_error(
                     f"Error loading skill: {normalized_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}"
+                    f"Unexpected error: {type(exc).__name__}: {exc}",
                 )
                 return
 
@@ -5277,17 +5667,19 @@ class DeepAgentsApp(App):
             return
         except OSError as exc:
             logger.warning(
-                "Filesystem error loading skill %r", normalized_name, exc_info=True
+                "Filesystem error loading skill %r",
+                normalized_name,
+                exc_info=True,
             )
             await _mount_error(
-                f"Could not load skill: {normalized_name}. Filesystem error: {exc}"
+                f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
             )
             return
         except Exception as exc:
             logger.warning("Error reading skill %r", normalized_name, exc_info=True)
             await _mount_error(
                 f"Error loading skill: {normalized_name}. "
-                f"Unexpected error: {type(exc).__name__}: {exc}"
+                f"Unexpected error: {type(exc).__name__}: {exc}",
             )
             return
 
@@ -5295,14 +5687,14 @@ class DeepAgentsApp(App):
             await _mount_error(
                 f"Could not read content for skill: {normalized_name}. "
                 "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8."
+                "and is saved as UTF-8.",
             )
             return
 
         if not content.strip():
             await _mount_error(
                 f"Skill '{normalized_name}' has an empty SKILL.md file. "
-                "Add instructions to the file before invoking."
+                "Add instructions to the file before invoking.",
             )
             return
 
@@ -5315,7 +5707,7 @@ class DeepAgentsApp(App):
                 source=str(cached.get("source", "")),
                 body=content,
                 args=args,
-            )
+            ),
         )
         await self._send_to_agent(
             envelope.prompt,
@@ -5433,13 +5825,13 @@ class DeepAgentsApp(App):
 
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
-                AppMessage("Nothing to offload \u2014 start a conversation first")
+                AppMessage("Nothing to offload \u2014 start a conversation first"),
             )
             return
 
         if self._agent_running:
             await self._mount_message(
-                AppMessage("Cannot offload while agent is running")
+                AppMessage("Cannot offload while agent is running"),
             )
             return
 
@@ -5453,7 +5845,7 @@ class DeepAgentsApp(App):
 
         if not state_values:
             await self._mount_message(
-                AppMessage("Nothing to offload \u2014 start a conversation first")
+                AppMessage("Nothing to offload \u2014 start a conversation first"),
             )
             return
 
@@ -5495,8 +5887,8 @@ class DeepAgentsApp(App):
                             f"The remaining context "
                             f"({total_str} tokens) is system overhead "
                             f"that can't be offloaded.\n\n"
-                            f"Use /tokens for a full breakdown."
-                        )
+                            f"Use /tokens for a full breakdown.",
+                        ),
                     )
                 else:
                     await self._mount_message(
@@ -5505,8 +5897,8 @@ class DeepAgentsApp(App):
                             f"(~{conv_str} tokens) is within the "
                             f"retention budget "
                             f"({result.budget_str}).\n\n"
-                            f"Use /tokens for a full breakdown."
-                        )
+                            f"Use /tokens for a full breakdown.",
+                        ),
                     )
                 return
 
@@ -5516,8 +5908,15 @@ class DeepAgentsApp(App):
 
             # Intentionally traced: the summarization event is a meaningful state
             # transition that should surface in LangSmith alongside real agent turns.
+            # The new `_context_tokens` count rides along on the same update so it
+            # shares a checkpoint with the offload and doesn't create a separate
+            # `UpdateState` run.
             await self._agent.aupdate_state(
-                config, {"_summarization_event": result.new_event}
+                config,
+                {
+                    "_summarization_event": result.new_event,
+                    "_context_tokens": result.tokens_after,
+                },
             )
 
             before = format_token_count(result.tokens_before)
@@ -5528,14 +5927,11 @@ class DeepAgentsApp(App):
                     f"freeing up context window space.\n"
                     f"Context: {before} \u2192 {after} tokens "
                     f"({result.pct_decrease}% decrease), "
-                    f"{result.messages_kept} messages kept."
-                )
+                    f"{result.messages_kept} messages kept.",
+                ),
             )
 
             self._on_tokens_update(result.tokens_after)
-            from deepagents_code.textual_adapter import _persist_context_tokens
-
-            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -5601,7 +5997,7 @@ class DeepAgentsApp(App):
             # `ErrorMessage` mounted by `on_deep_agents_app_server_start_failed`
             # is the single source of truth — don't duplicate it here.
             await self._mount_message(
-                AppMessage("Agent not configured for this session.")
+                AppMessage("Agent not configured for this session."),
             )
 
     async def _mount_deferred_start_notice(self) -> None:
@@ -5656,15 +6052,24 @@ class DeepAgentsApp(App):
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
+            try:
+                from deepagents_code.remote_client import format_agent_exception
+
+                error_text = f"Agent error: {format_agent_exception(e)}"
+            except Exception:
+                # The formatter itself must never mask the original error.
+                logger.exception("format_agent_exception failed")
+                error_text = f"Agent error: {e!r}"
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
-                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
+                self._ui_adapter.finalize_pending_tools_with_error(error_text)
             try:
-                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+                await self._mount_message(ErrorMessage(error_text))
             except Exception:
                 logger.debug(
-                    "Could not mount error message (app closing?)", exc_info=True
+                    "Could not mount error message (app closing?)",
+                    exc_info=True,
                 )
         finally:
             # Merge turn stats before cleanup — _cleanup_agent_task may raise
@@ -5699,7 +6104,7 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to process queued message")
             await self._mount_message(
-                ErrorMessage(f"Failed to process queued message: {msg.text[:60]}")
+                ErrorMessage(f"Failed to process queued message: {msg.text[:60]}"),
             )
         finally:
             self._processing_pending = False
@@ -5738,8 +6143,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "A deferred action failed after task completion. "
-                        "You may need to retry the operation."
-                    )
+                        "You may need to retry the operation.",
+                    ),
                 )
 
         # Process next message from queue if any
@@ -5786,7 +6191,7 @@ class DeepAgentsApp(App):
                             skill_source=str(skill_meta.get("source", "")),
                             skill_args=str(skill_meta.get("args", "")),
                             skill_body=content,
-                        )
+                        ),
                     )
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
@@ -6090,7 +6495,8 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
-        self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage
+        self,
+        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
     ) -> None:
         """Mount a message widget to the messages area.
 
@@ -6210,7 +6616,7 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning(
                 "Messages container (#messages) not found during clear; "
-                "UI may be out of sync with message store"
+                "UI may be out of sync with message store",
             )
 
     def _pop_last_queued_message(self) -> None:
@@ -6232,7 +6638,7 @@ class DeepAgentsApp(App):
         else:
             logger.warning(
                 "Queued-widget deque empty while pending-messages was not; "
-                "widget/message tracking may be out of sync"
+                "widget/message tracking may be out of sync",
             )
 
         if not self._chat_input:
@@ -6352,12 +6758,18 @@ class DeepAgentsApp(App):
                     action.execute,
                 )
                 label = action.kind.replace("_", " ")
-                with suppress(Exception):
+                try:
                     await self._mount_message(
                         ErrorMessage(
                             f"Deferred {label} failed unexpectedly. "
-                            "You may need to retry the operation."
-                        )
+                            "You may need to retry the operation.",
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not mount error message for deferred %r",
+                        action.kind,
+                        exc_info=True,
                     )
 
     def _cancel_worker(self, worker: Worker[None] | None) -> None:
@@ -6423,7 +6835,9 @@ class DeepAgentsApp(App):
         self._quit_pending = True
         quit_timeout = 3
         self.notify(
-            f"Press {shortcut} again to quit", timeout=quit_timeout, markup=False
+            f"Press {shortcut} again to quit",
+            timeout=quit_timeout,
+            markup=False,
         )
         self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
@@ -6584,7 +6998,7 @@ class DeepAgentsApp(App):
                 {
                     "event": "session.end",
                     "thread_id": getattr(self, "_lc_thread_id", ""),
-                }
+                },
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
@@ -6595,7 +7009,8 @@ class DeepAgentsApp(App):
         except Exception:
             # Cosmetic only: must never raise during shutdown.
             logger.warning(
-                "reset_terminal_background raised unexpectedly", exc_info=True
+                "reset_terminal_background raised unexpectedly",
+                exc_info=True,
             )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
@@ -6832,7 +7247,7 @@ class DeepAgentsApp(App):
         if isinstance(widget, _Toast):
             identity = _toast_identity(widget, app=self)
             if identity is not None and self._notice_registry.is_actionable_toast(
-                identity
+                identity,
             ):
                 self.call_after_refresh(self._open_notification_center)
             return
@@ -6932,10 +7347,11 @@ class DeepAgentsApp(App):
                                 model_spec,
                                 extra_kwargs=extra_kwargs,
                             ),
-                        )
+                        ),
                     )
                     self.notify(
-                        "Model will switch after current task completes.", timeout=3
+                        "Model will switch after current task completes.",
+                        timeout=3,
                     )
                 else:
                     self.call_later(
@@ -6943,7 +7359,7 @@ class DeepAgentsApp(App):
                             self._switch_model,
                             model_spec,
                             extra_kwargs=extra_kwargs,
-                        )
+                        ),
                     )
             # Refocus input after modal closes
             if self._chat_input:
@@ -6975,7 +7391,7 @@ class DeepAgentsApp(App):
                             variables={
                                 "footer-key-foreground": c.primary,
                             },
-                        )
+                        ),
                     )
                 except Exception:
                     logger.warning(
@@ -7007,7 +7423,8 @@ class DeepAgentsApp(App):
                 async def _persist() -> None:
                     try:
                         status = await asyncio.to_thread(
-                            _save_theme_preference_result, result
+                            _save_theme_preference_result,
+                            result,
                         )
                         if status.message is not None:
                             self.notify(
@@ -7123,7 +7540,7 @@ class DeepAgentsApp(App):
                     DeferredAction(
                         kind="agent_switch",
                         execute=_deferred_switch,
-                    )
+                    ),
                 )
                 self.notify(
                     "Agent will switch after connection completes.",
@@ -7160,7 +7577,9 @@ class DeepAgentsApp(App):
             agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
         except OSError:
             logger.warning(
-                "Could not stat agent directory for %r", agent_name, exc_info=True
+                "Could not stat agent directory for %r",
+                agent_name,
+                exc_info=True,
             )
             agent_dir_exists = False
 
@@ -7312,7 +7731,8 @@ class DeepAgentsApp(App):
                     )
             except Exception:
                 logger.exception(
-                    "UI teardown failed during agent swap to %r", agent_name
+                    "UI teardown failed during agent swap to %r",
+                    agent_name,
                 )
                 # Restore the previous-agent UI state so the user isn't
                 # stuck on a permanent "Connecting..." banner.
@@ -7323,6 +7743,7 @@ class DeepAgentsApp(App):
                         self._mcp_tool_count,
                         mcp_unauthenticated=self._mcp_unauthenticated,
                         mcp_errored=self._mcp_errored,
+                        mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
                 except NoMatches:
                     pass
@@ -7347,7 +7768,7 @@ class DeepAgentsApp(App):
 
             try:
                 server_proc.update_env(
-                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name}
+                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name},
                 )
                 await server_proc.restart()
                 # `ServerProcess.restart()` may rebind to a different port
@@ -7362,7 +7783,8 @@ class DeepAgentsApp(App):
                 self._agent = None
                 self._connecting = False
                 logger.exception(
-                    "Server restart failed during agent swap to %r", agent_name
+                    "Server restart failed during agent swap to %r",
+                    agent_name,
                 )
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
@@ -7439,7 +7861,7 @@ class DeepAgentsApp(App):
             # but before the new server was ready.
             if self._pending_messages and not self._agent_running:
                 self.call_after_refresh(
-                    lambda: asyncio.create_task(self._process_next_from_queue())
+                    lambda: asyncio.create_task(self._process_next_from_queue()),
                 )
         finally:
             self._agent_switching = False
@@ -7705,7 +8127,9 @@ class DeepAgentsApp(App):
         self.push_screen(UpdateAvailableScreen(entry), handle_result)
 
     async def _dispatch_notification_action(
-        self, key: str, action_id: ActionId
+        self,
+        key: str,
+        action_id: ActionId,
     ) -> None:
         """Execute the side effect for a notification action.
 
@@ -7727,7 +8151,11 @@ class DeepAgentsApp(App):
             await self._route_payload_action(entry, action_id)
         except Exception as exc:  # every failure surfaces to the user
             logger.warning(
-                "Action %r on %r failed: %s", action_id, key, exc, exc_info=True
+                "Action %r on %r failed: %s",
+                action_id,
+                key,
+                exc,
+                exc_info=True,
             )
             self.notify(
                 f"{action_label} failed: {type(exc).__name__}: {exc}",
@@ -7740,7 +8168,9 @@ class DeepAgentsApp(App):
             self._chat_input.focus_input()
 
     async def _route_payload_action(
-        self, entry: PendingNotification, action_id: ActionId
+        self,
+        entry: PendingNotification,
+        action_id: ActionId,
     ) -> None:
         """Dispatch *action_id* to the payload-specific handler.
 
@@ -8042,22 +8472,886 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    async def _handle_mcp_subcommand(self, args: str) -> None:
+        """Dispatch `/mcp <subcommand>` strings.
+
+        Currently supports `login <server>`; unknown subcommands surface
+        an inline help message.
+
+        Args:
+            args: Everything after `/mcp ` (already stripped).
+        """
+        parts = args.split(maxsplit=1)
+        if not parts:
+            await self._show_mcp_viewer()
+            return
+        subcommand = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if subcommand == "login":
+            if not rest:
+                await self._mount_message(AppMessage("Usage: /mcp login <server>"))
+                return
+            server_name = rest.split()[0]
+            self._start_mcp_login(server_name)
+            return
+        if subcommand == "reconnect":
+            force, valid = _parse_reconnect_args(rest)
+            if not valid:
+                await self._mount_message(
+                    AppMessage("Usage: /mcp reconnect [force]"),
+                )
+                return
+            await self._handle_mcp_reconnect_command(force=force)
+            return
+        await self._mount_message(
+            AppMessage(
+                f"Unknown `/mcp` subcommand: {subcommand!r}. "
+                "Try `/mcp`, `/mcp login <server>`, or `/mcp reconnect`.",
+            ),
+        )
+
+    def _sync_pending_mcp_reconnect(self) -> None:
+        """Refresh the aggregate MCP reconnect flag from tracked reasons."""
+        self._pending_mcp_reconnect = self._pending_mcp_login_reconnect or bool(
+            self._pending_mcp_disable_reconnect_servers
+        )
+
+    def _refresh_welcome_banner_mcp_counts(self) -> None:
+        """Push current MCP counts into the welcome banner when it is mounted."""
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            logger.debug("Welcome banner not mounted during MCP count refresh")
+            return
+        banner.set_connected(
+            self._mcp_tool_count,
+            mcp_unauthenticated=self._mcp_unauthenticated,
+            mcp_errored=self._mcp_errored,
+            mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
+        )
+
+    def _clear_mcp_login_reconnect_banner_counts(self, server_name: str) -> None:
+        """Optimistically clear splash login/reconnect prompts before restart.
+
+        Args:
+            server_name: Server whose successful login triggered the reconnect.
+        """
+        self._mcp_unauthenticated = sum(
+            1
+            for s in self._mcp_server_info or []
+            if s.name != server_name and s.needs_attention()
+        )
+        self._mcp_awaiting_reconnect = 0
+        self._refresh_welcome_banner_mcp_counts()
+
+    async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
+        """Restart the server to pick up any deferred MCP login tokens.
+
+        No-op (with an inline notice) when nothing is pending so the
+        command is safe to run idempotently. `force=True` bypasses the
+        no-op guard via a confirmation modal — the escape hatch for
+        stale-cache or externally-edited-config cases where the server
+        needs a fresh load even though no login is queued in this
+        session.
+
+        Args:
+            force: When `True`, prompt to restart unconditionally even
+                if no MCP login is queued.
+        """
+        if self._pending_mcp_reconnect:
+            await self._restart_server_for_mcp_refresh("pending login")
+            return
+        if not force:
+            await self._mount_message(
+                AppMessage(
+                    "No MCP login is queued in this session. "
+                    "If you logged in during an earlier run, relaunch "
+                    "dcode to pick up the token. "
+                    "Run `/mcp reconnect force` to restart anyway.",
+                ),
+            )
+            return
+        from deepagents_code.widgets.mcp_reconnect import (
+            MCPReconnectForceConfirmScreen,
+        )
+
+        confirmed = await self._push_screen_wait(MCPReconnectForceConfirmScreen())
+        if confirmed:
+            await self._restart_server_for_mcp_refresh("forced reconnect")
+
     async def _show_mcp_viewer(self) -> None:
-        """Show read-only MCP server/tool viewer as a modal screen."""
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+        """Show the MCP server/tool viewer as a modal screen.
+
+        The viewer may dismiss with a server name (when the user activates
+        an `unauthenticated` header row to start in-TUI OAuth login) or
+        with `None` (close without action).
+        """
+        from deepagents_code.widgets.mcp_viewer import (
+            MCP_VIEWER_RECONNECT_REQUEST,
+            MCPViewerScreen,
+        )
 
         screen = MCPViewerScreen(
             server_info=self._mcp_server_info or [],
             connecting=self._connecting,
+            pending_reconnect=self._pending_mcp_reconnect,
+            on_toggle_disable=self._toggle_mcp_server_disabled,
         )
         self._active_mcp_viewer = screen
 
-        def handle_result(result: None) -> None:  # noqa: ARG001
+        def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
-            if self._chat_input:
+            if result == MCP_VIEWER_RECONNECT_REQUEST:
+                # `action_reconnect` gates dismiss on pending state, so
+                # `force=False` is correct.
+                self.call_later(self._reconnect_from_viewer_safe)
+                return
+            if result:
+                # User picked an unauthenticated server — start login.
+                self._start_mcp_login(result)
+            elif self._chat_input:
                 self._chat_input.focus_input()
 
         self.push_screen(screen, handle_result)
+
+    async def _reconnect_from_viewer_safe(self) -> None:
+        """Run the post-viewer reconnect and surface unexpected failures.
+
+        `call_later` schedules this on Textual's message pump, which
+        logs but does not display exceptions. Re-checks pending state
+        so a flip between dismiss and the pump tick silently no-ops
+        instead of degrading to the CLI no-op notice.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        try:
+            await self._handle_mcp_reconnect_command()
+        except Exception as exc:
+            logger.exception("Reconnect after viewer dismiss failed")
+            await self._mount_message(
+                ErrorMessage(f"Reconnect failed: {type(exc).__name__}: {exc}"),
+            )
+
+    async def _toggle_mcp_server_disabled(self, server_name: str) -> None:
+        """Flip the persistent disabled state for `server_name` and signal a reconnect.
+
+        Looks up the current state from the loaded `MCPServerInfo` list so
+        the toggle is correct regardless of whether the server was disabled
+        in a previous session or by an external edit of `config.toml`.
+        Persists the new value, updates pending reconnect state, and
+        refreshes the open viewer in-place — keeping the cursor on the
+        same server header — so the user sees the updated status without
+        a screen-swap flicker.
+
+        Args:
+            server_name: Name of the MCP server to toggle. Empty names
+                are impossible by construction (the only caller pulls
+                from `MCPServerHeaderItem.server.name`) and silently
+                no-op as defense-in-depth. Unknown names — possible if
+                config was reloaded between the viewer opening and F2 —
+                surface a toast so the user knows F2 didn't take effect.
+        """
+        if not server_name:
+            logger.debug("Empty server name in disable toggle; ignoring")
+            return
+        known_names = {info.name for info in self._mcp_server_info or ()}
+        if server_name not in known_names:
+            logger.warning(
+                "Unknown server %r in disable toggle; ignoring",
+                server_name,
+            )
+            self.notify(
+                f"MCP server {server_name!r} is no longer configured.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        from deepagents_code.mcp_disabled import (
+            is_server_disabled,
+            set_server_disabled,
+        )
+
+        currently_disabled = await asyncio.to_thread(is_server_disabled, server_name)
+        new_state = not currently_disabled
+        ok, detail = await asyncio.to_thread(
+            set_server_disabled,
+            server_name,
+            new_state,
+        )
+        if not ok:
+            message = f"Could not persist disabled state for {server_name!r}"
+            if detail:
+                message += f": {detail}"
+            else:
+                message += "."
+            self.notify(
+                message,
+                severity="error",
+                markup=False,
+            )
+            return
+
+        had_original = server_name in self._mcp_optimistic_original_server_info
+        verb = "disabled" if new_state else "enabled"
+        self._apply_optimistic_disabled_state(server_name, disabled=new_state)
+        if new_state:
+            self._pending_mcp_disable_reconnect_servers.add(server_name)
+            message = (
+                f"MCP server {server_name!r} {verb}. "
+                "Run `/mcp reconnect` or press Ctrl+R to apply."
+            )
+        else:
+            message = f"MCP server {server_name!r} {verb}."
+            if had_original:
+                self._pending_mcp_disable_reconnect_servers.discard(server_name)
+            else:
+                self._pending_mcp_disable_reconnect_servers.add(server_name)
+                message += " Run `/mcp reconnect` or press Ctrl+R to apply."
+        self._sync_pending_mcp_reconnect()
+        self.notify(message, markup=False)
+        # Refresh the viewer in place so the new status glyph and the
+        # `Ctrl+R` reconnect hint appear without tearing the screen
+        # down. Persistence already succeeded and the user has seen
+        # the toast, so a failed in-place patch is non-fatal — but log
+        # with traceback so a real bug (e.g. signature drift,
+        # `DuplicateIds`) isn't masked the way `suppress(Exception)`
+        # would have masked it.
+        viewer = self._active_mcp_viewer
+        if viewer is not None:
+            try:
+                await viewer.apply_server_disable_toggle(
+                    self._mcp_server_info or [],
+                    toggled_server=server_name,
+                    pending_reconnect=self._pending_mcp_reconnect,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to refresh MCP viewer in place after toggle "
+                    "of %r; state has been persisted but the open "
+                    "viewer will not reflect it until reopened",
+                    server_name,
+                    exc_info=True,
+                )
+
+    def _apply_optimistic_disabled_state(
+        self,
+        server_name: str,
+        *,
+        disabled: bool,
+    ) -> None:
+        """Update `_mcp_server_info` so the viewer reflects the toggle immediately.
+
+        The authoritative state is recomputed on the next reconnect; this is
+        purely cosmetic so the user sees their action take effect without
+        waiting for the server restart.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            if disabled:
+                self._mcp_server_info = [
+                    MCPServerInfo(
+                        name=server_name,
+                        transport="unknown",
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                ]
+            return
+
+        updated: list[MCPServerInfo] = []
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            if disabled:
+                if entry.status != "disabled":
+                    self._mcp_optimistic_original_server_info[server_name] = entry
+                updated.append(
+                    MCPServerInfo(
+                        name=entry.name,
+                        transport=entry.transport,
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                )
+            else:
+                original = self._mcp_optimistic_original_server_info.pop(
+                    server_name,
+                    None,
+                )
+                if original is not None:
+                    updated.append(original)
+                else:
+                    # Best-effort re-enable when the app started with this
+                    # server disabled. Keep `status="disabled"` so the muted
+                    # pause glyph is shown instead of a red error badge —
+                    # the real status will be recomputed by the reconnect.
+                    updated.append(
+                        MCPServerInfo(
+                            name=entry.name,
+                            transport=entry.transport,
+                            status="disabled",
+                            error="Re-enabled — run `/mcp reconnect` to load.",
+                        ),
+                    )
+        self._mcp_server_info = updated
+
+    def _apply_optimistic_mcp_login_pending_state(self, server_name: str) -> None:
+        """Mark a just-authenticated server as waiting for reconnect.
+
+        OAuth tokens are already persisted at this point, but the running
+        LangGraph server still has the old MCP tool set. This keeps `/mcp`
+        from continuing to label the server as unauthenticated after the
+        user explicitly chose to defer the reconnect.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            return
+
+        updated: list[MCPServerInfo] = []
+        matched = False
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            matched = True
+            updated.append(
+                MCPServerInfo(
+                    name=entry.name,
+                    transport=entry.transport,
+                    status="awaiting_reconnect",
+                    error="Authenticated — run `/mcp reconnect` to load tools.",
+                ),
+            )
+        self._mcp_server_info = updated
+        self._mcp_unauthenticated = sum(
+            1 for s in self._mcp_server_info if s.needs_attention()
+        )
+        self._mcp_errored = sum(1 for s in self._mcp_server_info if s.status == "error")
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in self._mcp_server_info if s.status == "awaiting_reconnect"
+        )
+        if not matched:
+            logger.warning(
+                "MCP login completed for unknown server %r; pending state unchanged",
+                server_name,
+            )
+        self._refresh_welcome_banner_mcp_counts()
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """Surface login worker failures that escaped the inner error handling."""
+        from textual.worker import WorkerState
+
+        worker = event.worker
+        if not (worker.group or "").startswith("mcp-login-"):
+            return
+        if event.state == WorkerState.ERROR and worker.error is not None:
+            logger.warning(
+                "MCP login worker failed unexpectedly: %s",
+                worker.error,
+                exc_info=worker.error,
+            )
+            self.call_later(
+                self._mount_message,
+                ErrorMessage(
+                    f"MCP login failed unexpectedly: {worker.error}. "
+                    "You may need to retry.",
+                ),
+            )
+
+    def _start_mcp_login(self, server_name: str) -> None:
+        """Begin in-TUI OAuth login for `server_name`.
+
+        Guards against remote-server mode (no owned server to restart),
+        an absent local server, missing MCP config, an unknown server
+        name, and busy states. When the session is mid-run, the login
+        attempt is queued via `_defer_action` and runs once the user is
+        idle.
+
+        Args:
+            server_name: MCP server name from `mcpServers`.
+        """
+        if self._mcp_preload_kwargs is None:
+            self.notify(
+                "MCP is disabled in this session; nothing to log into.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._server_kwargs is None:
+            # Remote-server mode: we cannot restart the server, so the new
+            # token would never reach the MCP tool factory.
+            self.notify(
+                "Cannot log into MCP servers against a remote server. "
+                "Relaunch dcode locally to authenticate.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._connecting or self._server_proc is None:
+            self.notify(
+                "MCP login is unavailable until the local server is ready.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_switching:
+            self.notify(
+                "An agent switch is in progress; try again once it completes.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_running or self._shell_running:
+            self.notify(
+                "MCP login will start once the current task completes.",
+                timeout=5,
+                markup=False,
+            )
+            self._defer_action(
+                DeferredAction(
+                    kind="mcp_login",
+                    execute=lambda: self._run_mcp_login_worker(server_name),
+                ),
+            )
+            return
+
+        self.run_worker(
+            self._run_mcp_login_worker(server_name),
+            exclusive=False,
+            group=f"mcp-login-{server_name}",
+        )
+
+    async def _run_mcp_login_worker(self, server_name: str) -> None:
+        """Resolve config, run the login modal, and refresh on success.
+
+        Args:
+            server_name: MCP server name from `mcpServers`.
+        """
+        from deepagents_code.mcp_login_service import (
+            ConfigResolution,
+            ConfigResolutionError,
+            resolve_mcp_config,
+            select_server,
+        )
+
+        if self._mcp_preload_kwargs is None:
+            return
+        config_path = self._mcp_preload_kwargs.get("mcp_config_path")
+        resolution = resolve_mcp_config(config_path)
+        if isinstance(resolution, ConfigResolutionError):
+            await self._mount_message(
+                ErrorMessage(f"MCP login failed: {resolution.message}"),
+            )
+            return
+        if not isinstance(resolution, ConfigResolution):  # pragma: no cover - safety
+            return
+
+        selection = select_server(resolution, server_name)
+        if isinstance(selection, ConfigResolutionError):
+            await self._mount_message(
+                ErrorMessage(f"MCP login failed: {selection.message}"),
+            )
+            return
+
+        if selection.server_config.get("auth") != "oauth":
+            await self._mount_message(
+                ErrorMessage(
+                    f"MCP server {server_name!r} does not use OAuth; "
+                    "nothing to log into.",
+                ),
+            )
+            return
+
+        from deepagents_code.mcp_auth import login as mcp_login
+        from deepagents_code.widgets.mcp_login import (
+            LoginOutcome,
+            MCPLoginCancelledError,
+            MCPLoginScreen,
+        )
+
+        screen = MCPLoginScreen(server_name)
+        outcome_future: asyncio.Future[LoginOutcome | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        def _on_dismiss(outcome: LoginOutcome | None) -> None:
+            if not outcome_future.done():
+                outcome_future.set_result(outcome)
+
+        self.push_screen(screen, _on_dismiss)
+
+        # Pump one event loop iteration so `compose`/`on_mount` run before
+        # the worker awaits its first interaction method.
+        await asyncio.sleep(0)
+
+        login_error: Exception | None = None
+        try:
+            await mcp_login(
+                server_name=server_name,
+                server_config=selection.server_config,
+                ui=screen,
+            )
+        except MCPLoginCancelledError:
+            screen.finish(success=False, message="Login cancelled.")
+            await asyncio.wait_for(outcome_future, timeout=5.0)
+            await self._mount_message(
+                AppMessage(f"MCP login for {server_name!r} cancelled."),
+            )
+            return
+        except Exception as exc:  # noqa: BLE001  # surface unexpected errors
+            login_error = exc
+        except BaseException:
+            # Worker cancelled or app shutdown — unblock the modal and
+            # let the cancellation propagate.
+            if not screen.is_done:
+                screen.finish(success=False, message="Login interrupted.")
+            if not outcome_future.done():
+                outcome_future.set_result(None)
+            raise
+
+        if login_error is not None:
+            from deepagents_code.mcp_auth import format_login_failure
+
+            # Token-safe: never `%r`, `str()`, or `exc_info=` on the raw
+            # exception — its `args`/repr may include an `OAuthToken` from
+            # the MCP SDK. `format_login_failure` unwraps `ExceptionGroup`
+            # roots and degrades to a class-name chain for unknown types.
+            summary = format_login_failure(login_error)
+            logger.warning("MCP login for %r failed: %s", server_name, summary)
+            screen.finish(success=False, message=f"Login failed: {summary}")
+            await asyncio.wait_for(outcome_future, timeout=5.0)
+            await self._mount_message(
+                ErrorMessage(f"MCP login for {server_name!r} failed: {summary}"),
+            )
+            return
+
+        screen.finish(
+            success=True,
+            message=(
+                f"Logged in to {server_name!r}. Reconnect required to load new tools."
+            ),
+        )
+        await asyncio.wait_for(outcome_future, timeout=5.0)
+
+        # Ask the user whether to restart now or defer. Deferring lets them
+        # authenticate against additional MCP servers before paying the
+        # restart cost. `/mcp reconnect` (or another login confirmed with
+        # "reconnect") drives the restart later.
+        try:
+            await self._prompt_mcp_reconnect(server_name)
+        except Exception:
+            # The token is already on disk — surface the failure and
+            # remember the pending state so `/mcp reconnect` still works
+            # even though the prompt never reached the user.
+            logger.exception(
+                "MCP reconnect prompt for %r raised after successful login",
+                server_name,
+            )
+            self._pending_mcp_login_reconnect = True
+            self._sync_pending_mcp_reconnect()
+            self._apply_optimistic_mcp_login_pending_state(server_name)
+            self.notify(
+                f"Logged in to {server_name!r} but the reconnect prompt "
+                "failed. Run `/mcp reconnect` when ready to load the new tools.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+
+    async def _prompt_mcp_reconnect(self, server_name: str) -> None:
+        """Ask whether to restart now or defer after an MCP login succeeds.
+
+        Args:
+            server_name: Server whose login just completed — surfaced in the
+                modal title and downstream messages only.
+        """
+        from deepagents_code.widgets.mcp_reconnect import (
+            MCPReconnectPromptScreen,
+            ReconnectChoice,
+        )
+
+        choice_future: asyncio.Future[ReconnectChoice | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        def _on_dismiss(result: ReconnectChoice | None) -> None:
+            if not choice_future.done():
+                choice_future.set_result(result)
+
+        choice: ReconnectChoice | None
+        try:
+            self.push_screen(MCPReconnectPromptScreen(server_name), _on_dismiss)
+        except Exception:
+            # Modal could not be mounted (e.g. another modal hijacked the
+            # stack). Fall back to defer so the login isn't silently lost.
+            logger.exception("Failed to mount MCP reconnect prompt for %r", server_name)
+            choice = "later"
+        else:
+            try:
+                # Watchdog: guard against a screen that never resolves
+                # (compose crash, programmatic teardown that skips the
+                # callback). 10 minutes is well past any human latency
+                # but bounds the worker if the modal is genuinely broken.
+                choice = await asyncio.wait_for(choice_future, timeout=600.0)
+            except TimeoutError:
+                logger.warning(
+                    "MCP reconnect prompt for %r timed out; defaulting to defer",
+                    server_name,
+                )
+                choice = "later"
+
+        if choice == "reconnect":
+            self._pending_mcp_login_reconnect = False
+            self._pending_mcp_disable_reconnect_servers.clear()
+            self._sync_pending_mcp_reconnect()
+            self._clear_mcp_login_reconnect_banner_counts(server_name)
+            await self._restart_server_for_mcp_refresh(server_name)
+            return
+
+        # Defer: keep the running server in place so the user can authenticate
+        # with additional MCP servers. The token is on disk either way, so
+        # remember the pending state regardless of how the modal closed.
+        # Only notify on an explicit "later" choice — `None` (programmatic
+        # dismiss / timeout) stays quiet to avoid telling the user about
+        # an action they didn't take.
+        self._pending_mcp_login_reconnect = True
+        self._sync_pending_mcp_reconnect()
+        self._apply_optimistic_mcp_login_pending_state(server_name)
+        if choice == "later":
+            self.notify(
+                f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "
+                "to load the new tools.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
+            # Defer is the "log into another server first" path, so route the
+            # user back to the switcher where the next unauthenticated server
+            # is one click away. Timeout and push_screen-failure fallbacks
+            # also land here (both set `choice = "later"`), so they share
+            # both the notify above and this navigation — acceptable
+            # degradation since the viewer push is itself best-effort.
+            try:
+                await self._show_mcp_viewer()
+            except Exception:
+                # Broad catch: real failures here are Textual mount/stack
+                # errors plus the deferred SDK import — none worth crashing
+                # the worker for, since the token is already on disk.
+                # Surface a toast so the user knows why the switcher didn't
+                # come back; without it, the "logged in" notify is the only
+                # signal and the missing viewer looks like a UI hang.
+                logger.exception(
+                    "Failed to reopen MCP viewer after deferring reconnect for %r",
+                    server_name,
+                )
+                self.notify(
+                    "Couldn't reopen the MCP viewer — run `/mcp` to open it manually.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
+
+    async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
+        """Restart the app-owned LangGraph server to pick up new MCP tokens.
+
+        Skips and notifies when the app does not own a server process.
+        Failures roll back to the previous state via `ServerStartFailed`
+        from `_start_server_background`.
+
+        Args:
+            server_name: Server whose login just completed — used in user
+                messages only.
+        """
+        # Clear the pending flag up front so deferred state can't leak
+        # past a no-op early return — e.g. the server died between defer
+        # and `/mcp reconnect`. The token is on disk; the user must
+        # relaunch dcode to pick it up, and `/mcp reconnect` shouldn't
+        # keep claiming there's something to do.
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._sync_pending_mcp_reconnect()
+
+        if self._server_kwargs is None or self._server_proc is None:
+            self.notify(
+                "Cannot restart the LangGraph server automatically; "
+                "relaunch dcode to pick up the new MCP token.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        await self._respawn_server(
+            log_message=(f"Server restart after MCP login for {server_name!r} failed"),
+            mcp_failure_log="MCP metadata preload after login refresh failed",
+            mcp_failure_toast=(
+                "MCP tool metadata could not be refreshed after login. "
+                "Your tool list may be stale — use /mcp to check."
+            ),
+        )
+
+    async def _handle_restart_command(self, command: str) -> None:
+        """Drive the hidden `/restart` slash command.
+
+        Superset of `/reload`: re-reads `.env` / environment, clears
+        configuration caches, then respawns the app-owned LangGraph
+        server subprocess. Used as a recovery escape hatch when the
+        server wedges; intentionally hidden from autocomplete and help.
+
+        Cancels any in-flight agent work and drops the queued message
+        backlog before respawning. The streaming HTTP connection to the
+        dying subprocess would otherwise raise into the Textual reactor
+        after the new server advertises ready, leaving the UI wedged.
+
+        Args:
+            command: Raw command string for echoing back to chat.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        await self._mount_message(UserMessage(command))
+
+        # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
+        # discards the queued backlog too — those messages would otherwise
+        # fire against the freshly respawned agent silently.
+        if self._agent_running and self._agent_worker:
+            self._cancel_worker(self._agent_worker)
+            self._agent_running = False
+        else:
+            self._discard_queue()
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+            logger.exception("Failed to reload configuration during /restart")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration "
+                    f"({type(exc).__name__}: {exc}). Check your .env "
+                    "file and environment variables for syntax errors, "
+                    "then try again.",
+                ),
+            )
+            return
+
+        if self._server_proc is None or self._server_kwargs is None:
+            await self._mount_message(
+                AppMessage(
+                    "Cannot restart: this app is connected to a remote "
+                    "LangGraph server (no owned subprocess). Configuration "
+                    "was reloaded; relaunch dcode to fully restart.",
+                ),
+            )
+            return
+
+        await self._restart_server_manual()
+
+    async def _restart_server_manual(self) -> None:
+        """Respawn the app-owned LangGraph server for `/restart`.
+
+        Shares the respawn/preload sequence with
+        `_restart_server_for_mcp_refresh` via `_respawn_server`. Failures
+        surface via `ServerStartFailed` so the existing recovery UI takes
+        over.
+        """
+        await self._respawn_server(
+            log_message="Manual /restart of server failed",
+            mcp_failure_log="MCP metadata preload after /restart failed",
+            mcp_failure_toast=(
+                "MCP tool metadata could not be refreshed. Use /mcp to check."
+            ),
+        )
+
+    async def _respawn_server(
+        self,
+        *,
+        log_message: str,
+        mcp_failure_log: str,
+        mcp_failure_toast: str,
+        restart_timeout: float = 30.0,
+    ) -> None:
+        """Stop the app-owned server subprocess and rebuild the agent.
+
+        Used by `_restart_server_manual` (the `/restart` command) and
+        `_restart_server_for_mcp_refresh` (post-OAuth-login refresh).
+
+        Args:
+            log_message: Error log written when `server_proc.restart()`
+                raises or times out.
+            mcp_failure_log: Error log written when post-restart MCP
+                metadata preload raises.
+            mcp_failure_toast: User-facing toast shown when MCP preload
+                fails. Restart still succeeds; the agent comes up with
+                `mcp_info=None`.
+            restart_timeout: Seconds to wait for the subprocess restart
+                before giving up. Bounded so a wedged shutdown — the very
+                condition `/restart` exists to recover from — cannot
+                deadlock the handler.
+        """
+        server_proc = self._server_proc
+        if self._server_kwargs is None or server_proc is None:
+            return
+
+        try:
+            self._connecting = True
+            self._agent = None
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connecting()
+            except NoMatches:
+                pass
+
+            try:
+                await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
+            except (Exception, TimeoutError) as exc:
+                self._connecting = False
+                logger.exception(log_message)
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+
+            from deepagents_code.main import _preload_session_mcp_server_info
+            from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
+
+            mcp_info = None
+            try:
+                mcp_info = await _preload_session_mcp_server_info(
+                    **self._mcp_preload_kwargs,  # type: ignore[arg-type]
+                )
+            except Exception as exc:
+                logger.exception(mcp_failure_log)
+                self.notify(
+                    f"{mcp_failure_toast} ({type(exc).__name__})",
+                    severity="warning",
+                    markup=False,
+                )
+
+            def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
+                return _RemoteAgent(url=url, graph_name="agent")
+
+            self._agent = _build_agent(server_proc.url)
+            self.post_message(
+                self.ServerReady(
+                    agent=self._agent,
+                    server_proc=server_proc,
+                    mcp_server_info=mcp_info,
+                ),
+            )
+        except BaseException:
+            self._connecting = False
+            raise
+        finally:
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=not self._agent_running)
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
@@ -8079,10 +9373,11 @@ class DeepAgentsApp(App):
                         DeferredAction(
                             kind="thread_switch",
                             execute=partial(self._resume_thread, result),
-                        )
+                        ),
                     )
                     self.notify(
-                        "Thread will switch after current task completes.", timeout=3
+                        "Thread will switch after current task completes.",
+                        timeout=3,
                     )
                 else:
                     self.call_later(self._resume_thread, result)
@@ -8131,13 +9426,13 @@ class DeepAgentsApp(App):
         """
         if not self._agent:
             await self._mount_message(
-                AppMessage("Cannot switch threads: no active agent")
+                AppMessage("Cannot switch threads: no active agent"),
             )
             return
 
         if not self._session_state:
             await self._mount_message(
-                AppMessage("Cannot switch threads: no active session")
+                AppMessage("Cannot switch threads: no active session"),
             )
             return
 
@@ -8192,8 +9487,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(
                         f"Failed to switch to thread {thread_id}: {exc}. "
-                        "Use /threads to try again."
-                    )
+                        "Use /threads to try again.",
+                    ),
                 )
                 return
             logger.exception("Failed to switch to thread %s", thread_id)
@@ -8289,7 +9584,7 @@ class DeepAgentsApp(App):
                                 extra_kwargs=extra_kwargs,
                                 announce_unchanged=announce_unchanged,
                             ),
-                        )
+                        ),
                     )
                     self.notify(
                         "Model will switch once the session is ready.",
@@ -8304,11 +9599,12 @@ class DeepAgentsApp(App):
                     or self._server_startup_error is not None
                 ) and self._server_kwargs is not None:
                     await self._retry_startup_with_model(
-                        model_spec, extra_kwargs=extra_kwargs
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
                     )
                     return
                 await self._mount_message(
-                    ErrorMessage("Model switching requires a server-backed session.")
+                    ErrorMessage("Model switching requires a server-backed session."),
                 )
                 return
 
@@ -8327,8 +9623,8 @@ class DeepAgentsApp(App):
                     ErrorMessage(
                         f"Missing credentials: {auth_status.missing_detail()}\n\n"
                         f"Run `/auth` for the '{auth_status.provider}' provider, then "
-                        f"re-issue `/model {model_spec}`."
-                    )
+                        f"re-issue `/model {model_spec}`.",
+                    ),
                 )
                 return
             if (
@@ -8355,10 +9651,12 @@ class DeepAgentsApp(App):
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     await self._mount_message(
-                        AppMessage(f"Already using {current}{params_suffix}")
+                        AppMessage(f"Already using {current}{params_suffix}"),
                     )
                 logger.info(
-                    "Model unchanged (%s); model_params=%s", current, extra_kwargs
+                    "Model unchanged (%s); model_params=%s",
+                    current,
+                    extra_kwargs,
                 )
                 return
 
@@ -8377,7 +9675,7 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc))
+                    ErrorMessage(_build_model_switch_error_body(exc)),
                 )
                 return
 
@@ -8397,13 +9695,13 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
-                        "preference. Check permissions for ~/.deepagents/"
-                    )
+                        "preference. Check permissions for ~/.deepagents/",
+                    ),
                 )
             else:
                 params_suffix = _format_model_params(extra_kwargs)
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}")
+                    AppMessage(f"Switched to {display}{params_suffix}"),
                 )
             # Best-effort MRU update for the `/model` Recent section.
             # `display` may be a bare model name when provider auto-detection
@@ -8446,7 +9744,7 @@ class DeepAgentsApp(App):
 
         if self._server_kwargs is None:
             await self._mount_message(
-                ErrorMessage("Cannot retry startup: server is not app-owned.")
+                ErrorMessage("Cannot retry startup: server is not app-owned."),
             )
             return
 
@@ -8464,7 +9762,7 @@ class DeepAgentsApp(App):
         auth_status = get_provider_auth_status(provider) if provider else None
         if auth_status is not None and auth_status.blocks_start:
             await self._mount_message(
-                ErrorMessage(f"Missing credentials: {auth_status.missing_detail()}")
+                ErrorMessage(f"Missing credentials: {auth_status.missing_detail()}"),
             )
             return
 
@@ -8484,6 +9782,7 @@ class DeepAgentsApp(App):
 
         self._server_startup_error = None
         self._server_startup_missing_credentials_provider = None
+        self._server_startup_missing_provider_package = None
         self._server_startup_deferred = False
         self._connecting = True
         try:
@@ -8565,8 +9864,9 @@ class DeepAgentsApp(App):
         else:
             await self._mount_message(
                 ErrorMessage(
-                    "Could not save default model. Check permissions for ~/.deepagents/"
-                )
+                    "Could not save default model. "
+                    "Check permissions for ~/.deepagents/",
+                ),
             )
 
     async def _clear_default_model(self) -> None:
@@ -8581,15 +9881,15 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "Default model cleared. "
-                    "Future launches will use recent model or auto-detect."
-                )
+                    "Future launches will use recent model or auto-detect.",
+                ),
             )
         else:
             await self._mount_message(
                 ErrorMessage(
                     "Could not clear default model. "
-                    "Check permissions for ~/.deepagents/"
-                )
+                    "Check permissions for ~/.deepagents/",
+                ),
             )
 
 

@@ -25,6 +25,7 @@ from deepagents_code.mcp_tools import (
     _check_remote_server,
     _check_stdio_server,
     _load_tools_from_config,
+    _normalize_mcp_arguments,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_project_server_summaries,
@@ -1143,7 +1144,7 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "dcode mcp login notion" in (server_infos[0].error or "")
+        assert "re-authentication" in (server_infos[0].error or "")
         await manager.cleanup()
 
     async def test_existing_tokens_attach_oauth_provider(
@@ -1227,7 +1228,7 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "dcode mcp login notion" in (server_infos[0].error or "")
+        assert "re-authentication" in (server_infos[0].error or "")
         await manager.cleanup()
 
 
@@ -1421,6 +1422,115 @@ class TestResolveAndLoadMcpTools:
 
         merged = mock_load.call_args.args[0]
         assert "remote" in merged["mcpServers"]
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    async def test_disabled_server_is_split_off(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A disabled server is removed from the loader payload and surfaced as info."""
+        cfg = tmp_path / "mcp.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "fs": {"command": "npx", "args": []},
+                        "off": {"command": "node", "args": []},
+                    },
+                },
+            ),
+        )
+        mock_discover.return_value = [cfg]
+        mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.mcp_disabled.get_disabled_servers",
+            lambda *_a, **_k: {"off"},
+        )
+
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=True,
+        )
+
+        merged = mock_load.call_args.args[0]
+        assert "fs" in merged["mcpServers"]
+        assert "off" not in merged["mcpServers"]
+        disabled = [i for i in infos if i.status == "disabled"]
+        assert len(disabled) == 1
+        assert disabled[0].name == "off"
+        assert disabled[0].transport == "stdio"
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    async def test_all_servers_disabled_short_circuits_loader(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When every configured server is disabled, the loader is never called."""
+        cfg = tmp_path / "mcp.json"
+        cfg.write_text(
+            json.dumps(
+                {"mcpServers": {"fs": {"command": "npx", "args": []}}},
+            ),
+        )
+        mock_discover.return_value = [cfg]
+        mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.mcp_disabled.get_disabled_servers",
+            lambda *_a, **_k: {"fs"},
+        )
+
+        tools, manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=True,
+        )
+
+        assert tools == []
+        assert manager is None
+        assert mock_load.call_count == 0
+        assert [i.name for i in infos if i.status == "disabled"] == ["fs"]
+
+    @patch("deepagents_code.mcp_tools._load_tools_from_config")
+    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    async def test_disabled_non_dict_config_gets_unknown_transport(
+        self,
+        mock_discover: MagicMock,
+        mock_load: AsyncMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-dict server config in the disabled set surfaces `transport=unknown`."""
+        cfg = tmp_path / "mcp.json"
+        # Force a non-dict server entry into the merged config. JSON does
+        # not preserve type fidelity across all loaders, so we monkeypatch
+        # merge_mcp_configs to return a known-shape payload.
+        cfg.write_text(
+            json.dumps({"mcpServers": {"weird": {"command": "x"}}}),
+        )
+        mock_discover.return_value = [cfg]
+        mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.mcp_disabled.get_disabled_servers",
+            lambda *_a, **_k: {"weird"},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.mcp_tools.merge_mcp_configs",
+            lambda _configs: {"mcpServers": {"weird": "not-a-dict"}},
+        )
+
+        _tools, _manager, infos = await resolve_and_load_mcp_tools(
+            trust_project_mcp=True,
+        )
+
+        disabled = [i for i in infos if i.status == "disabled"]
+        assert len(disabled) == 1
+        assert disabled[0].name == "weird"
+        assert disabled[0].transport == "unknown"
 
 
 class TestDiscoveryHelpers:
@@ -1927,7 +2037,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="dcode mcp login srv"):
+            with pytest.raises(ToolException, match="re-authentication"):
                 await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         assert call_counter["n"] == 2
@@ -2426,3 +2536,135 @@ class TestToolFilterEndToEnd:
         assert names == ["api_search", "fs_read_file"]
         assert manager is not None
         await manager.cleanup()
+
+
+class TestNormalizeMCPArguments:
+    """Cover the empty-string-stripping at the MCP tool boundary."""
+
+    def _schema(
+        self,
+        properties: dict[str, dict],
+        required: list[str] | None = None,
+    ) -> dict:
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+        }
+
+    def test_drops_empty_optional_string(self) -> None:
+        schema = self._schema(
+            {
+                "query": {"type": "string"},
+                "context_channel_id": {"type": "string"},
+            },
+            required=["query"],
+        )
+        out = _normalize_mcp_arguments(
+            {"query": "hello", "context_channel_id": ""}, schema
+        )
+        assert out == {"query": "hello"}
+
+    def test_keeps_empty_required_string(self) -> None:
+        schema = self._schema({"query": {"type": "string"}}, required=["query"])
+        out = _normalize_mcp_arguments({"query": ""}, schema)
+        assert out == {"query": ""}
+
+    def test_keeps_nonempty_strings(self) -> None:
+        schema = self._schema({"q": {"type": "string"}})
+        out = _normalize_mcp_arguments({"q": "x"}, schema)
+        assert out == {"q": "x"}
+
+    def test_keeps_non_string_values(self) -> None:
+        schema = self._schema(
+            {
+                "limit": {"type": "integer"},
+                "include_bots": {"type": "boolean"},
+            }
+        )
+        out = _normalize_mcp_arguments({"limit": 0, "include_bots": False}, schema)
+        assert out == {"limit": 0, "include_bots": False}
+
+    def test_drops_empty_when_property_missing_type(self) -> None:
+        schema = self._schema({"hint": {"description": "free-form"}})
+        out = _normalize_mcp_arguments({"hint": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_unknown_property(self) -> None:
+        # Tool calls sometimes carry extra fields not listed in `properties`.
+        # Without a schema entry we can't prove the field is string-typed,
+        # but treating empty as "omitted" is the safer default.
+        schema = self._schema({"known": {"type": "string"}})
+        out = _normalize_mcp_arguments({"known": "a", "extra": ""}, schema)
+        assert out == {"known": "a"}
+
+    def test_passes_through_when_schema_is_not_dict(self) -> None:
+        out = _normalize_mcp_arguments({"a": "", "b": 1}, None)
+        assert out == {"a": "", "b": 1}
+
+    def test_handles_union_string_type(self) -> None:
+        schema = self._schema({"v": {"type": ["string", "null"]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_oneof_schema(self) -> None:
+        """`oneOf` props have no top-level `type` → conservative drop."""
+        schema = self._schema({"v": {"oneOf": [{"type": "string"}, {"type": "null"}]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_anyof_schema(self) -> None:
+        """`anyOf` props share the same no-top-level-`type` shape."""
+        schema = self._schema({"v": {"anyOf": [{"type": "string"}]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_ref_schema(self) -> None:
+        """`$ref` props look like `{"$ref": "#/..."}` — no `type` either."""
+        schema = self._schema({"v": {"$ref": "#/definitions/ChannelId"}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_when_property_is_boolean_schema(self) -> None:
+        """JSON Schema allows `{"properties": {"k": true}}` — `prop` non-dict.
+
+        `isinstance(prop, dict)` guards the `.get("type")` call so we don't
+        crash, and the field is treated as ambiguous (drop).
+        """
+        schema = {"type": "object", "properties": {"k": True}, "required": []}
+        out = _normalize_mcp_arguments({"k": ""}, schema)
+        assert out == {}
+
+    def test_passes_through_falsy_non_string_values(self) -> None:
+        """Guards against a `if not value` refactor — `0`/`False`/`[]`/`{}` survive."""
+        schema = self._schema(
+            {
+                "i": {"type": "integer"},
+                "b": {"type": "boolean"},
+                "a": {"type": "array"},
+                "o": {"type": "object"},
+            }
+        )
+        out = _normalize_mcp_arguments({"i": 0, "b": False, "a": [], "o": {}}, schema)
+        assert out == {"i": 0, "b": False, "a": [], "o": {}}
+
+    def test_required_takes_precedence_over_string_schema(self) -> None:
+        """`required` wins even when properties confirm the field is string-typed."""
+        schema = self._schema({"query": {"type": "string"}}, required=["query"])
+        out = _normalize_mcp_arguments({"query": ""}, schema)
+        assert out == {"query": ""}
+
+    def test_logs_dropped_keys(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Diagnostic log fires when at least one key is stripped."""
+        import logging
+
+        schema = self._schema(
+            {"q": {"type": "string"}, "ctx": {"type": "string"}},
+            required=["q"],
+        )
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            _normalize_mcp_arguments({"q": "x", "ctx": ""}, schema)
+        assert any(
+            "dropped empty-string keys" in r.message and "ctx" in r.message
+            for r in caplog.records
+        )

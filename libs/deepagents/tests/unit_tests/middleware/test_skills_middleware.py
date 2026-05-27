@@ -44,7 +44,6 @@ from deepagents.middleware.skills import (
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
-    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -60,7 +59,7 @@ def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
 
 @contextmanager
 def _runtime_context(assistant_id: str | None = None):
-    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    """Set a LangGraph Runtime in the current context so `get_runtime()` resolves."""
     server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
     runtime = Runtime(server_info=server_info)
     token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
@@ -218,101 +217,21 @@ No YAML frontmatter here.
     assert result is None
 
 
-def test_validate_module_path_absent() -> None:
-    """Missing key returns None — the vast majority of skills have no module."""
-    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_valid_bare() -> None:
-    """A bare filename with a supported extension passes through unchanged."""
-    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_strips_dot_slash() -> None:
-    """./index.ts → index.ts so the stored path matches how the loader keys files."""
-    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
-
-
-def test_validate_module_path_nested() -> None:
-    """Subdirectory paths are fine as long as they stay inside the skill dir."""
-    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
-
-
-def test_validate_module_path_all_supported_extensions() -> None:
-    """Every quickjs-rs-accepted extension is accepted here too."""
-    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
-        path = f"index.{ext}"
-        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
-
-
-def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
-    """Non-string values log a warning and return None — don't crash the parse."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
-    assert "non-string 'module'" in caplog.text
-
-
-def test_validate_module_path_rejects_empty_string() -> None:
-    """An empty / whitespace-only value is equivalent to absent."""
-    assert _validate_module_path("", "/skills/x/SKILL.md") is None
-    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
-
-
-def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
-    """Absolute paths could reach outside the skill dir — reject with a warning."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
-    assert "absolute" in caplog.text
-
-
-def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
-    """Any form of `..` traversal is rejected so skills can't read each other's code."""
-    caplog.set_level(logging.WARNING)
-    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
-        caplog.clear()
-        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
-        assert "escapes" in caplog.text
-
-
-def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
-    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
-    caplog.set_level(logging.WARNING)
-    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
-    assert "extension" in caplog.text
-
-
-def test_parse_skill_metadata_with_module() -> None:
-    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
+def test_parse_skill_metadata_entrypoint_in_metadata() -> None:
+    """Entrypoint stays in the metadata dict, not promoted to a top-level field."""
     content = """---
 name: pdf-extract
 description: Parse PDFs
-module: ./index.ts
+metadata:
+  entrypoint: scripts/index.ts
 ---
 
 # PDF extract
 """
     result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
     assert result is not None
-    assert result["module"] == "index.ts"
-
-
-def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
-    """An invalid `module` value must not drop the skill.
-
-    The prose is still useful; we just drop the module surface.
-    """
-    content = """---
-name: bad-module
-description: has a bad module path
-module: /etc/passwd
----
-
-# Bad module
-"""
-    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
-    assert result is not None
     assert "module" not in result
-    assert result["name"] == "bad-module"
+    assert result["metadata"]["entrypoint"] == "scripts/index.ts"
 
 
 def test_parse_skill_metadata_invalid_yaml() -> None:
@@ -2183,3 +2102,41 @@ def test_modify_request_uses_custom_template() -> None:
     assert "WARN:" in appended
     assert "LIST:" in appended
     assert "## Skills System" not in appended  # default template marker absent
+
+
+# --- required-ptc-tools stays in metadata ----------------------------------
+
+
+def test_parse_skill_metadata_required_ptc_tools_in_metadata() -> None:
+    """required-ptc-tools is preserved in the metadata dict, not promoted."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata:
+  required-ptc-tools: swarm_task read_file write_file glob
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "required_ptc_tools" not in result
+    assert result["metadata"]["required-ptc-tools"] == "swarm_task read_file write_file glob"
+
+
+def test_parse_skill_metadata_entrypoint_stays_in_metadata() -> None:
+    """metadata.entrypoint is preserved in metadata, not promoted to a top-level field."""
+    content = """---
+name: swarm
+description: Dispatch tasks in parallel
+metadata:
+  entrypoint: scripts/index.ts
+---
+
+# Swarm
+"""
+    result = _parse_skill_metadata(content, "/skills/swarm/SKILL.md", "swarm")
+    assert result is not None
+    assert "module" not in result
+    assert result["metadata"]["entrypoint"] == "scripts/index.ts"

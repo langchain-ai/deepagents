@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     import argparse
     from collections.abc import Callable
 
+    from deepagents_code.mcp_login_service import ConfigResolutionError
+
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
     """Return a callable that lazily imports and invokes a `ui` help function."""
@@ -55,15 +57,27 @@ def setup_mcp_parsers(
     )
     login_parser.add_argument("server", help="Server name from mcpServers config")
     login_parser.add_argument(
-        "--config",
+        "--mcp-config",
         dest="config_path",
         default=None,
-        help="Path to an MCP config JSON file (default: auto-discovered)",
+        help="Path to an MCP config JSON file. Falls back to the top-level "
+        "`--mcp-config`, then to auto-discovered configs.",
     )
     login_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_mcp_login_help")),
+    )
+
+    config_parser = mcp_sub.add_parser(
+        "config",
+        help="Show MCP config discovery paths",
+        add_help=False,
+    )
+    config_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(_lazy_ui_help("show_mcp_config_help")),
     )
 
 
@@ -87,110 +101,61 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         Process exit code: 0 on success, 1 on config or login failure,
         2 if no config file could be found.
     """
-    from pathlib import Path
-
     from deepagents_code.mcp_auth import login
-    from deepagents_code.mcp_tools import (
-        _validate_server_config,
-        classify_discovered_configs,
-        discover_mcp_configs,
-        load_mcp_config,
-        load_mcp_config_lenient,
-        merge_mcp_configs,
+    from deepagents_code.mcp_login_service import (
+        ConfigErrorKind,
+        ConfigResolution,
+        ConfigResolutionError,
+        format_untrusted_project_notice,
+        resolve_mcp_config,
+        select_server,
     )
+    from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-    if config_path is not None:
-        try:
-            config = load_mcp_config(config_path)
-        except (FileNotFoundError, TypeError, ValueError, RuntimeError) as exc:
-            print(  # noqa: T201
-                f"Failed to load MCP config {config_path}: {exc}",
-                file=sys.stderr,
-            )
-            return 1
-        search_label = config_path
-    else:
-        found = discover_mcp_configs()
-        if not found:
-            print(  # noqa: T201
-                "No MCP config file found in any auto-discovered location. "
-                "Pass --config <path>, or run `dcode mcp login --help` "
-                "to see the search paths and config format.",
-                file=sys.stderr,
-            )
-            return 2
+    resolution = resolve_mcp_config(config_path)
+    if isinstance(resolution, ConfigResolutionError):
+        _print_resolution_error(resolution)
+        return 2 if resolution.kind is ConfigErrorKind.NO_CONFIG_FOUND else 1
 
-        user_paths, project_paths = classify_discovered_configs(found)
-        configs: list[dict[str, Any]] = []
-        used_paths: list[Path] = []
-
-        for path in user_paths:
-            config = load_mcp_config_lenient(path)
-            if config is not None:
-                configs.append(config)
-                used_paths.append(path)
-
-        if project_paths:
-            from deepagents_code.mcp_trust import (
-                compute_config_fingerprint,
-                is_project_mcp_trusted,
-            )
-            from deepagents_code.project_utils import find_project_root
-
-            project_root = str((find_project_root() or Path.cwd()).resolve())
-            fingerprint = compute_config_fingerprint(project_paths)
-            if is_project_mcp_trusted(project_root, fingerprint):
-                for path in project_paths:
-                    config = load_mcp_config_lenient(path)
-                    if config is not None:
-                        configs.append(config)
-                        used_paths.append(path)
-            else:
-                skipped = ", ".join(str(path) for path in project_paths)
-                print(  # noqa: T201
-                    "Skipping untrusted project MCP config "
-                    f"(not yet approved or config changed): {skipped}. "
-                    "Approve it by running `deepagents` in this project, or "
-                    "pass --config <path> to use it explicitly.",
-                    file=sys.stderr,
-                )
-
-        if not configs:
-            found_paths = ", ".join(str(path) for path in found)
-            print(  # noqa: T201
-                f"No usable MCP config found in: {found_paths}",
-                file=sys.stderr,
-            )
-            return 1
-
-        config = merge_mcp_configs(configs)
-        search_label = ", ".join(str(path) for path in used_paths)
-
-    servers = config.get("mcpServers", {})
-    if server not in servers:
+    if not isinstance(resolution, ConfigResolution):  # pragma: no cover - safety
         print(  # noqa: T201
-            f"Server {server!r} not found in {search_label}. "
-            f"Known servers: {sorted(servers)}",
+            "Internal error: unexpected result from resolve_mcp_config. "
+            "Please report this bug.",
             file=sys.stderr,
         )
         return 1
 
-    # Re-run shape validation on the selected entry. Auto-discovered configs
-    # reach this point via `load_mcp_config_lenient`, which intentionally
-    # skips validation so one malformed entry doesn't break the whole app.
-    # Validating here rejects path-traversal server names like "../evil"
-    # before they flow into `FileTokenStorage` and onto disk.
-    try:
-        _validate_server_config(server, servers[server])
-    except (TypeError, ValueError) as exc:
-        print(f"Invalid MCP server config for {server!r}: {exc}", file=sys.stderr)  # noqa: T201
+    notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
+    if notice:
+        print(notice, file=sys.stderr)  # noqa: T201
+
+    selection = select_server(resolution, server)
+    if isinstance(selection, ConfigResolutionError):
+        print(selection.message, file=sys.stderr)  # noqa: T201
         return 1
 
     import httpx
     from pydantic import ValidationError
 
+    from deepagents_code.mcp_auth import format_login_failure
+
     try:
-        await login(server_name=server, server_config=servers[server])
+        await login(
+            server_name=selection.server_name,
+            server_config=selection.server_config,
+            ui=CliOAuthInteraction(),
+        )
+    except PermissionError as exc:
+        # PermissionError typically means the user's home dir or the
+        # ~/.deepagents/.state/mcp-tokens/ tree isn't writable. Retrying
+        # without a hint sends users in circles.
+        print(  # noqa: T201
+            f"Login failed: cannot write to the MCP tokens store ({exc}). "
+            f"Check permissions on ~/.deepagents/.state/mcp-tokens/ and "
+            f"retry `dcode mcp login {selection.server_name}`.",
+            file=sys.stderr,
+        )
+        return 1
     except (
         ValueError,
         RuntimeError,
@@ -199,6 +164,83 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         KeyError,
         OSError,
     ) as exc:
-        print(f"Login failed: {exc}", file=sys.stderr)  # noqa: T201
+        print(  # noqa: T201
+            f"Login failed: {format_login_failure(exc)}",
+            file=sys.stderr,
+        )
         return 1
     return 0
+
+
+def run_mcp_config() -> int:
+    """Handle `dcode mcp config`.
+
+    Prints the MCP config discovery paths in precedence order with a
+    marker showing which exist on disk. Stat-only; never opens config
+    files, so config-trust prompts are not triggered.
+
+    Returns:
+        Process exit code: always 0.
+    """
+    from pathlib import Path
+
+    from deepagents_code.mcp_tools import (
+        _resolve_project_config_base,
+        discover_mcp_configs,
+    )
+    from deepagents_code.ui import console
+
+    found = {str(p.resolve()) for p in discover_mcp_configs()}
+    user_dir = Path.home() / ".deepagents"
+    project_root = _resolve_project_config_base(None)
+
+    rows: list[tuple[str, str, bool]] = []
+    for display, label, resolved in (
+        ("~/.deepagents/.mcp.json", "user-level", user_dir / ".mcp.json"),
+        (
+            "<project-root>/.deepagents/.mcp.json",
+            "project subdir",
+            project_root / ".deepagents" / ".mcp.json",
+        ),
+        ("<project-root>/.mcp.json", "project root", project_root / ".mcp.json"),
+    ):
+        exists = str(resolved.resolve()) in found or resolved.is_file()
+        rows.append((display, label, exists))
+
+    width = max(len(p) for p, _, _ in rows)
+    console.print(
+        "MCP config discovery paths (lowest to highest precedence):",
+        highlight=False,
+    )
+    for display, label, exists in rows:
+        marker = "found" if exists else "missing"
+        console.print(
+            f"  [{marker:>7}]  {display:<{width}}  ({label})",
+            highlight=False,
+            markup=False,
+        )
+    console.print()
+    console.print(
+        "<project-root> = nearest ancestor with `.git`, else current directory.",
+        highlight=False,
+    )
+    console.print(
+        "Override via `--mcp-config <path>` at the top level or on "
+        "`dcode mcp login <server>`.",
+        highlight=False,
+    )
+    return 0
+
+
+def _print_resolution_error(error: ConfigResolutionError) -> None:
+    """Print the untrusted-paths notice (if any) then `error.message` to stderr.
+
+    Note: the untrusted-paths notice is also surfaced independently for
+    successful resolutions in `run_mcp_login`.
+    """
+    from deepagents_code.mcp_login_service import format_untrusted_project_notice
+
+    notice = format_untrusted_project_notice(error.untrusted_project_paths)
+    if notice:
+        print(notice, file=sys.stderr)  # noqa: T201
+    print(error.message, file=sys.stderr)  # noqa: T201

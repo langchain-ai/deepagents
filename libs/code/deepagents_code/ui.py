@@ -115,16 +115,30 @@ def show_help() -> None:
     console.print(
         "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
     )
+    console.print("  --sandbox-snapshot-name NAME")
+    console.print(
+        "                             Sandbox snapshot name to use or create"
+        " (langsmith only)"
+    )
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
     console.print(
         "  --mcp-config PATH          Load MCP tools from config file"
-        " (merged on top of auto-discovered configs)"
+        " (merged on top of auto-discovered configs;"
+        " run `dcode mcp config` to list discovery paths)"
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
+    )
+    console.print(
+        "  --interpreter              Enable JS interpreter (`js_eval`) middleware "
+        "(local mode only)"
+    )
+    console.print(
+        "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
+        "tool names"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
@@ -153,6 +167,10 @@ def show_help() -> None:
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
+    console.print(
+        "  --install EXTRA            Install an optional extra (e.g. quickjs)"
+    )
+    console.print("  --yes                      Skip --install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show dcode and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
@@ -433,19 +451,21 @@ def show_mcp_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print("  config            Show MCP config discovery paths")
     console.print()
     _print_option_section()
     console.print()
     _print_mcp_discovery_paths()
     console.print()
     console.print(
-        "  Pass --config <path> to any subcommand to bypass discovery.",
+        "  Pass --mcp-config <path> to any subcommand to bypass discovery.",
         style=theme.MUTED,
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
     console.print()
 
 
@@ -453,10 +473,10 @@ def show_mcp_login_help() -> None:
     """Show help information for the `mcp login` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode mcp login <server> [--config PATH]")
+    console.print("  dcode mcp login <server> [--mcp-config PATH]")
     console.print()
     _print_option_section(
-        "  --config PATH           Path to an MCP config JSON file "
+        "  --mcp-config PATH       Path to an MCP config JSON file "
         "(default: auto-discovered)",
     )
     console.print()
@@ -467,7 +487,22 @@ def show_mcp_login_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_config_help() -> None:
+    """Show help information for the `mcp config` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
+    console.print()
+    console.print(
+        "Print the MCP config discovery paths in precedence order, marking"
+        " which files exist on disk.",
+    )
+    console.print()
+    _print_mcp_discovery_paths()
     console.print()
 
 

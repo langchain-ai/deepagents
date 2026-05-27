@@ -712,6 +712,60 @@ class TestToolCallMessageShellCommand:
         assert lines[2].plain == "$ not a command"
         assert "dim" not in lines[2].markup
 
+    def test_format_shell_output_preview_truncates_long_single_line(self) -> None:
+        """Preview should char-truncate single-line output past the budget."""
+        msg = ToolCallMessage("execute", {"command": "gh api graphql"})
+        # One huge JSON-like line, well past _PREVIEW_CHARS (400).
+        output = "x" * 5000
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert "more chars" in result.truncation
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_shell_output_preview_short_no_truncation(self) -> None:
+        """Short shell output should not report any truncation in preview."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        output = "$ echo hi\nhi"
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_shell_output_preview_cumulative_chars_exceed_budget(self) -> None:
+        """Many small lines whose total exceeds the budget should char-truncate."""
+        msg = ToolCallMessage("execute", {"command": "noisy"})
+        # 4 lines of 200 chars => 800 + 3 separators, well past 400.
+        # The preview formatter caps at max_lines=4 regardless.
+        output = "\n".join("x" * 200 for _ in range(4))
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert "more chars" in result.truncation
+        # Rendered content stays under budget.
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_shell_output_preview_preserves_dim_when_first_line_clipped(
+        self,
+    ) -> None:
+        """Char-clipping line 0 must keep the `$ ` prefix dim styling."""
+        msg = ToolCallMessage("execute", {"command": "echo"})
+        output = "$ " + ("x" * 5000)
+        result = msg._format_shell_output(output, is_preview=True)
+
+        first_line = result.content.split("\n")[0]
+        assert first_line.plain.startswith("$ ")
+        assert "dim" in first_line.markup
+
+    def test_format_shell_output_full_never_truncates(self) -> None:
+        """`is_preview=False` must render full output regardless of size."""
+        msg = ToolCallMessage("execute", {"command": "big"})
+        output = "x" * 5000
+        result = msg._format_shell_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
 
 class TestToolCallMessageAwaitingApproval:
     """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""

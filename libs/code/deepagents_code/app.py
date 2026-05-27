@@ -8690,7 +8690,8 @@ class DeepAgentsApp(App):
         if new_state:
             self._pending_mcp_disable_reconnect_servers.add(server_name)
             message = (
-                f"MCP server {server_name!r} {verb}. Run `/mcp reconnect` to apply."
+                f"MCP server {server_name!r} {verb}. "
+                "Run `/mcp reconnect` or press Ctrl+R to apply."
             )
         else:
             message = f"MCP server {server_name!r} {verb}."
@@ -8698,7 +8699,7 @@ class DeepAgentsApp(App):
                 self._pending_mcp_disable_reconnect_servers.discard(server_name)
             else:
                 self._pending_mcp_disable_reconnect_servers.add(server_name)
-                message += " Run `/mcp reconnect` to apply."
+                message += " Run `/mcp reconnect` or press Ctrl+R to apply."
         self._sync_pending_mcp_reconnect()
         self.notify(message, markup=False)
         # Refresh the viewer in place so the new status glyph and the

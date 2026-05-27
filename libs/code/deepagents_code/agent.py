@@ -1268,7 +1268,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             MemoryMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(virtual_mode=False),
                 sources=memory_sources,
             )
         )
@@ -1311,7 +1311,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             SkillsMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(virtual_mode=False),
                 sources=middleware_sources,
             )
         )
@@ -1337,7 +1337,7 @@ def create_cli_agent(
             )
         else:
             # No shell access - use plain FilesystemBackend
-            backend = FilesystemBackend(root_dir=root_dir)
+            backend = FilesystemBackend(root_dir=root_dir, virtual_mode=False)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)

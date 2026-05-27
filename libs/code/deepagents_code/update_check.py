@@ -972,6 +972,21 @@ def install_extra_command(extra: str) -> str:
     return f"uv tool install -U 'deepagents-code[{extra}]'"
 
 
+def editable_extra_hint(extra: str) -> str:
+    """Return the canonical action hint for editable installs missing an extra.
+
+    Shared by every site that detects an editable install and points the user
+    at the correct `uv tool install --editable` invocation, so wording stays
+    consistent and the literal `[<extra>]` bracket fragment is centrally
+    defined (callers that print through Rich markup must still escape it).
+    """
+    return (
+        "Rerun your `uv tool install --editable` command with "
+        f"`--with 'deepagents-code[{extra}]'` added so the extra is "
+        "resolved against the editable source."
+    )
+
+
 async def perform_install_extra(
     extra: str,
     *,
@@ -981,9 +996,9 @@ async def perform_install_extra(
     """Add `extra` to the installed dcode tool environment.
 
     Runs `uv tool install -U 'deepagents-code[<extra>]'`. Editable installs
-    are refused — the caller should instead `uv sync --extra <extra>` from
-    the package directory, which we cannot do without knowing the source
-    location.
+    are refused — the caller should rerun their `uv tool install --editable`
+    command with `--with 'deepagents-code[<extra>]'` added so the extra is
+    resolved against the editable source.
 
     Args:
         extra: The extra name to install. Must satisfy `is_valid_extra_name`;
@@ -1004,9 +1019,8 @@ async def perform_install_extra(
     method = detect_install_method()
     if method == "unknown":
         return False, (
-            "Editable install detected — cannot add extras automatically. "
-            f"Run `uv sync --extra {extra}` from the deepagents-code source "
-            "directory instead."
+            "Editable install detected — cannot add extras automatically.\n"
+            + editable_extra_hint(extra)
         )
     if method == "brew":
         # Homebrew formula doesn't expose extras; uv tool install is the

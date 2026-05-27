@@ -106,7 +106,7 @@ def list_skills(
         if not skill_dir or not skill_dir.exists():
             continue
         try:
-            backend = FilesystemBackend(root_dir=str(skill_dir))
+            backend = FilesystemBackend(root_dir=str(skill_dir), virtual_mode=False)
             skills = list_skills_from_backend(backend=backend, source_path=".")
             if experimental and skills:
                 logger.info(

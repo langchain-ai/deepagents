@@ -3070,6 +3070,47 @@ class TestRunAgentTaskMediaTracker:
             errors = app.query(ErrorMessage)
             assert any("Agent error: boom" in str(w._content) for w in errors)
 
+    async def test_run_agent_task_formats_remote_exception_dict_payload(
+        self,
+    ) -> None:
+        """`RemoteException({...})` renders as `Type: message`, not dict repr.
+
+        Regression guard: the production fix replaces `f"Agent error: {e}"`
+        with `format_agent_exception(e)`. Without this test, reverting the
+        helper call would silently regress (the existing `RuntimeError("boom")`
+        test passes either way).
+        """
+        from langgraph.pregel.remote import RemoteException
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            pending_tool = MagicMock()
+            app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
+
+            exc = RemoteException(
+                {"error": "ToolException", "message": "An internal error occurred"}
+            )
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+                side_effect=exc,
+            ):
+                await app._run_agent_task("hello")
+                await pilot.pause()
+
+            expected = "Agent error: ToolException: An internal error occurred"
+            pending_tool.set_error.assert_called_once_with(expected)
+
+            errors = app.query(ErrorMessage)
+            assert any(expected in str(w._content) for w in errors)
+            # Confirm the ugly dict repr would have differed.
+            assert not any(
+                "{'error': 'ToolException'" in str(w._content) for w in errors
+            )
+
 
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""

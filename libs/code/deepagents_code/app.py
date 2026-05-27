@@ -6052,12 +6052,20 @@ class DeepAgentsApp(App):
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
+            try:
+                from deepagents_code.remote_client import format_agent_exception
+
+                error_text = f"Agent error: {format_agent_exception(e)}"
+            except Exception:
+                # The formatter itself must never mask the original error.
+                logger.exception("format_agent_exception failed")
+                error_text = f"Agent error: {e!r}"
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
-                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
+                self._ui_adapter.finalize_pending_tools_with_error(error_text)
             try:
-                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+                await self._mount_message(ErrorMessage(error_text))
             except Exception:
                 logger.debug(
                     "Could not mount error message (app closing?)",

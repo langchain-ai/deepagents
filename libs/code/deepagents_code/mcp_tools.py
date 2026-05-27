@@ -960,6 +960,69 @@ async def _discover_tools(session: ClientSession) -> list[Any]:
     raise RuntimeError(msg)
 
 
+def _normalize_mcp_arguments(
+    arguments: dict[str, Any],
+    input_schema: Any,  # noqa: ANN401  # raw JSON Schema dict from the MCP tool
+) -> dict[str, Any]:
+    """Drop empty-string values for optional MCP tool params.
+
+    Some MCP servers (e.g. Slack's `slack_search_public_and_private`) validate
+    optional ID-typed params with `value is not a channel ID` when the model
+    fills them in with `""` instead of omitting them. JSON-Schema-derived
+    Pydantic models happily accept `""` for `Optional[str]`, so the request
+    reaches the server and gets rejected with a generic `ToolException`.
+
+    Treat `""` for non-required string fields as "omitted" so the MCP server
+    sees the same payload it would have for a field the model genuinely
+    skipped. Required fields are passed through unchanged so the server's
+    own missing-field error path still runs when applicable.
+
+    Only `""` is normalized; `None` is left to the caller / server. Schemas
+    that declare `["string", "null"]` will see `""` dropped but `None`
+    forwarded — callers that want symmetric "no value" handling should
+    omit the kwarg explicitly.
+
+    Dropped keys are logged at debug so unexpected MCP behavior is
+    diagnosable when a tool semantically distinguishes `""` from omitted.
+
+    Args:
+        arguments: Keyword arguments collected by LangChain's tool runner.
+        input_schema: The MCP tool's `inputSchema` (raw JSON Schema dict).
+
+    Returns:
+        A new dict suitable for `session.call_tool`.
+    """
+    if not isinstance(input_schema, dict):
+        return arguments
+    required = set(input_schema.get("required") or ())
+    properties = input_schema.get("properties") or {}
+    cleaned: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if value != "" or key in required:  # noqa: PLC1901  # distinguishing "" from other falsy types (0, False, []) is the point
+            cleaned[key] = value
+            continue
+        prop = properties.get(key)
+        prop_type = prop.get("type") if isinstance(prop, dict) else None
+        is_string_typed = prop_type == "string" or (
+            isinstance(prop_type, list) and "string" in prop_type
+        )
+        # Three drop conditions converge here:
+        #   - explicit string type (the original Slack-style failure mode);
+        #   - missing `type` (oneOf/anyOf/$ref or untyped — treat as ambiguous
+        #     and conservatively drop, since the server will reject `""` for
+        #     any ID-shaped slot anyway);
+        #   - key absent from `properties` entirely (model invented a field).
+        # Anything with an explicit non-string `type` is kept — `""` can't be
+        # a valid integer/bool/array so it was the model's mistake to send,
+        # and the server's own validation gives a clearer error than ours.
+        if isinstance(prop, dict) and not is_string_typed and prop_type is not None:
+            cleaned[key] = value
+    if cleaned.keys() != arguments.keys():
+        dropped = sorted(set(arguments) - set(cleaned))
+        logger.debug("MCP arg normalize: dropped empty-string keys %s", dropped)
+    return cleaned
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1005,6 +1068,8 @@ def _build_cached_mcp_tool(
         **arguments: Any,
     ) -> Any:  # noqa: ANN401
         from deepagents_code.mcp_auth import find_reauth_required
+
+        arguments = _normalize_mcp_arguments(arguments, mcp_tool.inputSchema)
 
         session = await session_manager.get_session(server_name)
         try:

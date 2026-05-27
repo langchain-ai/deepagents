@@ -17,6 +17,10 @@ class UnresolvedServersError(RuntimeError):
     """Raised when one or more `mcp_server_url`s aren't registered."""
 
 
+class UninvokableServersError(RuntimeError):
+    """Raised when referenced MCP servers exist but cannot be invoked."""
+
+
 def _normalize_url(url: str) -> str:
     return url.strip().rstrip("/").lower()
 
@@ -43,22 +47,38 @@ def resolve_referenced_servers(
 ) -> dict[str, str]:
     """Return `{normalized_url → mcp_server_id}` for every URL in *payload*.
 
-    Uses `cache` as a starting point and only hits the list endpoint if any
-    URL is missing. Raises `UnresolvedServersError` if any URL is still
-    unresolved after the list call.
+    Always hits the list endpoint for referenced URLs so stale local state
+    cannot authorize a deploy against deleted, changed, or unavailable MCP
+    servers. Raises `UnresolvedServersError` if any URL is unresolved after
+    the list call and `UninvokableServersError` if a referenced server exists
+    but this identity cannot invoke it.
     """
+    _ = cache
     referenced = _collect_referenced_urls(payload)
-    out: dict[str, str] = {url: cache[url] for url in referenced if url in cache}
-    missing = referenced - out.keys()
-    if not missing:
-        return out
+    if not referenced:
+        return {}
 
+    out: dict[str, str] = {}
+    uninvokable: set[str] = set()
     for server in client.list_mcp_servers():
         url = server.get("url")
         if isinstance(url, str) and url:
             key = _normalize_url(url)
-            if key in missing:
-                out[key] = server["id"]
+            server_id = server.get("id")
+            if key in referenced and server.get("can_invoke") is False:
+                uninvokable.add(key)
+            elif key in referenced and isinstance(server_id, str):
+                out[key] = server_id
+
+    if uninvokable:
+        listed = "\n".join(f"  - {u}" for u in sorted(uninvokable))
+        msg = (
+            "The following MCP server URLs referenced in your tools are "
+            f"registered but this identity cannot invoke them:\n{listed}\n\n"
+            "Update MCP server permissions or reference a server this identity "
+            "can invoke."
+        )
+        raise UninvokableServersError(msg)
 
     still_missing = referenced - out.keys()
     if still_missing:

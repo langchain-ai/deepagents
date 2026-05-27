@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_cli.deploy.state import State
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_load_missing_returns_empty(tmp_path: Path) -> None:

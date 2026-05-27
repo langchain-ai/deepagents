@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import httpx
 import pytest
 
 from deepagents_cli.deploy.api_client import ApiClient, ApiError
 
+Handler = Callable[[httpx.Request], httpx.Response]
 
-def _transport(handler):
+
+def _transport(handler: Handler) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
@@ -25,14 +28,18 @@ def test_from_env_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_from_env_prefers_langsmith_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_a")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "lsv2_pt_b")
-    client = ApiClient.from_env(transport=_transport(lambda r: httpx.Response(200, json={})))
+    client = ApiClient.from_env(
+        transport=_transport(lambda _request: httpx.Response(200, json={}))
+    )
     assert client.api_key == "lsv2_pt_a"
 
 
 def test_endpoint_resolution_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://eu.example.invalid/")
-    client = ApiClient.from_env(transport=_transport(lambda r: httpx.Response(200, json={})))
+    client = ApiClient.from_env(
+        transport=_transport(lambda _request: httpx.Response(200, json={}))
+    )
     assert client.endpoint == "https://eu.example.invalid"
 
 
@@ -41,7 +48,7 @@ def test_endpoint_falls_back_to_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
     monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     client = ApiClient.from_env(
-        transport=_transport(lambda r: httpx.Response(200, json={})),
+        transport=_transport(lambda _request: httpx.Response(200, json={})),
         endpoint_fallback="https://state.example.invalid/",
     )
     assert client.endpoint == "https://state.example.invalid"
@@ -51,7 +58,7 @@ def test_endpoint_env_beats_state_fallback(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://env.example.invalid")
     client = ApiClient.from_env(
-        transport=_transport(lambda r: httpx.Response(200, json={})),
+        transport=_transport(lambda _request: httpx.Response(200, json={})),
         endpoint_fallback="https://state.example.invalid",
     )
     assert client.endpoint == "https://env.example.invalid"
@@ -78,7 +85,7 @@ def test_4xx_parses_error_response(monkeypatch: pytest.MonkeyPatch) -> None:
         "status": 400,
     }
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json=body)
 
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
@@ -93,7 +100,7 @@ def test_4xx_parses_error_response(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_5xx_retries_once_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(503, text="upstream")
 
@@ -108,7 +115,7 @@ def test_5xx_retries_once_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_5xx_retry_succeeds_on_second_try(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(502, text="bad gw")
@@ -121,7 +128,9 @@ def test_5xx_retry_succeeds_on_second_try(monkeypatch: pytest.MonkeyPatch) -> No
     assert body == {"items": []}
 
 
-def test_create_agent_posts_to_v1_deepagents_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_agent_posts_to_v1_deepagents_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -164,7 +173,7 @@ def test_list_agents_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     calls = {"n": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx.Request) -> httpx.Response:
         body = pages[calls["n"]]
         calls["n"] += 1
         return httpx.Response(200, json=body)
@@ -213,6 +222,20 @@ def test_list_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.list_mcp_servers() == body["servers"]
 
 
+def test_list_mcp_servers_accepts_bare_array(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = [{"id": "s1", "url": "https://tools.langchain.com"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/deepagents/mcp-servers"
+        return httpx.Response(200, json=body)
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    assert client.list_mcp_servers() == body
+
+
 def test_create_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -240,6 +263,38 @@ def test_create_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
+def test_update_mcp_server_patches_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"id": "s1", "url": "https://new.example/mcp"},
+        )
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    out = client.update_mcp_server(
+        "s1",
+        url="https://new.example/mcp",
+        headers=[],
+        auth_type="headers",
+    )
+    assert out["id"] == "s1"
+    assert captured == {
+        "method": "PATCH",
+        "path": "/v1/deepagents/mcp-servers/s1",
+        "body": {
+            "url": "https://new.example/mcp",
+            "headers": [],
+            "auth_type": "headers",
+        },
+    }
+
+
 def test_delete_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "DELETE"
@@ -249,3 +304,38 @@ def test_delete_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     client = ApiClient.from_env(transport=_transport(handler))
     assert client.delete_mcp_server("s1") is None
+
+
+def test_agent_directory_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "files": {"AGENTS.md": {"type": "file", "content": "hi"}},
+                    "commit_hash": "c1",
+                },
+            )
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"commit": {"commit_hash": "c2"}})
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    assert client.get_agent_directory("a")["commit_hash"] == "c1"
+    assert captured["path"] == "/v1/platform/hub/repos/-/a/directories"
+
+    out = client.commit_agent_directory(
+        "a",
+        files={"AGENTS.md": {"type": "file", "content": "new"}},
+        parent_commit="c1",
+    )
+
+    assert captured["path"] == "/v1/platform/hub/repos/-/a/directories/commits"
+    assert captured["body"] == {
+        "files": {"AGENTS.md": {"type": "file", "content": "new"}},
+        "parent_commit": "c1",
+    }
+    assert out == {"commit": {"commit_hash": "c2"}}

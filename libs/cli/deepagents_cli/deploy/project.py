@@ -21,7 +21,7 @@ import json
 import re as _re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _AGENT_JSON = "agent.json"
 _AGENTS_MD = "AGENTS.md"
@@ -30,11 +30,21 @@ _SKILLS_DIR = "skills"
 _SUBAGENTS_DIR = "subagents"
 _SKILL_FILE = "SKILL.md"
 
+_BACKEND_TYPE_DEFAULT = "default"
+_BACKEND_TYPE_THREAD_SCOPED_SANDBOX = "thread_scoped_sandbox"
+_BACKEND_TYPE_AGENT_SCOPED_SANDBOX = "agent_scoped_sandbox"
+_LEGACY_BACKEND_TYPE_SANDBOX = "sandbox"
 _VALID_BACKEND_TYPES = frozenset(
-    # `sandbox` is a legacy alias the platform still accepts; keep it permitted
-    # client-side so config files written before the rename keep working.
-    {"default", "sandbox", "thread_scoped_sandbox", "agent_scoped_sandbox"}
+    {
+        _BACKEND_TYPE_DEFAULT,
+        _BACKEND_TYPE_THREAD_SCOPED_SANDBOX,
+        _BACKEND_TYPE_AGENT_SCOPED_SANDBOX,
+    }
 )
+_SANDBOX_BACKEND_TYPES = frozenset(
+    {_BACKEND_TYPE_THREAD_SCOPED_SANDBOX, _BACKEND_TYPE_AGENT_SCOPED_SANDBOX}
+)
+_SANDBOX_INTEGER_FIELDS = frozenset({"idle_ttl_seconds", "delete_after_stop_seconds"})
 _VALID_IDENTITY = frozenset({"personal", "shared"})
 _VALID_VISIBILITY = frozenset({"tenant", "user"})
 _VALID_TENANT_ACCESS = frozenset({"read", "run", "write"})
@@ -51,6 +61,7 @@ class Skill:
     name: str
     description: str
     instructions: str
+    skill_file: str
     files: dict[str, str] = field(default_factory=dict)
 
 
@@ -63,6 +74,7 @@ class Subagent:
     model_id: str | None
     instructions: str
     tools: dict[str, Any] | None = None
+    tools_text: str | None = None
     extra_files: dict[str, str] = field(default_factory=dict)
     """Subagent-local skills, keyed by path under `subagents/<name>/`."""
 
@@ -76,9 +88,11 @@ class Project:
     description: str | None
     system_prompt: str
     runtime: dict[str, Any] | None
+    backend: dict[str, Any] | None
     permissions: dict[str, Any] | None
     extras: dict[str, Any] | None
     tools: dict[str, Any] | None
+    tools_text: str | None
     skills: list[Skill]
     subagents: list[Subagent]
 
@@ -94,6 +108,7 @@ class Project:
 
         agent_data = _read_agent_json(root)
         system_prompt = _read_agents_md(root)
+        tools, tools_text = _read_tools_json(root)
 
         return cls(
             root=root,
@@ -101,9 +116,11 @@ class Project:
             description=agent_data.get("description"),
             system_prompt=system_prompt,
             runtime=agent_data.get("runtime"),
+            backend=agent_data.get("backend"),
             permissions=agent_data.get("permissions"),
             extras=agent_data.get("extras"),
-            tools=_read_tools_json(root),
+            tools=tools,
+            tools_text=tools_text,
             skills=_read_skills(root),
             subagents=_read_subagents(root),
         )
@@ -130,16 +147,26 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
 
     runtime = data.get("runtime")
     if runtime is not None:
+        if not isinstance(runtime, dict):
+            msg = f"{path}: `runtime` must be an object."
+            raise ProjectError(msg)
         backend_type = runtime.get("backend_type")
-        if backend_type is not None and backend_type not in _VALID_BACKEND_TYPES:
+        if backend_type is not None:
             msg = (
-                f"runtime.backend_type {backend_type!r} not in "
-                f"{sorted(_VALID_BACKEND_TYPES)}"
+                f"{path}: `runtime.backend_type` is no longer supported. "
+                'Use top-level `backend`: {"type": "thread_scoped_sandbox"} instead.'
             )
             raise ProjectError(msg)
 
+    backend = data.get("backend")
+    if backend is not None:
+        data["backend"] = _normalize_backend(backend, source=path)
+
     permissions = data.get("permissions")
     if permissions is not None:
+        if not isinstance(permissions, dict):
+            msg = f"{path}: `permissions` must be an object."
+            raise ProjectError(msg)
         if (ident := permissions.get("identity")) and ident not in _VALID_IDENTITY:
             msg = f"permissions.identity {ident!r} not in {sorted(_VALID_IDENTITY)}"
             raise ProjectError(msg)
@@ -157,6 +184,54 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
     return data
 
 
+def _normalize_backend(backend: object, *, source: Path) -> dict[str, Any]:
+    if not isinstance(backend, dict):
+        msg = f"{source}: `backend` must be an object."
+        raise ProjectError(msg)
+    data = dict(cast("dict[str, Any]", backend))
+    backend_type = data.get("type")
+    if backend_type == _LEGACY_BACKEND_TYPE_SANDBOX:
+        backend_type = _BACKEND_TYPE_THREAD_SCOPED_SANDBOX
+        data["type"] = backend_type
+    if backend_type is not None and backend_type not in _VALID_BACKEND_TYPES:
+        msg = f"backend.type {backend_type!r} not in {sorted(_VALID_BACKEND_TYPES)}"
+        raise ProjectError(msg)
+
+    sandbox = data.get("sandbox")
+    if sandbox is None:
+        return data
+    if backend_type not in _SANDBOX_BACKEND_TYPES:
+        msg = (
+            f"{source}: `backend.sandbox` requires `backend.type` to be "
+            "`thread_scoped_sandbox` or `agent_scoped_sandbox`."
+        )
+        raise ProjectError(msg)
+    data["sandbox"] = _normalize_sandbox_config(sandbox, source=source)
+    return data
+
+
+def _normalize_sandbox_config(sandbox: object, *, source: Path) -> dict[str, Any]:
+    if not isinstance(sandbox, dict):
+        msg = f"{source}: `backend.sandbox` must be an object."
+        raise ProjectError(msg)
+    data = dict(cast("dict[str, Any]", sandbox))
+    policies = data.get("policy_ids")
+    if policies is not None and (
+        not isinstance(policies, list)
+        or not all(isinstance(policy, str) for policy in policies)
+    ):
+        msg = f"{source}: `backend.sandbox.policy_ids` must be an array of strings."
+        raise ProjectError(msg)
+    for key in _SANDBOX_INTEGER_FIELDS:
+        value = data.get(key)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool)
+        ):
+            msg = f"{source}: `backend.sandbox.{key}` must be an integer."
+            raise ProjectError(msg)
+    return data
+
+
 def _read_agents_md(root: Path) -> str:
     path = root / _AGENTS_MD
     if not path.is_file():
@@ -165,12 +240,13 @@ def _read_agents_md(root: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _read_tools_json(root: Path) -> dict[str, Any] | None:
+def _read_tools_json(root: Path) -> tuple[dict[str, Any] | None, str | None]:
     path = root / _TOOLS_JSON
     if not path.is_file():
-        return None
+        return None, None
+    text = path.read_text(encoding="utf-8")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         msg = f"Invalid JSON in {path}: {exc}"
         raise ProjectError(msg) from exc
@@ -196,12 +272,10 @@ def _read_tools_json(root: Path) -> dict[str, Any] | None:
     if interrupt_config is not None and not isinstance(interrupt_config, dict):
         msg = f"{path}: `interrupt_config` must be an object."
         raise ProjectError(msg)
-    return data
+    return data, text
 
 
-_FRONTMATTER_RE = _re.compile(
-    r"^---\n(?P<fm>.*?)\n---\n(?P<body>.*)$", _re.DOTALL
-)
+_FRONTMATTER_RE = _re.compile(r"^---\n(?P<fm>.*?)\n---\n(?P<body>.*)$", _re.DOTALL)
 
 
 def _parse_skill_frontmatter(text: str, *, source: Path) -> tuple[dict[str, str], str]:
@@ -237,28 +311,27 @@ def _read_skills(root: Path) -> list[Skill]:
         if not skill_file.is_file():
             msg = f"{entry}: missing SKILL.md"
             raise ProjectError(msg)
-        frontmatter, body = _parse_skill_frontmatter(
-            skill_file.read_text(encoding="utf-8"), source=skill_file
-        )
+        skill_text = skill_file.read_text(encoding="utf-8")
+        frontmatter, body = _parse_skill_frontmatter(skill_text, source=skill_file)
         name = frontmatter["name"]
         if name in seen:
             msg = f"duplicate skill name {name!r} in {skills_dir}"
             raise ProjectError(msg)
         seen.add(name)
         files: dict[str, str] = {}
-        for child in sorted(entry.iterdir()):
-            is_plain_file = (
-                child.is_file()
-                and child.name != _SKILL_FILE
-                and not child.name.startswith(".")
-            )
-            if is_plain_file:
-                files[child.name] = child.read_text(encoding="utf-8")
+        for child in sorted(entry.rglob("*")):
+            if not child.is_file() or child.name == _SKILL_FILE:
+                continue
+            rel = child.relative_to(entry)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            files[rel.as_posix()] = child.read_text(encoding="utf-8")
         result.append(
             Skill(
                 name=name,
                 description=frontmatter["description"],
                 instructions=body,
+                skill_file=skill_text,
                 files=files,
             )
         )
@@ -297,14 +370,17 @@ def _read_subagents(root: Path) -> list[Subagent]:
             raise ProjectError(msg)
         seen.add(key)
 
-        tools = _read_tools_json(entry)
+        tools, tools_text = _read_tools_json(entry)
         extra_files: dict[str, str] = {}
         local_skills_dir = entry / _SKILLS_DIR
         if local_skills_dir.is_dir():
             for f in sorted(local_skills_dir.rglob("*")):
-                if f.is_file() and not f.name.startswith("."):
-                    rel = f.relative_to(entry).as_posix()
-                    extra_files[rel] = f.read_text(encoding="utf-8")
+                if not f.is_file():
+                    continue
+                rel = f.relative_to(entry)
+                if any(part.startswith(".") for part in rel.parts):
+                    continue
+                extra_files[rel.as_posix()] = f.read_text(encoding="utf-8")
 
         result.append(
             Subagent(
@@ -313,6 +389,7 @@ def _read_subagents(root: Path) -> list[Subagent]:
                 model_id=data.get("model_id"),
                 instructions=agents_md.read_text(encoding="utf-8"),
                 tools=tools,
+                tools_text=tools_text,
                 extra_files=extra_files,
             )
         )
@@ -325,8 +402,7 @@ expects the new layout. Quick mapping:
 
   [agent]                       → agent.json (top-level keys: name, description)
   [agent].model                 → agent.json runtime.model.model_id
-  [sandbox].scope               → agent.json runtime.backend_type
-                                  ("thread_scoped_sandbox" or "agent_scoped_sandbox")
+  [sandbox].scope               → agent.json backend.type ("thread_scoped_sandbox")
   [auth], [memories], [frontend]→ remove; managed by the platform now
 
 Then run `deepagents init --force` to refresh scaffolding or migrate by hand.

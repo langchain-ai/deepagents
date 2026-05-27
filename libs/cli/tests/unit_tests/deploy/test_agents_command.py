@@ -4,41 +4,85 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import httpx
-import pytest
 
+import deepagents_cli.config as config_module
 import deepagents_cli.deploy.api_client as api_client_module
 from deepagents_cli.deploy.commands import execute_agents_command
 
+if TYPE_CHECKING:
+    import pytest
 
-def _patch_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+
+Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def _patch_client(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Handler,
+    *,
+    dotenv_calls: list[str] | None = None,
+) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    def load_dotenv(*, start_path: object) -> bool:
+        if dotenv_calls is not None:
+            dotenv_calls.append(str(start_path))
+        return True
+
+    def from_env(
+        cls: type[api_client_module.ApiClient],
+        *,
+        transport: httpx.BaseTransport | None = None,
+        endpoint_fallback: str | None = None,
+    ) -> api_client_module.ApiClient:
+        _ = transport, endpoint_fallback
+        return cls(
+            endpoint="https://api.invalid",
+            api_key="k",
+            transport=httpx.MockTransport(handler),
+        )
+
+    monkeypatch.setattr(config_module, "_load_dotenv", load_dotenv)
     monkeypatch.setattr(
-        api_client_module.ApiClient, "from_env",
-        classmethod(lambda cls, transport=None, endpoint_fallback=None: cls(
-            endpoint="https://api.invalid", api_key="k",
-            transport=httpx.MockTransport(handler))),
+        api_client_module.ApiClient,
+        "from_env",
+        classmethod(from_env),
     )
 
 
-def test_agents_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"items": [{"id": "a1", "name": "x"}], "next_cursor": None})
+def test_agents_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[str] = []
 
-    _patch_client(monkeypatch, handler)
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"items": [{"id": "a1", "name": "x"}], "next_cursor": None}
+        )
+
+    _patch_client(monkeypatch, handler, dotenv_calls=calls)
     execute_agents_command(argparse.Namespace(agents_cmd="list"))
     out = capsys.readouterr().out
-    assert "a1" in out and "x" in out
+    assert calls
+    assert "a1" in out
+    assert "x" in out
 
 
-def test_agents_get(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_agents_get(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/deepagents/agents/a1"
         return httpx.Response(200, json={"id": "a1", "name": "x", "revision": "r1"})
 
     _patch_client(monkeypatch, handler)
-    execute_agents_command(argparse.Namespace(agents_cmd="get", agent_id="a1", include_files=False))
+    execute_agents_command(
+        argparse.Namespace(agents_cmd="get", agent_id="a1", include_files=False)
+    )
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert parsed["id"] == "a1"
@@ -49,10 +93,15 @@ def test_agents_delete_requires_confirmation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr("builtins.input", lambda *_a, **_k: "n")
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("should not be called")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        msg = "should not be called"
+        raise AssertionError(msg)
+
     _patch_client(monkeypatch, handler)
-    execute_agents_command(argparse.Namespace(agents_cmd="delete", agent_id="a1", yes=False))
+    execute_agents_command(
+        argparse.Namespace(agents_cmd="delete", agent_id="a1", yes=False)
+    )
     assert "Aborted" in capsys.readouterr().out
 
 
@@ -67,6 +116,8 @@ def test_agents_delete_with_yes_flag(
         return httpx.Response(204)
 
     _patch_client(monkeypatch, handler)
-    execute_agents_command(argparse.Namespace(agents_cmd="delete", agent_id="a1", yes=True))
+    execute_agents_command(
+        argparse.Namespace(agents_cmd="delete", agent_id="a1", yes=True)
+    )
     assert calls == ["DELETE"]
     assert "Deleted" in capsys.readouterr().out

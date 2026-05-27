@@ -49,7 +49,8 @@ def _add_init_parser(
     )
     p.add_argument("name", nargs="?", default=None)
     p.add_argument(
-        "-h", "--help",
+        "-h",
+        "--help",
         action=make_help_action(lambda: p.print_help()),
         help="show this help message and exit",
     )
@@ -82,12 +83,12 @@ def _scaffold(*, name: str, force: bool) -> None:
     (project_dir / "agent.json").write_text(_STARTER_AGENT_JSON.format(name=name))
     (project_dir / "AGENTS.md").write_text(_STARTER_AGENTS_MD)
     (project_dir / ".gitignore").write_text(_STARTER_GITIGNORE)
-    (project_dir / ".env").write_text(_STARTER_ENV)
     (project_dir / "skills").mkdir(exist_ok=True)
 
-    print(f"Created {name}/ with: agent.json, AGENTS.md, .gitignore, .env, skills/")
+    print(f"Created {name}/ with: agent.json, AGENTS.md, .gitignore, skills/")
     print("\nNext steps:")
     print(f"  cd {name}")
+    print("  # set LANGSMITH_API_KEY in your shell, repo .env, or ~/.deepagents/.env")
     print("  # edit AGENTS.md, optionally add tools.json / skills/ / subagents/")
     print("  deepagents deploy")
 
@@ -96,9 +97,11 @@ _STARTER_AGENT_JSON = """\
 {{
   "name": "{name}",
   "description": "A managed deep agent.",
+  "backend": {{
+    "type": "thread_scoped_sandbox"
+  }},
   "runtime": {{
-    "model": {{"model_id": "anthropic:claude-sonnet-4-6"}},
-    "backend_type": "thread_scoped_sandbox"
+    "model": {{"model_id": "anthropic:claude-sonnet-4-6"}}
   }}
 }}
 """
@@ -119,15 +122,6 @@ _STARTER_GITIGNORE = """\
 .deepagents/
 """
 
-_STARTER_ENV = """\
-# Required: LangSmith API key for /v1/deepagents/* (private preview)
-LANGSMITH_API_KEY=
-
-# Optional: override the API endpoint (defaults to https://api.smith.langchain.com)
-# LANGSMITH_ENDPOINT=
-"""
-
-
 # --- deploy / agents / mcp-servers (stubs filled by later tasks) ------------
 
 
@@ -140,17 +134,28 @@ def _add_deploy_parser(
         help="(beta) Upsert the project as a managed deep agent",
         add_help=False,
     )
-    p.add_argument("-h", "--help",
-                   action=make_help_action(lambda: p.print_help()),
-                   help="show this help message and exit")
-    p.add_argument("--dir", type=str, default=None,
-                   help="Project directory (default: cwd)")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Print payload without sending")
-    p.add_argument("--detach", action="store_true",
-                   help="Exit immediately after upsert without polling health")
-    p.add_argument("--reset", action="store_true",
-                   help="Discard local state and create a fresh agent")
+    p.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(lambda: p.print_help()),
+        help="show this help message and exit",
+    )
+    p.add_argument(
+        "--dir", type=str, default=None, help="Project directory (default: cwd)"
+    )
+    p.add_argument(
+        "--dry-run", action="store_true", help="Print payload without sending"
+    )
+    p.add_argument(
+        "--detach",
+        action="store_true",
+        help="Exit immediately after upsert without polling health",
+    )
+    p.add_argument(
+        "--reset",
+        action="store_true",
+        help="Discard local state and create a fresh agent",
+    )
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
@@ -158,10 +163,15 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
     from deepagents_cli.config import _load_dotenv  # existing helper
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
     from deepagents_cli.deploy.mcp_resolver import (
+        UninvokableServersError,
         UnresolvedServersError,
         resolve_referenced_servers,
     )
-    from deepagents_cli.deploy.payload import build_payload
+    from deepagents_cli.deploy.payload import (
+        build_directory_files,
+        build_metadata_payload,
+        build_payload,
+    )
     from deepagents_cli.deploy.project import Project, ProjectError
     from deepagents_cli.deploy.state import State
 
@@ -176,10 +186,25 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
         raise SystemExit(1) from None
 
     state = State.load(root, reset=args.reset)
-    payload = build_payload(project, mode="patch" if state.agent_id else "create")
+    create_payload = build_payload(project, mode="create")
+    metadata_payload = build_metadata_payload(project)
+    directory_files = build_directory_files(project)
+    agent_payload = metadata_payload if state.agent_id else create_payload
 
     if args.dry_run:
-        print(json.dumps(payload, indent=2))
+        directory_entries = {
+            path: {"type": "file", "content": content}
+            for path, content in directory_files.items()
+        }
+        print(
+            json.dumps(
+                {
+                    "agent_payload": agent_payload,
+                    "directory_files": directory_entries,
+                },
+                indent=2,
+            )
+        )
         return
 
     client = ApiClient.from_env(endpoint_fallback=state.endpoint)
@@ -187,41 +212,132 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
 
     try:
         state.mcp_servers = resolve_referenced_servers(
-            client, payload, cache=state.mcp_servers
+            client, create_payload, cache=state.mcp_servers
         )
-    except UnresolvedServersError as exc:
+    except (UnresolvedServersError, UninvokableServersError) as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
 
     try:
-        agent = _upsert_agent(client, state.agent_id, payload)
+        agent, revision = _deploy_agent(
+            client,
+            state.agent_id,
+            create_payload=create_payload,
+            metadata_payload=metadata_payload,
+            directory_files=directory_files,
+        )
     except ApiError as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
 
-    state.save(agent_id=agent["id"], revision=agent.get("revision"))
-    _print_deploy_result(agent, client.endpoint, detach=args.detach, client=client)
+    state.save(agent_id=agent["id"], revision=revision)
+    _print_deploy_result(
+        agent,
+        client.endpoint,
+        detach=args.detach,
+        client=client,
+        revision=revision,
+    )
 
 
-def _upsert_agent(
+def _deploy_agent(
     client: ApiClient,
     agent_id: str | None,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Create or patch the agent depending on whether *agent_id* is known."""
+    *,
+    create_payload: dict[str, Any],
+    metadata_payload: dict[str, Any],
+    directory_files: dict[str, str],
+) -> tuple[dict[str, Any], str | None]:
+    """Create the agent or patch metadata and sync managed files."""
     from deepagents_cli.deploy.api_client import ApiError
 
     if agent_id:
         try:
-            return client.patch_agent(agent_id, payload)
+            agent = client.patch_agent(agent_id, metadata_payload)
         except ApiError as exc:
             if exc.status == 404:  # noqa: PLR2004
-                print(
-                    f"Note: agent {agent_id} no longer exists — creating a new one."
-                )
+                print(f"Note: agent {agent_id} no longer exists — creating a new one.")
             else:
                 raise
-    return client.create_agent(payload)
+        else:
+            agent.setdefault("id", agent_id)
+            revision = _sync_agent_directory(client, agent_id, directory_files)
+            return agent, revision or agent.get("revision")
+    agent = client.create_agent(create_payload)
+    return agent, agent.get("revision")
+
+
+def _sync_agent_directory(
+    client: ApiClient,
+    agent_id: str,
+    directory_files: dict[str, str],
+) -> str | None:
+    """Commit managed project files so the remote directory matches local."""
+    from deepagents_cli.deploy.api_client import ApiError
+    from deepagents_cli.deploy.payload import build_directory_delta
+
+    directory = _get_agent_directory(client, agent_id)
+    remote_files = _extract_directory_files(directory)
+    parent_commit = _extract_commit_hash(directory)
+    delta = build_directory_delta(remote_files, directory_files)
+    if not delta:
+        return parent_commit
+    try:
+        commit = client.commit_agent_directory(
+            agent_id,
+            files=delta,
+            parent_commit=parent_commit,
+        )
+    except ApiError as exc:
+        if exc.status not in {409, 412}:
+            raise
+        directory = client.get_agent_directory(agent_id)
+        delta = build_directory_delta(
+            _extract_directory_files(directory), directory_files
+        )
+        if not delta:
+            return _extract_commit_hash(directory)
+        commit = client.commit_agent_directory(
+            agent_id,
+            files=delta,
+            parent_commit=_extract_commit_hash(directory),
+        )
+    return _extract_commit_hash(commit) or parent_commit
+
+
+def _get_agent_directory(client: ApiClient, agent_id: str) -> dict[str, Any]:
+    from deepagents_cli.deploy.api_client import ApiError
+
+    try:
+        return client.get_agent_directory(agent_id)
+    except ApiError as exc:
+        if exc.status == 404:  # noqa: PLR2004
+            return {}
+        raise
+
+
+def _extract_directory_files(directory: dict[str, Any]) -> dict[str, Any]:
+    files = directory.get("files")
+    if isinstance(files, dict):
+        return files
+    nested = directory.get("directory")
+    if isinstance(nested, dict) and isinstance(nested.get("files"), dict):
+        return nested["files"]
+    return {}
+
+
+def _extract_commit_hash(payload: dict[str, Any]) -> str | None:
+    for key in ("commit_hash", "revision", "hash"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in ("commit", "directory"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            value = _extract_commit_hash(nested)
+            if value:
+                return value
+    return None
 
 
 def _print_deploy_result(
@@ -230,15 +346,16 @@ def _print_deploy_result(
     *,
     detach: bool,
     client: ApiClient,
+    revision: str | None = None,
 ) -> None:
     """Print a deploy summary and optionally poll agent health."""
     name = agent.get("name", "?")
     agent_id = agent.get("id", "?")
-    revision = (agent.get("revision") or "")[:8]
+    revision_display = (revision or agent.get("revision") or "")[:8]
     smith_endpoint = endpoint.replace("api.smith.langchain.com", "smith.langchain.com")
     print(f"\nDeployed: {name}")
     print(f"  agent_id: {agent_id}")
-    print(f"  revision: {revision}")
+    print(f"  revision: {revision_display}")
     print(f"  {smith_endpoint}/o/-/agents/{agent_id}")
     if detach:
         return
@@ -254,9 +371,12 @@ def _add_agents_parser(
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> None:
     p = subparsers.add_parser("agents", help="Manage agents", add_help=False)
-    p.add_argument("-h", "--help",
-                   action=make_help_action(lambda: p.print_help()),
-                   help="show this help message and exit")
+    p.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(lambda: p.print_help()),
+        help="show this help message and exit",
+    )
     sub = p.add_subparsers(dest="agents_cmd", required=True)
     sub.add_parser("list")
     g = sub.add_parser("get")
@@ -269,8 +389,10 @@ def _add_agents_parser(
 
 def execute_agents_command(args: argparse.Namespace) -> None:
     """Run the `deepagents agents` sub-command."""
+    from deepagents_cli.config import _load_dotenv
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
 
+    _load_dotenv(start_path=Path.cwd())
     client = ApiClient.from_env()
     try:
         if args.agents_cmd == "list":
@@ -304,9 +426,12 @@ def _add_mcp_servers_parser(
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> None:
     p = subparsers.add_parser("mcp-servers", help="Manage MCP servers", add_help=False)
-    p.add_argument("-h", "--help",
-                   action=make_help_action(lambda: p.print_help()),
-                   help="show this help message and exit")
+    p.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(lambda: p.print_help()),
+        help="show this help message and exit",
+    )
     sub = p.add_subparsers(dest="mcp_cmd", required=True)
     sub.add_parser("list")
     a = sub.add_parser("add")
@@ -316,6 +441,12 @@ def _add_mcp_servers_parser(
     a.add_argument("--auth-type", default="headers", choices=["headers"])
     g = sub.add_parser("get")
     g.add_argument("mcp_server_id")
+    u = sub.add_parser("update")
+    u.add_argument("mcp_server_id")
+    u.add_argument("--url", default=None)
+    u.add_argument("--header", action="append", default=None, metavar="KEY=VALUE")
+    u.add_argument("--clear-headers", action="store_true")
+    u.add_argument("--auth-type", default=None, choices=["headers"])
     d = sub.add_parser("delete")
     d.add_argument("mcp_server_id")
     d.add_argument("--yes", action="store_true")
@@ -325,8 +456,10 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
     """Run the `deepagents mcp-servers` sub-command."""
     from urllib.parse import urlparse
 
+    from deepagents_cli.config import _load_dotenv
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
 
+    _load_dotenv(start_path=Path.cwd())
     client = ApiClient.from_env()
     try:
         if args.mcp_cmd == "list":
@@ -346,7 +479,26 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
             srv_url = srv.get("url")
             print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
         elif args.mcp_cmd == "get":
-            print(json.dumps(client.get_mcp_server(args.mcp_server_id), indent=2))
+            server = client.get_mcp_server(args.mcp_server_id)
+            print(json.dumps(_redact_mcp_server(server), indent=2))
+        elif args.mcp_cmd == "update":
+            headers = _parse_update_headers(args.header, args.clear_headers)
+            if args.url is None and headers is None and args.auth_type is None:
+                print(
+                    "Error: provide at least one of --url, --header, "
+                    "or --clear-headers."
+                )
+                raise SystemExit(1)
+            srv = client.update_mcp_server(
+                args.mcp_server_id,
+                url=args.url,
+                headers=headers,
+                auth_type=args.auth_type,
+            )
+            srv_id = srv.get("id")
+            srv_name = srv.get("name")
+            srv_url = srv.get("url")
+            print(f"Updated mcp_server {srv_id}: {srv_name} → {srv_url}")
         elif args.mcp_cmd == "delete":
             if not args.yes:
                 try:
@@ -375,3 +527,35 @@ def _parse_header_args(raw: list[str]) -> list[dict[str, str]]:
         key, _, value = entry.partition("=")
         out.append({"key": key.strip(), "value": value})
     return out
+
+
+def _parse_update_headers(
+    raw: list[str] | None,
+    clear_headers: bool,
+) -> list[dict[str, str]] | None:
+    if raw and clear_headers:
+        print("Error: use either --header or --clear-headers, not both.")
+        raise SystemExit(1)
+    if clear_headers:
+        return []
+    if raw is None:
+        return None
+    return _parse_header_args(raw)
+
+
+def _redact_mcp_server(server: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(server)
+    headers = redacted.get("headers")
+    if isinstance(headers, list):
+        redacted["headers"] = [
+            _redact_mcp_header(header) if isinstance(header, dict) else header
+            for header in headers
+        ]
+    return redacted
+
+
+def _redact_mcp_header(header: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(header)
+    if "value" in redacted:
+        redacted["value"] = "***"
+    return redacted

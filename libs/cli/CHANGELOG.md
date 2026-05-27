@@ -13,13 +13,18 @@ changes too:
 - `deepagents.toml` → `agent.json`
 - `mcp.json` → MCP servers registered via `deepagents mcp-servers add ...`,
   with tool references living in `tools.json`
-- `[sandbox].scope` → `agent.json.runtime.backend_type`
+- `[sandbox].scope` → `agent.json.backend.type`
+  (`thread_scoped_sandbox` is the recommended managed backend)
 - `[frontend]`, `[auth]`, `[memories]` — removed (the platform owns these now)
 
 Removed: `deepagents dev` (no local-iteration path post-migration).
 
 New: `deepagents agents {list,get,delete}`, `deepagents mcp-servers
-{list,add,get,delete}`.
+{list,add,get,update,delete}`. `deepagents init` no longer writes a `.env`
+file; set `LANGSMITH_API_KEY` in your shell, repo `.env`, or
+`~/.deepagents/.env`. New projects use `thread_scoped_sandbox` by default;
+the CLI only configures managed backend intent and does not provision
+sandboxes itself.
 
 Run `deepagents init --force` on an existing project, or migrate by hand —
 `deepagents deploy` prints a migration hint when it detects a legacy

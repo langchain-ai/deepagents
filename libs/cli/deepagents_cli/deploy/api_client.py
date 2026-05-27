@@ -26,6 +26,7 @@ import httpx
 
 _DEFAULT_ENDPOINT = "https://api.smith.langchain.com"
 _DEPLOY_PATH = "/v1/deepagents"
+_HUB_PATH = "/v1/platform/hub"
 _RETRY_SLEEP_SECONDS = 1.0
 
 
@@ -193,7 +194,12 @@ class ApiClient:
     def list_mcp_servers(self) -> list[dict[str, Any]]:
         """Return all registered MCP servers in this workspace."""
         body = self._request("GET", f"{_DEPLOY_PATH}/mcp-servers")
-        return list(body.get("servers", []))
+        if isinstance(body, list):
+            return list(body)
+        if isinstance(body, dict) and isinstance(body.get("servers"), list):
+            return list(body["servers"])
+        msg = "Unexpected MCP server list response."
+        raise ApiError(status=0, detail=msg)
 
     def get_mcp_server(self, mcp_server_id: str) -> dict[str, Any]:
         """Fetch a single MCP server by ID."""
@@ -217,6 +223,49 @@ class ApiClient:
             payload["headers"] = headers
         return self._request("POST", f"{_DEPLOY_PATH}/mcp-servers", json=payload)
 
+    def update_mcp_server(
+        self,
+        mcp_server_id: str,
+        *,
+        url: str | None = None,
+        headers: list[dict[str, str]] | None = None,
+        auth_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing MCP server in this workspace."""
+        payload: dict[str, Any] = {}
+        if url is not None:
+            payload["url"] = url
+        if headers is not None:
+            payload["headers"] = headers
+        if auth_type is not None:
+            payload["auth_type"] = auth_type
+        return self._request(
+            "PATCH", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}", json=payload
+        )
+
     def delete_mcp_server(self, mcp_server_id: str) -> None:
         """Delete an MCP server by ID."""
         self._request("DELETE", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")
+
+    # --- hub directories -------------------------------------------------
+
+    def get_agent_directory(self, agent_id: str) -> dict[str, Any]:
+        """Fetch the Hub directory backing a managed deep agent."""
+        return self._request("GET", f"{_HUB_PATH}/repos/-/{agent_id}/directories")
+
+    def commit_agent_directory(
+        self,
+        agent_id: str,
+        *,
+        files: dict[str, dict[str, str] | None],
+        parent_commit: str | None,
+    ) -> dict[str, Any]:
+        """Commit file updates to the Hub directory backing an agent."""
+        payload: dict[str, Any] = {"files": files}
+        if parent_commit:
+            payload["parent_commit"] = parent_commit
+        return self._request(
+            "POST",
+            f"{_HUB_PATH}/repos/-/{agent_id}/directories/commits",
+            json=payload,
+        )

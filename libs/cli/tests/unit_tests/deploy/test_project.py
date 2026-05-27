@@ -1,4 +1,4 @@
-"""Tests for Project.load() (parsing agent.json/AGENTS.md/tools.json/skills/subagents)."""
+"""Tests for Project.load()."""
 
 from __future__ import annotations
 
@@ -20,25 +20,27 @@ def test_load_bare_project_reads_agent_json_and_agents_md() -> None:
     assert proj.skills == []
     assert proj.subagents == []
     assert proj.runtime is None
+    assert proj.backend is None
     assert proj.permissions is None
+    assert proj.tools_text is None
 
 
 def test_load_missing_agent_json_raises(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match="agent.json"):
+    with pytest.raises(ProjectError, match=r"agent\.json"):
         Project.load(tmp_path)
 
 
 def test_load_missing_agents_md_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"name": "x"}')
-    with pytest.raises(ProjectError, match="AGENTS.md"):
+    with pytest.raises(ProjectError, match=r"AGENTS\.md"):
         Project.load(tmp_path)
 
 
 def test_load_invalid_agent_json_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text("{not json")
     (tmp_path / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match="agent.json"):
+    with pytest.raises(ProjectError, match=r"agent\.json"):
         Project.load(tmp_path)
 
 
@@ -54,9 +56,12 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
         """
         {
           "name": "x",
+          "backend": {
+            "type": "thread_scoped_sandbox",
+            "sandbox": {"policy_ids": ["p-1"]}
+          },
           "runtime": {
-            "model": {"model_id": "anthropic:claude-sonnet-4-6"},
-            "backend_type": "thread_scoped_sandbox"
+            "model": {"model_id": "anthropic:claude-sonnet-4-6"}
           },
           "permissions": {
             "identity": "personal",
@@ -68,9 +73,10 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
     )
     (tmp_path / "AGENTS.md").write_text("hi")
     proj = Project.load(tmp_path)
-    assert proj.runtime == {
-        "model": {"model_id": "anthropic:claude-sonnet-4-6"},
-        "backend_type": "thread_scoped_sandbox",
+    assert proj.runtime == {"model": {"model_id": "anthropic:claude-sonnet-4-6"}}
+    assert proj.backend == {
+        "type": "thread_scoped_sandbox",
+        "sandbox": {"policy_ids": ["p-1"]},
     }
     assert proj.permissions == {
         "identity": "personal",
@@ -79,30 +85,118 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
     }
 
 
-def test_invalid_runtime_backend_type_raises(tmp_path: Path) -> None:
+def test_runtime_backend_type_raises_migration_error(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text(
-        '{"name": "x", "runtime": {"backend_type": "lol_unknown"}}'
+        '{"name": "x", "runtime": {"backend_type": "sandbox"}}'
     )
     (tmp_path / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match="backend_type"):
+    with pytest.raises(ProjectError, match=r"runtime\.backend_type") as excinfo:
+        Project.load(tmp_path)
+    assert "thread_scoped_sandbox" in str(excinfo.value)
+
+
+def test_legacy_sandbox_backend_type_normalizes_to_thread_scoped(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "sandbox",
+            "sandbox": {"policy_ids": ["p-1"]}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {
+        "type": "thread_scoped_sandbox",
+        "sandbox": {"policy_ids": ["p-1"]},
+    }
+
+
+def test_agent_scoped_sandbox_backend_type_is_allowed(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "backend": {"type": "agent_scoped_sandbox"}}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {"type": "agent_scoped_sandbox"}
+
+
+def test_invalid_backend_type_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "backend": {"type": "unknown_sandbox"}}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match=r"backend\.type"):
+        Project.load(tmp_path)
+
+
+def test_sandbox_config_with_default_backend_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "backend": {"type": "default", "sandbox": {}}}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match=r"backend\.sandbox"):
+        Project.load(tmp_path)
+
+
+def test_sandbox_policy_ids_must_be_strings(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "thread_scoped_sandbox",
+            "sandbox": {"policy_ids": ["p-1", 2]}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match=r"policy_ids"):
+        Project.load(tmp_path)
+
+
+def test_sandbox_ttl_fields_must_be_integers(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "thread_scoped_sandbox",
+            "sandbox": {"idle_ttl_seconds": true}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match=r"idle_ttl_seconds"):
         Project.load(tmp_path)
 
 
 def test_load_with_tools_reads_tools_json() -> None:
     proj = Project.load(_FIXTURES / "with_tools")
     assert proj.tools is not None
+    assert proj.tools_text is not None
     assert proj.tools["tools"][0]["name"] == "tavily_web_search"
     assert proj.tools["tools"][0]["mcp_server_url"] == "https://tools.langchain.com"
-    assert proj.tools["interrupt_config"][
-        "https://tools.langchain.com::tavily_web_search::Fleet"
-    ] is True
+    assert (
+        proj.tools["interrupt_config"][
+            "https://tools.langchain.com::tavily_web_search::Fleet"
+        ]
+        is True
+    )
 
 
 def test_invalid_tools_json_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"name": "x"}')
     (tmp_path / "AGENTS.md").write_text("hi")
     (tmp_path / "tools.json").write_text("[]")  # array, not object
-    with pytest.raises(ProjectError, match="tools.json"):
+    with pytest.raises(ProjectError, match=r"tools\.json"):
         Project.load(tmp_path)
 
 
@@ -125,6 +219,22 @@ def test_load_with_skills_parses_frontmatter_and_files() -> None:
     assert "one-paragraph summary" in skill.instructions
     assert "examples.md" in skill.files
     assert "Example 1" in skill.files["examples.md"]
+    assert skill.skill_file.startswith("---")
+
+
+def test_top_level_skill_files_are_recursive(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    skill_dir = tmp_path / "skills" / "guide"
+    (skill_dir / "data").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: guide\ndescription: read nested data\n---\nUse data.\n"
+    )
+    (skill_dir / "data" / "facts.md").write_text("nested")
+
+    project = Project.load(tmp_path)
+
+    assert project.skills[0].files["data/facts.md"] == "nested"
 
 
 def test_skill_missing_frontmatter_raises(tmp_path: Path) -> None:
@@ -143,9 +253,7 @@ def test_skill_duplicate_names_raises(tmp_path: Path) -> None:
     for dirname in ("a", "b"):
         d = tmp_path / "skills" / dirname
         d.mkdir(parents=True)
-        (d / "SKILL.md").write_text(
-            "---\nname: same\ndescription: x\n---\nhi\n"
-        )
+        (d / "SKILL.md").write_text("---\nname: same\ndescription: x\n---\nhi\n")
     with pytest.raises(ProjectError, match="duplicate"):
         Project.load(tmp_path)
 
@@ -176,14 +284,15 @@ def test_subagent_missing_agent_json_raises(tmp_path: Path) -> None:
     sa = tmp_path / "subagents" / "broken"
     sa.mkdir(parents=True)
     (sa / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match="agent.json"):
+    with pytest.raises(ProjectError, match=r"agent\.json"):
         Project.load(tmp_path)
 
 
 def test_subagent_duplicate_names_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"name": "x"}')
     (tmp_path / "AGENTS.md").write_text("hi")
-    from deepagents_cli.deploy.project import _read_subagents  # noqa: PLC0415
+    from deepagents_cli.deploy.project import _read_subagents
+
     sa1 = tmp_path / "subagents" / "x"
     sa1.mkdir(parents=True)
     (sa1 / "agent.json").write_text("{}")
@@ -202,11 +311,9 @@ def test_subagent_duplicate_names_raises(tmp_path: Path) -> None:
 
 
 def test_legacy_deepagents_toml_raises_migration_hint(tmp_path: Path) -> None:
-    (tmp_path / "deepagents.toml").write_text(
-        '[agent]\nname = "x"\n'
-    )
+    (tmp_path / "deepagents.toml").write_text('[agent]\nname = "x"\n')
     (tmp_path / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match="legacy deepagents.toml"):
+    with pytest.raises(ProjectError, match=r"legacy deepagents\.toml"):
         Project.load(tmp_path)
 
 
@@ -214,5 +321,5 @@ def test_legacy_mcp_json_raises_migration_hint(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"name": "x"}')
     (tmp_path / "AGENTS.md").write_text("hi")
     (tmp_path / "mcp.json").write_text('{"mcpServers": {}}')
-    with pytest.raises(ProjectError, match="mcp.json"):
+    with pytest.raises(ProjectError, match=r"mcp\.json"):
         Project.load(tmp_path)

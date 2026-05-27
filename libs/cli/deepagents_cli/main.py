@@ -28,7 +28,8 @@ _REPL_REDIRECT_MESSAGE = (
     "Install it with:\n\n"
     "  pip install deepagents-code\n\n"
     "Then run `deepagents-code` to start an interactive session.\n\n"
-    "The `deepagents` CLI now only provides `init`, `deploy`, `agents`, and `mcp-servers`. "
+    "The `deepagents` CLI now only provides `init`, `deploy`, "
+    "`agents`, and `mcp-servers`. "
 )
 
 

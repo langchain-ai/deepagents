@@ -21,7 +21,8 @@ uv tool install deepagents-cli
 
 You'll need a LangSmith API key with access to the Managed Deep Agents private
 preview ([waitlist](https://www.langchain.com/langsmith-managed-deep-agents-waitlist)).
-Export it before running any command:
+Export it before running any command, or put it in a repo `.env` or
+`~/.deepagents/.env`:
 
 ```bash
 export LANGSMITH_API_KEY="..."
@@ -42,11 +43,16 @@ deepagents mcp-servers add --url https://tools.langchain.com \
 cd my-agent && deepagents deploy
 ```
 
+`deepagents init` configures new agents with the managed
+`thread_scoped_sandbox` backend by default. The CLI does not create or run
+sandboxes locally; sandbox lifecycle is handled by the Managed Deep Agents
+platform.
+
 ### Project layout
 
 ```text
 my-agent/
-  agent.json              # name, description, runtime.model, permissions
+  agent.json              # name, description, backend, runtime.model, permissions
   AGENTS.md               # system prompt
   tools.json              # tools the agent can call (optional)
   skills/<name>/SKILL.md  # frontmatter-tagged skills (optional)
@@ -62,6 +68,7 @@ deepagents agents delete <agent_id>     # delete an agent
 
 deepagents mcp-servers list             # list workspace MCP servers
 deepagents mcp-servers add --url URL    # register a server
+deepagents mcp-servers update <id>      # update server URL or headers
 deepagents mcp-servers delete <id>      # remove a server
 ```
 

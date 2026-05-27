@@ -2517,6 +2517,32 @@ class TestCreateModelViaInitImportError:
         assert isinstance(exc_info.value, ModelConfigError)
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_missing_vertexai_package_uses_declared_extra(
+        self, mock_init: Mock
+    ) -> None:
+        """Vertex AI provider id does not match its optional extra name."""
+        from deepagents_code.model_config import MissingProviderPackageError
+
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_google_vertexai'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value="vertex",
+            ) as mock_extra_for_package,
+            pytest.raises(
+                MissingProviderPackageError,
+                match=r"Install: /install vertex",
+            ) as exc_info,
+        ):
+            _create_model_via_init("claude-sonnet-4-5", "google_vertexai", {})
+        mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+        assert exc_info.value.provider == "google_vertexai"
+        assert exc_info.value.package == "langchain-google-vertexai"
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_installed_but_broken_import(self, mock_init: Mock) -> None:
         """Shows real error when package is installed but import fails internally."""
         mock_init.side_effect = ImportError("cannot import name 'foo' from 'bar'")
@@ -2552,7 +2578,10 @@ class TestCreateModelViaInitImportError:
             patch("importlib.util.find_spec", return_value=None),
             pytest.raises(
                 ModelConfigError,
-                match=r"pip install langchain-custom_provider",
+                match=(
+                    "Install with: uv tool install -U deepagents-code "
+                    "--with langchain-custom_provider"
+                ),
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})

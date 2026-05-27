@@ -184,6 +184,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="upgrade",
     ),
     SlashCommand(
+        name="/install",
+        description="Install an optional extra (e.g. quickjs, daytona, fireworks)",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras add provider sandbox dependency",
+        argument_hint="<extra> [--force]",
+    ),
+    SlashCommand(
         name="/auto-update",
         description="Toggle automatic updates on or off",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

@@ -237,6 +237,5 @@ async def test_install_slash_editable_install_refuses() -> None:
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert any(
-            "Cannot install extras on editable installs" in str(m._content)
-            for m in app_msgs
+            "Editable install detected" in str(m._content) for m in app_msgs
         )

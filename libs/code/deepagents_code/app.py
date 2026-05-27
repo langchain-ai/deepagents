@@ -86,6 +86,7 @@ from deepagents_code.widgets.messages import (
     SkillMessage,
     ToolCallMessage,
     UserMessage,
+    _apply_timestamp_tooltip,
 )
 from deepagents_code.widgets.status import StatusBar
 from deepagents_code.widgets.welcome import WelcomeBanner
@@ -6562,6 +6563,7 @@ class DeepAgentsApp(App):
             await messages.mount(widget)
         else:
             await self._mount_before_queued(messages, widget)
+        _apply_timestamp_tooltip(widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()

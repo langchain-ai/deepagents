@@ -19,7 +19,6 @@ from deepagents_code.widgets.messages import (
     ToolCallMessage,
     UserMessage,
     _MutedRichMarkdown,
-    _show_timestamp_toast,
     _strip_frontmatter,
     _strip_success_exit_line,
 )
@@ -104,19 +103,15 @@ class TestErrorMessageMarkupSafety:
             app=SimpleNamespace(notify=MagicMock()),
             stop=MagicMock(),
         )
-        with (
-            patch("deepagents_code.widgets.messages.open_style_link") as mock_open_link,
-            patch(
-                "deepagents_code.widgets.messages._show_timestamp_toast"
-            ) as mock_toast,
-        ):
+        with patch(
+            "deepagents_code.widgets.messages.open_style_link"
+        ) as mock_open_link:
             msg.on_click(event)  # type: ignore[arg-type]
 
         mock_open_link.assert_called_once_with(event)
-        mock_toast.assert_not_called()
 
-    def test_error_message_click_off_link_shows_timestamp(self) -> None:
-        """Click outside a link span should fall back to the timestamp toast."""
+    def test_error_message_click_off_link_no_ops(self) -> None:
+        """Click outside a link span should not perform timestamp side effects."""
         from types import SimpleNamespace
 
         msg = ErrorMessage("plain error, no URL")
@@ -125,16 +120,12 @@ class TestErrorMessageMarkupSafety:
             app=SimpleNamespace(notify=MagicMock()),
             stop=MagicMock(),
         )
-        with (
-            patch("deepagents_code.widgets.messages.open_style_link") as mock_open_link,
-            patch(
-                "deepagents_code.widgets.messages._show_timestamp_toast"
-            ) as mock_toast,
-        ):
+        with patch(
+            "deepagents_code.widgets.messages.open_style_link"
+        ) as mock_open_link:
             msg.on_click(event)  # type: ignore[arg-type]
 
         mock_open_link.assert_not_called()
-        mock_toast.assert_called_once_with(msg)
 
 
 class TestAppMessageMarkupSafety:
@@ -1119,68 +1110,6 @@ class TestAppMessageOnClickOpensLink:
 
         mock_open.assert_not_called()
         event.stop.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Timestamp toast tests
-# ---------------------------------------------------------------------------
-
-_MSG_STORE_PATH = "deepagents_code.widgets.messages"
-
-
-class TestTimestampClickMixin:
-    """Tests for `_TimestampClickMixin` on message widgets."""
-
-    @pytest.mark.parametrize(
-        "cls",
-        [UserMessage, AssistantMessage, DiffMessage, ErrorMessage],
-        ids=["UserMessage", "AssistantMessage", "DiffMessage", "ErrorMessage"],
-    )
-    def test_mixin_classes_have_on_click(self, cls: type) -> None:
-        """Mixin widget classes should have an `on_click` handler."""
-        assert hasattr(cls, "on_click")
-
-    def test_tool_call_message_click_without_output_shows_toast(self) -> None:
-        """ToolCallMessage click with no output should show timestamp toast."""
-        msg = ToolCallMessage("test_tool", {})
-        msg._output = ""
-        event = MagicMock()
-
-        with patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast:
-            msg.on_click(event)
-
-        event.stop.assert_called_once()
-        mock_toast.assert_called_once_with(msg)
-
-    def test_tool_call_message_click_with_output_toggles(self) -> None:
-        """ToolCallMessage click with output should toggle, not toast."""
-        msg = ToolCallMessage("test_tool", {})
-        msg._output = "some output"
-        event = MagicMock()
-
-        with (
-            patch.object(msg, "toggle_output") as mock_toggle,
-            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
-        ):
-            msg.on_click(event)
-
-        event.stop.assert_called_once()
-        mock_toggle.assert_called_once()
-        mock_toast.assert_not_called()
-
-    def test_app_message_click_shows_toast_alongside_link(self) -> None:
-        """AppMessage click should open link and show toast."""
-        msg = AppMessage("test")
-        event = MagicMock()
-        event.style = Style()
-
-        with (
-            patch(_WEBBROWSER_OPEN),
-            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
-        ):
-            msg.on_click(event)
-
-        mock_toast.assert_called_once_with(msg)
 
 
 class TestMountMessageIdSync:

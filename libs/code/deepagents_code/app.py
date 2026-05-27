@@ -1531,6 +1531,17 @@ class DeepAgentsApp(App):
         until the session reaches its first stable busy/idle state.
         """
 
+        self._initial_session_started = False
+        """Set on first entry into `_run_session_start_sequence` past gating.
+
+        Server respawns (`/mcp reconnect`, `/restart`) post a fresh
+        `ServerReady`; without this flag the sequence re-runs and
+        `_load_thread_history` bulk-mounts widgets whose IDs already exist in
+        the DOM, raising `DuplicateIds`. Set on entry (not on success) because
+        if `_load_thread_history` partially mounted before failing, retrying
+        would still hit the duplicate-ID path.
+        """
+
         # Message queue & store
         self._pending_messages: deque[QueuedMessage] = deque()
         """User message queue for sequential processing."""
@@ -4141,6 +4152,17 @@ class DeepAgentsApp(App):
         if self._server_startup_deferred:
             return
 
+        if self._initial_session_started:
+            # Server respawns (e.g. `/mcp reconnect`, `/restart`) fire another
+            # `ServerReady`; rerunning the sequence would attempt to bulk-load
+            # the active thread on top of widgets already mounted in the DOM.
+            logger.debug(
+                "Skipping session start sequence; already initialized for thread %s",
+                self._lc_thread_id,
+            )
+            await self._drain_startup_backlog()
+            return
+
         if self._launch_init_requested:
             self._ensure_launch_init_task()
         launch_init_task = self._launch_init_task
@@ -4148,6 +4170,7 @@ class DeepAgentsApp(App):
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
 
+        self._initial_session_started = True
         self._startup_sequence_running = True
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
@@ -4169,6 +4192,10 @@ class DeepAgentsApp(App):
         finally:
             self._startup_sequence_running = False
 
+        await self._drain_startup_backlog()
+
+    async def _drain_startup_backlog(self) -> None:
+        """Drain deferred actions and queued input after server readiness."""
         if self._agent_running or self._shell_running:
             return
 

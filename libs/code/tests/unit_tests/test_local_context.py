@@ -1441,7 +1441,54 @@ class TestBuildMcpContext:
         server = _make_server("empty", "sse", [])
         result = _build_mcp_context([server])
         assert "(1 servers, 0 tools)" in result
-        assert "**empty** (sse): (no tools)" in result
+        assert "**empty** (sse): (no tools registered)" in result
+
+    def test_server_load_failure_error_status(self) -> None:
+        """A server with status='error' surfaces the failure to the model."""
+        server = MCPServerInfo(
+            name="slack",
+            transport="http",
+            tools=(),
+            status="error",
+            error="connection refused",
+        )
+        result = _build_mcp_context([server])
+        assert "(1 servers, 0 tools)" in result
+        assert "**slack** (http):" in result
+        assert "FAILED TO LOAD" in result
+        assert "connection refused" in result
+        # The model should be told the integration is unavailable and to
+        # surface the failure to the user rather than silently refuse.
+        assert "temporarily unavailable" in result
+        assert "re-auth" in result or "restart" in result.lower()
+        # Must NOT be rendered as the benign "no tools registered" case.
+        assert "(no tools registered)" not in result
+
+    def test_server_load_failure_unauthenticated_status(self) -> None:
+        """A server with status='unauthenticated' also surfaces the failure."""
+        server = MCPServerInfo(
+            name="slack",
+            transport="http",
+            tools=(),
+            status="unauthenticated",
+            error="OAuth login required",
+        )
+        result = _build_mcp_context([server])
+        assert "FAILED TO LOAD" in result
+        assert "OAuth login required" in result
+        assert "(no tools registered)" not in result
+
+    def test_clean_no_tools_and_failure_render_differently(self) -> None:
+        """The two zero-tool cases must produce distinct prompt fragments."""
+        clean = MCPServerInfo(name="empty", transport="sse", tools=())
+        failed = MCPServerInfo(
+            name="empty",
+            transport="sse",
+            tools=(),
+            status="error",
+            error="boom",
+        )
+        assert _build_mcp_context([clean]) != _build_mcp_context([failed])
 
     def test_long_tool_list_truncated(self) -> None:
         names = [f"tool_{i}" for i in range(15)]

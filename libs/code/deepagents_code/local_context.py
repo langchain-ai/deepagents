@@ -62,7 +62,21 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
 
     for server in servers:
         if not server.tools:
-            lines.append(f"- **{server.name}** ({server.transport}): (no tools)")
+            status = getattr(server, "status", None)
+            error = getattr(server, "error", None)
+            if status in ("error", "unauthenticated"):
+                detail = f"FAILED TO LOAD — {error or status}"
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): {detail}. "
+                    "Treat this integration as temporarily unavailable; "
+                    "tell the user the server failed to load and suggest "
+                    "re-auth or restarting the MCP server."
+                )
+            else:
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): "
+                    "(no tools registered)"
+                )
             continue
 
         names = [t.name for t in server.tools]

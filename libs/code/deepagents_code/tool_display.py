@@ -108,7 +108,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         Formatted string for display (e.g., "(*) read_file(config.py)" in ASCII mode)
 
     Examples:
-        read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
+        read_file(file_path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
         execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """

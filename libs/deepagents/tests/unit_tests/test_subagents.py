@@ -208,6 +208,98 @@ class TestSubAgents:
         subagent_tool_message = tool_messages[0]
         assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
 
+    def test_subagent_accepts_empty_string_tool_call_id(self) -> None:
+        """Handle model adapters that surface an empty string tool call id."""
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Calculate the sum of 2 and 3",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The calculation has been completed."),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content="The sum of 2 and 3 is 5.")]))
+        compiled_subagent = create_agent(model=subagent_chat_model)
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent for various tasks.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="What is 2 + 3?")]},
+            config={"configurable": {"thread_id": "test_thread_empty_tool_call_id"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages[0].tool_call_id == ""
+        assert "The sum of 2 and 3 is 5." in tool_messages[0].content
+
+    async def test_async_subagent_accepts_empty_string_tool_call_id(self) -> None:
+        """Handle empty string tool call ids on the async task path."""
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Calculate the sum of 2 and 3",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The calculation has been completed."),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content="The sum of 2 and 3 is 5.")]))
+        compiled_subagent = create_agent(model=subagent_chat_model)
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent for various tasks.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        result = await parent_agent.ainvoke(
+            {"messages": [HumanMessage(content="What is 2 + 3?")]},
+            config={"configurable": {"thread_id": "test_thread_async_empty_tool_call_id"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert tool_messages[0].tool_call_id == ""
+        assert "The sum of 2 and 3 is 5." in tool_messages[0].content
+
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
         """Test that multiple different subagents can be launched in parallel.
 

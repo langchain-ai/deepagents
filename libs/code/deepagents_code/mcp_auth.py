@@ -614,7 +614,8 @@ class _LoopbackOAuthCallbackServer:
                     handler,
                     200,
                     _oauth_success_html(
-                        "MCP authorization complete. You can close this browser tab.",
+                        "MCP authorization complete. "
+                        "This tab will close automatically.",
                     ),
                 )
             else:
@@ -658,7 +659,7 @@ class _LoopbackOAuthCallbackServer:
             handler,
             200,
             _oauth_success_html(
-                "MCP authorization complete. You can close this browser tab.",
+                "MCP authorization complete. This tab will close automatically.",
             ),
         )
 
@@ -707,6 +708,16 @@ def _oauth_result_html(
     escaped_title = html.escape(title)
     escaped_heading = html.escape(heading)
     escaped = html.escape(message)
+    # `window.close()` is only honored for tabs the script itself opened
+    # (browser policy), but for the common case where the auth flow was
+    # launched via `window.open` / `target=_blank` from another page, the
+    # tab closes cleanly. When the browser refuses, the user still sees the
+    # static success page and the message text remains accurate.
+    auto_close = (
+        "<script>setTimeout(function(){window.close();},2000);</script>"
+        if status == "success"
+        else ""
+    )
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -727,6 +738,7 @@ def _oauth_result_html(
         f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
         f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
         "</main>"
+        f"{auto_close}"
         "</body></html>"
     )
 

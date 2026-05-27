@@ -67,7 +67,7 @@ def test_unresolved_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     with pytest.raises(UnresolvedServersError) as excinfo:
         resolve_referenced_servers(client, payload, cache={})
-    assert "https://missing.example" in str(excinfo.value)
+    assert excinfo.value.urls == ("https://missing.example",)
 
 
 def test_uninvokable_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,7 +89,7 @@ def test_uninvokable_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     with pytest.raises(UninvokableServersError) as excinfo:
         resolve_referenced_servers(client, payload, cache={})
-    assert "https://tools.example" in str(excinfo.value)
+    assert excinfo.value.urls == ("https://tools.example",)
     assert "cannot invoke" in str(excinfo.value)
 
 

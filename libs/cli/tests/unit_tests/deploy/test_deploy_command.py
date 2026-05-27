@@ -268,7 +268,7 @@ def test_deploy_fails_when_tools_reference_unregistered_server(
     with pytest.raises(SystemExit):
         execute_deploy_command(_ns(tmp_path))
     err = capsys.readouterr().out
-    assert "https://missing.example" in err
+    assert "  - https://missing.example" in err.splitlines()
     assert "deepagents mcp-servers add" in err
 
 
@@ -307,5 +307,5 @@ def test_deploy_fails_when_tools_reference_uninvokable_server(
     with pytest.raises(SystemExit):
         execute_deploy_command(_ns(tmp_path))
     err = capsys.readouterr().out
-    assert "https://tools.example" in err
+    assert "  - https://tools.example" in err.splitlines()
     assert "cannot invoke" in err

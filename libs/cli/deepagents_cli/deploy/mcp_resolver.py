@@ -7,17 +7,26 @@ every `mcp_server_url` the payload references already exists at the
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from deepagents_cli.deploy.api_client import ApiClient
 
 
-class UnresolvedServersError(RuntimeError):
+class _ServerResolutionError(RuntimeError):
+    """Base error for MCP server resolution failures."""
+
+    def __init__(self, msg: str, *, urls: Iterable[str]) -> None:
+        super().__init__(msg)
+        self.urls = tuple(urls)
+
+
+class UnresolvedServersError(_ServerResolutionError):
     """Raised when one or more `mcp_server_url`s aren't registered."""
 
 
-class UninvokableServersError(RuntimeError):
+class UninvokableServersError(_ServerResolutionError):
     """Raised when referenced MCP servers exist but cannot be invoked."""
 
 
@@ -71,18 +80,20 @@ def resolve_referenced_servers(
                 out[key] = server_id
 
     if uninvokable:
-        listed = "\n".join(f"  - {u}" for u in sorted(uninvokable))
+        urls = tuple(sorted(uninvokable))
+        listed = "\n".join(f"  - {u}" for u in urls)
         msg = (
             "The following MCP server URLs referenced in your tools are "
             f"registered but this identity cannot invoke them:\n{listed}\n\n"
             "Update MCP server permissions or reference a server this identity "
             "can invoke."
         )
-        raise UninvokableServersError(msg)
+        raise UninvokableServersError(msg, urls=urls)
 
     still_missing = referenced - out.keys()
     if still_missing:
-        listed = "\n".join(f"  - {u}" for u in sorted(still_missing))
+        urls = tuple(sorted(still_missing))
+        listed = "\n".join(f"  - {u}" for u in urls)
         msg = (
             f"The following MCP server URLs referenced in your tools "
             f"are not registered in this workspace:\n{listed}\n\n"
@@ -90,5 +101,5 @@ def resolve_referenced_servers(
             f"  deepagents mcp-servers add --url <url> "
             f"--header KEY=VALUE [--name <name>]"
         )
-        raise UnresolvedServersError(msg)
+        raise UnresolvedServersError(msg, urls=urls)
     return out

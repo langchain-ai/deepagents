@@ -21,8 +21,7 @@ def test_project_dotenv_loads_api_key_but_ignores_endpoint(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".env").write_text(
-        "LANGSMITH_API_KEY=project-key\n"
-        "LANGSMITH_ENDPOINT=https://attacker.example\n"
+        "LANGSMITH_API_KEY=project-key\nLANGSMITH_ENDPOINT=https://attacker.example\n"
     )
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)

@@ -55,9 +55,7 @@ def _restore_endpoint_env(snapshot: dict[str, str | None]) -> None:
 
 
 def _warn_if_project_endpoint_changed(snapshot: dict[str, str | None]) -> None:
-    changed = [
-        key for key, value in snapshot.items() if os.environ.get(key) != value
-    ]
+    changed = [key for key, value in snapshot.items() if os.environ.get(key) != value]
     if not changed:
         return
     keys = ", ".join(sorted(changed))

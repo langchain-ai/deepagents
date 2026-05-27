@@ -10,12 +10,13 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
@@ -325,6 +326,164 @@ class TestSubAgents:
         multiplication_tool_message = tool_messages_by_id["call_multiplication"]
         assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
+        )
+
+    def test_private_state_does_not_propagate_from_parent_to_subagent(self) -> None:
+        """A private state field on the parent should not be visible to a child subagent."""
+
+        class _ParentPrivateState(AgentState):
+            secret: Annotated[str | None, PrivateStateAttr]
+
+        captured_child_states: list[dict[str, Any]] = []
+
+        class _ParentSeedMiddleware(AgentMiddleware[_ParentPrivateState, Any, Any]):
+            state_schema = _ParentPrivateState
+
+            def before_agent(self, state: _ParentPrivateState, runtime: object) -> dict[str, Any] | None:
+                if "secret" in state:
+                    return None
+                return {"secret": "parent-secret"}
+
+        class _ChildCaptureState(AgentState):
+            secret: Annotated[str | None, PrivateStateAttr]
+
+        class _ChildCaptureMiddleware(AgentMiddleware[_ChildCaptureState, Any, Any]):
+            state_schema = _ChildCaptureState
+
+            def before_agent(self, state: _ChildCaptureState, runtime: object) -> dict[str, Any] | None:
+                captured_child_states.append(dict(state))
+                return None
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Run the child subagent", "subagent_type": "child"},
+                                "id": "call_child",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        child_model = GenericFakeChatModel(messages=iter([AIMessage(content="child done")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            middleware=[_ParentSeedMiddleware()],
+            subagents=[
+                SubAgent(
+                    name="child",
+                    description="Captures its incoming state.",
+                    system_prompt="Capture the incoming state and complete the task.",
+                    model=child_model,
+                    middleware=[_ChildCaptureMiddleware()],
+                ),
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="run the child subagent")]},
+            config={"configurable": {"thread_id": "test_private_state_parent_to_child"}},
+        )
+
+        assert captured_child_states, "Child subagent should have received state"
+        assert "secret" not in captured_child_states[0], f"Private parent field 'secret' leaked into child state: {captured_child_states[0]}"
+
+    def test_private_state_does_not_propagate_between_sibling_subagents(self) -> None:
+        """A private state field written by one sibling subagent must not reach another."""
+        # The writer subagent seeds a private field; the reader subagent must not see it.
+        # Sibling isolation works because the framework strips PrivateStateAttr fields
+        # from a compiled subgraph's returned state before they reach the parent, so
+        # the field never enters the parent's runtime.state at all.
+
+        class _WriterState(AgentState):
+            writer_secret: Annotated[str | None, PrivateStateAttr]
+
+        written_values: list[str | None] = []
+
+        class _WriterMiddleware(AgentMiddleware[_WriterState, Any, Any]):
+            state_schema = _WriterState
+
+            def before_agent(self, state: _WriterState, runtime: object) -> dict[str, Any] | None:
+                written_values.append(state.get("writer_secret"))
+                return {"writer_secret": "sibling-secret"}
+
+        captured_reader_states: list[dict[str, Any]] = []
+
+        class _ReaderCaptureMiddleware(AgentMiddleware[AgentState, Any, Any]):
+            def before_agent(self, state: AgentState, runtime: object) -> dict[str, Any] | None:
+                captured_reader_states.append(dict(state))
+                return None
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Seed the writer state", "subagent_type": "writer"},
+                                "id": "call_writer",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Read the state", "subagent_type": "reader"},
+                                "id": "call_reader",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        writer_model = GenericFakeChatModel(messages=iter([AIMessage(content="writer done")]))
+        reader_model = GenericFakeChatModel(messages=iter([AIMessage(content="reader done")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="writer",
+                    description="Seeds private state.",
+                    system_prompt="Seed private state and complete.",
+                    model=writer_model,
+                    middleware=[_WriterMiddleware()],
+                ),
+                SubAgent(
+                    name="reader",
+                    description="Reads state.",
+                    system_prompt="Report what state you received.",
+                    model=reader_model,
+                    middleware=[_ReaderCaptureMiddleware()],
+                ),
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="run writer then reader")]},
+            config={"configurable": {"thread_id": "test_private_state_sibling"}},
+        )
+
+        assert captured_reader_states, "Reader subagent should have received state"
+        assert "writer_secret" not in captured_reader_states[0], (
+            f"Private writer field 'writer_secret' leaked into reader state: {captured_reader_states[0]}"
         )
 
     def test_agent_with_structured_output_tool_strategy(self) -> None:

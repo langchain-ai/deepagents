@@ -244,16 +244,18 @@ returning updates from subagents.
 When returning updates:
 
 1. The messages key is handled explicitly to ensure only the final message
-    is included
+    is included.
 2. The todos and `structured_response` keys are excluded as they do not have
     a defined reducer and no clear meaning for returning them from a subagent
     to the main agent.
 3. The `skills_metadata`, `skills_load_errors`, and `memory_contents` keys are
     automatically excluded from subagent output via `PrivateStateAttr`
-    annotations on their respective state schemas. However, they must ALSO
-    be explicitly filtered from runtime.state when invoking a subagent to
-    prevent parent state from leaking to child agents (e.g., the general-purpose
-    subagent loads its own skills via `SkillsMiddleware`).
+    annotations on their respective state schemas.  They are also listed here
+    as a belt-and-suspenders guard against them leaking through the input path;
+    the primary mechanism for input-side filtering is the dynamic
+    `_private_state_keys` set on `SubAgentMiddleware`, which covers all
+    middleware that declares `PrivateStateAttr` fields (including user-supplied
+    middleware not listed here).
 """
 
 
@@ -460,6 +462,8 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
+    *,
+    get_private_keys: Callable[[], frozenset[str]] = frozenset,
 ) -> BaseTool:
     """Create a task tool from pre-built subagent graphs.
 
@@ -467,6 +471,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagents: List of subagent specs containing name, description, and runnable.
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
+        get_private_keys: Zero-arg callable that returns the current set of
+            state keys to strip before passing parent state to a subagent.
+            Read at invocation time so callers can update the set after the
+            tool is built without rebuilding it.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -527,8 +535,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
     def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
+        private_keys = get_private_keys()
         # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_keys}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
@@ -680,12 +689,17 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
         self._backend = backend
         self._subagents = subagents
+        self._private_state_keys: frozenset[str] = frozenset()
         subagent_specs = self._get_subagents()
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(subagent_specs, task_description)
+        task_tool = _build_task_tool(
+            subagent_specs,
+            task_description,
+            get_private_keys=lambda: self._private_state_keys,
+        )
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -695,6 +709,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             self.system_prompt = system_prompt
 
         self.tools = [task_tool]
+
+    def set_private_state_keys(self, keys: frozenset[str]) -> None:
+        """Update the private-state filter applied when invoking subagents."""
+        self._private_state_keys = keys
 
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.

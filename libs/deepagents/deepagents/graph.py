@@ -38,6 +38,7 @@ from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -734,6 +735,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    # Now that the middleware stack is fully assembled and exclusions applied,
+    # derive which state keys are private and tell SubAgentMiddleware about
+    # them. This must happen after _apply_excluded_middleware so that keys
+    # from user-supplied middleware (added after SubAgentMiddleware was
+    # constructed) are included.
+    if sub_agent_middleware is not None:
+        sub_agent_middleware.set_private_state_keys(
+            private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
+        )
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

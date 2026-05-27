@@ -11,6 +11,18 @@ from deepagents_cli.deploy.project import Project, ProjectError
 _FIXTURES = Path(__file__).parent / "fixtures" / "projects"
 
 
+def _write_minimal_project(root: Path) -> None:
+    (root / "agent.json").write_text('{"name": "x"}')
+    (root / "AGENTS.md").write_text("hi")
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
 def test_load_bare_project_reads_agent_json_and_agents_md() -> None:
     proj = Project.load(_FIXTURES / "bare")
     assert proj.name == "research-assistant"
@@ -48,6 +60,16 @@ def test_load_missing_name_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"description": "x"}')
     (tmp_path / "AGENTS.md").write_text("hi")
     with pytest.raises(ProjectError, match="name"):
+        Project.load(tmp_path)
+
+
+def test_top_level_symlink_file_raises(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x"}')
+    target = tmp_path.parent / "prompt.txt"
+    target.write_text("outside project")
+    _symlink_or_skip(tmp_path / "AGENTS.md", target)
+
+    with pytest.raises(ProjectError, match="symlinks are not allowed"):
         Project.load(tmp_path)
 
 
@@ -237,6 +259,33 @@ def test_top_level_skill_files_are_recursive(tmp_path: Path) -> None:
     assert project.skills[0].files["data/facts.md"] == "nested"
 
 
+def test_skill_extra_file_symlink_raises(tmp_path: Path) -> None:
+    _write_minimal_project(tmp_path)
+    skill_dir = tmp_path / "skills" / "guide"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: guide\ndescription: read nested data\n---\nUse data.\n"
+    )
+    target = tmp_path.parent / "secret.txt"
+    target.write_text("outside project")
+    _symlink_or_skip(skill_dir / "secret.txt", target)
+
+    with pytest.raises(ProjectError, match="symlinks are not allowed"):
+        Project.load(tmp_path)
+
+
+def test_skill_directory_symlink_raises(tmp_path: Path) -> None:
+    _write_minimal_project(tmp_path)
+    target = tmp_path.parent / "external-skill"
+    target.mkdir()
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _symlink_or_skip(skills_dir / "external", target)
+
+    with pytest.raises(ProjectError, match="symlinks are not allowed"):
+        Project.load(tmp_path)
+
+
 def test_skill_missing_frontmatter_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text('{"name": "x"}')
     (tmp_path / "AGENTS.md").write_text("hi")
@@ -276,6 +325,21 @@ def test_subagent_local_skills_go_into_extra_files() -> None:
     sa = proj.subagents[0]
     assert "skills/note/SKILL.md" in sa.extra_files
     assert "Take a note." in sa.extra_files["skills/note/SKILL.md"]
+
+
+def test_subagent_local_skill_file_symlink_raises(tmp_path: Path) -> None:
+    _write_minimal_project(tmp_path)
+    sa = tmp_path / "subagents" / "researcher"
+    skill_dir = sa / "skills" / "note"
+    skill_dir.mkdir(parents=True)
+    (sa / "agent.json").write_text('{"description": "Researches."}')
+    (sa / "AGENTS.md").write_text("Research.")
+    target = tmp_path.parent / "secret.txt"
+    target.write_text("outside project")
+    _symlink_or_skip(skill_dir / "secret.txt", target)
+
+    with pytest.raises(ProjectError, match="symlinks are not allowed"):
+        Project.load(tmp_path)
 
 
 def test_subagent_missing_agent_json_raises(tmp_path: Path) -> None:

@@ -43,25 +43,41 @@ def test_endpoint_resolution_env_override(monkeypatch: pytest.MonkeyPatch) -> No
     assert client.endpoint == "https://eu.example.invalid"
 
 
-def test_endpoint_falls_back_to_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_endpoint_defaults_when_env_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
     monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     client = ApiClient.from_env(
-        transport=_transport(lambda _request: httpx.Response(200, json={})),
-        endpoint_fallback="https://state.example.invalid/",
+        transport=_transport(lambda _request: httpx.Response(200, json={}))
     )
-    assert client.endpoint == "https://state.example.invalid"
+    assert client.endpoint == "https://api.smith.langchain.com"
 
 
-def test_endpoint_env_beats_state_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_endpoint_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://env.example.invalid")
     client = ApiClient.from_env(
-        transport=_transport(lambda _request: httpx.Response(200, json={})),
-        endpoint_fallback="https://state.example.invalid",
+        transport=_transport(lambda _request: httpx.Response(200, json={}))
     )
     assert client.endpoint == "https://env.example.invalid"
+
+
+def test_endpoint_rejects_non_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://env.example.invalid")
+    with pytest.raises(SystemExit):
+        ApiClient.from_env(
+            transport=_transport(lambda _request: httpx.Response(200, json={}))
+        )
+
+
+def test_endpoint_rejects_userinfo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://user:pass@env.example.invalid")
+    with pytest.raises(SystemExit):
+        ApiClient.from_env(
+            transport=_transport(lambda _request: httpx.Response(200, json={}))
+        )
 
 
 def test_request_sends_x_api_key_header(monkeypatch: pytest.MonkeyPatch) -> None:

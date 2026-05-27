@@ -54,6 +54,64 @@ class ProjectError(ValueError):
     """Raised when the on-disk project is malformed."""
 
 
+def _symlink_error(path: Path) -> ProjectError:
+    msg = f"{path}: symlinks are not allowed in deploy project inputs."
+    return ProjectError(msg)
+
+
+def _ensure_project_contained(
+    root: Path,
+    path: Path,
+    *,
+    container: Path | None = None,
+) -> None:
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+        if container is not None:
+            resolved.relative_to(container.resolve(strict=True))
+    except FileNotFoundError as exc:
+        msg = f"{path}: file does not exist."
+        raise ProjectError(msg) from exc
+    except ValueError as exc:
+        msg = f"{path}: path escapes the deploy project directory."
+        raise ProjectError(msg) from exc
+
+
+def _read_project_text(
+    root: Path,
+    path: Path,
+    *,
+    missing_msg: str | None = None,
+    container: Path | None = None,
+) -> str:
+    if path.is_symlink():
+        raise _symlink_error(path)
+    if not path.is_file():
+        msg = missing_msg or f"{path}: expected a regular file."
+        raise ProjectError(msg)
+    _ensure_project_contained(root, path, container=container)
+    return path.read_text(encoding="utf-8")
+
+
+def _is_project_file(root: Path, path: Path) -> bool:
+    if path.is_symlink():
+        raise _symlink_error(path)
+    if not path.is_file():
+        return False
+    _ensure_project_contained(root, path)
+    return True
+
+
+def _is_project_dir(root: Path, path: Path) -> bool:
+    if path.is_symlink():
+        raise _symlink_error(path)
+    if not path.is_dir():
+        return False
+    _ensure_project_contained(root, path)
+    return True
+
+
 @dataclass
 class Skill:
     """A skill discovered under `skills/<name>/`."""
@@ -128,11 +186,14 @@ class Project:
 
 def _read_agent_json(root: Path) -> dict[str, Any]:
     path = root / _AGENT_JSON
-    if not path.is_file():
-        msg = f"agent.json is required but not found in {root}."
-        raise ProjectError(msg)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            _read_project_text(
+                root,
+                path,
+                missing_msg=f"agent.json is required but not found in {root}.",
+            )
+        )
     except json.JSONDecodeError as exc:
         msg = f"Invalid JSON in {path}: {exc}"
         raise ProjectError(msg) from exc
@@ -234,17 +295,18 @@ def _normalize_sandbox_config(sandbox: object, *, source: Path) -> dict[str, Any
 
 def _read_agents_md(root: Path) -> str:
     path = root / _AGENTS_MD
-    if not path.is_file():
-        msg = f"AGENTS.md is required but not found in {root}."
-        raise ProjectError(msg)
-    return path.read_text(encoding="utf-8")
+    return _read_project_text(
+        root,
+        path,
+        missing_msg=f"AGENTS.md is required but not found in {root}.",
+    )
 
 
 def _read_tools_json(root: Path) -> tuple[dict[str, Any] | None, str | None]:
     path = root / _TOOLS_JSON
-    if not path.is_file():
+    if not _is_project_file(root, path):
         return None, None
-    text = path.read_text(encoding="utf-8")
+    text = _read_project_text(root, path)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -300,18 +362,25 @@ def _parse_skill_frontmatter(text: str, *, source: Path) -> tuple[dict[str, str]
 
 def _read_skills(root: Path) -> list[Skill]:
     skills_dir = root / _SKILLS_DIR
-    if not skills_dir.is_dir():
+    if not _is_project_dir(root, skills_dir):
         return []
     result: list[Skill] = []
     seen: set[str] = set()
     for entry in sorted(skills_dir.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+        if entry.name.startswith("."):
             continue
+        if entry.is_symlink():
+            raise _symlink_error(entry)
+        if not entry.is_dir():
+            continue
+        _ensure_project_contained(root, entry)
         skill_file = entry / _SKILL_FILE
-        if not skill_file.is_file():
-            msg = f"{entry}: missing SKILL.md"
-            raise ProjectError(msg)
-        skill_text = skill_file.read_text(encoding="utf-8")
+        skill_text = _read_project_text(
+            root,
+            skill_file,
+            missing_msg=f"{entry}: missing SKILL.md",
+            container=entry,
+        )
         frontmatter, body = _parse_skill_frontmatter(skill_text, source=skill_file)
         name = frontmatter["name"]
         if name in seen:
@@ -320,12 +389,14 @@ def _read_skills(root: Path) -> list[Skill]:
         seen.add(name)
         files: dict[str, str] = {}
         for child in sorted(entry.rglob("*")):
+            if child.is_symlink():
+                raise _symlink_error(child)
             if not child.is_file() or child.name == _SKILL_FILE:
                 continue
             rel = child.relative_to(entry)
             if any(part.startswith(".") for part in rel.parts):
                 continue
-            files[rel.as_posix()] = child.read_text(encoding="utf-8")
+            files[rel.as_posix()] = _read_project_text(root, child, container=entry)
         result.append(
             Skill(
                 name=name,
@@ -340,23 +411,29 @@ def _read_skills(root: Path) -> list[Skill]:
 
 def _read_subagents(root: Path) -> list[Subagent]:
     sa_dir = root / _SUBAGENTS_DIR
-    if not sa_dir.is_dir():
+    if not _is_project_dir(root, sa_dir):
         return []
     result: list[Subagent] = []
     seen: set[str] = set()
     for entry in sorted(sa_dir.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("."):
+        if entry.name.startswith("."):
             continue
+        if entry.is_symlink():
+            raise _symlink_error(entry)
+        if not entry.is_dir():
+            continue
+        _ensure_project_contained(root, entry)
         agent_json = entry / _AGENT_JSON
         agents_md = entry / _AGENTS_MD
-        if not agent_json.is_file():
-            msg = f"{entry}: missing agent.json"
-            raise ProjectError(msg)
-        if not agents_md.is_file():
-            msg = f"{entry}: missing AGENTS.md"
-            raise ProjectError(msg)
         try:
-            data = json.loads(agent_json.read_text(encoding="utf-8"))
+            data = json.loads(
+                _read_project_text(
+                    root,
+                    agent_json,
+                    missing_msg=f"{entry}: missing agent.json",
+                    container=entry,
+                )
+            )
         except json.JSONDecodeError as exc:
             msg = f"Invalid JSON in {agent_json}: {exc}"
             raise ProjectError(msg) from exc
@@ -373,21 +450,32 @@ def _read_subagents(root: Path) -> list[Subagent]:
         tools, tools_text = _read_tools_json(entry)
         extra_files: dict[str, str] = {}
         local_skills_dir = entry / _SKILLS_DIR
-        if local_skills_dir.is_dir():
+        if _is_project_dir(root, local_skills_dir):
             for f in sorted(local_skills_dir.rglob("*")):
+                if f.is_symlink():
+                    raise _symlink_error(f)
                 if not f.is_file():
                     continue
                 rel = f.relative_to(entry)
                 if any(part.startswith(".") for part in rel.parts):
                     continue
-                extra_files[rel.as_posix()] = f.read_text(encoding="utf-8")
+                extra_files[rel.as_posix()] = _read_project_text(
+                    root,
+                    f,
+                    container=entry,
+                )
 
         result.append(
             Subagent(
                 name=name,
                 description=data.get("description"),
                 model_id=data.get("model_id"),
-                instructions=agents_md.read_text(encoding="utf-8"),
+                instructions=_read_project_text(
+                    root,
+                    agents_md,
+                    missing_msg=f"{entry}: missing AGENTS.md",
+                    container=entry,
+                ),
                 tools=tools,
                 tools_text=tools_text,
                 extra_files=extra_files,

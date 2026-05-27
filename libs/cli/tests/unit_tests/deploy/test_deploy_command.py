@@ -35,9 +35,8 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Handler) -> None:
         cls: type[api_client_module.ApiClient],
         *,
         transport: httpx.BaseTransport | None = None,
-        endpoint_fallback: str | None = None,
     ) -> api_client_module.ApiClient:
-        _ = transport, endpoint_fallback
+        _ = transport
         return cls(
             endpoint="https://api.invalid",
             api_key="k",

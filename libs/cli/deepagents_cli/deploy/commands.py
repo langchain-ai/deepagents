@@ -207,7 +207,7 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
         )
         return
 
-    client = ApiClient.from_env(endpoint_fallback=state.endpoint)
+    client = ApiClient.from_env()
     state.endpoint = client.endpoint
 
     try:

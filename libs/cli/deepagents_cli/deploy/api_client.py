@@ -21,6 +21,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -48,6 +49,23 @@ class ApiError(Exception):
         return " — ".join(bits)
 
 
+def _normalize_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.strip().rstrip("/")
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.netloc:
+        msg = "Error: LANGSMITH_ENDPOINT / LANGCHAIN_ENDPOINT must be an HTTPS URL.\n"
+        sys.stderr.write(msg)
+        raise SystemExit(1)
+    if parsed.username or parsed.password:
+        msg = (
+            "Error: LANGSMITH_ENDPOINT / LANGCHAIN_ENDPOINT must not include "
+            "userinfo.\n"
+        )
+        sys.stderr.write(msg)
+        raise SystemExit(1)
+    return endpoint
+
+
 class ApiClient:
     """HTTP client for `/v1/deepagents/*`."""
 
@@ -73,14 +91,12 @@ class ApiClient:
         cls,
         *,
         transport: httpx.BaseTransport | None = None,
-        endpoint_fallback: str | None = None,
     ) -> ApiClient:
         """Build a client from `LANGSMITH_*` / `LANGCHAIN_*` env vars.
 
-        Endpoint resolution: env var > `endpoint_fallback` (e.g. state.json)
-        > `_DEFAULT_ENDPOINT`. This keeps teammates who clone a project
-        targeting a non-default endpoint consistent without having to set
-        the env var themselves.
+        Endpoint resolution is env var > `_DEFAULT_ENDPOINT`. Project-local
+        deploy state is intentionally ignored because it can be repository
+        controlled and must not steer authenticated requests.
 
         Exits non-zero with a friendly message if the API key is missing.
         """
@@ -97,9 +113,9 @@ class ApiClient:
         endpoint = (
             os.environ.get("LANGSMITH_ENDPOINT")
             or os.environ.get("LANGCHAIN_ENDPOINT")
-            or endpoint_fallback
             or _DEFAULT_ENDPOINT
-        ).rstrip("/")
+        )
+        endpoint = _normalize_endpoint(endpoint)
         return cls(endpoint=endpoint, api_key=api_key, transport=transport)
 
     def close(self) -> None:

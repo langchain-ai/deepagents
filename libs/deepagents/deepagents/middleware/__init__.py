@@ -50,7 +50,8 @@ Use a **plain tool** when:
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.outcomes import (
+from deepagents.middleware.rubric import (
+    GRADER_SYSTEM_PROMPT,
     RUBRIC_GRADER_MESSAGE_SOURCE,
     CriterionEval,
     GraderResponse,
@@ -68,6 +69,7 @@ from deepagents.middleware.summarization import (
 )
 
 __all__ = [
+    "GRADER_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",

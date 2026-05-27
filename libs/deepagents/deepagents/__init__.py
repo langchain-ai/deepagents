@@ -10,7 +10,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.outcomes import RubricMiddleware
+from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,

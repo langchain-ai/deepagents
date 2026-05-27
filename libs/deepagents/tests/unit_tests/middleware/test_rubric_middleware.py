@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deepagents.middleware.outcomes import (
+from deepagents.middleware.rubric import (
     GraderResponse,
     RubricEvaluation,
     RubricMiddleware,
@@ -169,8 +169,8 @@ class TestBeforeAgent:
         assert result["_rubric_iterations"] == 0
         assert result["_rubric_status"] is None
         assert result["_active_rubric"] == "- ship it"
-        assert isinstance(result["_current_rubric_id"], str)
-        assert result["_current_rubric_id"]  # non-empty
+        assert isinstance(result["_current_grading_run_id"], str)
+        assert result["_current_grading_run_id"]  # non-empty
 
     def test_sticky_rubric_is_noop(self) -> None:
         mw = RubricMiddleware(model=_STUB_MODEL)
@@ -178,7 +178,7 @@ class TestBeforeAgent:
             "messages": [],
             "rubric": "- ship it",
             "_active_rubric": "- ship it",
-            "_current_rubric_id": "rubric-1",
+            "_current_grading_run_id": "rubric-1",
             "_rubric_iterations": 2,
         }
         assert mw.before_agent(state, _runtime()) is None
@@ -189,7 +189,7 @@ class TestBeforeAgent:
             "messages": [],
             "rubric": "- write a limerick",
             "_active_rubric": "- write a haiku",
-            "_current_rubric_id": "rubric-prev",
+            "_current_grading_run_id": "rubric-prev",
             "_rubric_iterations": 5,
             "_rubric_status": "satisfied",
         }
@@ -198,7 +198,29 @@ class TestBeforeAgent:
         assert result["_rubric_iterations"] == 0
         assert result["_rubric_status"] is None
         assert result["_active_rubric"] == "- write a limerick"
-        assert result["_current_rubric_id"] != "rubric-prev"
+        assert result["_current_grading_run_id"] != "rubric-prev"
+
+    @pytest.mark.parametrize("terminal_status", ["satisfied", "max_iterations_reached", "failed"])
+    def test_same_rubric_after_terminal_resets_attempt(self, terminal_status: str) -> None:
+        """Same rubric on a follow-up invocation gets a fresh budget.
+
+        Fires when the previous grading run ended terminally.
+        """
+        mw = RubricMiddleware(model=_STUB_MODEL)
+        state = {
+            "messages": [],
+            "rubric": "- ship it",
+            "_active_rubric": "- ship it",
+            "_current_grading_run_id": "rubric-prev",
+            "_rubric_iterations": 3,
+            "_rubric_status": terminal_status,
+        }
+        result = mw.before_agent(state, _runtime())
+        assert result is not None
+        assert result["_rubric_iterations"] == 0
+        assert result["_rubric_status"] is None
+        assert result["_active_rubric"] == "- ship it"
+        assert result["_current_grading_run_id"] != "rubric-prev"
 
     @pytest.mark.asyncio
     async def test_abefore_agent_matches_sync(self) -> None:
@@ -222,7 +244,7 @@ class TestAfterAgentDirect:
             ],
             "rubric": "- The thing is built",
             "_active_rubric": "- The thing is built",
-            "_current_rubric_id": "rubric-direct",
+            "_current_grading_run_id": "rubric-direct",
             "_rubric_iterations": 0,
         }
         base.update(overrides)
@@ -293,7 +315,7 @@ class TestAfterAgentDirect:
         mw.after_agent(self._state(), _runtime(events))
         types = [e["type"] for e in events]
         assert types == ["rubric_evaluation_start", "rubric_evaluation_end"]
-        assert events[0]["rubric_id"] == "rubric-direct"
+        assert events[0]["grading_run_id"] == "rubric-direct"
         assert events[0]["iteration"] == 0
         assert events[1]["result"] == "satisfied"
 
@@ -326,7 +348,7 @@ class TestGraderPlumbing:
                 ainvoke=None,
             )
 
-        monkeypatch.setattr("deepagents.middleware.outcomes.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
         # `resolve_model` is imported lazily inside `_ensure_grader`; patch
         # at its source so the stub model string never hits init_chat_model.
         monkeypatch.setattr("deepagents._models.resolve_model", lambda m: m)
@@ -358,7 +380,7 @@ class TestGraderPlumbing:
             seen["tools"] = list(tools)
             return SimpleNamespace()
 
-        monkeypatch.setattr("deepagents.middleware.outcomes.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
         monkeypatch.setattr("deepagents._models.resolve_model", lambda m: m)
         mw = RubricMiddleware(model=_STUB_MODEL, tools=[shell])
         mw._ensure_grader()
@@ -371,7 +393,7 @@ class TestGraderPlumbing:
             seen["model"] = model
             return SimpleNamespace()
 
-        monkeypatch.setattr("deepagents.middleware.outcomes.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
         monkeypatch.setattr("deepagents._models.resolve_model", lambda m: m)
         mw = RubricMiddleware(model="custom-grader-model")
         mw._ensure_grader()
@@ -385,7 +407,7 @@ class TestGraderPlumbing:
             seen["system_prompt"] = system_prompt
             return SimpleNamespace()
 
-        monkeypatch.setattr("deepagents.middleware.outcomes.create_agent", fake_create_agent)
+        monkeypatch.setattr("deepagents.middleware.rubric.create_agent", fake_create_agent)
         monkeypatch.setattr("deepagents._models.resolve_model", lambda m: m)
         mw = RubricMiddleware(
             model=_STUB_MODEL,
@@ -541,6 +563,13 @@ class TestRubricTracking:
     """
 
     def test_sticky_rubric_across_invocations(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Rubric *string* sticks across invocations on a checkpointed thread.
+
+        After the first invocation reaches a terminal verdict, a follow-up
+        invocation on the same thread inherits the rubric without the caller
+        re-supplying it (grader runs again), but the new invocation starts a
+        fresh attempt: new `grading_run_id` and iteration index back at 0.
+        """
         agent_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -570,15 +599,19 @@ class TestRubricTracking:
             config=config,
         )
         first_evals = agent.get_state(config).values["_rubric_evaluations"]
-        first_id = first_evals[0]["rubric_id"]
+        first_id = first_evals[0]["grading_run_id"]
 
-        # Second invocation omits the rubric — sticky from the prior call.
+        # Second invocation omits the rubric — the rubric string sticks from
+        # the prior call, so the grader still runs. The previous attempt
+        # ended `satisfied` (terminal), so this is a fresh attempt with a
+        # new `grading_run_id` and a reset iteration budget.
         agent.invoke({"messages": [HumanMessage("again")]}, config=config)
         second_evals = agent.get_state(config).values["_rubric_evaluations"]
         assert len(second_evals) == 2
-        assert second_evals[1]["rubric_id"] == first_id
+        assert second_evals[1]["grading_run_id"] != first_id
+        assert second_evals[1]["iteration"] == 0
 
-    def test_new_rubric_mints_new_rubric_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_new_rubric_mints_new_grading_run_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         agent_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -610,7 +643,7 @@ class TestRubricTracking:
             config=config,
         )
         first_evals = agent.get_state(config).values["_rubric_evaluations"]
-        first_id = first_evals[0]["rubric_id"]
+        first_id = first_evals[0]["grading_run_id"]
 
         agent.invoke(
             {
@@ -620,7 +653,7 @@ class TestRubricTracking:
             config=config,
         )
         second_evals = agent.get_state(config).values["_rubric_evaluations"]
-        second_id = second_evals[-1]["rubric_id"]
+        second_id = second_evals[-1]["grading_run_id"]
         assert first_id != second_id
         # Both evaluations are retained across the rubric change.
         assert len(second_evals) == 2

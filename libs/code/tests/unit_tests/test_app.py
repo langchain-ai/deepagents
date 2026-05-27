@@ -340,6 +340,63 @@ class TestInitialPromptOnMount:
 class TestStartupSequence:
     """Tests for post-connect startup sequencing."""
 
+    async def test_session_start_sequence_is_idempotent_across_server_ready(
+        self,
+    ) -> None:
+        """Subsequent `ServerReady` events must not re-run history hydration.
+
+        Regression for the `/mcp reconnect` and `/restart` flows: respawns
+        post a fresh `ServerReady`, which would otherwise re-run
+        `_load_thread_history` against an already-populated `MessageStore`
+        and raise `DuplicateIds` during widget mount.
+        """
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        call_count = 0
+
+        async def capture_history(  # noqa: RUF029
+            *,
+            thread_id: str | None = None,
+            preloaded_payload: object | None = None,
+        ) -> None:
+            del thread_id, preloaded_payload
+            nonlocal call_count
+            call_count += 1
+
+        app._load_thread_history = capture_history  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+        await app._run_session_start_sequence()
+        await app._run_session_start_sequence()
+
+        assert call_count == 1
+        assert app._initial_session_started is True
+
+    async def test_reconnect_drains_queue_without_reloading_history(self) -> None:
+        """Later `ServerReady` events should drain queued input once connected."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        app._initial_session_started = True
+        app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+        load_history = AsyncMock()
+        drain_deferred = AsyncMock()
+        process_next = AsyncMock()
+        app._load_thread_history = load_history  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_deferred  # type: ignore[assignment]
+        app._process_next_from_queue = process_next  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        load_history.assert_not_awaited()
+        drain_deferred.assert_awaited_once()
+        process_next.assert_awaited_once()
+
     async def test_resumed_history_loads_before_startup_command(self) -> None:
         """Resumed threads should mount prior history before startup output."""
         app = DeepAgentsApp(

@@ -692,6 +692,100 @@ class TestSubAgents:
         # so that lc_agent_name in streamed chunks reflects the declared subagent name.
         assert captured_config["metadata"]["lc_agent_name"] == "general-purpose"
 
+    def test_subagent_forwards_parent_metadata_without_clobbering_bound_identity(self) -> None:
+        """Verify metadata forwarding stripping behavior.
+
+        Parent `metadata` reaches the subagent's tools, but LangChain-reserved keys
+        (`lc_agent_name`, `ls_integration`) are stripped so the subagent's bound identity
+        survives the merge. Regression test for #3634.
+        """
+        captured_config: Any = None
+
+        @tool
+        def capture_metadata(runtime: ToolRuntime) -> str:
+            """Capture runtime config so the test can inspect propagated metadata."""
+            nonlocal captured_config
+            captured_config = runtime.config
+            return "OK"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Capture the metadata.",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_subagent_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_metadata",
+                                "args": {},
+                                "id": "call_capture_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            tools=[capture_metadata],
+            name="metadata-check-subagent",
+        )
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the metadata check.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                "metadata": {
+                    "customer_id": "abc-123",
+                    "lc_agent_name": "PARENT-OVERRIDE",
+                    "ls_integration": "PARENT-INTEGRATION",
+                },
+            },
+            durability="exit",
+        )
+
+        assert captured_config is not None
+        metadata = captured_config.get("metadata", {})
+        assert metadata.get("customer_id") == "abc-123", f"User-set parent metadata should reach subagent tools, got {metadata!r}"
+        assert metadata.get("lc_agent_name") != "PARENT-OVERRIDE", f"Parent's `lc_agent_name` must be stripped before forwarding, got {metadata!r}"
+        assert metadata.get("ls_integration") != "PARENT-INTEGRATION", (
+            f"Parent's `ls_integration` must be stripped before forwarding, got {metadata!r}"
+        )
+
     def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
         interrupt_payloads: list[Any] = []
 

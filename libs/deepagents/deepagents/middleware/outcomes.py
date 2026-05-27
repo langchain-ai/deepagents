@@ -34,8 +34,6 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
-    ModelRequest,
-    ModelResponse,
     PrivateStateAttr,
     ResponseT,
     hook_config,
@@ -51,13 +49,11 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable, Sequence
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
-
-    from deepagents.backends.protocol import BackendFactory, BackendProtocol
-    from deepagents.middleware.subagents import SubAgent
 
 logger = logging.getLogger(__name__)
 
@@ -243,77 +239,25 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     return without modifying state, so the middleware is safe to include
     unconditionally in a `create_deep_agent` stack.
 
-    The grader sub-agent inherits defaults from the surrounding deep agent
-    when the user does not supply them explicitly:
-
-    - **Model**: if `grader` omits `model`, the middleware uses the deep
-      agent's main model (captured the first time `wrap_model_call` fires).
-      This mirrors how `create_deep_agent` falls back to the main model for
-      sub-agents that omit their own `model`.
-    - **Backend**: if `grader` includes `skills` or `permissions` and the
-      caller does not pass a `backend`, the middleware uses the deep agent's
-      backend (injected by `create_deep_agent` when this middleware is part
-      of its stack). If no backend is available from either source, the
-      grader raises `RuntimeError` at first invocation.
-
     Args:
-        grader: Optional `SubAgent` spec describing the grader sub-agent.
-            When omitted, the grader runs with the deep agent's main model,
-            no tools, and the default grader prompt.
-
-            Fields honored by the middleware:
-
-            - `model`: The model used by the grader. Accepts either a model
-              string like `"provider:model-id"` or a `BaseChatModel` instance.
-              If omitted, falls back to the deep agent's main model.
-            - `name`: Trace label for the grader sub-agent. Defaults to
-              `"rubric_grader"`.
-            - `system_prompt`: Custom grading instructions. Defaults to the
-              middleware's built-in grader prompt if omitted.
-            - `tools`: Tools the grader may call before producing its
-              `GraderResponse`. Defaults to no tools (pure-LLM grader).
-            - `middleware`: Additional middleware applied to the grader
-              sub-agent (e.g. rate limiting, logging).
-            - `interrupt_on`: Human-in-the-loop configuration; auto-wires
-              `HumanInTheLoopMiddleware` for the grader.
-            - `skills`: Skill sources for the grader; auto-wires
-              `SkillsMiddleware`. Requires a backend (from the `backend`
-              argument or from the surrounding `create_deep_agent`).
-            - `permissions`: Filesystem permission rules for the grader;
-              auto-wires `FilesystemMiddleware`. Requires a backend (same
-              sources as `skills`).
-
-            Fields not used by this middleware:
-
-            - `description`: Used by the deepagents `task` tool to advertise
-              sub-agents; the grader is invoked internally, not delegated to,
-              so this field has no destination here.
-            - `response_format`: The grader's response format is always
-              `GraderResponse` because the middleware's downstream logic
-              depends on that contract.
-
+        model: Model used by the grader sub-agent. Accepts either a model
+            string like `"provider:model-id"` or a `BaseChatModel`
+            instance. Required.
+        system_prompt: Custom grading instructions. Defaults to the
+            middleware's built-in grader prompt.
+        tools: Tools the grader may call before producing its
+            `GraderResponse`. Defaults to no tools (pure-LLM grader).
         max_iterations: Hard cap on grader iterations per rubric attempt.
             Defaults to 3, hard-capped at 20. When the cap is reached
             without a `satisfied` verdict, the agent terminates with status
             `'max_iterations_reached'`.
-
         on_evaluation: Optional callback invoked with each `RubricEvaluation`
             after grading.
 
-        backend: Optional backend instance used by `FilesystemMiddleware`
-            and `SkillsMiddleware` when the grader spec includes
-            `permissions` or `skills`. If omitted, the middleware falls
-            back to the deep agent's backend when wired through
-            `create_deep_agent`.
-
     Raises:
-        ValueError: If `max_iterations` is outside `[1, 20]`.
+        ValueError: If `max_iterations` is outside `[1, 20]`, or if `model`
+            is falsy.
         TypeError: If `max_iterations` is not an `int`.
-        RuntimeError: Raised at first grader invocation (not at
-            construction) when no model can be resolved from the grader
-            spec or from the captured main-agent model, or when
-            `skills`/`permissions` are configured but no backend can be
-            resolved.
     """
 
     state_schema = RubricState
@@ -321,11 +265,15 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     def __init__(  # noqa: D107
         self,
         *,
-        grader: SubAgent | None = None,
+        model: str | BaseChatModel,
+        system_prompt: str | None = None,
+        tools: Sequence[BaseTool] | None = None,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,
-        backend: BackendProtocol | BackendFactory | None = None,
     ) -> None:
+        if not model:
+            msg = "RubricMiddleware: `model` is required."
+            raise ValueError(msg)
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
             msg = f"RubricMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
             raise TypeError(msg)
@@ -334,50 +282,13 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             raise ValueError(msg)
 
         self.max_iterations = max_iterations
-        # An empty dict means "use all defaults" (main agent's model, no
-        # tools, default grader prompt). The user can pass a full spec to
-        # override any of these.
-        self._grader_spec: SubAgent = grader if grader is not None else {}  # type: ignore[typeddict-item]
-        self._backend = backend
+        self._model = model
+        self._system_prompt = system_prompt or _GRADER_SYSTEM_PROMPT
+        self._tools: list[BaseTool] = list(tools) if tools else []
         self._on_evaluation = on_evaluation
-        # Populated by `wrap_model_call` the first time the main agent
-        # invokes its model. Used as a fallback when the grader spec omits
-        # `model`. See `_ensure_grader`.
-        self._fallback_model: BaseChatModel | None = None
-        # Populated by `create_deep_agent` when this middleware is part of
-        # its stack, so the grader can default to the deep agent's backend
-        # when the user doesn't pass one explicitly and `skills`/
-        # `permissions` are configured. See graph.py for the injection.
-        self._fallback_backend: BackendProtocol | BackendFactory | None = None
         # Built lazily so importing the middleware doesn't construct a model
-        # client (which can trigger env-var lookups / API key validation),
-        # and so the fallback model captured at runtime is available.
+        # client (which can trigger env-var lookups / API key validation).
         self._grader: Any = None
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        """Capture the deep agent's model so the grader can default to it.
-
-        This hook is otherwise a pass-through -- it does not modify the
-        request or the response. The captured reference is used only when
-        the grader spec omits `model`.
-        """
-        if self._fallback_model is None:
-            self._fallback_model = request.model
-        return handler(request)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
-        """Async variant of `wrap_model_call`. See that method for details."""
-        if self._fallback_model is None:
-            self._fallback_model = request.model
-        return await handler(request)
 
     def before_agent(
         self,
@@ -516,84 +427,16 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if self._grader is not None:
             return self._grader
 
-        # Local imports keep the import-time graph minimal -- in particular,
-        # `resolve_model` / `init_chat_model` can trigger provider lookups, and
-        # `FilesystemMiddleware` / `SkillsMiddleware` are heavier than this
-        # module needs at import time.
-        from langchain.agents.middleware import HumanInTheLoopMiddleware  # noqa: PLC0415
-
+        # Local import keeps the import-time graph minimal -- `resolve_model`
+        # / `init_chat_model` can trigger provider lookups / API key
+        # validation we don't want to pay at module-import time.
         from deepagents._models import resolve_model  # noqa: PLC0415
-        from deepagents.middleware.filesystem import FilesystemMiddleware  # noqa: PLC0415
-        from deepagents.middleware.skills import SkillsMiddleware  # noqa: PLC0415
-
-        spec = self._grader_spec
-
-        # Resolve model: explicit on the spec wins; otherwise fall back to
-        # the main agent's model captured by `wrap_model_call`. If neither
-        # is available we cannot build the grader.
-        raw_model = spec.get("model") or self._fallback_model
-        if raw_model is None:
-            msg = (
-                "RubricMiddleware: no grader model available. Either set "
-                "`grader={'model': ...}` explicitly, or use this middleware "
-                "inside `create_deep_agent` so the main agent's model can "
-                "be captured as the default."
-            )
-            raise RuntimeError(msg)
-
-        # Resolve backend: explicit on the constructor wins; otherwise fall
-        # back to the deep agent's backend injected by `create_deep_agent`.
-        # Only required when `skills` or `permissions` is configured on the
-        # grader spec, since both auto-wire backend-dependent middleware.
-        grader_permissions = spec.get("permissions")
-        grader_skills = spec.get("skills")
-        resolved_backend = self._backend or self._fallback_backend
-        if (grader_permissions is not None or grader_skills) and resolved_backend is None:
-            msg = (
-                "RubricMiddleware: grader spec includes `skills` or "
-                "`permissions`, which require a backend, but none was "
-                "supplied. Either pass `backend=...` to RubricMiddleware "
-                "or use this middleware inside `create_deep_agent` so the "
-                "deep agent's backend can be inherited."
-            )
-            raise RuntimeError(msg)
-
-        middleware: list[AgentMiddleware[Any, Any, Any]] = []
-
-        # NOTE: the permissions and skills wiring below is copied
-        # from the inline-SubAgent branch of `create_deep_agent`
-        # (graph.py:545-560). `resolved_backend` is guaranteed non-None on
-        # both branches by the check above; the assertions reassure the
-        # type checker without changing behavior.
-        if grader_permissions is not None:
-            if resolved_backend is None:  # pragma: no cover - guarded above
-                msg = "internal: backend should be set when permissions are configured"
-                raise RuntimeError(msg)
-            middleware.append(
-                FilesystemMiddleware(
-                    backend=resolved_backend,
-                    _permissions=grader_permissions,
-                )
-            )
-
-        if grader_skills:
-            if resolved_backend is None:  # pragma: no cover - guarded above
-                msg = "internal: backend should be set when skills are configured"
-                raise RuntimeError(msg)
-            middleware.append(SkillsMiddleware(backend=resolved_backend, sources=grader_skills))
-
-        middleware.extend(spec.get("middleware") or [])
-
-        interrupt_on = spec.get("interrupt_on")
-        if interrupt_on:
-            middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
         self._grader = create_agent(
-            model=resolve_model(raw_model),
-            system_prompt=spec.get("system_prompt") or _GRADER_SYSTEM_PROMPT,
-            tools=list(spec.get("tools") or []),
-            middleware=middleware,
-            name=spec.get("name") or RUBRIC_GRADER_MESSAGE_SOURCE,
+            model=resolve_model(self._model),
+            system_prompt=self._system_prompt,
+            tools=self._tools,
+            name=RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
         )
         return self._grader

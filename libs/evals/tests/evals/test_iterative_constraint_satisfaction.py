@@ -2,17 +2,18 @@
 
 Asks a deep agent to produce a paragraph under two simultaneous hard
 constraints: exact word count AND every sentence must start with the
-letter `z`. The agent is wired with `RubricMiddleware`, so a separate
-grader sub-agent evaluates each draft against the rubric and loops the
-main agent back with feedback until the rubric is satisfied (or the
-iteration cap is hit).
+phrase `Zebra protocol`. The agent is wired with `RubricMiddleware`, so
+a separate grader sub-agent evaluates each draft against the rubric and
+loops the main agent back with feedback until the rubric is satisfied
+(or the iteration cap is hit).
 
 The programmatic scorer slides a window across every contiguous span of
 sentences in the final response and passes on the first span that hits
-the exact word count with every sentence starting with `z`. This makes
-the test robust to models that wrap the answer with reasoning, a
-word-count tally, or a self-congratulatory summary line — without having
-to teach the model about the grading strategy.
+the exact word count with every sentence starting with the phrase
+`Zebra protocol` (case-insensitive). This makes the test robust to
+models that wrap the answer with reasoning, a word-count tally, or a
+self-congratulatory summary line — without having to teach the model
+about the grading strategy.
 """
 
 from __future__ import annotations
@@ -50,8 +51,15 @@ def count_words(text: str) -> int:
 pytestmark = [pytest.mark.eval_category("conversation")]
 
 
-# Letters accepted at the start of every sentence (uppercase + lowercase z).
-_START_LETTERS = frozenset("zZ")
+# Phrase every sentence must begin with (case-insensitive match).
+_START_PHRASE = "Zebra protocol"
+_START_PHRASE_LOWER = _START_PHRASE.lower()
+
+
+def _starts_with_phrase(sentence: str) -> bool:
+    """Case-insensitive check that ``sentence`` begins with ``_START_PHRASE``."""
+    return sentence.lower().startswith(_START_PHRASE_LOWER)
+
 
 # Splits text into sentences on any run of sentence-ending punctuation,
 # blank-line paragraph breaks, or a colon directly followed by a newline
@@ -75,20 +83,21 @@ def _sentences(text: str) -> list[str]:
 
 
 def _grade_response(answer: str, target_words: int) -> tuple[bool, list[str]]:
-    """Slide a window of contiguous z-starting sentences and return on first match.
+    """Slide a window of contiguous phrase-starting sentences and return on first match.
 
     The model's final response often wraps the answer paragraph with
-    preamble ("Here you go:"), postamble ("This is 72 words exactly."),
+    preamble ("Here you go:"), postamble ("This is 147 words exactly."),
     or both — sometimes on separate lines, sometimes inline. We can't
     reliably point at "the answer paragraph" up front, so we walk the
-    sentence list and consider every maximal run of consecutive z-starting
-    sentences as a candidate. Within each such run, every contiguous
-    sub-window is checked for an exact `target_words` match; if none hits,
-    we fast-forward past any non-z sentences (preamble, "Word count: 72"
-    interjections, postamble) to the next z-run rather than restarting
-    from each index — that lets the scan recover from noise sitting
-    between the story and the model's commentary without ever accepting a
-    non-z sentence as part of the answer.
+    sentence list and consider every maximal run of consecutive sentences
+    starting with ``_START_PHRASE`` as a candidate. Within each such run,
+    every contiguous sub-window is checked for an exact ``target_words``
+    match; if none hits, we fast-forward past any non-matching sentences
+    (preamble, "Word count: 147" interjections, postamble) to the next
+    qualifying run rather than restarting from each index — that lets the
+    scan recover from noise sitting between the story and the model's
+    commentary without ever accepting a non-matching sentence as part of
+    the answer.
     """
     sentences = _sentences(answer)
     if not sentences:
@@ -96,13 +105,13 @@ def _grade_response(answer: str, target_words: int) -> tuple[bool, list[str]]:
 
     idx = 0
     while idx < len(sentences):
-        # Advance past any non-z sentence (preamble, interjection, postamble).
-        if sentences[idx][0] not in _START_LETTERS:
+        # Advance past any sentence that doesn't begin with the required phrase.
+        if not _starts_with_phrase(sentences[idx]):
             idx += 1
             continue
-        # Find the maximal contiguous z-run starting at idx.
+        # Find the maximal contiguous run of phrase-starting sentences from idx.
         run_end = idx
-        while run_end < len(sentences) and sentences[run_end][0] in _START_LETTERS:
+        while run_end < len(sentences) and _starts_with_phrase(sentences[run_end]):
             run_end += 1
         # Sliding window over (start, end) within this run; early-break
         # whenever the running word count would exceed target_words.
@@ -117,17 +126,18 @@ def _grade_response(answer: str, target_words: int) -> tuple[bool, list[str]]:
         idx = run_end
 
     total_words = sum(len(s.split()) for s in sentences)
-    non_z = sum(1 for s in sentences if s[0] not in _START_LETTERS)
+    non_phrase = sum(1 for s in sentences if not _starts_with_phrase(s))
     return False, [
-        f"no contiguous z-starting span summed to {target_words} words",
-        f"response stats: sentences={len(sentences)}, total_words={total_words}, non-z starts={non_z}",
+        f"no contiguous span starting with {_START_PHRASE!r} summed to {target_words} words",
+        f"response stats: sentences={len(sentences)}, total_words={total_words}, non-phrase starts={non_phrase}",
     ]
 
 
 @dataclass(frozen=True)
-class ExactWordCountAndZStarts(SuccessAssertion):
+class ExactWordCountAndPhraseStarts(SuccessAssertion):
     """At least one paragraph in the response must be exactly ``target_words``
-    long with every sentence beginning with the letter `z` (case-insensitive).
+    long with every sentence beginning with the phrase ``_START_PHRASE``
+    (case-insensitive).
     """
 
     target_words: int
@@ -141,13 +151,17 @@ class ExactWordCountAndZStarts(SuccessAssertion):
         return "no paragraph satisfied both constraints: " + " | ".join(problems)
 
 
-TARGET_WORDS = 72
+TARGET_WORDS = 147
 
 _QUERY = (
-    "Write a story about a bear that's 72 words and has every sentence starting with the letter Z."
+    f"Write a story about a bear that's {TARGET_WORDS} words and has every "
+    'sentence starting with the phrase "Zebra protocol".'
 )
 
-_RUBRIC = """The story must be 72 words and every sentence must start with the letter Z"""
+_RUBRIC = (
+    f"The story must be {TARGET_WORDS} words and every sentence must start "
+    'with the phrase "Zebra protocol".'
+)
 
 
 @pytest.mark.eval_tier("hillclimb")
@@ -166,10 +180,8 @@ def test_exact_word_count_and_z_starts(model: BaseChatModel) -> None:
         model=model,
         middleware=[
             RubricMiddleware(
-                grader={
-                    "model": model,
-                    "tools": [count_words],
-                },
+                model=model,
+                tools=[count_words],
                 max_iterations=5,
             )
         ],
@@ -179,5 +191,5 @@ def test_exact_word_count_and_z_starts(model: BaseChatModel) -> None:
         model=model,
         query=_QUERY,
         extra_state={"rubric": _RUBRIC},
-        scorer=TrajectoryScorer().success(ExactWordCountAndZStarts(target_words=TARGET_WORDS)),
+        scorer=TrajectoryScorer().success(ExactWordCountAndPhraseStarts(target_words=TARGET_WORDS)),
     )

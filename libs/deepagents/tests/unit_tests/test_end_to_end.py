@@ -16,6 +16,7 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.channels.delta import DeltaChannel
@@ -3860,7 +3861,7 @@ class TestRubricMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
         config = {"configurable": {"thread_id": "rubric-e2e-satisfied"}}
@@ -3912,7 +3913,7 @@ class TestRubricMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=5)],
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=5)],
             checkpointer=InMemorySaver(),
         )
         config = {"configurable": {"thread_id": "rubric-e2e-revise"}}
@@ -3971,7 +3972,7 @@ class TestRubricMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=2)],
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=2)],
             checkpointer=InMemorySaver(),
         )
         config = {"configurable": {"thread_id": "rubric-e2e-max"}}
@@ -3995,7 +3996,7 @@ class TestRubricMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
         config = {"configurable": {"thread_id": "rubric-e2e-noop"}}
@@ -4028,7 +4029,7 @@ class TestRubricMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
         config = {"configurable": {"thread_id": "rubric-e2e-interrupt"}}
@@ -4040,21 +4041,16 @@ class TestRubricMiddlewareEndToEnd:
             )
 
     def test_custom_grader_system_prompt_is_honored(self) -> None:
-        """A `system_prompt` on the grader spec replaces the default grader prompt."""
+        """A `system_prompt` kwarg replaces the default grader prompt at the wire."""
         captured_grader_prompts: list[str] = []
 
-        class _CapturingMiddleware(AgentMiddleware):
-            def wrap_model_call(  # type: ignore[override]
-                self,
-                request: ModelRequest,
-                handler: Callable[[ModelRequest], ModelResponse],
-            ) -> ModelResponse:
-                if request.system_message is not None:
-                    captured_grader_prompts.append(str(request.system_message.content))
-                return handler(request)
+        class _CapturingGraderModel(FixedGenericFakeChatModel):
+            def _generate(self, messages: list[Any], *args: Any, **kwargs: Any) -> ChatResult:
+                captured_grader_prompts.extend(str(m.content) for m in messages if isinstance(m, SystemMessage))
+                return super()._generate(messages, *args, **kwargs)
 
         main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
-        grader_model = FixedGenericFakeChatModel(
+        grader_model = _CapturingGraderModel(
             messages=iter(
                 [
                     self._grader_call(
@@ -4071,11 +4067,8 @@ class TestRubricMiddlewareEndToEnd:
             model=main_model,
             middleware=[
                 RubricMiddleware(
-                    grader={
-                        "model": grader_model,
-                        "system_prompt": custom_prompt,
-                        "middleware": [_CapturingMiddleware()],
-                    },
+                    model=grader_model,
+                    system_prompt=custom_prompt,
                     max_iterations=3,
                 )
             ],
@@ -4087,65 +4080,6 @@ class TestRubricMiddlewareEndToEnd:
             config=config,
         )
 
-        # The grader's wrap_model_call middleware should have seen the
-        # custom system prompt on its first request.
-        assert captured_grader_prompts, "expected the grader middleware to capture at least one system prompt"
+        # The custom prompt must reach the grader model as the system message.
+        assert captured_grader_prompts, "expected the grader model to receive at least one system prompt"
         assert "CUSTOM_GRADER_MARKER" in captured_grader_prompts[0]
-
-    def test_grader_model_defaults_to_deep_agent_model(self) -> None:
-        """When the grader spec omits `model`, the grader uses the deep agent's main model."""
-        # The grader_model iterator is what the grader's structured output comes from.
-        # If the grader falls back to the *main* model, the same FixedGenericFakeChatModel
-        # will produce both the main response AND the grader's response — so we have to
-        # feed it both in order.
-        shared_model = FixedGenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(content="main agent draft"),
-                    self._grader_call(
-                        result="satisfied",
-                        explanation="ok",
-                        criteria=[{"name": "any", "passed": True}],
-                        call_id="grader_fallback",
-                    ),
-                ]
-            )
-        )
-
-        agent = create_deep_agent(
-            model=shared_model,
-            middleware=[RubricMiddleware(max_iterations=3)],  # no grader= -> fallback path
-            checkpointer=InMemorySaver(),
-        )
-        config = {"configurable": {"thread_id": "rubric-e2e-model-fallback"}}
-        agent.invoke(
-            {"messages": [HumanMessage(content="do it")], "rubric": "- anything"},
-            config=config,
-        )
-
-        # The grader ran (we got the satisfied verdict) using the main model.
-        state = agent.get_state(config).values
-        assert state["_rubric_status"] == "satisfied"
-        assert state["_rubric_iterations"] == 1
-
-    def test_grader_backend_defaults_to_deep_agent_backend(self) -> None:
-        """When the grader spec has skills/permissions but no explicit backend, the deep agent's backend is used."""
-        # We don't drive the grader to completion here — we just verify that
-        # construction succeeds and that the deep agent's backend ends up
-        # on the RubricMiddleware instance's `_fallback_backend` slot.
-        rubric_mw = RubricMiddleware(
-            grader={"model": "openai:gpt-4o", "skills": ["/skills/grading/"]},
-        )
-        # Before create_deep_agent runs, no fallback backend.
-        assert rubric_mw._fallback_backend is None
-
-        backend = StateBackend()
-        create_deep_agent(
-            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")])),
-            middleware=[rubric_mw],
-            backend=backend,
-        )
-
-        # After create_deep_agent assembles its middleware stack, the deep
-        # agent's backend has been injected onto the rubric middleware.
-        assert rubric_mw._fallback_backend is backend

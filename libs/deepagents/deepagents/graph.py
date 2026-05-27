@@ -42,7 +42,6 @@ from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
-from deepagents.middleware.outcomes import RubricMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
@@ -709,16 +708,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     if middleware:
         deepagent_middleware.extend(middleware)
-    # Inject the deep agent's backend into any user-supplied RubricMiddleware
-    # instances so the grader can default to it when `skills` or
-    # `permissions` are set on the grader spec but no explicit `backend`
-    # was passed to RubricMiddleware. This is parallel to how
-    # RubricMiddleware itself captures the main agent's model via
-    # `wrap_model_call`; the model has a per-call event we can hook, but
-    # the backend does not, so the wiring happens here.
-    for mw in deepagent_middleware:
-        if isinstance(mw, RubricMiddleware):
-            mw._fallback_backend = backend
     # Harness-profile middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.

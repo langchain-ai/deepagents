@@ -9,9 +9,11 @@ import pytest
 
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
+    KNOWN_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
+    extra_for_package,
     format_extras_status,
     format_extras_status_plain,
     get_extras_status,
@@ -135,6 +137,28 @@ def test_skips_entries_without_extra_marker() -> None:
     assert extras == {"foo": [("gated-pkg", "1.2.3")]}
 
 
+def test_extra_for_package_returns_declaring_known_extra() -> None:
+    """Package lookup should use declared extras instead of provider-name guesses."""
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
+        "deepagents-code[anthropic,baseten] ; extra == 'all-providers'",
+    ]
+
+    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
+        assert extra_for_package("langchain-google-vertexai") == "vertex"
+
+
+def test_extra_for_package_returns_none_for_unknown_package() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
+    ]
+
+    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
+        assert extra_for_package("not-declared") is None
+
+
 def test_skips_composite_self_referencing_extras() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
@@ -223,6 +247,17 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     )
 
 
+def test_known_extras_is_union_of_categories() -> None:
+    """`KNOWN_EXTRAS` must be the union of the three category frozensets.
+
+    `dcode --install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
+    to decide whether to prompt for confirmation on unknown values, so this
+    set has to stay aligned with the taxonomy or callers will see spurious
+    prompts for real extras.
+    """
+    assert KNOWN_EXTRAS == (MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS)
+
+
 def test_extras_categories_are_disjoint() -> None:
     """An extra can only be classified in one taxonomy set."""
     pairs = (
@@ -239,7 +274,7 @@ def test_verify_interpreter_deps_raises_when_module_missing() -> None:
         patch(
             "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
         ),
-        pytest.raises(ImportError, match="deepagents-code\\[quickjs\\]"),
+        pytest.raises(ImportError, match="dcode --install quickjs"),
     ):
         verify_interpreter_deps()
 

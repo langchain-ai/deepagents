@@ -18,6 +18,7 @@ from importlib.metadata import (
 )
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "openrouter",
         "perplexity",
         "together",
-        "vertexai",
+        "vertex",
         "xai",
     }
 )
@@ -69,6 +70,18 @@ STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
 These integrations layer onto the main agent (e.g. a JS REPL via
 `langchain-quickjs`) and aren't grouped under `all-providers` or
 `all-sandboxes`.
+"""
+
+KNOWN_EXTRAS: frozenset[str] = (
+    MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+)
+"""Union of all individually-installable extras.
+
+Excludes the composite meta-extras (`all-providers`, `all-sandboxes`) since
+those expand to other extras and don't add anything on their own.
+Drift-protected by `test_model_config.TestProviderApiKeyEnv` and the
+model-provider-drift checks; new extras must be added to the corresponding
+category frozenset above.
 """
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
@@ -202,6 +215,58 @@ def get_optional_dependency_status(
     )
 
 
+def extra_for_package(
+    package: str,
+    distribution_name: str = "deepagents-code",
+) -> str | None:
+    """Return the installable extra that declares a package.
+
+    Resolves recovery hints from the package that is actually missing
+    instead of guessing from a provider identifier. For example,
+    `langchain-google-vertexai` maps to the `vertex` extra even though the
+    provider id is `google_vertexai`.
+
+    Args:
+        package: Distribution package name to find in optional dependencies.
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        The known extra name that declares `package`, or `None` when the
+            package is not declared by an individually-installable extra,
+            or when the distribution's metadata could not be read (logged
+            at `warning` level — callers should treat both cases the same
+            since the right fallback in either is `install_package_command`).
+    """
+    try:
+        dist = distribution(distribution_name)
+    except PackageNotFoundError:
+        logger.warning(
+            "Distribution %s not found; cannot resolve extra for package %s",
+            distribution_name,
+            package,
+        )
+        return None
+
+    own_name = canonicalize_name(distribution_name)
+    target = canonicalize_name(package)
+    for raw in dist.requires or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            logger.warning("Could not parse Requires-Dist entry: %s", raw)
+            continue
+        if canonicalize_name(req.name) != target:
+            continue
+        if canonicalize_name(req.name) == own_name:
+            continue
+        if not req.marker:
+            continue
+        extra = _extract_extra_name(str(req.marker))
+        if extra in KNOWN_EXTRAS:
+            return extra
+    return None
+
+
 def verify_interpreter_deps() -> None:
     """Check that `langchain-quickjs` is installed for the `--interpreter` flag.
 
@@ -227,7 +292,7 @@ def verify_interpreter_deps() -> None:
     if not found:
         msg = (
             "Missing dependencies for --interpreter. "
-            "Install with: pip install 'deepagents-code[quickjs]'"
+            "Install with: dcode --install quickjs"
         )
         raise ImportError(msg)
 

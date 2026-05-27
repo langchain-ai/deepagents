@@ -5370,8 +5370,7 @@ class TestDeferredActions:
             app._connecting = True
 
             error = MissingProviderPackageError(
-                "Missing package for provider 'fireworks'. "
-                "Install: pip install langchain-fireworks",
+                "Missing package for provider 'fireworks'. Install: /install fireworks",
                 provider="fireworks",
                 package="langchain-fireworks",
             )
@@ -5391,14 +5390,87 @@ class TestDeferredActions:
             widget = app._startup_failure_widget
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
-            assert "pip install langchain-fireworks" in rendered
+            # `fireworks` is a known extra → /install hint, not the raw uv form.
+            assert "/install fireworks" in rendered
             assert "/model fireworks:<model>" in rendered
+
+    async def test_server_failure_missing_vertexai_package_uses_declared_extra(
+        self,
+    ) -> None:
+        """Startup hint should resolve extras from missing packages."""
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "google_vertexai:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'google_vertexai'. "
+                "Install: /install vertex",
+                provider="google_vertexai",
+                package="langchain-google-vertexai",
+            )
+            with patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value="vertex",
+            ) as mock_extra_for_package:
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "/install vertex" in rendered
+            assert "/install google-vertexai" not in rendered
+            assert "/model google_vertexai:<model>" in rendered
+
+    async def test_server_failure_missing_unknown_package_shows_uv_command(
+        self,
+    ) -> None:
+        """Manual fallback should include the default uv tool command."""
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "custom_provider:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'custom_provider'.",
+                provider="custom_provider",
+                package="langchain-custom_provider",
+            )
+            with patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value=None,
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert (
+                "uv tool install -U deepagents-code --with langchain-custom_provider"
+                in rendered
+            )
+            assert "/model custom_provider:<model>" in rendered
 
     async def test_retry_startup_clears_missing_package_slot(self) -> None:
         """`_retry_startup_with_model` must clear the package recovery slot.
 
         Mirrors the credentials-slot reset directly above it. A regression
-        that drops the reset would leave a stale `pip install` hint visible
+        that drops the reset would leave a stale `/install` hint visible
         after a successful retry, or render the wrong hint on the next failure.
         """
         from deepagents_code.model_config import (
@@ -6394,7 +6466,9 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
             NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),
             NotificationAction(ActionId.SKIP_VERSION, "Skip this version"),
         ),
-        payload=UpdateAvailablePayload(latest=latest, upgrade_cmd="pip install"),
+        payload=UpdateAvailablePayload(
+            latest=latest, upgrade_cmd="uv tool upgrade deepagents-code"
+        ),
     )
 
 
@@ -6407,7 +6481,7 @@ def test_build_update_notification_uses_release_and_installed_age_copy() -> None
         cli_version="1.0.0",
         release_age=" (released 3d ago)",
         installed_age=" (8 days old)",
-        upgrade_cmd="pip install",
+        upgrade_cmd="uv tool upgrade deepagents-code",
     )
 
     assert notification.body == (
@@ -7289,7 +7363,7 @@ class TestNotificationCenterIntegration:
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
-                return_value="pip install -U deepagents-code",
+                return_value="uv tool upgrade deepagents-code",
             ),
         ):
             async with app.run_test() as pilot:
@@ -7338,7 +7412,7 @@ class TestNotificationCenterIntegration:
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
-                return_value="pip install -U deepagents-code",
+                return_value="uv tool upgrade deepagents-code",
             ),
         ):
             async with app.run_test() as pilot:

@@ -30,7 +30,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemPermission
-from deepagents.middleware.outcomes import OUTCOME_GRADER_MESSAGE_SOURCE, OutcomeMiddleware
+from deepagents.middleware.outcomes import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
@@ -3801,8 +3801,8 @@ def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
 
 
-class TestOutcomeMiddlewareEndToEnd:
-    """End-to-end tests for `OutcomeMiddleware` wired into `create_deep_agent`.
+class TestRubricMiddlewareEndToEnd:
+    """End-to-end tests for `RubricMiddleware` wired into `create_deep_agent`.
 
     Both the main agent and the grader sub-agent are driven by
     `FixedGenericFakeChatModel` instances. The grader's `response_format` is
@@ -3810,8 +3810,8 @@ class TestOutcomeMiddlewareEndToEnd:
     `AutoStrategy -> ToolStrategy(GraderResponse)`, so a fake grader emits a
     `GraderResponse` tool call to deliver its verdict.
 
-    `OutcomeMiddleware`'s bookkeeping fields (`_outcome_status`,
-    `_outcome_iterations`, `_outcome_evaluations`) are
+    `RubricMiddleware`'s bookkeeping fields (`_rubric_status`,
+    `_rubric_iterations`, `_rubric_evaluations`) are
     `PrivateStateAttr`-annotated and not part of the I/O schema, so these
     tests use an `InMemorySaver` and read final values via
     `agent.get_state(config).values`.
@@ -3860,10 +3860,10 @@ class TestOutcomeMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[OutcomeMiddleware(model=grader_model, max_iterations=3)],
+            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
-        config = {"configurable": {"thread_id": "outcome-e2e-satisfied"}}
+        config = {"configurable": {"thread_id": "rubric-e2e-satisfied"}}
         result = agent.invoke(
             {"messages": [HumanMessage(content="do it")], "rubric": "- The thing is built"},
             config=config,
@@ -3872,12 +3872,12 @@ class TestOutcomeMiddlewareEndToEnd:
         # Only the original user message and the model's draft survive — no
         # synthetic revision turn was injected.
         assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
-        assert not any(m.additional_kwargs.get("lc_source") == OUTCOME_GRADER_MESSAGE_SOURCE for m in result["messages"])
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
 
         state = agent.get_state(config).values
-        assert state["_outcome_status"] == "satisfied"
-        assert state["_outcome_iterations"] == 1
-        evals = state["_outcome_evaluations"]
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 1
+        evals = state["_rubric_evaluations"]
         assert len(evals) == 1
         assert evals[0]["result"] == "satisfied"
         assert evals[0]["criteria"] == [{"name": "built", "passed": True}]
@@ -3912,20 +3912,20 @@ class TestOutcomeMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[OutcomeMiddleware(model=grader_model, max_iterations=5)],
+            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=5)],
             checkpointer=InMemorySaver(),
         )
-        config = {"configurable": {"thread_id": "outcome-e2e-revise"}}
+        config = {"configurable": {"thread_id": "rubric-e2e-revise"}}
         result = agent.invoke(
             {"messages": [HumanMessage(content="do it")], "rubric": "- tests pass"},
             config=config,
         )
 
         # The grader-injected revision message must appear between the two
-        # AIMessage attempts and carry the `outcome_grader` source tag.
-        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == OUTCOME_GRADER_MESSAGE_SOURCE]
+        # AIMessage attempts and carry the `rubric_grader` source tag.
+        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
         assert len(injected) == 1
-        assert injected[0].name == OUTCOME_GRADER_MESSAGE_SOURCE
+        assert injected[0].name == RUBRIC_GRADER_MESSAGE_SOURCE
         assert "add tests" in injected[0].content
         assert "no tests" in injected[0].content
 
@@ -3935,9 +3935,9 @@ class TestOutcomeMiddlewareEndToEnd:
         assert "second attempt with fix" in ai_contents
 
         state = agent.get_state(config).values
-        assert state["_outcome_status"] == "satisfied"
-        assert state["_outcome_iterations"] == 2
-        results = [e["result"] for e in state["_outcome_evaluations"]]
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 2
+        results = [e["result"] for e in state["_rubric_evaluations"]]
         assert results == ["needs_revision", "satisfied"]
 
     def test_max_iterations_reached(self) -> None:
@@ -3971,20 +3971,20 @@ class TestOutcomeMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[OutcomeMiddleware(model=grader_model, max_iterations=2)],
+            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=2)],
             checkpointer=InMemorySaver(),
         )
-        config = {"configurable": {"thread_id": "outcome-e2e-max"}}
+        config = {"configurable": {"thread_id": "rubric-e2e-max"}}
         agent.invoke(
             {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
             config=config,
         )
 
         state = agent.get_state(config).values
-        assert state["_outcome_status"] == "max_iterations_reached"
-        assert state["_outcome_iterations"] == 2
-        assert len(state["_outcome_evaluations"]) == 2
-        assert all(e["result"] == "needs_revision" for e in state["_outcome_evaluations"])
+        assert state["_rubric_status"] == "max_iterations_reached"
+        assert state["_rubric_iterations"] == 2
+        assert len(state["_rubric_evaluations"]) == 2
+        assert all(e["result"] == "needs_revision" for e in state["_rubric_evaluations"])
 
     def test_no_rubric_is_noop(self) -> None:
         """Without a rubric on invocation state the middleware does not call the grader."""
@@ -3995,20 +3995,20 @@ class TestOutcomeMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[OutcomeMiddleware(model=grader_model, max_iterations=3)],
+            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
-        config = {"configurable": {"thread_id": "outcome-e2e-noop"}}
+        config = {"configurable": {"thread_id": "rubric-e2e-noop"}}
         result = agent.invoke({"messages": [HumanMessage(content="say hi")]}, config=config)
 
         # Plain conversation: user prompt + single AI reply, no grader turns.
         assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
-        assert not any(m.additional_kwargs.get("lc_source") == OUTCOME_GRADER_MESSAGE_SOURCE for m in result["messages"])
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
 
         state = agent.get_state(config).values
-        assert state.get("_outcome_status") is None
-        assert state.get("_outcome_iterations", 0) == 0
-        assert state.get("_outcome_evaluations", []) == []
+        assert state.get("_rubric_status") is None
+        assert state.get("_rubric_iterations", 0) == 0
+        assert state.get("_rubric_evaluations", []) == []
 
     def test_keyboard_interrupt_in_grader_propagates(self) -> None:
         """A `KeyboardInterrupt` raised during grading bubbles out of `agent.invoke()`.
@@ -4028,13 +4028,124 @@ class TestOutcomeMiddlewareEndToEnd:
 
         agent = create_deep_agent(
             model=main_model,
-            middleware=[OutcomeMiddleware(model=grader_model, max_iterations=3)],
+            middleware=[RubricMiddleware(grader={"model": grader_model}, max_iterations=3)],
             checkpointer=InMemorySaver(),
         )
-        config = {"configurable": {"thread_id": "outcome-e2e-interrupt"}}
+        config = {"configurable": {"thread_id": "rubric-e2e-interrupt"}}
 
         with pytest.raises(KeyboardInterrupt, match="simulated Ctrl"):
             agent.invoke(
                 {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
                 config=config,
             )
+
+    def test_custom_grader_system_prompt_is_honored(self) -> None:
+        """A `system_prompt` on the grader spec replaces the default grader prompt."""
+        captured_grader_prompts: list[str] = []
+
+        class _CapturingMiddleware(AgentMiddleware):
+            def wrap_model_call(  # type: ignore[override]
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                if request.system_message is not None:
+                    captured_grader_prompts.append(str(request.system_message.content))
+                return handler(request)
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok",
+                        call_id="grader_1",
+                    )
+                ]
+            )
+        )
+
+        custom_prompt = "CUSTOM_GRADER_MARKER: be extremely strict about every criterion."
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[
+                RubricMiddleware(
+                    grader={
+                        "model": grader_model,
+                        "system_prompt": custom_prompt,
+                        "middleware": [_CapturingMiddleware()],
+                    },
+                    max_iterations=3,
+                )
+            ],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-custom-prompt"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- whatever"},
+            config=config,
+        )
+
+        # The grader's wrap_model_call middleware should have seen the
+        # custom system prompt on its first request.
+        assert captured_grader_prompts, "expected the grader middleware to capture at least one system prompt"
+        assert "CUSTOM_GRADER_MARKER" in captured_grader_prompts[0]
+
+    def test_grader_model_defaults_to_deep_agent_model(self) -> None:
+        """When the grader spec omits `model`, the grader uses the deep agent's main model."""
+        # The grader_model iterator is what the grader's structured output comes from.
+        # If the grader falls back to the *main* model, the same FixedGenericFakeChatModel
+        # will produce both the main response AND the grader's response — so we have to
+        # feed it both in order.
+        shared_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="main agent draft"),
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok",
+                        criteria=[{"name": "any", "passed": True}],
+                        call_id="grader_fallback",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=shared_model,
+            middleware=[RubricMiddleware(max_iterations=3)],  # no grader= -> fallback path
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-model-fallback"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- anything"},
+            config=config,
+        )
+
+        # The grader ran (we got the satisfied verdict) using the main model.
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 1
+
+    def test_grader_backend_defaults_to_deep_agent_backend(self) -> None:
+        """When the grader spec has skills/permissions but no explicit backend, the deep agent's backend is used."""
+        # We don't drive the grader to completion here — we just verify that
+        # construction succeeds and that the deep agent's backend ends up
+        # on the RubricMiddleware instance's `_fallback_backend` slot.
+        rubric_mw = RubricMiddleware(
+            grader={"model": "openai:gpt-4o", "skills": ["/skills/grading/"]},
+        )
+        # Before create_deep_agent runs, no fallback backend.
+        assert rubric_mw._fallback_backend is None
+
+        backend = StateBackend()
+        create_deep_agent(
+            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")])),
+            middleware=[rubric_mw],
+            backend=backend,
+        )
+
+        # After create_deep_agent assembles its middleware stack, the deep
+        # agent's backend has been injected onto the rubric middleware.
+        assert rubric_mw._fallback_backend is backend

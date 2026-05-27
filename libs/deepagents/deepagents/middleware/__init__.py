@@ -51,13 +51,13 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.outcomes import (
-    OUTCOME_GRADER_MESSAGE_SOURCE,
+    RUBRIC_GRADER_MESSAGE_SOURCE,
     CriterionEval,
     GraderResponse,
-    OutcomeEvaluation,
-    OutcomeMiddleware,
-    OutcomeResult,
-    OutcomeState,
+    RubricEvaluation,
+    RubricMiddleware,
+    RubricResult,
+    RubricState,
 )
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -68,7 +68,7 @@ from deepagents.middleware.summarization import (
 )
 
 __all__ = [
-    "OUTCOME_GRADER_MESSAGE_SOURCE",
+    "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
@@ -77,10 +77,10 @@ __all__ = [
     "FilesystemPermission",
     "GraderResponse",
     "MemoryMiddleware",
-    "OutcomeEvaluation",
-    "OutcomeMiddleware",
-    "OutcomeResult",
-    "OutcomeState",
+    "RubricEvaluation",
+    "RubricMiddleware",
+    "RubricResult",
+    "RubricState",
     "SkillsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",

@@ -1,7 +1,7 @@
-"""Outcome middleware for self-evaluated agent iteration.
+"""Rubric middleware for self-evaluated agent iteration.
 
-`OutcomeMiddleware` lets a caller declare *what done looks like* via a
-markdown rubric. After each natural agent stop the middleware invokes a
+`RubricMiddleware` lets a caller declare *what done looks like* via a
+rubric. After each natural agent stop the middleware invokes a
 separate grader sub-agent; if the grader returns `needs_revision`, the
 deepagent is looped back to the model with the grader's feedback injected
 as a `HumanMessage`. The loop terminates on `satisfied`, on
@@ -31,7 +31,11 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
+    ModelRequest,
+    ModelResponse,
     PrivateStateAttr,
+    ResponseT,
     hook_config,
 )
 from langchain_core._api import beta
@@ -45,16 +49,18 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
+
+    from deepagents.backends.protocol import BackendFactory, BackendProtocol
+    from deepagents.middleware.subagents import SubAgent
 
 logger = logging.getLogger(__name__)
 
 
-OutcomeResult = Literal[
+RubricResult = Literal[
     "satisfied",
     "needs_revision",
     "max_iterations_reached",
@@ -76,15 +82,15 @@ _MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 4_000
 _MAX_ITERATIONS_HARD_CAP = 20
 """Hard upper bound for `max_iterations`."""
 
-OUTCOME_GRADER_MESSAGE_SOURCE = "outcome_grader"
+RUBRIC_GRADER_MESSAGE_SOURCE = "rubric_grader"
 """Tag stored on synthetic revision messages this middleware injects.
 
 The revision message is injected as a `HumanMessage` (the role the model
 follows most reliably), but it carries:
 
-- `name="outcome_grader"` -- visible at the wire on providers that round-trip
+- `name="rubric_grader"` -- visible at the wire on providers that round-trip
   the `name` field; ignored elsewhere.
-- `additional_kwargs={"lc_source": OUTCOME_GRADER_MESSAGE_SOURCE}` -- visible
+- `additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE}` -- visible
   to in-process consumers (evals, UIs, observability) so they can attribute
   the turn to the grader instead of treating it as a real user message.
 
@@ -120,7 +126,7 @@ Be conservative: every criterion you cannot positively confirm should be \
 marked failed with a `gap` describing what evidence would be needed."""
 
 
-class CriterionEval(TypedDict, total=False):
+class CriterionEval(TypedDict):
     """Per-criterion grader verdict.
 
     Attributes:
@@ -132,60 +138,65 @@ class CriterionEval(TypedDict, total=False):
 
     name: str
     passed: bool
-    gap: str
+    gap: NotRequired[str]
 
 
-class OutcomeEvaluation(TypedDict, total=False):
-    """One grader evaluation, appended to `_outcome_evaluations` each iteration.
+class RubricEvaluation(TypedDict):
+    """One grader evaluation, appended to `_rubric_evaluations` each iteration.
+
+    Consumers can read any field without guarding against absence since all fields are always populated by `_build_evaluation` and
+    `_handle_grader_exception`.
 
     Attributes:
-        outcome_id: Identifier shared by all evaluations for a single outcome
+        rubric_id: Identifier shared by all evaluations for a single rubric
             attempt. Resets when the caller supplies a new rubric.
-        iteration: Zero-based index within the current outcome attempt.
+        iteration: Zero-based index within the current rubric attempt.
         result: The grader's terminal verdict for this iteration.
         explanation: Free-form summary of the verdict, from the grader.
         criteria: Per-criterion verdicts.
     """
 
-    outcome_id: str
+    rubric_id: str
     iteration: int
-    result: OutcomeResult
+    result: RubricResult
     explanation: str
     criteria: list[CriterionEval]
 
 
-class OutcomeState(AgentState):
-    """State schema for `OutcomeMiddleware`.
+class RubricState(AgentState):
+    """State schema for `RubricMiddleware`.
 
     Only `rubric` is part of the public I/O schema -- callers write a
     rubric and read the improved agent response back from `messages`.
 
     Everything else is bookkeeping: status, iteration count, accumulated
-    evaluations, and outcome-attempt tracking are annotated with
+    evaluations, and rubric-attempt tracking are annotated with
     [`PrivateStateAttr`][langchain.agents.middleware.types.PrivateStateAttr]
     so they are omitted from input/output schemas. Tests, evals, and
     observability consumers can still reach them via the `on_evaluation`
-    callback, the `outcome_evaluation_*` stream events, or
+    callback, the `rubric_evaluation_*` stream events, or
     `agent.get_state(config).values` on a checkpointed thread.
     """
 
     rubric: NotRequired[str]
     """Caller-supplied rubric describing what `done` looks like."""
 
-    _outcome_status: NotRequired[Annotated[OutcomeResult, PrivateStateAttr]]
-    """The most recent terminal status. Private; not in I/O schema."""
+    _rubric_status: NotRequired[Annotated[RubricResult | None, PrivateStateAttr]]
+    """The most recent terminal status, or `None` after a fresh rubric
+    attempt is started but before the first grader call. Private; not in
+    I/O schema."""
 
-    _outcome_iterations: NotRequired[Annotated[int, PrivateStateAttr]]
-    """Grader evaluations performed for the current outcome. Private; not in I/O schema."""
+    _rubric_iterations: NotRequired[Annotated[int, PrivateStateAttr]]
+    """Grader evaluations performed for the current rubric. Private; not in I/O schema."""
 
-    _outcome_evaluations: NotRequired[Annotated[list[OutcomeEvaluation], PrivateStateAttr]]
-    """Accumulated grader evaluations across outcomes. Private; not in I/O schema."""
+    _rubric_evaluations: NotRequired[Annotated[list[RubricEvaluation], PrivateStateAttr]]
+    """Accumulated grader evaluations across rubrics. Private; not in I/O schema."""
 
-    _current_outcome_id: NotRequired[Annotated[str, PrivateStateAttr]]
-    """Tracking id for the active outcome attempt. Private; not in I/O schema."""
+    _current_rubric_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    """Tracking id for the active rubric attempt. Private; not in I/O schema."""
 
     _active_rubric: NotRequired[Annotated[str, PrivateStateAttr]]
-    """The rubric that minted `_current_outcome_id`. Private; not in I/O schema."""
+    """The rubric that minted `_current_rubric_id`. Private; not in I/O schema."""
 
 
 _GRADER_RESULT_DESCRIPTION = (
@@ -219,7 +230,7 @@ class GraderResponse(BaseModel):
 
 
 @beta()
-class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
+class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
 
     The middleware activates only when a caller passes a `rubric` on
@@ -227,73 +238,153 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     return without modifying state, so the middleware is safe to include
     unconditionally in a `create_deep_agent` stack.
 
+    The grader sub-agent inherits defaults from the surrounding deep agent
+    when the user does not supply them explicitly:
+
+    - **Model**: if `grader` omits `model`, the middleware uses the deep
+      agent's main model (captured the first time `wrap_model_call` fires).
+      This mirrors how `create_deep_agent` falls back to the main model for
+      sub-agents that omit their own `model`.
+    - **Backend**: if `grader` includes `skills` or `permissions` and the
+      caller does not pass a `backend`, the middleware uses the deep agent's
+      backend (injected by `create_deep_agent` when this middleware is part
+      of its stack). If no backend is available from either source, the
+      grader raises `RuntimeError` at first invocation.
+
     Args:
-        max_iterations: Hard cap on grader iterations per outcome. Defaults
-            to 3, hard-capped at 20.
-            When the cap is reached without a `satisfied` verdict, the
-            agent terminates with status `'max_iterations_reached'`.
+        grader: Optional `SubAgent` spec describing the grader sub-agent.
+            When omitted, the grader runs with the deep agent's main model,
+            no tools, and the default grader prompt.
 
-        model: Model used by the grader sub-agent. Required. Accepts the
-            same forms as `create_agent`'s `model` parameter (either a
-            model string like `"provider:model-id"` or a `BaseChatModel`
-            instance). Callers must specify this explicitly so the choice
-            of grader is recorded in code and cannot silently rot when a
-            default model is deprecated.
+            Fields honored by the middleware:
 
-        grader_tools: Tools the grader sub-agent may call before producing
-            its `GraderResponse`. Defaults to no tools (pure-LLM grader).
-            Pass tools (e.g. a shell runner or filesystem reader) to enable
-            script-based grading; the grader can interleave tool
-            calls with its final structured response.
+            - `model`: The model used by the grader. Accepts either a model
+              string like `"provider:model-id"` or a `BaseChatModel` instance.
+              If omitted, falls back to the deep agent's main model.
+            - `name`: Trace label for the grader sub-agent. Defaults to
+              `"rubric_grader"`.
+            - `system_prompt`: Custom grading instructions. Defaults to the
+              middleware's built-in grader prompt if omitted.
+            - `tools`: Tools the grader may call before producing its
+              `GraderResponse`. Defaults to no tools (pure-LLM grader).
+            - `middleware`: Additional middleware applied to the grader
+              sub-agent (e.g. rate limiting, logging).
+            - `interrupt_on`: Human-in-the-loop configuration; auto-wires
+              `HumanInTheLoopMiddleware` for the grader.
+            - `skills`: Skill sources for the grader; auto-wires
+              `SkillsMiddleware`. Requires a backend (from the `backend`
+              argument or from the surrounding `create_deep_agent`).
+            - `permissions`: Filesystem permission rules for the grader;
+              auto-wires `FilesystemMiddleware`. Requires a backend (same
+              sources as `skills`).
 
-        on_evaluation: Optional callback invoked with each `OutcomeEvaluation`
+            Fields not used by this middleware:
+
+            - `description`: Used by the deepagents `task` tool to advertise
+              sub-agents; the grader is invoked internally, not delegated to,
+              so this field has no destination here.
+            - `response_format`: The grader's response format is always
+              `GraderResponse` because the middleware's downstream logic
+              depends on that contract.
+
+        max_iterations: Hard cap on grader iterations per rubric attempt.
+            Defaults to 3, hard-capped at 20. When the cap is reached
+            without a `satisfied` verdict, the agent terminates with status
+            `'max_iterations_reached'`.
+
+        on_evaluation: Optional callback invoked with each `RubricEvaluation`
             after grading.
 
+        backend: Optional backend instance used by `FilesystemMiddleware`
+            and `SkillsMiddleware` when the grader spec includes
+            `permissions` or `skills`. If omitted, the middleware falls
+            back to the deep agent's backend when wired through
+            `create_deep_agent`.
+
     Raises:
-        ValueError: If `model` is missing/empty or `max_iterations` is
-            outside `[1, 20]`.
+        ValueError: If `max_iterations` is outside `[1, 20]`.
+        TypeError: If `max_iterations` is not an `int`.
+        RuntimeError: Raised at first grader invocation (not at
+            construction) when no model can be resolved from the grader
+            spec or from the captured main-agent model, or when
+            `skills`/`permissions` are configured but no backend can be
+            resolved.
     """
 
-    state_schema = OutcomeState
+    state_schema = RubricState
 
     def __init__(  # noqa: D107
         self,
         *,
-        model: str | BaseChatModel,
+        grader: SubAgent | None = None,
         max_iterations: int = 3,
-        grader_tools: Sequence[BaseTool] = (),
-        on_evaluation: Callable[[OutcomeEvaluation], None] | None = None,
+        on_evaluation: Callable[[RubricEvaluation], None] | None = None,
+        backend: BackendProtocol | BackendFactory | None = None,
     ) -> None:
-        # Fail-fast on configuration. Matches the FilesystemMiddleware pattern.
-        if not model:
-            msg = "OutcomeMiddleware: `model` is required. Pass a model string like 'provider:model-id' or a BaseChatModel instance."
-            raise ValueError(msg)
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
-            msg = f"OutcomeMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
+            msg = f"RubricMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
             raise TypeError(msg)
         if not 1 <= max_iterations <= _MAX_ITERATIONS_HARD_CAP:
-            msg = f"OutcomeMiddleware: `max_iterations` must be in [1, {_MAX_ITERATIONS_HARD_CAP}], got {max_iterations}."
+            msg = f"RubricMiddleware: `max_iterations` must be in [1, {_MAX_ITERATIONS_HARD_CAP}], got {max_iterations}."
             raise ValueError(msg)
 
         self.max_iterations = max_iterations
-        self._model = model
-        self._grader_tools = tuple(grader_tools)
+        # An empty dict means "use all defaults" (main agent's model, no
+        # tools, default grader prompt). The user can pass a full spec to
+        # override any of these.
+        self._grader_spec: SubAgent = grader if grader is not None else {}  # type: ignore[typeddict-item]
+        self._backend = backend
         self._on_evaluation = on_evaluation
+        # Populated by `wrap_model_call` the first time the main agent
+        # invokes its model. Used as a fallback when the grader spec omits
+        # `model`. See `_ensure_grader`.
+        self._fallback_model: BaseChatModel | None = None
+        # Populated by `create_deep_agent` when this middleware is part of
+        # its stack, so the grader can default to the deep agent's backend
+        # when the user doesn't pass one explicitly and `skills`/
+        # `permissions` are configured. See graph.py for the injection.
+        self._fallback_backend: BackendProtocol | BackendFactory | None = None
         # Built lazily so importing the middleware doesn't construct a model
-        # client (which can trigger env-var lookups / API key validation).
+        # client (which can trigger env-var lookups / API key validation),
+        # and so the fallback model captured at runtime is available.
         self._grader: Any = None
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        """Capture the deep agent's model so the grader can default to it.
+
+        This hook is otherwise a pass-through -- it does not modify the
+        request or the response. The captured reference is used only when
+        the grader spec omits `model`.
+        """
+        if self._fallback_model is None:
+            self._fallback_model = request.model
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
+        """Async variant of `wrap_model_call`. See that method for details."""
+        if self._fallback_model is None:
+            self._fallback_model = request.model
+        return await handler(request)
 
     def before_agent(
         self,
-        state: OutcomeState,
-        runtime: Runtime[Any],  # noqa: ARG002
+        state: RubricState,
+        runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Detect a new outcome attempt and reset iteration bookkeeping.
+        """Detect a new rubric attempt and reset iteration bookkeeping.
 
-        A "new outcome" is when the supplied `rubric` differs from
+        A "new rubric" is when the supplied `rubric` differs from
         `_active_rubric` (or no `_active_rubric` is set yet). In that case
-        we mint a fresh `_current_outcome_id`, reset `_outcome_iterations`
-        to 0, and clear `_outcome_status` so a new attempt starts fresh.
+        we mint a fresh `_current_rubric_id`, reset `_rubric_iterations`
+        to 0, and clear `_rubric_status` so a new attempt starts fresh.
 
         If `rubric` is unset the middleware is a no-op for this run.
 
@@ -308,32 +399,32 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
 
     async def abefore_agent(
         self,
-        state: OutcomeState,
-        runtime: Runtime[Any],  # noqa: ARG002
+        state: RubricState,
+        runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent`. See that method for details."""
         return self._reset_for_new_rubric(state)
 
-    def _reset_for_new_rubric(self, state: OutcomeState) -> dict[str, Any] | None:
+    def _reset_for_new_rubric(self, state: RubricState) -> dict[str, Any] | None:
         rubric = state.get("rubric")
         if not rubric:
             # No rubric ever supplied -> middleware is a no-op for this run.
             return None
         if state.get("_active_rubric") == rubric:
-            # Sticky rubric / follow-up turn on the same outcome.
+            # Sticky rubric / follow-up turn on the same rubric attempt.
             return None
         return {
-            "_outcome_iterations": 0,
-            "_outcome_status": None,
-            "_current_outcome_id": str(uuid.uuid4()),
+            "_rubric_iterations": 0,
+            "_rubric_status": None,
+            "_current_rubric_id": str(uuid.uuid4()),
             "_active_rubric": rubric,
         }
 
     @hook_config(can_jump_to=["model"])
     def after_agent(
         self,
-        state: OutcomeState,
-        runtime: Runtime[Any],
+        state: RubricState,
+        runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
         """Grade the transcript and decide whether to loop back to the model.
 
@@ -349,56 +440,56 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         prep = self._prepare_evaluation(state, runtime)
         if prep is None:
             return None
-        outcome_id, iteration = prep
+        rubric_id, iteration = prep
 
         try:
             graded = self._grade(state, iteration)
         except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(runtime, state, outcome_id, iteration, exc)
+            return self._handle_grader_exception(runtime, state, rubric_id, iteration, exc)
 
-        return self._finalize_evaluation(graded, state, runtime, outcome_id, iteration)
+        return self._finalize_evaluation(graded, state, runtime, rubric_id, iteration)
 
     async def aafter_agent(
         self,
-        state: OutcomeState,
-        runtime: Runtime[Any],
+        state: RubricState,
+        runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent`. See that method for details."""
         prep = self._prepare_evaluation(state, runtime)
         if prep is None:
             return None
-        outcome_id, iteration = prep
+        rubric_id, iteration = prep
 
         try:
             graded = await self._agrade(state, iteration)
         except Exception as exc:  # noqa: BLE001
-            return self._handle_grader_exception(runtime, state, outcome_id, iteration, exc)
+            return self._handle_grader_exception(runtime, state, rubric_id, iteration, exc)
 
-        return self._finalize_evaluation(graded, state, runtime, outcome_id, iteration)
+        return self._finalize_evaluation(graded, state, runtime, rubric_id, iteration)
 
     def _prepare_evaluation(
         self,
-        state: OutcomeState,
-        runtime: Runtime[Any],
+        state: RubricState,
+        runtime: Runtime[ContextT],
     ) -> tuple[str, int] | None:
-        """Compute `(outcome_id, iteration)` and emit the start event.
+        """Compute `(rubric_id, iteration)` and emit the start event.
 
         Returns `None` if the middleware should no-op for this run (no
         rubric has been supplied on this thread).
         """
         if not state.get("rubric"):
             return None
-        iteration = state.get("_outcome_iterations", 0) or 0
-        outcome_id = state.get("_current_outcome_id") or str(uuid.uuid4())
-        self._emit(runtime, "outcome_evaluation_start", outcome_id, iteration)
-        return outcome_id, iteration
+        iteration = state.get("_rubric_iterations", 0) or 0
+        rubric_id = state.get("_current_rubric_id") or str(uuid.uuid4())
+        self._emit(runtime, "rubric_evaluation_start", rubric_id, iteration)
+        return rubric_id, iteration
 
     def _finalize_evaluation(
         self,
         graded: GraderResponse,
-        state: OutcomeState,
-        runtime: Runtime[Any],
-        outcome_id: str,
+        state: RubricState,
+        runtime: Runtime[ContextT],
+        rubric_id: str,
         iteration: int,
     ) -> dict[str, Any]:
         """Record the evaluation, emit the end event, and compose state update.
@@ -407,38 +498,108 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         difference between the two hook paths is the grader invocation
         (sync `_grade` vs `await _agrade`).
         """
-        evaluation = self._build_evaluation(graded, outcome_id, iteration)
-        self._emit(runtime, "outcome_evaluation_end", outcome_id, iteration, evaluation)
+        evaluation = self._build_evaluation(graded, rubric_id, iteration)
+        self._emit(runtime, "rubric_evaluation_end", rubric_id, iteration, evaluation)
         if self._on_evaluation is not None:
             try:
                 self._on_evaluation(evaluation)
             except Exception:
-                logger.exception("OutcomeMiddleware on_evaluation callback raised")
+                logger.exception("RubricMiddleware on_evaluation callback raised")
         return self._compose_update(state, evaluation, graded.result)
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
             return self._grader
-        model: str | BaseChatModel = self._model
-        # Passing the raw class lets `AutoStrategy` pick `ProviderStrategy`
-        # vs `ToolStrategy` per the underlying model's capabilities. Tools
-        # are propagated so the grader may interleave verification calls
-        # with its final structured response.
+
+        # Local imports keep the import-time graph minimal -- in particular,
+        # `resolve_model` / `init_chat_model` can trigger provider lookups, and
+        # `FilesystemMiddleware` / `SkillsMiddleware` are heavier than this
+        # module needs at import time.
+        from langchain.agents.middleware import HumanInTheLoopMiddleware  # noqa: PLC0415
+
+        from deepagents._models import resolve_model  # noqa: PLC0415
+        from deepagents.middleware.filesystem import FilesystemMiddleware  # noqa: PLC0415
+        from deepagents.middleware.skills import SkillsMiddleware  # noqa: PLC0415
+
+        spec = self._grader_spec
+
+        # Resolve model: explicit on the spec wins; otherwise fall back to
+        # the main agent's model captured by `wrap_model_call`. If neither
+        # is available we cannot build the grader.
+        raw_model = spec.get("model") or self._fallback_model
+        if raw_model is None:
+            msg = (
+                "RubricMiddleware: no grader model available. Either set "
+                "`grader={'model': ...}` explicitly, or use this middleware "
+                "inside `create_deep_agent` so the main agent's model can "
+                "be captured as the default."
+            )
+            raise RuntimeError(msg)
+
+        # Resolve backend: explicit on the constructor wins; otherwise fall
+        # back to the deep agent's backend injected by `create_deep_agent`.
+        # Only required when `skills` or `permissions` is configured on the
+        # grader spec, since both auto-wire backend-dependent middleware.
+        grader_permissions = spec.get("permissions")
+        grader_skills = spec.get("skills")
+        resolved_backend = self._backend or self._fallback_backend
+        if (grader_permissions is not None or grader_skills) and resolved_backend is None:
+            msg = (
+                "RubricMiddleware: grader spec includes `skills` or "
+                "`permissions`, which require a backend, but none was "
+                "supplied. Either pass `backend=...` to RubricMiddleware "
+                "or use this middleware inside `create_deep_agent` so the "
+                "deep agent's backend can be inherited."
+            )
+            raise RuntimeError(msg)
+
+        middleware: list[AgentMiddleware[Any, Any, Any]] = []
+
+        # NOTE: the permissions and skills wiring below is copied
+        # from the inline-SubAgent branch of `create_deep_agent`
+        # (graph.py:545-560). `resolved_backend` is guaranteed non-None on
+        # both branches by the check above; the assertions reassure the
+        # type checker without changing behavior.
+        if grader_permissions is not None:
+            if resolved_backend is None:  # pragma: no cover - guarded above
+                msg = "internal: backend should be set when permissions are configured"
+                raise RuntimeError(msg)
+            middleware.append(
+                FilesystemMiddleware(
+                    backend=resolved_backend,
+                    _permissions=grader_permissions,
+                )
+            )
+
+        if grader_skills:
+            if resolved_backend is None:  # pragma: no cover - guarded above
+                msg = "internal: backend should be set when skills are configured"
+                raise RuntimeError(msg)
+            middleware.append(SkillsMiddleware(backend=resolved_backend, sources=grader_skills))
+
+        middleware.extend(spec.get("middleware") or [])
+
+        interrupt_on = spec.get("interrupt_on")
+        if interrupt_on:
+            middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
         self._grader = create_agent(
-            model=model,
-            system_prompt=_GRADER_SYSTEM_PROMPT,
-            tools=list(self._grader_tools),
+            model=resolve_model(raw_model),
+            system_prompt=spec.get("system_prompt") or _GRADER_SYSTEM_PROMPT,
+            tools=list(spec.get("tools") or []),
+            middleware=middleware,
+            name=spec.get("name") or RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
         )
         return self._grader
 
-    def _grade(self, state: OutcomeState, iteration: int) -> GraderResponse:
+    def _grade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
         result = grader.invoke({"messages": [HumanMessage(content=payload)]})
         return self._extract_graded(result)
 
-    async def _agrade(self, state: OutcomeState, iteration: int) -> GraderResponse:
+    async def _agrade(self, state: RubricState, iteration: int) -> GraderResponse:
         grader = self._ensure_grader()
         payload = self._build_grader_payload(state, iteration)
         result = await grader.ainvoke({"messages": [HumanMessage(content=payload)]})
@@ -448,7 +609,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     def _extract_graded(result: dict[str, Any]) -> GraderResponse:
         graded = result.get("structured_response")
         if graded is None:
-            msg = "OutcomeMiddleware grader did not return a structured_response. The grader sub-agent must use response_format=GraderResponse."
+            msg = "RubricMiddleware grader did not return a structured_response. The grader sub-agent must use response_format=GraderResponse."
             raise RuntimeError(msg)
         if not isinstance(graded, GraderResponse):
             # `create_agent` returns whatever the grader's response_format
@@ -457,11 +618,11 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             if isinstance(graded, dict):
                 graded = GraderResponse.model_validate(graded)
             else:
-                msg = f"OutcomeMiddleware grader returned unexpected structured_response of type {type(graded).__name__}."
+                msg = f"RubricMiddleware grader returned unexpected structured_response of type {type(graded).__name__}."
                 raise TypeError(msg)
         return graded
 
-    def _build_grader_payload(self, state: OutcomeState, iteration: int) -> str:
+    def _build_grader_payload(self, state: RubricState, iteration: int) -> str:
         """Assemble the grader's first user message.
 
         Combines the (trusted) rubric and a clipped (untrusted) transcript
@@ -482,7 +643,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         )
 
     @staticmethod
-    def _revision_prompt(evaluation: OutcomeEvaluation) -> str:
+    def _revision_prompt(evaluation: RubricEvaluation) -> str:
         lines = ["A grader reviewed your work against the rubric and asked for revisions before we can finish."]
         explanation = evaluation.get("explanation")
         if explanation:
@@ -508,11 +669,11 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
     def _build_evaluation(
         self,
         graded: GraderResponse,
-        outcome_id: str,
+        rubric_id: str,
         iteration: int,
-    ) -> OutcomeEvaluation:
-        evaluation: OutcomeEvaluation = {
-            "outcome_id": outcome_id,
+    ) -> RubricEvaluation:
+        evaluation: RubricEvaluation = {
+            "rubric_id": rubric_id,
             "iteration": iteration,
             "result": graded.result,
             "explanation": graded.explanation,
@@ -522,30 +683,30 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
 
     def _compose_update(
         self,
-        state: OutcomeState,
-        evaluation: OutcomeEvaluation,
+        state: RubricState,
+        evaluation: RubricEvaluation,
         graded_result: Literal["satisfied", "needs_revision", "failed"],
     ) -> dict[str, Any]:
         iteration = evaluation["iteration"]
         next_iteration = iteration + 1
-        evals = [*state.get("_outcome_evaluations", []), evaluation]
+        evals = [*state.get("_rubric_evaluations", []), evaluation]
 
         update: dict[str, Any] = {
-            "_outcome_evaluations": evals,
-            "_outcome_iterations": next_iteration,
-            "_outcome_status": evaluation["result"],
+            "_rubric_evaluations": evals,
+            "_rubric_iterations": next_iteration,
+            "_rubric_status": evaluation["result"],
         }
 
         if graded_result == "satisfied":
             return update
 
         if graded_result == "failed":
-            update["_outcome_status"] = "failed"
+            update["_rubric_status"] = "failed"
             return update
 
         # needs_revision
         if next_iteration >= self.max_iterations:
-            update["_outcome_status"] = "max_iterations_reached"
+            update["_rubric_status"] = "max_iterations_reached"
             return update
 
         return {
@@ -553,8 +714,8 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
             "messages": [
                 HumanMessage(
                     content=self._revision_prompt(evaluation),
-                    name=OUTCOME_GRADER_MESSAGE_SOURCE,
-                    additional_kwargs={"lc_source": OUTCOME_GRADER_MESSAGE_SOURCE},
+                    name=RUBRIC_GRADER_MESSAGE_SOURCE,
+                    additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE},
                 )
             ],
             "jump_to": "model",
@@ -562,9 +723,9 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
 
     def _handle_grader_exception(
         self,
-        runtime: Runtime[Any],
-        state: OutcomeState,
-        outcome_id: str,
+        runtime: Runtime[ContextT],
+        state: RubricState,
+        rubric_id: str,
         iteration: int,
         exc: Exception,
     ) -> dict[str, Any]:
@@ -572,42 +733,42 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         # not handled here -- they're `BaseException` subclasses, not
         # `Exception`, so they propagate up the call stack and preserve
         # normal Python interrupt / asyncio cancellation semantics.
-        logger.exception("OutcomeMiddleware grader failed")
-        evaluation: OutcomeEvaluation = {
-            "outcome_id": outcome_id,
+        logger.exception("RubricMiddleware grader failed")
+        evaluation: RubricEvaluation = {
+            "rubric_id": rubric_id,
             "iteration": iteration,
             "result": "failed",
             "explanation": f"Grader raised {type(exc).__name__}: {exc}",
             "criteria": [],
         }
-        self._emit(runtime, "outcome_evaluation_end", outcome_id, iteration, evaluation)
+        self._emit(runtime, "rubric_evaluation_end", rubric_id, iteration, evaluation)
         if self._on_evaluation is not None:
             try:
                 self._on_evaluation(evaluation)
             except Exception:
-                logger.exception("OutcomeMiddleware on_evaluation callback raised")
+                logger.exception("RubricMiddleware on_evaluation callback raised")
 
-        evals = [*state.get("_outcome_evaluations", []), evaluation]
+        evals = [*state.get("_rubric_evaluations", []), evaluation]
         return {
-            "_outcome_evaluations": evals,
-            "_outcome_iterations": iteration + 1,
-            "_outcome_status": "failed",
+            "_rubric_evaluations": evals,
+            "_rubric_iterations": iteration + 1,
+            "_rubric_status": "failed",
         }
 
-    @staticmethod
     def _emit(
-        runtime: Runtime[Any],
+        self,
+        runtime: Runtime[ContextT],
         event_type: str,
-        outcome_id: str,
+        rubric_id: str,
         iteration: int,
-        evaluation: OutcomeEvaluation | None = None,
+        evaluation: RubricEvaluation | None = None,
     ) -> None:
         writer = getattr(runtime, "stream_writer", None)
         if writer is None:
             return
         payload: dict[str, Any] = {
             "type": event_type,
-            "outcome_id": outcome_id,
+            "rubric_id": rubric_id,
             "iteration": iteration,
         }
         if evaluation is not None:
@@ -617,7 +778,7 @@ class OutcomeMiddleware(AgentMiddleware[OutcomeState, Any, Any]):
         try:
             writer(payload)
         except Exception:  # noqa: BLE001
-            logger.debug("OutcomeMiddleware stream_writer raised; ignoring")
+            logger.debug("RubricMiddleware stream_writer raised; ignoring")
 
 
 def _build_grader_transcript(messages: list[AnyMessage]) -> str:

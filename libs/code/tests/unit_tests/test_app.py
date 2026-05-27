@@ -9121,7 +9121,10 @@ class TestMCPLoginCommand:
 
         assert app._pending_mcp_reconnect is False
         assert notify.call_count == 2
-        assert "Run `/mcp reconnect`" in notify.call_args_list[0].args[0]
+        assert notify.call_args_list[0].args[0] == (
+            "MCP server 'filesystem' disabled. "
+            "Run `/mcp reconnect` or press Ctrl+R to apply."
+        )
         assert notify.call_args_list[1].args[0] == "MCP server 'filesystem' enabled."
 
     async def test_toggle_disable_notify_surfaces_persistence_error(self) -> None:

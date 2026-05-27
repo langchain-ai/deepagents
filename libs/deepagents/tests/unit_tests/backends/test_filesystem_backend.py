@@ -151,8 +151,54 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    # Missing paths must be distinguishable from empty directories — see #3573.
+    missing_listing = be.ls("/nonexistent/")
+    assert missing_listing.entries == []
+    assert missing_listing.error is not None
+    assert "not found" in missing_listing.error.lower()
+    assert "/nonexistent/" in missing_listing.error
+
+
+def test_filesystem_backend_ls_missing_path_returns_error(tmp_path: Path):
+    """Regression for #3573 — missing path must populate `error`.
+
+    Previously `ls("/missing/")` returned `LsResult(error=None, entries=[])`
+    which is indistinguishable from an empty directory.
+    """
+    root = tmp_path
+    (root / "empty").mkdir()
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    missing = be.ls("/missing/")
+    empty = be.ls("/empty/")
+
+    assert missing.error is not None
+    assert "not found" in missing.error.lower()
+    assert missing.entries == []
+
+    # Empty directories stay error-free with empty entries (existing contract).
+    assert empty.error is None
+    assert empty.entries == []
+
+
+def test_filesystem_backend_ls_path_is_file_returns_error(tmp_path: Path):
+    """Regression for #3573 — file path must surface 'not a directory'.
+
+    Agents need to tell 'no such path', 'not a directory', and 'empty
+    directory' apart; previously all three collapsed to `LsResult(error=None,
+    entries=[])`.
+    """
+    root = tmp_path
+    (root / "file.txt").write_text("hello")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    result = be.ls("/file.txt")
+    assert result.error is not None
+    assert "not a directory" in result.error.lower()
+    assert "/file.txt" in result.error
+    assert result.entries == []
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):

@@ -246,8 +246,10 @@ class FilesystemBackend(BackendProtocol):
         """
         try:
             dir_path = self._resolve_path(path)
-            if not dir_path.exists() or not dir_path.is_dir():
-                return LsResult(entries=[])
+            if not dir_path.exists():
+                return LsResult(error=f"Path not found: '{path}'", entries=[])
+            if not dir_path.is_dir():
+                return LsResult(error=f"Not a directory: '{path}'", entries=[])
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)

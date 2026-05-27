@@ -1061,3 +1061,17 @@ def test_build_config_options_empty_models_list_omits_entry() -> None:
     options = agent._build_config_options("session-1")
 
     assert options == []
+
+
+def test_generic_fake_chat_model_stream_rejects_non_string_content() -> None:
+    """Edge case: streaming an AIMessage whose content is a list must raise ValueError.
+
+    The fake model's `_stream` assumes string content for chunking. Multimodal
+    list content should fail fast with a clear error instead of silently breaking.
+    """
+    model = GenericFakeChatModel(
+        messages=iter([AIMessage(content=[{"type": "text", "text": "hello"}])]),
+        stream_delimiter=None,
+    )
+    with pytest.raises(ValueError, match="Expected content to be a string"):
+        list(model.stream("hi"))

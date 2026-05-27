@@ -73,6 +73,7 @@ class GenericFakeChatModel(BaseChatModel):
         generation = ChatGeneration(message=message_)
         return ChatResult(generations=[generation])
 
+    @override
     def _stream(
         self,
         messages: list[BaseMessage],

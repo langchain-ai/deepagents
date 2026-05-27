@@ -8903,6 +8903,90 @@ class TestMCPLoginCommand:
         assert app._mcp_server_info == [original]
         assert app._mcp_optimistic_original_server_info == {}
 
+    def test_optimistic_mcp_login_pending_state_relabels_only_target(self) -> None:
+        """Deferred OAuth login updates the target without touching siblings."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        ok = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        errored = MCPServerInfo(
+            name="broken",
+            transport="http",
+            status="error",
+            error="connection refused",
+        )
+        target = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="unauthenticated",
+            error="needs re-authentication",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[ok, errored, target])
+        banner = MagicMock(spec=WelcomeBanner)
+        app.query_one = MagicMock(return_value=banner)  # type: ignore[assignment]
+
+        app._apply_optimistic_mcp_login_pending_state("github")
+
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0] == ok
+        assert app._mcp_server_info[1] == errored
+        assert app._mcp_server_info[2].status == "awaiting_reconnect"
+        assert app._mcp_server_info[2].error == (
+            "Authenticated — run `/mcp reconnect` to load tools."
+        )
+        assert app._mcp_unauthenticated == 0
+        assert app._mcp_errored == 1
+        banner.set_connected.assert_called_once_with(
+            1,
+            mcp_unauthenticated=0,
+            mcp_errored=1,
+        )
+
+    def test_optimistic_mcp_login_pending_state_warns_for_unknown_server(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unexpected OAuth callback does not fail silently."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        original = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="unauthenticated",
+            error="needs re-authentication",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app._apply_optimistic_mcp_login_pending_state("notion")
+
+        assert app._mcp_server_info == [original]
+        assert app._mcp_unauthenticated == 1
+        assert any(
+            "unknown server 'notion'" in record.message for record in caplog.records
+        )
+
+    def test_refresh_welcome_banner_mcp_counts_ignores_missing_banner(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """MCP count refresh is best-effort before the welcome banner mounts."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.app"):
+            app._refresh_welcome_banner_mcp_counts()
+
+        assert any(
+            "Welcome banner not mounted during MCP count refresh" in record.message
+            for record in caplog.records
+        )
+
     async def test_disable_then_reenable_before_reconnect_clears_pending_notice(
         self,
     ) -> None:
@@ -9345,7 +9429,19 @@ class TestMCPLoginCommand:
         The viewer is the obvious launchpad for the next login, so deferring
         routes the user back there instead of dropping them at the chat input.
         """
-        app = DeepAgentsApp(agent=MagicMock())
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="unauthenticated",
+                    error="needs re-authentication",
+                )
+            ],
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._pending_mcp_reconnect is False
@@ -9365,6 +9461,8 @@ class TestMCPLoginCommand:
 
             restart.assert_not_called()
             assert app._pending_mcp_reconnect is True
+            assert app._mcp_server_info is not None
+            assert app._mcp_server_info[0].status == "awaiting_reconnect"
             notify.assert_called_once()
             message = notify.call_args.args[0]
             assert "notion" in message

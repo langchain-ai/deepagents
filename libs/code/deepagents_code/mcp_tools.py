@@ -51,12 +51,29 @@ class MCPToolInfo:
     """
 
 
-MCPServerStatus = Literal["ok", "unauthenticated", "error", "disabled"]
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
 """Load states a configured MCP server can end up in.
+
+`ok` means the server loaded successfully and has an authoritative tool list.
+
+`unauthenticated` means the server requires OAuth login before tools can load.
+
+`error` means the server failed to load after a connection or configuration
+failure.
 
 `disabled` is set when the user has turned the server off via the TUI
 (`/mcp` -> F2). No connection is attempted and no tools are loaded, but
 the entry is still surfaced in the viewer so the user can re-enable it.
+
+`awaiting_reconnect` is a transient UI-only state used after OAuth login
+has succeeded but before the LangGraph server has restarted and loaded
+the newly available MCP tools.
 """
 
 
@@ -77,7 +94,11 @@ class MCPServerInfo:
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
-    """Load status — `ok`, `unauthenticated`, `error`, or `disabled`."""
+    """Load status.
+
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
+    `disabled`.
+    """
 
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
@@ -110,6 +131,14 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+
+    def is_loaded(self) -> bool:
+        """Return whether this server has successfully loaded tools."""
+        return self.status == "ok"
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}

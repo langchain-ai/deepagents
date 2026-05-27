@@ -3180,6 +3180,7 @@ class DeepAgentsApp(App):
             )
             from deepagents_code.update_check import (
                 create_update_log_path,
+                editable_extra_hint,
                 install_extra_command,
                 is_valid_extra_name,
                 perform_install_extra,
@@ -3203,9 +3204,8 @@ class DeepAgentsApp(App):
         if await asyncio.to_thread(_is_editable_install):
             await self._mount_message(
                 AppMessage(
-                    "Cannot install extras on editable installs. "
-                    f"Run `uv sync --extra {extra}` from the "
-                    "deepagents-code source directory instead.",
+                    "Editable install detected — cannot install extras.\n"
+                    + editable_extra_hint(extra),
                 ),
             )
             return

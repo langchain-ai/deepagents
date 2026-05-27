@@ -47,7 +47,7 @@ def _sample_info() -> list[MCPServerInfo]:
 
 
 def _mixed_status_info() -> list[MCPServerInfo]:
-    """Three servers covering all `MCPServerStatus` values."""
+    """Servers covering all `MCPServerStatus` values."""
     return [
         MCPServerInfo(
             name="filesystem",
@@ -61,10 +61,22 @@ def _mixed_status_info() -> list[MCPServerInfo]:
             error="Run: dcode mcp login github",
         ),
         MCPServerInfo(
+            name="notion",
+            transport="http",
+            status="awaiting_reconnect",
+            error="Authenticated — run `/mcp reconnect` to load tools.",
+        ),
+        MCPServerInfo(
             name="broken",
             transport="sse",
             status="error",
             error="Connection refused",
+        ),
+        MCPServerInfo(
+            name="paused",
+            transport="stdio",
+            status="disabled",
+            error="Disabled in this session",
         ),
     ]
 
@@ -1360,12 +1372,34 @@ class TestMCPViewerScreen:
             app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
-            # After `unauthenticated`-first sort: github(0), filesystem(1),
-            # read_file tool(2), broken(3).
-            for _ in range(3):
+            # Attention-needed states are floated to the top: github(0),
+            # notion(1), filesystem(2), read_file tool(3), broken(4).
+            for _ in range(4):
                 await pilot.press("down")
                 await pilot.pause()
-            assert screen._row_widgets[3]._server.name == "broken"  # type: ignore[union-attr]
+            assert screen._row_widgets[4]._server.name == "broken"  # type: ignore[union-attr]
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == []
+
+    async def test_enter_on_awaiting_reconnect_header_is_noop(self) -> None:
+        """Activating a pending-reconnect header does not restart login."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._row_widgets[1]._server.name == "notion"  # type: ignore[union-attr]
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1565,7 +1599,7 @@ class TestMCPViewerScreen:
             assert "filter" in text
             assert "esc" in text
 
-    async def test_three_state_status_indicators_render(self) -> None:
+    async def test_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line.
 
         We assert on rendered text + glyph (the user-visible signal); the
@@ -1579,13 +1613,16 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             headers = screen.query(".mcp-server-header")
-            assert len(headers) == 3
+            assert len(headers) == 5
 
             # `unauthenticated` servers float to the top, so the order is:
-            # github (unauth), filesystem (ok), broken (err).
+            # github (unauth), notion (ready to load), filesystem (ok),
+            # broken (err), paused (disabled).
             unauth_text = _widget_text(headers[0])
-            ok_text = _widget_text(headers[1])
-            err_text = _widget_text(headers[2])
+            pending_text = _widget_text(headers[1])
+            ok_text = _widget_text(headers[2])
+            err_text = _widget_text(headers[3])
+            disabled_text = _widget_text(headers[4])
 
             assert "filesystem" in ok_text
             assert "stdio" in ok_text
@@ -1596,11 +1633,18 @@ class TestMCPViewerScreen:
             # user to leave the app and run `dcode mcp login`.
             assert "Enter to log in" in unauth_text
 
+            assert "notion" in pending_text
+            assert "ready to load" in pending_text
+            assert "Ctrl+R to load tools" in pending_text
+
             assert "broken" in err_text
             assert "error" in err_text
             assert "Connection refused" in err_text
 
-    def test_status_color_maps_three_states(self) -> None:
+            assert "paused" in disabled_text
+            assert "disabled" in disabled_text
+
+    def test_status_color_maps_all_states(self) -> None:
         """Unit-level: each status maps to the correct theme color attribute."""
         from deepagents_code import theme
         from deepagents_code.widgets.mcp_viewer import _status_color
@@ -1608,7 +1652,9 @@ class TestMCPViewerScreen:
         colors = theme.get_theme_colors()
         assert _status_color("ok", colors) == colors.success
         assert _status_color("unauthenticated", colors) == colors.warning
+        assert _status_color("awaiting_reconnect", colors) == colors.warning
         assert _status_color("error", colors) == colors.error
+        assert _status_color("disabled", colors) == colors.muted
 
     async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
         """Status icons reuse existing `Glyphs` (unicode by default)."""
@@ -1622,10 +1668,13 @@ class TestMCPViewerScreen:
 
             glyphs = get_glyphs()
             headers = screen.query(".mcp-server-header")
-            # `unauthenticated` floats to the top: warning, then ok, then error.
+            # Attention-needed states float to the top: unauth (warning),
+            # awaiting_reconnect (empty circle), ok, error, disabled.
             assert glyphs.warning in _widget_text(headers[0])
-            assert glyphs.checkmark in _widget_text(headers[1])
-            assert glyphs.error in _widget_text(headers[2])
+            assert glyphs.circle_empty in _widget_text(headers[1])
+            assert glyphs.checkmark in _widget_text(headers[2])
+            assert glyphs.error in _widget_text(headers[3])
+            assert glyphs.pause in _widget_text(headers[4])
 
     async def test_synthetic_config_error_entry_renders(self) -> None:
         """A `<config:foo>` entry from a malformed config file does not crash."""
@@ -1710,13 +1759,19 @@ class TestModuleLevelHelpers:
 
     # --- _sort_servers_for_display ---
 
-    def test_sort_servers_floats_unauthenticated_to_top(self) -> None:
-        """`unauthenticated` servers move ahead of `ok` and `error` servers."""
+    def test_sort_servers_floats_attention_needed_to_top(self) -> None:
+        """Actionable servers move ahead of `ok` and `error` servers."""
         from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
 
         info = _mixed_status_info()
         ordered = _sort_servers_for_display(info)
-        assert [s.name for s in ordered] == ["github", "filesystem", "broken"]
+        assert [s.name for s in ordered] == [
+            "github",
+            "notion",
+            "filesystem",
+            "broken",
+            "paused",
+        ]
 
     def test_sort_servers_is_stable_within_groups(self) -> None:
         """Original config order is preserved among same-priority servers."""

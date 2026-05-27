@@ -267,8 +267,8 @@ async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None
 async def test_update_slash_command_editable_install_short_circuits() -> None:
     """Editable install must not invoke `perform_upgrade` from the TUI.
 
-    A regression here would run `pip install --upgrade deepagents-code` on
-    an editable dev checkout and overwrite the local install.
+    A regression here would run `uv tool upgrade deepagents-code` on an
+    editable dev checkout and clobber the local install with a PyPI copy.
     """
     from unittest.mock import AsyncMock
 

@@ -2464,10 +2464,27 @@ def _create_model_via_init(
                 f"import for provider '{provider}': {e}"
             )
         else:
-            msg = (
-                f"Missing package for provider '{provider}'. "
-                f"Install: pip install {package}"
-            )
+            from deepagents_code.extras_info import extra_for_package
+
+            extra = extra_for_package(package)
+            if extra is not None:
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"Install: /install {extra}"
+                )
+            else:
+                from deepagents_code.update_check import install_package_command
+
+                try:
+                    install_cmd = install_package_command(package)
+                except ValueError:
+                    install_hint = f"Install the '{package}' package manually"
+                else:
+                    install_hint = f"Install with: {install_cmd}"
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"{install_hint}, then retry with `/model`."
+                )
             raise MissingProviderPackageError(
                 msg, provider=provider, package=package
             ) from e

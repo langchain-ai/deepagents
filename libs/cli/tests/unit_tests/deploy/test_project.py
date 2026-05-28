@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ def test_load_bare_project_reads_agent_json_and_agents_md() -> None:
     assert proj.permissions is None
     assert proj.tools_text is None
     assert proj.agent_id is None
+    assert proj.model is None
 
 
 def test_load_missing_agent_json_raises(tmp_path: Path) -> None:
@@ -106,6 +108,44 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
         "visibility": "tenant",
         "tenant_access_level": "read",
     }
+    assert proj.model is None
+
+
+def test_model_round_trip(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "model": "  anthropic:claude-sonnet-4-6  "}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.model == "anthropic:claude-sonnet-4-6"
+    assert proj.runtime is None
+
+
+@pytest.mark.parametrize("model", ["", 123])
+def test_model_must_be_non_empty_string(tmp_path: Path, model: object) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "model": ' + json.dumps(model) + "}"
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="model"):
+        Project.load(tmp_path)
+
+
+def test_model_and_runtime_conflict(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "model": "anthropic:claude-sonnet-4-6",
+          "runtime": {
+            "model": {"model_id": "anthropic:claude-sonnet-4-6"}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="either top-level `model` or `runtime`"):
+        Project.load(tmp_path)
 
 
 def test_agent_id_round_trip(tmp_path: Path) -> None:

@@ -99,11 +99,9 @@ _STARTER_AGENT_JSON = """\
 {{
   "name": "{name}",
   "description": "A managed deep agent.",
+  "model": "anthropic:claude-sonnet-4-6",
   "backend": {{
     "type": "thread_scoped_sandbox"
-  }},
-  "runtime": {{
-    "model": {{"model_id": "anthropic:claude-sonnet-4-6"}}
   }}
 }}
 """
@@ -121,7 +119,6 @@ You are a helpful AI agent.
 
 _STARTER_GITIGNORE = """\
 .env
-.deepagents/
 """
 
 # --- deploy / agents / mcp-servers (stubs filled by later tasks) ------------

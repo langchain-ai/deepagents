@@ -50,6 +50,8 @@ def build_metadata_payload(project: Project) -> dict[str, Any]:
         payload["description"] = project.description
     if project.runtime:
         payload["runtime"] = project.runtime
+    elif project.model:
+        payload["runtime"] = {"model": {"model_id": project.model}}
     if project.backend:
         payload["backend"] = project.backend
     if project.permissions:

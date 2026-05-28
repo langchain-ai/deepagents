@@ -27,13 +27,15 @@ def test_init_scaffolds_new_layout(
     assert (project / "agent.json").is_file()
     agent = json.loads((project / "agent.json").read_text())
     assert agent["name"] == "my-agent"
+    assert agent["model"] == "anthropic:claude-sonnet-4-6"
     assert agent["backend"] == {"type": "thread_scoped_sandbox"}
-    assert "backend_type" not in agent["runtime"]
+    assert "runtime" not in agent
     assert (project / "AGENTS.md").is_file()
     assert (project / ".gitignore").is_file()
     assert not (project / ".env").exists()
-    assert ".env" in (project / ".gitignore").read_text()
-    assert ".deepagents/" in (project / ".gitignore").read_text()
+    gitignore = (project / ".gitignore").read_text()
+    assert ".env" in gitignore
+    assert ".deepagents/" not in gitignore
     assert (project / "skills").is_dir()
 
 

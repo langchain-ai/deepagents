@@ -57,6 +57,26 @@ def test_create_payload_normalizes_legacy_sandbox_backend(tmp_path: Path) -> Non
     assert payload["backend"] == {"type": "thread_scoped_sandbox"}
 
 
+def test_create_payload_compiles_model_shorthand(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "model": "anthropic:claude-sonnet-4-6"}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    project = Project.load(tmp_path)
+    payload = build_payload(project, mode="create")
+    assert payload["runtime"] == {"model": {"model_id": "anthropic:claude-sonnet-4-6"}}
+
+
+def test_metadata_payload_compiles_model_shorthand(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "model": "anthropic:claude-sonnet-4-6"}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    project = Project.load(tmp_path)
+    payload = build_metadata_payload(project)
+    assert payload["runtime"] == {"model": {"model_id": "anthropic:claude-sonnet-4-6"}}
+
+
 def test_directory_files_include_project_and_subagent_sources() -> None:
     project = Project.load(_FIXTURES / "subagent_with_local_skills")
     files = build_directory_files(project)

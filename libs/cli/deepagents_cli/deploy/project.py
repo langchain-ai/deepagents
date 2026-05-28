@@ -145,6 +145,7 @@ class Project:
     agent_id: str | None
     name: str
     description: str | None
+    model: str | None
     system_prompt: str
     runtime: dict[str, Any] | None
     backend: dict[str, Any] | None
@@ -174,6 +175,7 @@ class Project:
             agent_id=agent_data.get("agent_id"),
             name=agent_data["name"],
             description=agent_data.get("description"),
+            model=agent_data.get("model"),
             system_prompt=system_prompt,
             runtime=agent_data.get("runtime"),
             backend=agent_data.get("backend"),
@@ -215,10 +217,20 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
             raise ProjectError(msg)
         data["agent_id"] = agent_id.strip()
 
+    model = data.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            msg = f"{path}: `model` must be a non-empty string when provided."
+            raise ProjectError(msg)
+        data["model"] = model.strip()
+
     runtime = data.get("runtime")
     if runtime is not None:
         if not isinstance(runtime, dict):
             msg = f"{path}: `runtime` must be an object."
+            raise ProjectError(msg)
+        if model is not None:
+            msg = f"{path}: use either top-level `model` or `runtime`, not both."
             raise ProjectError(msg)
         backend_type = runtime.get("backend_type")
         if backend_type is not None:
@@ -498,7 +510,7 @@ Found legacy deepagents.toml in {root}. The migrated `deepagents deploy`
 expects the new layout. Quick mapping:
 
   [agent]                       → agent.json (top-level keys: name, description)
-  [agent].model                 → agent.json runtime.model.model_id
+  [agent].model                 → agent.json model
   [sandbox].scope               → agent.json backend.type ("thread_scoped_sandbox")
   [auth], [memories], [frontend]→ remove; managed by the platform now
 

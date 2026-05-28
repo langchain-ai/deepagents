@@ -63,6 +63,12 @@ test = [
 
 [tool.uv.sources]
 langchain = { git = "https://github.com/langchain-ai/langchain", branch = "nh/subagent-projection", subdirectory = "libs/langchain_v1" }
+# The `nh/subagent-name-langgraph` branch (langgraph#7928) must be rebased on
+# `nh/ensure-config-merge-semantics` (langgraph#7926). #7926's per-key
+# `ensure_config` merge is what propagates parent metadata into subagent runs
+# (deepagents#3634) while preserving the subagent's bound `lc_agent_name` — see
+# `test_subagent_inherits_parent_user_metadata`. Once #7926 ships in a langgraph
+# release, drop this pin and add a `langgraph>=<release>` floor to `dependencies`.
 langgraph = { git = "https://github.com/langchain-ai/langgraph", branch = "nh/subagent-name-langgraph", subdirectory = "libs/langgraph" }
 
 [build-system]

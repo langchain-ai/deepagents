@@ -3375,6 +3375,70 @@ class TestAppFocusRestoresChatInput:
             assert app._chat_input._text_area.cursor_blink is True
 
 
+class TestChatScrollKeepsInputFocus:
+    """Clicking a chat message must not steal focus from the chat input."""
+
+    async def test_clicking_message_keeps_input_focused(self) -> None:
+        """A click on a mounted message should leave the input focused.
+
+        The `#chat` scroll container is focusable, so without
+        `FOCUS_ON_CLICK = False` Textual would walk up from the clicked
+        message to the container and refocus it, de-focusing the input.
+
+        Drives `Screen._forward_event` with a real `MouseDown` rather than
+        `Pilot.click`: the headless pilot's synthesized click doesn't exercise
+        the screen's focus-on-click resolution, so it can't catch a regression.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            app._chat_input._text_area.focus()
+            await pilot.pause()
+            assert app._chat_input._text_area.has_focus
+
+            messages = app.query_one("#messages", Container)
+            message = AppMessage("hello", id="focus-test-message")
+            await messages.mount(message)
+            await pilot.pause()
+
+            region = message.region
+            x, y = region.x + 1, region.y
+            app.screen._forward_event(
+                events.MouseDown(
+                    widget=message,
+                    x=x,
+                    y=y,
+                    delta_x=0,
+                    delta_y=0,
+                    button=1,
+                    shift=False,
+                    meta=False,
+                    ctrl=False,
+                    screen_x=x,
+                    screen_y=y,
+                    style=None,  # type: ignore[arg-type]
+                )
+            )
+            await pilot.pause()
+
+            assert app._chat_input._text_area.has_focus
+
+    async def test_chat_scroll_does_not_focus_on_click(self) -> None:
+        """The chat scroll container opts out of focus-on-click."""
+        from textual.containers import VerticalScroll
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one("#chat", VerticalScroll)
+            # Stays focusable (keyboard scrolling) but doesn't grab focus on click.
+            assert chat.focusable
+            assert chat.focus_on_click() is False
+
+
 class TestAppBlurPausesCursorBlink:
     """Test `on_app_blur` pauses cursor blink without changing widget focus."""
 

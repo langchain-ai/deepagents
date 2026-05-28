@@ -691,7 +691,8 @@ class TestMcpServerCounters:
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner(mcp_unauthenticated=1)
         plain = widget._build_banner().plain
-        assert "1 MCP server need login" in plain
+        assert "1 MCP server need login — open /mcp" in plain
+        assert "/mcp login" not in plain
 
     def test_errored_line_plural(self) -> None:
         """Two errored servers read `'servers'` and route to `/mcp` for details."""

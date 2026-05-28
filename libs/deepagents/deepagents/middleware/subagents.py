@@ -543,10 +543,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
         the subagent as a nested subgraph.
 
         `recursion_limit` and `metadata` are intentionally
-        *not* forwarded — the subagent's own bound config must take precedence.
+        *not* forwarded. The subagent's own bound config must take precedence.
 
         Passing `metadata` in the invoke config replaces the
         subagent's bound metadata (e.g. `lc_agent_name`).
+
+        TODO: collapse this helper once langgraph#7926 (ensure_config merge
+        semantics) ships. After that fix, parent runtime callbacks/tags/configurable
+        propagate automatically and only the `ls_agent_type` tag needs to be set.
         """
         parent_config = runtime.config or {}
         config: RunnableConfig = {}
@@ -568,9 +572,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         subagent_config = _build_subagent_config(runtime)
-        # Tag the subagent's configurable so downstream readers (e.g. middleware
-        # that key off `runtime.config["configurable"]["ls_agent_type"]`) see the
-        # subagent context, in addition to the langsmith tracing-context tag.
         subagent_config["configurable"] = {
             **subagent_config.get("configurable", {}),
             "ls_agent_type": "subagent",
@@ -592,8 +593,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         subagent_config = _build_subagent_config(runtime)
-        # Mirror `task()` — tag the subagent's configurable as well as the
-        # langsmith tracing context so both code paths see `ls_agent_type`.
         subagent_config["configurable"] = {
             **subagent_config.get("configurable", {}),
             "ls_agent_type": "subagent",
@@ -609,6 +608,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description=description,
         infer_schema=False,
         args_schema=TaskToolSchema,
+        subagent_name=lambda call: call["args"]["subagent_type"],
     )
 
 

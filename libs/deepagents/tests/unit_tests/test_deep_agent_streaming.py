@@ -20,11 +20,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field
 
-from deepagents import (
-    AsyncSubagentRunStream,
-    SubagentRunStream,
-    create_deep_agent,
-)
+from deepagents import create_deep_agent
 
 
 class _Scripted(BaseChatModel):
@@ -180,9 +176,8 @@ class TestCreateDeepAgentAstreamV2:
         agent = _build_agent_with_one_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[AsyncSubagentRunStream] = []
+        handles: list[Any] = []
         async for sub in run.subagents:
-            assert isinstance(sub, AsyncSubagentRunStream)
             handles.append(sub)
             async for _ in sub.messages:
                 pass
@@ -193,7 +188,6 @@ class TestCreateDeepAgentAstreamV2:
         assert len(handles) == 1
         (sub,) = handles
         assert sub.name == "researcher"
-        assert sub.task_input == "look something up"
         assert sub.cause == {"type": "toolCall", "tool_call_id": "call-parent-1"}
         assert sub.status == "completed"
         # path is ("tools:<pregel_task_id>",) — the tool node hosting the subagent.
@@ -279,7 +273,7 @@ class TestCreateDeepAgentAstreamV2:
         agent = _build_agent_with_failing_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[AsyncSubagentRunStream] = []
+        handles: list[Any] = []
 
         async def collect_subagents() -> None:
             with suppress(RuntimeError):
@@ -301,7 +295,6 @@ class TestCreateDeepAgentAstreamV2:
         assert len(handles) == 1
         (sub,) = handles
         assert sub.name == "researcher"
-        assert sub.task_input == "look something up"
         assert sub.status == "failed"
         assert sub.error is not None
 
@@ -321,7 +314,7 @@ class TestCreateDeepAgentStreamV2:
         agent = _build_agent_with_one_subagent()
         run = agent.stream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[SubagentRunStream] = []
+        handles: list[Any] = []
         for sub in run.subagents:
             handles.append(sub)
             for _ in sub.messages:

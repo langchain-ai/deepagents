@@ -61,6 +61,10 @@ test = [
 ]
 
 
+[tool.uv.sources]
+langchain = { git = "https://github.com/langchain-ai/langchain", branch = "nh/subagent-projection", subdirectory = "libs/langchain_v1" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph", branch = "nh/subagent-name-langgraph", subdirectory = "libs/langgraph" }
+
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"

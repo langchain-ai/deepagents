@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -28,6 +29,8 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 
+from deepagents_code.unicode_security import strip_dangerous_unicode
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -43,6 +46,40 @@ _TOOL_NAME_DISPLAY_LIMIT = 10
 
 _DETECT_SCRIPT_TIMEOUT = 30
 """Timeout in seconds for the environment detection script."""
+
+_MCP_ERROR_DETAIL_LIMIT = 200
+"""Max characters of an MCP server error surfaced in the system prompt."""
+
+
+def _sanitize_error_detail(error: str | None) -> str:
+    """Make an untrusted MCP error string safe to embed in the system prompt.
+
+    The error originates from exception text or MCP config-file contents, so it
+    is untrusted input flowing into the system prompt (prompt-injection and
+    log-forging risk). Strip hidden/deceptive Unicode, flatten control
+    characters and newlines to spaces so the value cannot break out of its
+    single bullet line or inject fake instruction lines, collapse runs of
+    whitespace, and bound the length.
+
+    Args:
+        error: Raw error message, or `None`.
+
+    Returns:
+        A single-line, length-bounded, sanitized string. Falls back to
+        `"unknown error"` when no usable message remains.
+    """
+    if not error:
+        return "unknown error"
+    stripped = strip_dangerous_unicode(error)
+    flattened = "".join(
+        " " if unicodedata.category(ch).startswith("C") else ch for ch in stripped
+    )
+    collapsed = " ".join(flattened.split())
+    if not collapsed:
+        return "unknown error"
+    if len(collapsed) > _MCP_ERROR_DETAIL_LIMIT:
+        return collapsed[: _MCP_ERROR_DETAIL_LIMIT - 1].rstrip() + "…"
+    return collapsed
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -62,7 +99,41 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
 
     for server in servers:
         if not server.tools:
-            lines.append(f"- **{server.name}** ({server.transport}): (no tools)")
+            # `status`/`error` always exist on the frozen dataclass; the
+            # `__post_init__` invariant guarantees a non-`ok` status carries a
+            # non-`None` error. The error is untrusted (exception/config text),
+            # so it is sanitized and isolated in an `<error>` delimiter before
+            # reaching the prompt.
+            if server.status == "error":
+                detail = _sanitize_error_detail(server.error)
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): "
+                    f"FAILED TO LOAD — <error>{detail}</error>. "
+                    "Treat this integration as temporarily unavailable; "
+                    "tell the user the server failed to load and suggest "
+                    "restarting the MCP server."
+                )
+            elif server.status == "unauthenticated":
+                detail = _sanitize_error_detail(server.error)
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): "
+                    f"NEEDS LOGIN — <error>{detail}</error>. "
+                    "This integration requires authentication before its "
+                    "tools are available; tell the user and suggest running "
+                    "`/mcp` to log in."
+                )
+            elif server.status == "disabled":
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): (disabled by user)"
+                )
+            else:
+                # `ok` with no tools (genuinely empty). `awaiting_reconnect` is a
+                # transient UI-only status that never reaches this function (the
+                # middleware is always built from a fresh preload), but it would
+                # also render benignly here.
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): (no tools registered)"
+                )
             continue
 
         names = [t.name for t in server.tools]

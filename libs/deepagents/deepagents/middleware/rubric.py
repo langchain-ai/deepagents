@@ -2,11 +2,12 @@
 """Rubric middleware for self-evaluated agent iteration.
 
 `RubricMiddleware` lets a caller declare *what done looks like* via a
-rubric. After each natural agent stop the middleware invokes a separate
-grader sub-agent. If the grader returns `needs_revision`, the agent is
-re-run with the grader's feedback injected as a `HumanMessage`. The loop
-terminates when the grader returns `satisfied` or `failed`, or when
-`max_iterations` is reached.
+rubric. Each time the agent would otherwise finish — i.e. the model
+returns a response with no further tool calls — the middleware invokes a
+separate grader sub-agent against the transcript. If the grader returns
+`needs_revision`, its feedback is injected as a `HumanMessage` and the
+agent loop resumes. Grading repeats until the grader returns `satisfied`
+or `failed`, or `max_iterations` is reached.
 """
 
 from __future__ import annotations
@@ -58,7 +59,10 @@ RubricResult = Literal[
     "max_iterations_reached",
     "failed",
 ]
-"""Terminal status reported per evaluation."""
+"""Status reported by the grader for a single evaluation.
+
+Only `needs_revision` continues the loop; the other three end the grading run.
+"""
 
 
 _TERMINAL_RESULTS: frozenset[RubricResult] = frozenset({"satisfied", "max_iterations_reached", "failed"})
@@ -68,15 +72,25 @@ iteration budget."""
 
 
 _MAX_TRANSCRIPT_MESSAGES = 30
-"""Upper bound on transcript messages forwarded to the grader, to bound
-grader prompt size and input token cost.
+"""Cap on how many messages from the agent's transcript are sent to the
+grader, to keep the grader prompt and input-token cost bounded.
 
-Larger windows are clipped from the head; the original human message is
-always kept (see `_build_grader_transcript`).
+When the transcript is longer than this, only the most recent
+`_MAX_TRANSCRIPT_MESSAGES` are kept, plus the original user prompt
+(prepended if it would otherwise fall outside the window). See
+`_build_grader_transcript`.
 """
 
 _MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 4_000
-"""Per-message character budget for transcript snippets."""
+"""Per-message character budget for transcript snippets. Anything longer
+is cut off and suffixed with `...(truncated)` before being handed to the
+grader.
+
+Example: a 10,000-character tool output is forwarded as the first 4,000
+characters plus `...(truncated)`, keeping the grader prompt bounded even
+when a single tool call returns a large blob (e.g. a file dump or test
+log).
+"""
 
 _MAX_ITERATIONS_HARD_CAP = 20
 """Hard upper bound for `max_iterations`."""
@@ -91,10 +105,10 @@ The revision message is injected as a `HumanMessage` (the role the model
 follows most reliably), but it carries:
 
 - `name="rubric_grader"` -- visible at the wire on providers that round-trip
-  the `name` field; ignored elsewhere.
+    the `name` field; ignored elsewhere.
 - `additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE}` -- visible
-  to in-process consumers (evals, UIs, observability) so they can attribute
-  the turn to the grader instead of treating it as a real user message.
+    to in-process consumers (evals, UIs, observability) so they can attribute
+    the turn to the grader instead of treating it as a real user message.
 
 This follows the same convention as `SummarizationMiddleware`, which tags
 its synthetic summary messages with `lc_source="summarization"`.
@@ -114,6 +128,14 @@ Allowed `result` values:
 - `failed`: the rubric is malformed, contradictory, or otherwise impossible to evaluate against the transcript.
 
 Be conservative: every criterion you cannot positively confirm should be marked failed with a `gap` describing what evidence would be needed."""
+"""System prompt for the grader sub-agent.
+
+Establishes the grader's role, the `<rubric>` / `<transcript>` payload
+contract, prompt-injection defenses (transcript content is untrusted
+observation, not instructions), and the semantics of each `RubricResult`
+value. Paired with the structured-output `GraderResponse` schema, which
+constrains the grader to one of the allowed `result` values.
+"""
 
 
 class CriterionEval(TypedDict):
@@ -127,7 +149,10 @@ class CriterionEval(TypedDict):
 
     gap: NotRequired[str]
     """When `passed` is False, a short, actionable description of what's
-    missing or incorrect. Omitted when `passed` is True."""
+    missing or incorrect.
+
+    Omitted when `passed` is True.
+    """
 
 
 class RubricEvaluation(TypedDict):
@@ -140,8 +165,10 @@ class RubricEvaluation(TypedDict):
 
     grading_run_id: str
     """Identifier shared by all evaluations within a single grading run.
+
     A new run starts when the caller supplies a different rubric, or when
-    the same rubric is re-invoked after a terminal verdict."""
+    the same rubric is re-invoked after a terminal verdict.
+    """
 
     iteration: int
     """Zero-based index within the current rubric attempt."""

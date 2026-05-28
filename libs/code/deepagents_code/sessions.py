@@ -760,7 +760,7 @@ async def _populate_checkpoint_fields(
             conn, uncached_ids, serde
         )
     # `initial_prompt` cannot be recovered from the latest checkpoint alone:
-    # `after_model` middleware (e.g., `TokenStateMiddleware`) writes partial
+    # `after_model` middleware (e.g., `ResumeStateMiddleware`) writes partial
     # checkpoints whose `channel_values` omit `messages`. Read the very first
     # write to the `messages` channel from the `writes` table instead — that
     # row holds the user's original input.

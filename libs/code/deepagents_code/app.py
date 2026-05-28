@@ -1395,6 +1395,9 @@ class DeepAgentsApp(App):
         self._model_params_override: dict[str, Any] | None = None
         """Per-turn model params override set via `/model --model-params`."""
 
+        self._last_model_unchanged_message: str | None = None
+        """Most recent same-model notice, used to suppress duplicates."""
+
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
         """Status bar widget; populated in `on_mount`."""
@@ -9677,9 +9680,10 @@ class DeepAgentsApp(App):
                 self._model_params_override = extra_kwargs
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
-                    await self._mount_message(
-                        AppMessage(f"Already using {current}{params_suffix}"),
-                    )
+                    message = f"Already using {current}{params_suffix}"
+                    if message != self._last_model_unchanged_message:
+                        await self._mount_message(AppMessage(message))
+                        self._last_model_unchanged_message = message
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
@@ -9718,6 +9722,7 @@ class DeepAgentsApp(App):
                     model=settings.model_name or "",
                 )
 
+            self._last_model_unchanged_message = None
             if not await asyncio.to_thread(save_recent_model, display):
                 await self._mount_message(
                     ErrorMessage(

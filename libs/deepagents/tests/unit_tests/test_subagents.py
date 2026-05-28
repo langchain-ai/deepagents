@@ -10,12 +10,13 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
@@ -326,6 +327,168 @@ class TestSubAgents:
         assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
+
+    def test_private_state_does_not_propagate_between_sibling_subagents(self) -> None:
+        """A private state field should not propagate from one sibling subagent to another."""
+
+        class _LocalPrivateState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        class _LocalPrivateMiddleware(AgentMiddleware[_LocalPrivateState, Any, Any]):
+            state_schema = _LocalPrivateState
+
+            def before_agent(self, state: _LocalPrivateState, _runtime: object) -> dict[str, Any] | None:
+                if "shared_value" in state:
+                    return None
+                return {"shared_value": "seeded"}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Seed the interpreter state",
+                                    "subagent_type": "writer",
+                                },
+                                "id": "call_writer",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Read the interpreter state",
+                                    "subagent_type": "reader",
+                                },
+                                "id": "call_reader",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        writer_model = GenericFakeChatModel(messages=iter([AIMessage(content="writer saw seeded")]))
+        reader_model = GenericFakeChatModel(messages=iter([AIMessage(content="reader saw missing")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="writer",
+                    description="Writes state.",
+                    system_prompt="Write the seeded private state value and report completion.",
+                    model=writer_model,
+                    middleware=[_LocalPrivateMiddleware()],
+                ),
+                SubAgent(
+                    name="reader",
+                    description="Reads state.",
+                    system_prompt="Read the private state value and report what you received.",
+                    model=reader_model,
+                ),
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="run the two subagents")]},
+            config={"configurable": {"thread_id": "test_shared_quickjs_subagents"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        assert "seeded" in tool_messages[0].content
+        assert "missing" in tool_messages[1].content
+
+    def test_private_state_does_not_propagate_from_parent_to_subagent(self) -> None:
+        """A private state field on the parent should not be visible to a child subagent."""
+
+        class _ParentPrivateState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        class _ChildCaptureState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        captured_child_states: list[dict[str, Any]] = []
+
+        class _ChildCaptureMiddleware(AgentMiddleware[_ChildCaptureState, Any, Any]):
+            state_schema = _ChildCaptureState
+
+            def before_agent(self, state: _ChildCaptureState, _runtime: object) -> dict[str, Any] | None:
+                captured_child_states.append(dict(state))
+                return None
+
+        class _ParentSeedMiddleware(AgentMiddleware[_ParentPrivateState, Any, Any]):
+            state_schema = _ParentPrivateState
+
+            def before_agent(self, state: _ParentPrivateState, _runtime: object) -> dict[str, Any] | None:
+                if "shared_value" in state:
+                    return None
+                return {"shared_value": "parent-secret"}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Run the child subagent",
+                                    "subagent_type": "child",
+                                },
+                                "id": "call_child",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        child_model = GenericFakeChatModel(messages=iter([AIMessage(content="child done")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            middleware=[_ParentSeedMiddleware()],
+            subagents=[
+                SubAgent(
+                    name="child",
+                    description="Captures its incoming state.",
+                    system_prompt="Capture the incoming state and complete the task.",
+                    model=child_model,
+                    middleware=[_ChildCaptureMiddleware()],
+                ),
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="run the child subagent")]},
+            config={
+                "configurable": {"thread_id": "test_private_state_parent_to_child"},
+                "metadata": {"shared_value": "parent-secret"},
+            },
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "child done" in tool_messages[0].content
+        assert captured_child_states, "Child subagent should have received state"
+        assert "shared_value" not in captured_child_states[0]
 
     def test_agent_with_structured_output_tool_strategy(self) -> None:
         """Test that an agent with ToolStrategy properly generates structured output.

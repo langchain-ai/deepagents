@@ -405,6 +405,7 @@ class ChatTextArea(TextArea):
         # Remove placeholder if passed, TextArea doesn't support it the same way
         kwargs.pop("placeholder", None)
         super().__init__(**kwargs)
+        self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
         # Buffer quote-prefixed high-frequency key bursts from terminals that
@@ -840,6 +841,11 @@ class ChatTextArea(TextArea):
         if event.key == "enter":
             event.prevent_default()
             event.stop()
+            if (
+                self._chat_input_owner is not None
+                and self._chat_input_owner._handle_stale_slash_enter()
+            ):
+                return
             value = self.text.strip()
             if value:
                 self.post_message(self.Submitted(value))
@@ -1184,6 +1190,7 @@ class ChatInput(Vertical):
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
+        self._text_area._chat_input_owner = self
 
         # Both controllers implement the CompletionController protocol but have
         # different concrete types; the list-item warning is a false positive.
@@ -1557,6 +1564,46 @@ class ChatInput(Vertical):
                 self.mode,
             )
         return max(0, min(mapped, text_len))
+
+    def _handle_stale_slash_enter(self) -> bool:
+        """Refresh stale slash completions during an Enter-key race.
+
+        Returns:
+            `True` when Enter was handled by applying a single visible
+            suggestion or by showing multiple visible suggestions.
+        """
+        if self.mode != "command" or self._text_area is None:
+            return False
+
+        slash_controller = self._slash_controller
+        if slash_controller is None:
+            return False
+
+        if self._text_area._completion_active:
+            return False
+
+        text, cursor = self._completion_text_and_cursor()
+        if not text.startswith("/"):
+            return False
+
+        matches = slash_controller.name_prefix_matches(text, cursor)
+        if not matches:
+            return False
+
+        completion_manager = self._completion_manager
+        if completion_manager is None:
+            logger.warning(
+                "Slash controller is initialized without completion manager; "
+                "stale slash Enter cannot refresh completions."
+            )
+            return False
+
+        completion_manager.on_text_changed(text, cursor)
+        if len(matches) == 1:
+            slash_controller.apply_name_prefix_completion(matches[0], cursor)
+            self._submit_value(self._text_area.text.strip())
+            return True
+        return True
 
     def _submit_value(self, value: str) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.

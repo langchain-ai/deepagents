@@ -39,6 +39,7 @@ class MockSandbox(BaseSandbox):
     def __init__(self) -> None:
         self.last_command: str | None = None
         self._next_output: str = "1"
+        self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
 
@@ -54,8 +55,10 @@ class MockSandbox(BaseSandbox):
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
         output = self._next_output
+        exit_code = self._next_exit_code
         self._next_output = "1"
-        return ExecuteResponse(output=output, exit_code=0, truncated=False)
+        self._next_exit_code = 0
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
         """Simulate the server-side temp-file edit script.
@@ -363,6 +366,137 @@ def test_ls_command_base64_encodes_path() -> None:
     expected_b64 = base64.b64encode(b"/test/dir").decode("ascii")
     assert expected_b64 in sandbox.last_command
     assert "python3 -c" in sandbox.last_command
+
+
+# -- grep tests ---------------------------------------------------------------
+
+
+def test_grep_parses_matches() -> None:
+    """grep() parses path, line number, and matched text from grep output."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/file.txt",
+            "line": 12,
+            "text": "needle here",
+        }
+    ]
+
+
+def test_grep_parses_matches_with_colons_in_filename_and_text() -> None:
+    """grep() handles colon-containing filenames and matched text."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/foo:bar.txt\00012:http://example.com"
+
+    result = sandbox.grep("http", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/foo:bar.txt",
+            "line": 12,
+            "text": "http://example.com",
+        }
+    ]
+
+
+def test_grep_preserves_matches_when_later_output_is_malformed() -> None:
+    """grep() keeps parsed matches when one output line is malformed."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here\nmalformed output"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/file.txt",
+            "line": 12,
+            "text": "needle here",
+        }
+    ]
+
+
+def test_grep_defaults_path_to_current_directory() -> None:
+    """grep() searches the current directory when no path is provided."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "./file.txt\0001:needle"
+
+    result = sandbox.grep("needle")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "./file.txt",
+            "line": 1,
+            "text": "needle",
+        }
+    ]
+    assert sandbox.last_command is not None
+    assert " ." in sandbox.last_command
+
+
+def test_grep_passes_glob_include() -> None:
+    """grep() passes the optional glob through to grep include."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.py\0001:needle"
+
+    result = sandbox.grep("needle", "/test", "*.py")
+
+    assert result.error is None
+    assert sandbox.last_command is not None
+    assert "--include='*.py'" in sandbox.last_command
+
+
+def test_grep_returns_empty_matches_for_successful_empty_output() -> None:
+    """grep() returns no matches when grep succeeds with no output."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == []
+
+
+def test_grep_returns_error_for_backend_exec_failure() -> None:
+    """grep() surfaces container exec failures instead of parsing stderr text."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "OCI runtime exec failed: chdir /does-not-exist: exec failed"
+    sandbox._next_exit_code = 126
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': OCI runtime exec failed: chdir /does-not-exist: exec failed"
+
+
+def test_grep_returns_exit_code_when_backend_exec_failure_has_no_output() -> None:
+    """grep() includes the exit code when the backend failure has no diagnostic."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+    sandbox._next_exit_code = 126
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': exit code 126"
+
+
+def test_grep_returns_error_for_malformed_output_with_zero_exit() -> None:
+    """grep() does not crash if backend diagnostics leak with a zero exit code."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "OCI runtime exec failed: chdir /does-not-exist: exec failed"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': OCI runtime exec failed: chdir /does-not-exist: exec failed"
 
 
 # -- write tests --------------------------------------------------------------
@@ -733,7 +867,7 @@ def test_sandbox_grep_literal_search() -> None:
             # -F can appear as standalone "-F" or combined like "-rHnF"
             assert "-F" in command or "F" in command.split("grep", 1)[1].split(maxsplit=1)[0], "grep should use -F flag for literal search"
             return ExecuteResponse(
-                output="/test/code.py:1:def __init__(self):\n/test/types.py:1:str | int",
+                output="/test/code.py\0001:def __init__(self):\n/test/types.py\0001:str | int",
                 exit_code=0,
                 truncated=False,
             )
@@ -750,9 +884,9 @@ def test_sandbox_grep_literal_search() -> None:
     matches = sandbox.grep("str | int", path="/test").matches
     assert matches is not None
 
-    # Verify the command uses grep -rHnF for literal search (combined flags)
+    # Verify the command uses grep -rHnFZ for literal search and NUL-delimited paths.
     assert sandbox.last_command is not None
-    assert "grep -rHnF" in sandbox.last_command
+    assert "grep -rHnFZ" in sandbox.last_command
 
 
 def test_sandbox_grep_quotes_include_glob() -> None:

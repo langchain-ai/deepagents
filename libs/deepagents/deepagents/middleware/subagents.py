@@ -162,6 +162,13 @@ class CompiledSubAgent(TypedDict):
         This is required for the subagent to communicate results back to
         the main agent.
 
+    !!! note
+
+        `CompiledSubAgent` runnables are used as provided. They do not
+        inherit `create_deep_agent(state_schema=...)`; if the runnable
+        needs custom state fields, compile it with a compatible state
+        schema yourself.
+
     When the subagent completes, the parent reads the returned state:
     if `structured_response` is non-`None`, it is JSON-serialized and used as
     the `ToolMessage` content; otherwise, the last non-empty `AIMessage`
@@ -637,6 +644,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
+        state_schema: Base graph state schema forwarded to declarative
+            `SubAgent` specs when their runnables are compiled.
+
+            Leave unset to use `create_agent`'s default. `CompiledSubAgent`
+            entries are unaffected — callers own those runnables' schemas.
 
     Example:
         ```python
@@ -671,6 +683,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        state_schema: type | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -680,6 +693,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
         self._backend = backend
         self._subagents = subagents
+        self._state_schema = state_schema
         subagent_specs = self._get_subagents()
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
         """Declared subagent names. Public so streamers can discover them
@@ -733,18 +747,20 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+            create_agent_kwargs: dict[str, Any] = {
+                "system_prompt": spec["system_prompt"],
+                "tools": spec["tools"],
+                "middleware": middleware,
+                "name": spec["name"],
+                "response_format": spec.get("response_format"),
+            }
+            if self._state_schema is not None:
+                create_agent_kwargs["state_schema"] = self._state_schema
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
-                    "runnable": create_agent(
-                        model,
-                        system_prompt=spec["system_prompt"],
-                        tools=spec["tools"],
-                        middleware=middleware,
-                        name=spec["name"],
-                        response_format=spec.get("response_format"),
-                    ),
+                    "runnable": create_agent(model, **create_agent_kwargs),
                 }
             )
 

@@ -427,6 +427,95 @@ class TestStartupSequence:
         assert order == ["history", "startup"]
         assert app._startup_sequence_running is False
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"initial_prompt": "hello world"},
+            {"initial_skill": "code-review"},
+        ],
+    )
+    async def test_resumed_model_adopts_before_initial_submission(
+        self,
+        kwargs: dict[str, str],
+    ) -> None:
+        """Resume + startup submission should switch before first agent call."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            **kwargs,  # type: ignore[invalid-argument-type]  # parametrized str kwargs
+        )
+        app._resume_thread_intent = None
+        app._should_adopt_resumed_model = True
+        order: list[str] = []
+
+        async def capture_state(thread_id: str) -> dict[str, object]:  # noqa: RUF029
+            assert thread_id == "thread-123"
+            order.append("state")
+            return {"_model_spec": "anthropic:claude-sonnet-4-5"}
+
+        async def capture_switch(  # noqa: RUF029
+            model_spec: str,
+            *,
+            announce_unchanged: bool = True,
+            persist: bool = True,
+            from_resume: bool = False,
+        ) -> None:
+            assert model_spec == "anthropic:claude-sonnet-4-5"
+            assert announce_unchanged is False
+            assert persist is False
+            assert from_resume is True
+            order.append("switch")
+
+        async def capture_initial_submission() -> None:  # noqa: RUF029
+            order.append("initial")
+
+        app._get_thread_state_values = capture_state  # type: ignore[assignment]
+        app._switch_model = capture_switch  # type: ignore[assignment]
+        app._submit_initial_submission = capture_initial_submission  # type: ignore[assignment]
+        load_history = AsyncMock()
+        app._load_thread_history = load_history  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["state", "switch", "initial"]
+        assert app._should_adopt_resumed_model is False
+        load_history.assert_not_awaited()
+        assert app._startup_sequence_running is False
+
+    async def test_resumed_model_adoption_failure_blocks_initial_submission(
+        self,
+    ) -> None:
+        """State-read failures should not submit into an unverified resume."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello world",
+        )
+        app._resume_thread_intent = None
+        app._should_adopt_resumed_model = True
+        order: list[str] = []
+
+        async def fail_state(thread_id: str) -> dict[str, object]:  # noqa: RUF029
+            assert thread_id == "thread-123"
+            order.append("state")
+            msg = "checkpoint unavailable"
+            raise RuntimeError(msg)
+
+        async def capture_initial_submission() -> None:  # noqa: RUF029
+            order.append("initial")
+
+        app._get_thread_state_values = fail_state  # type: ignore[assignment]
+        app._submit_initial_submission = capture_initial_submission  # type: ignore[assignment]
+        mount_message = AsyncMock()
+        app._mount_message = mount_message  # type: ignore[assignment]
+
+        await app._run_session_start_sequence()
+
+        assert order == ["state"]
+        assert app._should_adopt_resumed_model is False
+        assert app._startup_sequence_running is False
+        mount_message.assert_awaited_once()
+
     async def test_startup_cleanup_defers_queue_until_initial_submission(self) -> None:
         """Queued input should wait until startup submission owns the agent slot."""
         app = DeepAgentsApp(
@@ -6519,6 +6608,95 @@ class TestResolveResumeThread:
 
             assert app._assistant_id == "coder"
             assert app._default_assistant_id == "agent"
+
+    async def test_resume_enables_model_adoption_flag(self) -> None:
+        """Resuming an existing thread arms the one-shot model-adoption flag."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._should_adopt_resumed_model is False
+            app._resume_thread_intent = "some-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._should_adopt_resumed_model is True
+
+    async def test_explicit_model_suppresses_adoption_flag(self) -> None:
+        """`--model` wins over a resumed thread's persisted model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="agent",
+            server_kwargs=None,
+            server_proc=None,
+            model_explicitly_set=True,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._should_adopt_resumed_model is False
+
+    async def test_no_previous_thread_leaves_adoption_flag_unset(self) -> None:
+        """Falling back to a fresh thread must not arm model adoption."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._should_adopt_resumed_model is False
+
+    async def test_most_recent_resume_arms_adoption_flag(self) -> None:
+        """`-r` (most recent) resolving to a thread also arms model adoption.
+
+        Covers the `__MOST_RECENT__` arming site, distinct from the explicit
+        `-r <id>` branch.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._should_adopt_resumed_model is True
 
 
 def _missing_dep_entry(

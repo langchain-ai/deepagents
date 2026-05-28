@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
 
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.5...deepagents-acp==0.0.6) (2026-04-18)

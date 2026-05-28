@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
 
 ## [0.0.4](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.3...langchain-modal==0.0.4) (2026-05-12)

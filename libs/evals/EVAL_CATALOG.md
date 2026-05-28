@@ -122,7 +122,7 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
-- [`test_exact_word_count_and_vowel_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L114) — `tests/evals/test_iterative_constraint_satisfaction.py:114`
+- [`test_exact_word_count_and_z_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L168) — `tests/evals/test_iterative_constraint_satisfaction.py:168`
 
 ## Summarization (`summarization`) (5 evals)
 

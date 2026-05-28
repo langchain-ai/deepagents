@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Deep Agents CLI Changelog
 
 From 0.1.0 onward, `deepagents-cli` only contains `deploy`, `dev`, and `init`.

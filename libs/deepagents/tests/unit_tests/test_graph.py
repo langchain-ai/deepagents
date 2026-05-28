@@ -75,47 +75,6 @@ class TestCreateDeepAgentMetadata:
         assert agent.config is not None
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
 
-    def test_default_state_schema_uses_deep_agent_state(self) -> None:
-        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        fake_agent = MagicMock()
-        fake_agent.with_config.return_value = "compiled-agent"
-
-        with (
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
-            patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
-            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
-        ):
-            result = create_deep_agent(model="testprov:some-model")
-
-        assert result == "compiled-agent"
-        assert mock_create.call_args.kwargs["state_schema"] is _DeepAgentState
-
-    def test_custom_state_schema_passed_through(self) -> None:
-        class MyState(_DeepAgentState):
-            page_url: str
-            file_urls: list[str]
-
-        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        fake_agent = MagicMock()
-        fake_agent.with_config.return_value = "compiled-agent"
-
-        with (
-            patch("deepagents.graph.resolve_model", return_value=fake_model),
-            patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
-            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
-            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
-        ):
-            create_deep_agent(model="testprov:some-model", state_schema=MyState)
-
-        assert mock_create.call_args.kwargs["state_schema"] is MyState
-
 
 class TestProfileForModel:
     """Tests for _harness_profile_for_model."""
@@ -738,6 +697,60 @@ class TestExtraMiddlewareWiring:
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+
+class TestStateSchema:
+    """End-to-end tests for the `state_schema` parameter on `create_deep_agent`."""
+
+    def test_default_state_schema_uses_deep_agent_state(self) -> None:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model")
+
+        assert mock_create.call_args.kwargs["state_schema"] is _DeepAgentState
+
+    def test_custom_state_schema_passed_through(self) -> None:
+        class MyState(_DeepAgentState):
+            page_url: str
+            file_urls: list[str]
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        assert mock_create.call_args.kwargs["state_schema"] is MyState
+
+    def test_custom_state_schema_propagates_to_subagent_middleware(self) -> None:
+        """Custom schema reaches `SubAgentMiddleware` so declarative subagents compile with it."""
+
+        class MyState(_DeepAgentState):
+            page_url: str
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        mw_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
+        assert sub_mw._state_schema is MyState
 
 
 class _OtherStubMW(AgentMiddleware[Any, Any, Any]):

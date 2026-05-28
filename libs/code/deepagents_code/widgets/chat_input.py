@@ -22,6 +22,7 @@ from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_code import theme
+from deepagents_code._debug import configure_debug_logging
 from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -39,6 +40,7 @@ from deepagents_code.widgets.autocomplete import (
 from deepagents_code.widgets.history import HistoryManager
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 
 
 def _default_history_path() -> Path:

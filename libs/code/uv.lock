@@ -3117,7 +3117,7 @@ wheels = [
 [[package]]
 name = "langgraph"
 version = "1.2.2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=nh%2Fsubagent-name-langgraph#8ef9a36d2eaca180cf13ece374f5e88c6d90b65d" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -3171,7 +3171,7 @@ wheels = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.1.1"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=nh%2Fsubagent-name-langgraph#8ef9a36d2eaca180cf13ece374f5e88c6d90b65d" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
@@ -3216,7 +3216,7 @@ inmem = [
 [[package]]
 name = "langgraph-prebuilt"
 version = "1.1.0"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=nh%2Fsubagent-name-langgraph#8ef9a36d2eaca180cf13ece374f5e88c6d90b65d" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -3242,11 +3242,14 @@ wheels = [
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.14"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=nh%2Fsubagent-name-langgraph#8ef9a36d2eaca180cf13ece374f5e88c6d90b65d" }
+version = "0.4.0"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
 dependencies = [
     { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "langchain-protocol" },
     { name = "orjson" },
+    { name = "websockets" },
 ]
 
 [[package]]

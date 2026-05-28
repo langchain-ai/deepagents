@@ -991,6 +991,20 @@ class _StaticHeader(Header):
         event.stop()
 
 
+class _ChatScroll(VerticalScroll):
+    """Chat scroll container that doesn't steal focus when clicked.
+
+    `ScrollableContainer` is focusable by default, so Textual's
+    `Screen._forward_event` walks up from a clicked (non-focusable) message
+    widget to this container and calls `set_focus` on it, de-focusing the chat
+    input's `TextArea`. Setting `FOCUS_ON_CLICK = False` keeps the container
+    focusable (e.g. for keyboard scrolling) while leaving input focus intact
+    when the user clicks a message to expand it.
+    """
+
+    FOCUS_ON_CLICK = False
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1769,8 +1783,9 @@ class DeepAgentsApp(App):
         if is_env_truthy(SHOW_HEADER):
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
-        # VerticalScroll tracks user scroll intent for better auto-scroll behavior
-        with VerticalScroll(id="chat"):
+        # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
+        # `_ChatScroll` keeps clicks on messages from stealing input focus.
+        with _ChatScroll(id="chat"):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,

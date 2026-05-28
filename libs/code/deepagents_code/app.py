@@ -43,7 +43,6 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -91,7 +90,6 @@ from deepagents_code.widgets.status import StatusBar
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (

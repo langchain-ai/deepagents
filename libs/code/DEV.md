@@ -60,9 +60,22 @@ The app runs a `langgraph dev` subprocess for every interactive session. When th
 | Variable | Effect |
 | --- | --- |
 | `DEEPAGENTS_CODE_DEBUG=1` | Preserves the server subprocess log on shutdown and prints its path to stderr. Without this, the log is deleted when the process stops. Also enables the app-process file handler below. Accepts `1`/`true`/`yes`/`on` (case-insensitive) as enabled; `0`/`false`/`no`/`off`/empty/unset as disabled. |
-| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the default path (`/tmp/deepagents_debug.log`) for the app-process file handler, which attaches at `DEBUG` level to `textual_adapter` and `remote_client`. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy.** Useful for diagnosing streaming/client-side issues; does **not** capture the server subprocess. |
+| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the default path (`/tmp/deepagents_debug.log`) for the app-process file handler, which attaches at `DEBUG` level to the `deepagents_code` package logger. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy.** Useful for diagnosing client-side app issues; does **not** capture the server subprocess. |
 
 `DEEPAGENTS_CODE_DEBUG` is what you want for startup crashes (graph init, MCP config, sandbox): the preserved subprocess log contains the real traceback. The optional `DEEPAGENTS_CODE_DEBUG_FILE` override is for post-startup client-side debugging.
+
+To capture client-side logs while reproducing an issue:
+
+```bash
+cd libs/code
+DEEPAGENTS_CODE_DEBUG=1 uv run deepagents-code
+```
+
+Then in another terminal:
+
+```bash
+tail -f /tmp/deepagents_debug.log
+```
 
 ### Finding the server subprocess log
 

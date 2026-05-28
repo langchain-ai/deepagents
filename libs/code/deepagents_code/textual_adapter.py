@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext  # noqa: TC001
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     SessionStats as SessionStats,
@@ -71,7 +70,6 @@ from deepagents_code.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""

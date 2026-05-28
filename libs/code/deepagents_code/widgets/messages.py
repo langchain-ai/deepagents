@@ -1551,7 +1551,7 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_shell_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_shell_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format shell command output.
@@ -1562,18 +1562,40 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
+        char_budget = self._PREVIEW_CHARS if is_preview else None
         parts: list[Content] = []
+        chars_used = 0
+        char_truncated = False
         for i, line in enumerate(lines[:max_lines]):
-            if i == 0 and line.startswith("$ "):
-                parts.append(Content.styled(line, "dim"))
+            display_line = line
+            if char_budget is not None:
+                separator_cost = 1 if parts else 0
+                remaining = char_budget - chars_used - separator_cost
+                if remaining <= 0:
+                    char_truncated = True
+                    break
+                if len(line) > remaining:
+                    display_line = line[:remaining]
+                    char_truncated = True
+                chars_used += separator_cost + len(display_line)
+
+            if i == 0 and display_line.startswith("$ "):
+                parts.append(Content.styled(display_line, "dim"))
             else:
-                parts.append(Content(line))
+                parts.append(Content(display_line))
+            if char_truncated:
+                break
 
         content = Content("\n").join(parts) if parts else Content("")
 
         truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
+        if is_preview:
+            hidden_lines = len(lines) - len(parts)
+            hidden_chars = len(output) - chars_used
+            if char_truncated:
+                truncation = f"{hidden_chars} more chars"
+            elif hidden_lines > 0:
+                truncation = f"{hidden_lines} more lines"
 
         return FormattedOutput(content=content, truncation=truncation)
 

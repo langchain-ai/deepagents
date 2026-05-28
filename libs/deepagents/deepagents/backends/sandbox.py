@@ -778,7 +778,9 @@ except PermissionError:
         search_path = shlex.quote(path or ".")
 
         # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        # `-Z` separates the filename from line data with NUL, so filenames may
+        # contain `:` without making the output ambiguous.
+        grep_opts = "-rHnFZ"
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -791,23 +793,39 @@ except PermissionError:
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
-        output = result.output.rstrip()
+        output = result.output.rstrip("\n")
+        if result.exit_code is not None and result.exit_code != 0:
+            detail = output.strip() if output else f"exit code {result.exit_code}"
+            return GrepResult(error=f"Path '{path or '.'}': {detail}")
         if not output:
             return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
+        parse_error: str | None = None
         for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= 3:  # noqa: PLR2004  # Grep output field count
+            # Format is: path\0line_number:text
+            parts = line.split("\0", 1)
+            if len(parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            line_parts = parts[1].split(":", 1)
+            if len(line_parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            try:
                 matches.append(
                     {
                         "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
+                        "line": int(line_parts[0]),
+                        "text": line_parts[1],
                     }
                 )
+            except ValueError:
+                parse_error = line
+
+        if parse_error is not None and not matches:
+            return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
 
         return GrepResult(matches=matches)
 

@@ -419,28 +419,23 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test line count limiting in read_file tool with very long lines."""
-        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
-        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
-        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
-
-        # Add some normal lines before and after
+        """`limit` bounds source lines; wrapped continuations don't displace later lines."""
+        # 18k chars wraps into 4 rows (2, 2.1, 2.2, 2.3) but still counts as one
+        # source line against `limit`.
+        very_long_line = "x" * 18000
         lines = [
             "short line 0",
-            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            very_long_line,
             "short line 2",
             "short line 3",
             "short line 4",
         ]
         content = "\n".join(lines)
 
-        # Create backend and write file
-
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # Create a fake model that calls read_file with limit=3
-        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        # `limit=3` source lines → lines 1, 2 (all 4 wrapped chunks), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -462,41 +457,28 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Should have the first short line
         assert "short line 0" in file_content
-
-        # Should have the beginning of the very long line (line 2 with continuation)
-        assert "xxx" in file_content  # The very long line should be present
-
-        # Should NOT have the later short lines because the limit cuts off after 3 output lines
-        # (line 1, line 2, line 2.1)
-        assert "short line 2" not in file_content
+        assert "xxx" in file_content
+        # All four wrapped chunks of source line 2 render in order.
+        for marker in ("2\t", "2.1\t", "2.2\t", "2.3\t"):
+            assert marker in file_content, f"missing continuation marker {marker!r}"
+        # Source line 3 is the third source line and must be included.
+        assert "short line 2" in file_content
+        # Source lines 4 and 5 fall outside `limit=3`.
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
-
-        # Count actual lines in the output (excluding empty lines from formatting)
-        output_lines = [line for line in file_content.split("\n") if line.strip()]
-        # Should be at most 3 lines (the limit we specified)
-        # This includes continuation lines as separate lines
-        assert len(output_lines) <= 3
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -1117,32 +1099,19 @@ class TestDeepAgentEndToEnd:
         assert len(file_content) < 85000
 
     def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test the behavior with a single very long line.
+        """`limit` bounds source lines, not formatted rows.
 
-        When a file has a single very long line (e.g., 85,000 chars), it gets split
-        into continuation markers (1, 1.1, 1.2, etc.) by format_content_with_line_numbers.
-
-        The current behavior:
-        - offset works on logical lines (before formatting)
-        - limit applies to formatted output lines (after continuation markers)
-        - This allows pagination through long lines by increasing limit
-        - Limitation: cannot use offset to skip within a long line
-
-        This test verifies:
-        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
-        2. Size-based truncation applies if the formatted output exceeds threshold
+        When a source line is wider than `MAX_LINE_LENGTH`, every continuation
+        chunk for that line is rendered — `limit=1` returns the full set of
+        chunks rather than just the first one. The byte-budget guard still
+        clamps the result when the formatted output exceeds the size cap.
         """
-        # Create a file with a SINGLE very long line (no newlines)
-        # This will be split into ~17 continuation chunks (85000 / 5000)
+        # 85k characters in one line → 17 continuation chunks at 5k each.
         single_long_line = "x" * 85000
-
-        # Create backend and write file
 
         file_path = "/single_long_line.txt"
         starter_files = prepopulate_file(backend, file_path, single_long_line)
 
-        # Create a fake model that calls read_file with limit=1
-        # This should return just 1 formatted line (the first chunk of the long line)
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1164,32 +1133,88 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Verify behavior: with limit=1, we get only the first formatted line
-        # (not all continuation markers)
-        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
-        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
-        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+        # `limit=1` (one source line) renders the wrapped chunks; size cap
+        # still trims when the formatted result exceeds the byte budget.
+        assert "1.1" in file_content
+        assert "Output was truncated due to size limits" in file_content
+        assert len(file_content) <= 80000
 
-        # To get more of the line, the model would need to increase limit, not offset
-        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+    def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
+        """Wrapped long lines must not displace later source lines across pagination.
+
+        Regression for #2453: previously `limit` re-truncated formatted output
+        after wrapping, so a 15k-char line on page 1 pushed `important
+        instruction` off the page, and page 2 resumed past it.
+        """
+        long_line = "x" * 15000
+        content = f"line1\n{long_line}\nimportant instruction\nline4"
+        file_path = "/wrapped.txt"
+        starter_files = prepopulate_file(backend, file_path, content)
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 3},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 3, "limit": 3},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend)
+
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        combined = tool_messages[0].content + tool_messages[1].content
+        assert "important instruction" in combined
+        assert "line4" in combined
+        # All three continuation chunks of the wrapped line 2 must render in
+        # order, before `important instruction`, with nothing dropped at the
+        # page boundary.
+        for marker in ("2\t", "2.1\t", "2.2\t"):
+            assert marker in combined, f"missing continuation marker {marker!r}"
+        idx_first = combined.index("2\t")
+        idx_cont1 = combined.index("2.1\t")
+        idx_cont2 = combined.index("2.2\t")
+        idx_next = combined.index("important instruction")
+        assert idx_first < idx_cont1 < idx_cont2 < idx_next
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.

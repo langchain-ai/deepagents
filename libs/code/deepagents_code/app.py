@@ -1302,7 +1302,7 @@ class DeepAgentsApp(App):
         """Total tool count across MCP servers, displayed in the status bar."""
 
         self._mcp_unauthenticated = sum(
-            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (mcp_server_info or []) if s.needs_attention()
         )
         """MCP servers awaiting a `dcode mcp login` run."""
 
@@ -1310,6 +1310,15 @@ class DeepAgentsApp(App):
             1 for s in (mcp_server_info or []) if s.status == "error"
         )
         """MCP servers that failed to load (config or network error)."""
+
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (mcp_server_info or []) if s.status == "awaiting_reconnect"
+        )
+        """MCP servers that completed OAuth login but are blocked on
+        `/mcp reconnect` before their tools can load.
+
+        See `MCPServerStatus` for the underlying state machine.
+        """
 
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
@@ -1520,6 +1529,17 @@ class DeepAgentsApp(App):
         Covers resumed-history hydration, `--startup-cmd`, and the handoff to
         the first queued or initial submission so user input stays serialized
         until the session reaches its first stable busy/idle state.
+        """
+
+        self._initial_session_started = False
+        """Set on first entry into `_run_session_start_sequence` past gating.
+
+        Server respawns (`/mcp reconnect`, `/restart`) post a fresh
+        `ServerReady`; without this flag the sequence re-runs and
+        `_load_thread_history` bulk-mounts widgets whose IDs already exist in
+        the DOM, raising `DuplicateIds`. Set on entry (not on success) because
+        if `_load_thread_history` partially mounted before failing, retrying
+        would still hit the duplicate-ID path.
         """
 
         # Message queue & store
@@ -1734,6 +1754,7 @@ class DeepAgentsApp(App):
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -2509,10 +2530,13 @@ class DeepAgentsApp(App):
             task.add_done_callback(_log_task_exception)
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
         self._mcp_unauthenticated = sum(
-            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+            1 for s in (event.mcp_server_info or []) if s.needs_attention()
         )
         self._mcp_errored = sum(
             1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "awaiting_reconnect"
         )
 
         # Update welcome banner to show ready state
@@ -2522,6 +2546,7 @@ class DeepAgentsApp(App):
                 self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
+                mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
@@ -4127,6 +4152,17 @@ class DeepAgentsApp(App):
         if self._server_startup_deferred:
             return
 
+        if self._initial_session_started:
+            # Server respawns (e.g. `/mcp reconnect`, `/restart`) fire another
+            # `ServerReady`; rerunning the sequence would attempt to bulk-load
+            # the active thread on top of widgets already mounted in the DOM.
+            logger.debug(
+                "Skipping session start sequence; already initialized for thread %s",
+                self._lc_thread_id,
+            )
+            await self._drain_startup_backlog()
+            return
+
         if self._launch_init_requested:
             self._ensure_launch_init_task()
         launch_init_task = self._launch_init_task
@@ -4134,6 +4170,7 @@ class DeepAgentsApp(App):
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
 
+        self._initial_session_started = True
         self._startup_sequence_running = True
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
@@ -4155,6 +4192,10 @@ class DeepAgentsApp(App):
         finally:
             self._startup_sequence_running = False
 
+        await self._drain_startup_backlog()
+
+    async def _drain_startup_backlog(self) -> None:
+        """Drain deferred actions and queued input after server readiness."""
         if self._agent_running or self._shell_running:
             return
 
@@ -6038,12 +6079,20 @@ class DeepAgentsApp(App):
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
+            try:
+                from deepagents_code.remote_client import format_agent_exception
+
+                error_text = f"Agent error: {format_agent_exception(e)}"
+            except Exception:
+                # The formatter itself must never mask the original error.
+                logger.exception("format_agent_exception failed")
+                error_text = f"Agent error: {e!r}"
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
-                self._ui_adapter.finalize_pending_tools_with_error(f"Agent error: {e}")
+                self._ui_adapter.finalize_pending_tools_with_error(error_text)
             try:
-                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+                await self._mount_message(ErrorMessage(error_text))
             except Exception:
                 logger.debug(
                     "Could not mount error message (app closing?)",
@@ -7721,6 +7770,7 @@ class DeepAgentsApp(App):
                         self._mcp_tool_count,
                         mcp_unauthenticated=self._mcp_unauthenticated,
                         mcp_errored=self._mcp_errored,
+                        mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
                 except NoMatches:
                     pass
@@ -8493,6 +8543,34 @@ class DeepAgentsApp(App):
             self._pending_mcp_disable_reconnect_servers
         )
 
+    def _refresh_welcome_banner_mcp_counts(self) -> None:
+        """Push current MCP counts into the welcome banner when it is mounted."""
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+        except NoMatches:
+            logger.debug("Welcome banner not mounted during MCP count refresh")
+            return
+        banner.set_connected(
+            self._mcp_tool_count,
+            mcp_unauthenticated=self._mcp_unauthenticated,
+            mcp_errored=self._mcp_errored,
+            mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
+        )
+
+    def _clear_mcp_login_reconnect_banner_counts(self, server_name: str) -> None:
+        """Optimistically clear splash login/reconnect prompts before restart.
+
+        Args:
+            server_name: Server whose successful login triggered the reconnect.
+        """
+        self._mcp_unauthenticated = sum(
+            1
+            for s in self._mcp_server_info or []
+            if s.name != server_name and s.needs_attention()
+        )
+        self._mcp_awaiting_reconnect = 0
+        self._refresh_welcome_banner_mcp_counts()
+
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
@@ -8647,7 +8725,8 @@ class DeepAgentsApp(App):
         if new_state:
             self._pending_mcp_disable_reconnect_servers.add(server_name)
             message = (
-                f"MCP server {server_name!r} {verb}. Run `/mcp reconnect` to apply."
+                f"MCP server {server_name!r} {verb}. "
+                "Run `/mcp reconnect` or press Ctrl+R to apply."
             )
         else:
             message = f"MCP server {server_name!r} {verb}."
@@ -8655,7 +8734,7 @@ class DeepAgentsApp(App):
                 self._pending_mcp_disable_reconnect_servers.discard(server_name)
             else:
                 self._pending_mcp_disable_reconnect_servers.add(server_name)
-                message += " Run `/mcp reconnect` to apply."
+                message += " Run `/mcp reconnect` or press Ctrl+R to apply."
         self._sync_pending_mcp_reconnect()
         self.notify(message, markup=False)
         # Refresh the viewer in place so the new status glyph and the
@@ -8746,6 +8825,50 @@ class DeepAgentsApp(App):
                         ),
                     )
         self._mcp_server_info = updated
+
+    def _apply_optimistic_mcp_login_pending_state(self, server_name: str) -> None:
+        """Mark a just-authenticated server as waiting for reconnect.
+
+        OAuth tokens are already persisted at this point, but the running
+        LangGraph server still has the old MCP tool set. This keeps `/mcp`
+        from continuing to label the server as unauthenticated after the
+        user explicitly chose to defer the reconnect.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            return
+
+        updated: list[MCPServerInfo] = []
+        matched = False
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            matched = True
+            updated.append(
+                MCPServerInfo(
+                    name=entry.name,
+                    transport=entry.transport,
+                    status="awaiting_reconnect",
+                    error="Authenticated — run `/mcp reconnect` to load tools.",
+                ),
+            )
+        self._mcp_server_info = updated
+        self._mcp_unauthenticated = sum(
+            1 for s in self._mcp_server_info if s.needs_attention()
+        )
+        self._mcp_errored = sum(1 for s in self._mcp_server_info if s.status == "error")
+        self._mcp_awaiting_reconnect = sum(
+            1 for s in self._mcp_server_info if s.status == "awaiting_reconnect"
+        )
+        if not matched:
+            logger.warning(
+                "MCP login completed for unknown server %r; pending state unchanged",
+                server_name,
+            )
+        self._refresh_welcome_banner_mcp_counts()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Surface login worker failures that escaped the inner error handling."""
@@ -8963,6 +9086,7 @@ class DeepAgentsApp(App):
             )
             self._pending_mcp_login_reconnect = True
             self._sync_pending_mcp_reconnect()
+            self._apply_optimistic_mcp_login_pending_state(server_name)
             self.notify(
                 f"Logged in to {server_name!r} but the reconnect prompt "
                 "failed. Run `/mcp reconnect` when ready to load the new tools.",
@@ -9017,6 +9141,7 @@ class DeepAgentsApp(App):
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
+            self._clear_mcp_login_reconnect_banner_counts(server_name)
             await self._restart_server_for_mcp_refresh(server_name)
             return
 
@@ -9028,6 +9153,7 @@ class DeepAgentsApp(App):
         # an action they didn't take.
         self._pending_mcp_login_reconnect = True
         self._sync_pending_mcp_reconnect()
+        self._apply_optimistic_mcp_login_pending_state(server_name)
         if choice == "later":
             self.notify(
                 f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "

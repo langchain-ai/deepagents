@@ -645,8 +645,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             about how to use the task tool.
         task_description: Custom description for the task tool.
         state_schema: Base graph state schema forwarded to declarative
-            `SubAgent` specs when their runnables are compiled. Leave
-            unset to use `create_agent`'s default. `CompiledSubAgent`
+            `SubAgent` specs when their runnables are compiled.
+
+            Leave unset to use `create_agent`'s default. `CompiledSubAgent`
             entries are unaffected — callers own those runnables' schemas.
 
     Example:

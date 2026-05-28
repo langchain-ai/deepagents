@@ -11,7 +11,9 @@ import httpx
 import pytest
 
 import deepagents_cli.deploy.api_client as api_client_module
+import deepagents_cli.deploy.state as state_module
 from deepagents_cli.deploy.commands import execute_deploy_command
+from deepagents_cli.deploy.state import State
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -25,7 +27,13 @@ def _make_transport(handler: Handler) -> httpx.MockTransport:
 
 
 def _ns(dir_: Path, **overrides: object) -> argparse.Namespace:
-    base = {"dir": str(dir_), "dry_run": False, "detach": True, "reset": False}
+    base = {
+        "dir": str(dir_),
+        "dry_run": False,
+        "detach": True,
+        "reset": False,
+        "yes": False,
+    }
     base.update({k.replace("-", "_"): v for k, v in overrides.items()})
     return argparse.Namespace(**base)
 
@@ -57,6 +65,11 @@ def _seed_project(root: Path) -> None:
         '"runtime": {"model": {"model_id": "anthropic:claude-sonnet-4-6"}}}'
     )
     (root / "AGENTS.md").write_text("You are a test agent.\n")
+
+
+@pytest.fixture(autouse=True)
+def _state_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(state_module, "_STATE_ROOT", tmp_path / "deploy-state")
 
 
 def test_deploy_dry_run_prints_payload(
@@ -112,13 +125,13 @@ def test_deploy_creates_agent_and_writes_state(
 
     execute_deploy_command(_ns(tmp_path))
 
-    state = json.loads((tmp_path / ".deepagents" / "state.json").read_text())
-    assert state["agent_id"] == "a-1"
-    assert state["revision"] == "r-1"
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.agent_id == "a-1"
+    assert state.revision == "r-1"
     assert any(method == "POST" and path.endswith("/agents") for method, path in calls)
 
 
-def test_second_deploy_patches(
+def test_deploy_ignores_project_local_state_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,13 +141,139 @@ def test_second_deploy_patches(
         json.dumps(
             {
                 "schema_version": 1,
-                "agent_id": "a-1",
-                "revision": "r-1",
+                "agent_id": "attacker-controlled",
+                "revision": "old",
                 "endpoint": "https://api.invalid",
                 "last_deployed_at": "2026-05-20T00:00:00+00:00",
                 "mcp_servers": {},
             }
         )
+    )
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/agents"):
+            return httpx.Response(
+                201, json={"id": "a-safe", "revision": "r-1", "name": "test-agent"}
+            )
+        return httpx.Response(500)
+
+    _patch_client(monkeypatch, handler)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    execute_deploy_command(_ns(tmp_path))
+
+    assert requests == [("POST", "/v1/deepagents/agents")]
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.agent_id == "a-safe"
+
+
+def test_deploy_uses_agent_json_agent_id_with_confirmation_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_project(tmp_path)
+    (tmp_path / "agent.json").write_text(
+        '{"name": "test-agent", "agent_id": "a-1", "description": "test"}'
+    )
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/agents/a-1"):
+            return httpx.Response(200, json={"id": "a-1", "name": "remote-agent"})
+        if request.method == "PATCH" and request.url.path.endswith("/agents/a-1"):
+            return httpx.Response(
+                200,
+                json={"id": "a-1", "name": "test-agent", "revision": "agent-r2"},
+            )
+        if request.method == "GET" and request.url.path.endswith("/directories"):
+            return httpx.Response(
+                200,
+                json={
+                    "commit_hash": "c1",
+                    "files": {
+                        "AGENTS.md": {
+                            "type": "file",
+                            "content": "You are a test agent.\n",
+                        },
+                    },
+                },
+            )
+        return httpx.Response(500)
+
+    _patch_client(monkeypatch, handler)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    execute_deploy_command(_ns(tmp_path, yes=True))
+
+    assert requests == [
+        ("GET", "/v1/deepagents/agents/a-1"),
+        ("PATCH", "/v1/deepagents/agents/a-1"),
+        ("GET", "/v1/platform/hub/repos/-/a-1/directories"),
+    ]
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.agent_id == "a-1"
+    assert state.revision == "c1"
+
+
+def test_deploy_agent_json_agent_id_404_does_not_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_project(tmp_path)
+    (tmp_path / "agent.json").write_text(
+        '{"name": "test-agent", "agent_id": "missing", "description": "test"}'
+    )
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/agents/missing"):
+            return httpx.Response(
+                404, json={"code": "not_found", "detail": "gone", "status": 404}
+            )
+        return httpx.Response(500)
+
+    _patch_client(monkeypatch, handler)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    with pytest.raises(SystemExit):
+        execute_deploy_command(_ns(tmp_path, yes=True))
+
+    assert requests == [("GET", "/v1/deepagents/agents/missing")]
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.agent_id is None
+
+
+def test_deploy_reset_with_agent_json_agent_id_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_project(tmp_path)
+    (tmp_path / "agent.json").write_text(
+        '{"name": "test-agent", "agent_id": "a-1", "description": "test"}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        msg = f"unexpected request: {request.method} {request.url.path}"
+        raise AssertionError(msg)
+
+    _patch_client(monkeypatch, handler)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+
+    with pytest.raises(SystemExit):
+        execute_deploy_command(_ns(tmp_path, reset=True, yes=True))
+
+
+def test_second_deploy_patches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_project(tmp_path)
+    State.load(tmp_path, endpoint="https://api.invalid").save(
+        agent_id="a-1", revision="r-1"
     )
 
     requests: list[tuple[str, str]] = []
@@ -184,8 +323,8 @@ def test_second_deploy_patches(
         },
         "parent_commit": "c1",
     }
-    state = json.loads((tmp_path / ".deepagents" / "state.json").read_text())
-    assert state["revision"] == "c2"
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.revision == "c2"
 
 
 def test_deploy_404_falls_back_to_create(
@@ -193,18 +332,8 @@ def test_deploy_404_falls_back_to_create(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_project(tmp_path)
-    (tmp_path / ".deepagents").mkdir()
-    (tmp_path / ".deepagents" / "state.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "agent_id": "stale",
-                "revision": "old",
-                "endpoint": None,
-                "last_deployed_at": "0",
-                "mcp_servers": {},
-            }
-        )
+    State.load(tmp_path, endpoint="https://api.invalid").save(
+        agent_id="stale", revision="old"
     )
 
     methods: list[str] = []
@@ -222,8 +351,8 @@ def test_deploy_404_falls_back_to_create(
 
     execute_deploy_command(_ns(tmp_path))
     assert methods == ["PATCH", "POST"]
-    state = json.loads((tmp_path / ".deepagents" / "state.json").read_text())
-    assert state["agent_id"] == "new"
+    state = State.load(tmp_path, endpoint="https://api.invalid")
+    assert state.agent_id == "new"
 
 
 def _extract_json(stdout: str) -> str:

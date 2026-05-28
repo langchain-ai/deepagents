@@ -35,6 +35,7 @@ def test_load_bare_project_reads_agent_json_and_agents_md() -> None:
     assert proj.backend is None
     assert proj.permissions is None
     assert proj.tools_text is None
+    assert proj.agent_id is None
 
 
 def test_load_missing_agent_json_raises(tmp_path: Path) -> None:
@@ -105,6 +106,20 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
         "visibility": "tenant",
         "tenant_access_level": "read",
     }
+
+
+def test_agent_id_round_trip(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x", "agent_id": "  a-1  "}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.agent_id == "a-1"
+
+
+def test_agent_id_must_be_non_empty_string(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x", "agent_id": ""}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match="agent_id"):
+        Project.load(tmp_path)
 
 
 def test_runtime_backend_type_raises_migration_error(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents_cli.deploy.api_client import ApiClient
+    from deepagents_cli.deploy.state import State
 
 _BETA_WARNING = (
     "\033[33mWarning: `deepagents deploy` is in beta. "
@@ -157,6 +158,11 @@ def _add_deploy_parser(
         action="store_true",
         help="Discard local state and create a fresh agent",
     )
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm deploy target changes without prompting",
+    )
 
 
 def execute_deploy_command(args: argparse.Namespace) -> None:
@@ -186,11 +192,10 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
 
-    state = State.load(root, reset=args.reset)
     create_payload = build_payload(project, mode="create")
     metadata_payload = build_metadata_payload(project)
     directory_files = build_directory_files(project)
-    agent_payload = metadata_payload if state.agent_id else create_payload
+    agent_payload = metadata_payload if project.agent_id else create_payload
 
     if args.dry_run:
         directory_entries = {
@@ -209,7 +214,30 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
         return
 
     client = ApiClient.from_env()
-    state.endpoint = client.endpoint
+    if args.reset and project.agent_id:
+        print(
+            "Error: --reset cannot create a fresh agent while agent.json declares "
+            f"agent_id {project.agent_id!r}. Remove agent_id or deploy without --reset."
+        )
+        raise SystemExit(1)
+    try:
+        state = State.load(root, endpoint=client.endpoint, reset=args.reset)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
+
+    target_agent_id = project.agent_id or state.agent_id
+    if project.agent_id:
+        try:
+            _confirm_agent_json_target(
+                client,
+                project.agent_id,
+                state,
+                assume_yes=args.yes,
+            )
+        except ApiError as exc:
+            print(f"Error: {exc}")
+            raise SystemExit(1) from None
 
     try:
         state.mcp_servers = resolve_referenced_servers(
@@ -222,10 +250,11 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
     try:
         agent, revision = _deploy_agent(
             client,
-            state.agent_id,
+            target_agent_id,
             create_payload=create_payload,
             metadata_payload=metadata_payload,
             directory_files=directory_files,
+            allow_create_on_missing=project.agent_id is None,
         )
     except ApiError as exc:
         print(f"Error: {exc}")
@@ -241,6 +270,38 @@ def execute_deploy_command(args: argparse.Namespace) -> None:
     )
 
 
+def _confirm_agent_json_target(
+    client: ApiClient,
+    agent_id: str,
+    state: State,
+    *,
+    assume_yes: bool,
+) -> None:
+    """Confirm first use of an `agent_id` declared by project configuration."""
+    if state.agent_id == agent_id:
+        return
+
+    agent = client.get_agent(agent_id, include_files=False)
+    name = agent.get("name") if isinstance(agent.get("name"), str) else "<unnamed>"
+    if assume_yes:
+        print(f"Using agent_id from agent.json: {agent_id} ({name})")
+        return
+
+    try:
+        prompt = (
+            f"Deploy to agent {name} ({agent_id}) from agent.json? "
+            "This will update that remote agent. [y/N]: "
+        )
+        answer = input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("Aborted.")
+        raise SystemExit(1) from None
+    if answer not in {"y", "yes"}:
+        print("Aborted.")
+        raise SystemExit(1)
+
+
 def _deploy_agent(
     client: ApiClient,
     agent_id: str | None,
@@ -248,6 +309,7 @@ def _deploy_agent(
     create_payload: dict[str, Any],
     metadata_payload: dict[str, Any],
     directory_files: dict[str, str],
+    allow_create_on_missing: bool = True,
 ) -> tuple[dict[str, Any], str | None]:
     """Create the agent or patch metadata and sync managed files."""
     from deepagents_cli.deploy.api_client import ApiError
@@ -256,7 +318,7 @@ def _deploy_agent(
         try:
             agent = client.patch_agent(agent_id, metadata_payload)
         except ApiError as exc:
-            if exc.status == 404:  # noqa: PLR2004
+            if exc.status == 404 and allow_create_on_missing:  # noqa: PLR2004
                 print(f"Note: agent {agent_id} no longer exists — creating a new one.")
             else:
                 raise

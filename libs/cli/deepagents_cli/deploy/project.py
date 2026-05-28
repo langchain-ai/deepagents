@@ -142,6 +142,7 @@ class Project:
     """In-memory view of the on-disk project."""
 
     root: Path
+    agent_id: str | None
     name: str
     description: str | None
     system_prompt: str
@@ -170,6 +171,7 @@ class Project:
 
         return cls(
             root=root,
+            agent_id=agent_data.get("agent_id"),
             name=agent_data["name"],
             description=agent_data.get("description"),
             system_prompt=system_prompt,
@@ -205,6 +207,13 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
     if not isinstance(name, str) or not name.strip():
         msg = f"`name` (non-empty string) is required in {path}."
         raise ProjectError(msg)
+
+    agent_id = data.get("agent_id")
+    if agent_id is not None:
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            msg = f"{path}: `agent_id` must be a non-empty string when provided."
+            raise ProjectError(msg)
+        data["agent_id"] = agent_id.strip()
 
     runtime = data.get("runtime")
     if runtime is not None:

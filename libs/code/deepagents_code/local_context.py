@@ -62,17 +62,26 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
 
     for server in servers:
         if not server.tools:
-            status = getattr(server, "status", None)
-            error = getattr(server, "error", None)
-            if status in {"error", "unauthenticated"}:
-                detail = f"FAILED TO LOAD — {error or status}"
+            # `status`/`error` always exist on the frozen dataclass; the
+            # `__post_init__` invariant guarantees a non-`ok` status carries a
+            # non-`None` error, so `server.error` is safe to interpolate below.
+            if server.status in {"error", "unauthenticated"}:
                 lines.append(
-                    f"- **{server.name}** ({server.transport}): {detail}. "
+                    f"- **{server.name}** ({server.transport}): "
+                    f"FAILED TO LOAD — {server.error}. "
                     "Treat this integration as temporarily unavailable; "
                     "tell the user the server failed to load and suggest "
                     "re-auth or restarting the MCP server."
                 )
+            elif server.status == "disabled":
+                lines.append(
+                    f"- **{server.name}** ({server.transport}): (disabled by user)"
+                )
             else:
+                # `ok` with no tools (genuinely empty). `awaiting_reconnect` is a
+                # transient UI-only status that never reaches this function (the
+                # middleware is always built from a fresh preload), but it would
+                # also render benignly here.
                 lines.append(
                     f"- **{server.name}** ({server.transport}): (no tools registered)"
                 )

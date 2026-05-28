@@ -1490,6 +1490,40 @@ class TestBuildMcpContext:
         )
         assert _build_mcp_context([clean]) != _build_mcp_context([failed])
 
+    def test_disabled_server_renders_distinctly(self) -> None:
+        """A user-disabled server is labeled as such, not as empty or failed."""
+        server = MCPServerInfo(
+            name="slack",
+            transport="http",
+            tools=(),
+            status="disabled",
+            error="Disabled via /mcp",
+        )
+        result = _build_mcp_context([server])
+        assert "**slack** (http): (disabled by user)" in result
+        # A deliberately-disabled server is neither a failure nor a benign empty,
+        # so it must not borrow either of those renderings (which would tell the
+        # model to re-auth/restart, or imply tools could appear).
+        assert "FAILED TO LOAD" not in result
+        assert "(no tools registered)" not in result
+
+    def test_awaiting_reconnect_renders_benignly(self) -> None:
+        """Render `awaiting_reconnect` benignly, never as a load failure.
+
+        This status is UI-only and shouldn't reach this function, but if it
+        ever does it must not be surfaced to the model as a failure.
+        """
+        server = MCPServerInfo(
+            name="slack",
+            transport="http",
+            tools=(),
+            status="awaiting_reconnect",
+            error="Authenticated — run `/mcp reconnect` to load tools.",
+        )
+        result = _build_mcp_context([server])
+        assert "**slack** (http): (no tools registered)" in result
+        assert "FAILED TO LOAD" not in result
+
     def test_long_tool_list_truncated(self) -> None:
         names = [f"tool_{i}" for i in range(15)]
         server = _make_server("big", "stdio", names)

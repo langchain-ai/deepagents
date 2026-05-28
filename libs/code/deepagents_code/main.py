@@ -1217,6 +1217,7 @@ async def run_textual_cli_async(
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
+            model_explicitly_set=model_name is not None,
             defer_server_start=defer_server_start,
         )
     except Exception as e:

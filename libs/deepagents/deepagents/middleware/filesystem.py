@@ -350,7 +350,7 @@ Usage:
     - Only omit limit (read full file) when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
+- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
@@ -844,11 +844,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
-        def _truncate(content: str, file_path: str, limit: int) -> str:
-            lines = content.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                content = "".join(lines)
+        def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
+            if line_limit is not None:
+                lines = content.splitlines(keepends=True)
+                if len(lines) > line_limit:
+                    content = "".join(lines[:line_limit])
 
             if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
@@ -877,7 +877,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
                 # Legacy backends already format with line numbers
                 return ToolMessage(
-                    content=_truncate(read_result, validated_path, limit),
+                    content=_truncate(read_result, validated_path, line_limit=limit),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="success",
@@ -922,10 +922,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
-            # We apply truncation again after formatting content as continuation lines
-            # can increase line count
+            # `limit` already bounded raw source lines at the backend; do not
+            # re-truncate by row count here, or wrapped continuation rows would
+            # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate(content, validated_path, limit),
+                content=_truncate(content, validated_path),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

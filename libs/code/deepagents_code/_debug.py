@@ -10,17 +10,27 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from deepagents_code._env_vars import DEBUG, DEBUG_FILE, is_env_truthy
+
+_DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
 
 
 def configure_debug_logging(target: logging.Logger) -> None:
     """Attach a file handler to *target* when `DEEPAGENTS_CODE_DEBUG` is set.
 
+    Intended to be called once on the `deepagents_code` package logger; child
+    module loggers reach the same file via propagation, so individual modules do
+    not configure logging themselves.
+
     The log file defaults to `'/tmp/deepagents_debug.log'` but can be overridden
-    with `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends so that multiple
-    modules share the same log file across a session.
+    with `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends (`mode='a'`) so logs
+    are preserved across separate process runs. Calling this again with the same
+    resolved path is a no-op: the existing tagged handler is reused rather than
+    stacking duplicates. If the resolved path changes, the stale handler is
+    closed and replaced.
 
     Does nothing when `DEEPAGENTS_CODE_DEBUG` is not truthy (see `is_env_truthy`).
 
@@ -36,16 +46,30 @@ def configure_debug_logging(target: logging.Logger) -> None:
             "/tmp/deepagents_debug.log",  # noqa: S108
         )
     )
+    for existing in list(target.handlers):
+        if not (
+            isinstance(existing, logging.FileHandler)
+            and getattr(existing, _DEBUG_HANDLER_ATTR, False)
+        ):
+            continue
+        if Path(existing.baseFilename) == debug_path:
+            # Already configured for this path; reuse rather than duplicate.
+            target.setLevel(logging.DEBUG)
+            return
+        # The debug path changed; drop the stale handler before re-attaching so
+        # we don't leak its file descriptor or fan logs out to two files.
+        target.removeHandler(existing)
+        existing.close()
+
     try:
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:
-        import sys
-
         print(  # noqa: T201
             f"Warning: could not open debug log file {debug_path}: {exc}",
             file=sys.stderr,
         )
         return
+    setattr(handler, _DEBUG_HANDLER_ATTR, True)
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(message)s"))
     target.addHandler(handler)

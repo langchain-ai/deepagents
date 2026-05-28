@@ -43,7 +43,6 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -91,7 +90,6 @@ from deepagents_code.widgets.status import StatusBar
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -775,6 +773,10 @@ class _ThreadHistoryPayload:
     context_tokens: int
     """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
 
+    model_spec: str
+    """Persisted `_model_spec` from the checkpoint, or `""` for legacy threads
+    saved before model persistence existed."""
+
 
 def _new_thread_id() -> str:
     """Deferred-import wrapper around `sessions.generate_thread_id`.
@@ -989,6 +991,20 @@ class _StaticHeader(Header):
         event.stop()
 
 
+class _ChatScroll(VerticalScroll):
+    """Chat scroll container that doesn't steal focus when clicked.
+
+    `ScrollableContainer` is focusable by default, so Textual's
+    `Screen._forward_event` walks up from a clicked (non-focusable) message
+    widget to this container and calls `set_focus` on it, de-focusing the chat
+    input's `TextArea`. Setting `FOCUS_ON_CLICK = False` keeps the container
+    focusable (e.g. for keyboard scrolling) while leaving input focus intact
+    when the user clicks a message to expand it.
+    """
+
+    FOCUS_ON_CLICK = False
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1101,6 +1117,7 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        model_explicitly_set: bool = False,
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
@@ -1154,6 +1171,11 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            model_explicitly_set: Whether the user passed `--model` on the
+                command line.
+
+                When `True`, an explicit choice wins over the model persisted
+                in a resumed thread (no resume adoption).
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
@@ -1370,6 +1392,20 @@ class DeepAgentsApp(App):
         first paint; consumed by the startup worker and reset to `None`.
         """
 
+        self._model_explicitly_set = model_explicitly_set
+        """Whether `--model` was passed on the command line.
+
+        Suppresses adopting a resumed thread's persisted model.
+        """
+
+        self._should_adopt_resumed_model = False
+        """One-shot flag set by `_resolve_resume_thread` when an existing
+        thread is resumed without an explicit `--model`.
+
+        Consumed before the first resumed agent turn to adopt the thread's
+        persisted model.
+        """
+
         raw = (server_kwargs or {}).get("sandbox_type")
         """Raw argparse sandbox value from `server_kwargs` before normalization.
 
@@ -1529,6 +1565,17 @@ class DeepAgentsApp(App):
         Covers resumed-history hydration, `--startup-cmd`, and the handoff to
         the first queued or initial submission so user input stays serialized
         until the session reaches its first stable busy/idle state.
+        """
+
+        self._initial_session_started = False
+        """Set on first entry into `_run_session_start_sequence` past gating.
+
+        Server respawns (`/mcp reconnect`, `/restart`) post a fresh
+        `ServerReady`; without this flag the sequence re-runs and
+        `_load_thread_history` bulk-mounts widgets whose IDs already exist in
+        the DOM, raising `DuplicateIds`. Set on entry (not on success) because
+        if `_load_thread_history` partially mounted before failing, retrying
+        would still hit the duplicate-ID path.
         """
 
         # Message queue & store
@@ -1736,8 +1783,9 @@ class DeepAgentsApp(App):
         if is_env_truthy(SHOW_HEADER):
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
-        # VerticalScroll tracks user scroll intent for better auto-scroll behavior
-        with VerticalScroll(id="chat"):
+        # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
+        # `_ChatScroll` keeps clicks on messages from stealing input focus.
+        with _ChatScroll(id="chat"):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
@@ -2325,6 +2373,7 @@ class DeepAgentsApp(App):
                         if self._server_kwargs:
                             self._server_kwargs["assistant_id"] = agent_name
                     self._lc_thread_id = thread_id
+                    self._should_adopt_resumed_model = not self._model_explicitly_set
                 else:
                     self._lc_thread_id = generate_thread_id()
                     if agent_filter:
@@ -2334,6 +2383,7 @@ class DeepAgentsApp(App):
                     self.notify(msg, severity="warning", markup=False)
             elif await thread_exists(resume):
                 self._lc_thread_id = resume
+                self._should_adopt_resumed_model = not self._model_explicitly_set
                 if self._assistant_id == default_agent:
                     agent_name = await get_thread_agent(resume)
                     if agent_name:
@@ -4141,6 +4191,17 @@ class DeepAgentsApp(App):
         if self._server_startup_deferred:
             return
 
+        if self._initial_session_started:
+            # Server respawns (e.g. `/mcp reconnect`, `/restart`) fire another
+            # `ServerReady`; rerunning the sequence would attempt to bulk-load
+            # the active thread on top of widgets already mounted in the DOM.
+            logger.debug(
+                "Skipping session start sequence; already initialized for thread %s",
+                self._lc_thread_id,
+            )
+            await self._drain_startup_backlog()
+            return
+
         if self._launch_init_requested:
             self._ensure_launch_init_task()
         launch_init_task = self._launch_init_task
@@ -4148,6 +4209,7 @@ class DeepAgentsApp(App):
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
 
+        self._initial_session_started = True
         self._startup_sequence_running = True
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
@@ -4156,6 +4218,24 @@ class DeepAgentsApp(App):
             )
             if should_load_history:
                 await self._load_thread_history()
+            elif self._has_initial_submission():
+                try:
+                    await self._adopt_resumed_model_if_needed(
+                        thread_id=self._lc_thread_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to adopt resumed model for %s before startup "
+                        "submission",
+                        self._lc_thread_id,
+                    )
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Could not read the resumed thread state. "
+                            "Startup prompt was not submitted."
+                        ),
+                    )
+                    return
 
             if self._startup_cmd:
                 cmd = self._startup_cmd
@@ -4169,6 +4249,10 @@ class DeepAgentsApp(App):
         finally:
             self._startup_sequence_running = False
 
+        await self._drain_startup_backlog()
+
+    async def _drain_startup_backlog(self) -> None:
+        """Drain deferred actions and queued input after server readiness."""
         if self._agent_running or self._shell_running:
             return
 
@@ -6007,6 +6091,24 @@ class DeepAgentsApp(App):
         self._server_startup_deferred_notice_shown = True
         await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
 
+    def _effective_model_spec(self) -> str | None:
+        """Return the `provider:model` spec in effect for the next invocation.
+
+        Prefers a per-session `/model` override; otherwise falls back to the
+        startup-resolved model from `settings`. Returns `None` when neither
+        yields a usable spec (e.g. credentials not yet configured), so
+        `ResumeStateMiddleware` records nothing rather than a malformed spec.
+        """
+        if self._model_override:
+            return self._model_override
+        from deepagents_code.config import settings
+
+        provider = settings.model_provider or ""
+        model = settings.model_name or ""
+        if provider and model:
+            return f"{provider}:{model}"
+        return None
+
     async def _run_agent_task(
         self,
         message: str,
@@ -6047,6 +6149,7 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    effective_model=self._effective_model_spec(),
                 ),
                 turn_stats=turn_stats,
             )
@@ -6305,18 +6408,20 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
-            Payload containing converted message data and the persisted
-            context-token count.
+            Payload containing converted message data, the persisted
+            context-token count, and the persisted model spec (if any).
         """
         state_values = await self._get_thread_state_values(thread_id)
         raw_tokens = state_values.get("_context_tokens")
         context_tokens = (
             raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
         )
+        raw_spec = state_values.get("_model_spec")
+        model_spec = raw_spec if isinstance(raw_spec, str) else ""
         messages = state_values.get("messages", [])
 
         if not messages:
-            return _ThreadHistoryPayload([], context_tokens)
+            return _ThreadHistoryPayload([], context_tokens, model_spec)
 
         # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
@@ -6327,7 +6432,37 @@ class DeepAgentsApp(App):
 
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        return _ThreadHistoryPayload(data, context_tokens)
+        return _ThreadHistoryPayload(data, context_tokens, model_spec)
+
+    async def _adopt_resumed_model_if_needed(
+        self,
+        *,
+        model_spec: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Adopt a resumed thread's persisted model for this session only.
+
+        Args:
+            model_spec: Already-fetched `_model_spec`, when available.
+            thread_id: Thread ID to fetch `_model_spec` from if needed.
+        """
+        if not self._should_adopt_resumed_model:
+            return
+
+        self._should_adopt_resumed_model = False
+        spec = model_spec
+        if spec is None and thread_id:
+            state_values = await self._get_thread_state_values(thread_id)
+            raw_spec = state_values.get("_model_spec")
+            spec = raw_spec if isinstance(raw_spec, str) else ""
+
+        if spec:
+            await self._switch_model(
+                spec,
+                announce_unchanged=False,
+                persist=False,
+                from_resume=True,
+            )
 
     async def _upgrade_thread_message_link(
         self,
@@ -6430,6 +6565,16 @@ class DeepAgentsApp(App):
                 if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
+            # Adopt the resumed thread's model (session-only) so the session
+            # continues on the model it was last using, not the global default.
+            # One-shot: only on the initial `-r` resume, never on in-session
+            # thread switches, and never when `--model` was passed explicitly.
+            # Runs before the empty-history early return so the flag is always
+            # consumed on this first load — otherwise a legacy thread (no
+            # persisted spec) could leave it armed for a later in-session
+            # `/threads` switch.
+            await self._adopt_resumed_model_if_needed(model_spec=payload.model_spec)
+
             if not payload.messages:
                 return
 
@@ -9476,6 +9621,11 @@ class DeepAgentsApp(App):
                 warn_if_missing=False,
             )
 
+            # Adopt the switched-to thread's model (session-only), mirroring
+            # launch-time `-r` resume — unless `--model` pinned an explicit
+            # choice for this session. Consumed by `_load_thread_history`.
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+
             # Load thread history
             await self._load_thread_history(
                 thread_id=thread_id,
@@ -9526,12 +9676,36 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
+    async def _mount_resume_adoption_failure(
+        self, desired: str, reason: str, *, hint: str = ""
+    ) -> None:
+        """Tell the user a resumed thread's model couldn't be restored.
+
+        Unlike the interactive `/model` errors, this names the desired model,
+        the reason, and the model the session is falling back to — so a `-r`
+        resume that can't restore its model doesn't silently switch the user
+        onto a different one.
+
+        Args:
+            desired: The `provider:model` spec the resumed thread wanted.
+            reason: Short human-readable cause (e.g. missing credentials).
+            hint: Optional trailing remediation hint.
+        """
+        current = self._effective_model_spec()
+        fallback = f"; continuing on {current}." if current else "."
+        body = f"Couldn't restore this thread's model {desired} ({reason}){fallback}"
+        if hint:
+            body += f" {hint}"
+        await self._mount_message(ErrorMessage(body))
+
     async def _switch_model(
         self,
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
         announce_unchanged: bool = True,
+        persist: bool = True,
+        from_resume: bool = False,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -9549,6 +9723,18 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
             announce_unchanged: Whether to mount a message when the requested
                 model is already active.
+            persist: Whether to write the model to the user's recent/default
+                config.
+
+                Set `False` for session-only switches (e.g. adopting a
+                resumed thread's model) so a one-off resume does not redefine
+                the user's persisted default.
+            from_resume: Whether this switch is auto-adopting a resumed thread's
+                model.
+
+                When `True`, failures are reported with resume-specific
+                messaging (which model couldn't be restored and what the session
+                is falling back to) rather than the interactive `/model` errors.
         """
         from deepagents_code.config import create_model, detect_provider, settings
         from deepagents_code.model_config import (
@@ -9583,6 +9769,8 @@ class DeepAgentsApp(App):
                                 model_spec,
                                 extra_kwargs=extra_kwargs,
                                 announce_unchanged=announce_unchanged,
+                                persist=persist,
+                                from_resume=from_resume,
                             ),
                         ),
                     )
@@ -9619,13 +9807,20 @@ class DeepAgentsApp(App):
             # Check credentials
             auth_status = get_provider_auth_status(provider) if provider else None
             if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, then "
-                        f"re-issue `/model {model_spec}`.",
-                    ),
-                )
+                if from_resume:
+                    await self._mount_resume_adoption_failure(
+                        model_spec,
+                        f"missing credentials for '{auth_status.provider}'",
+                        hint=f"Run `/auth` then `/model {model_spec}` to use it.",
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                            f"Run `/auth` for the '{auth_status.provider}' provider, "
+                            f"then re-issue `/model {model_spec}`.",
+                        ),
+                    )
                 return
             if (
                 auth_status is not None
@@ -9674,9 +9869,14 @@ class DeepAgentsApp(App):
                 result.apply_to_settings()
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
-                await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc)),
-                )
+                if from_resume:
+                    await self._mount_resume_adoption_failure(
+                        display, "the model could not be initialized"
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(_build_model_switch_error_body(exc)),
+                    )
                 return
 
             # Set the model override for ConfigurableModelMiddleware.
@@ -9691,7 +9891,14 @@ class DeepAgentsApp(App):
                     model=settings.model_name or "",
                 )
 
-            if not await asyncio.to_thread(save_recent_model, display):
+            params_suffix = _format_model_params(extra_kwargs)
+            if not persist:
+                # Session-only switch (e.g. adopting a resumed thread's model):
+                # announce but never touch the user's persisted recent/default.
+                await self._mount_message(
+                    AppMessage(f"Switched to {display}{params_suffix}"),
+                )
+            elif not await asyncio.to_thread(save_recent_model, display):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
@@ -9699,17 +9906,18 @@ class DeepAgentsApp(App):
                     ),
                 )
             else:
-                params_suffix = _format_model_params(extra_kwargs)
                 await self._mount_message(
                     AppMessage(f"Switched to {display}{params_suffix}"),
                 )
-            # Best-effort MRU update for the `/model` Recent section.
-            # `display` may be a bare model name when provider auto-detection
-            # fails; use the post-resolution spec so touch_recent_model always
-            # gets a valid "provider:model" string. Silent on failure —
-            # debug log captures it when DEEPAGENTS_CODE_DEBUG=1.
-            resolved_spec = f"{result.provider}:{result.model_name}"
-            await asyncio.to_thread(touch_recent_model, resolved_spec)
+            if persist:
+                # Best-effort MRU update for the `/model` Recent section.
+                # `display` may be a bare model name when provider
+                # auto-detection fails; use the post-resolution spec so
+                # touch_recent_model always gets a valid "provider:model"
+                # string. Silent on failure — the debug log captures it when
+                # debug logging is enabled.
+                resolved_spec = f"{result.provider}:{result.model_name}"
+                await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",
                 display,
@@ -9930,6 +10138,7 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    model_explicitly_set: bool = False,
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
@@ -9976,6 +10185,11 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        model_explicitly_set: Whether the user passed `--model` on the command
+            line.
+
+            When `True`, the explicit choice wins over a resumed thread's
+            persisted model (no resume adoption).
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
@@ -10005,6 +10219,7 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        model_explicitly_set=model_explicitly_set,
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,

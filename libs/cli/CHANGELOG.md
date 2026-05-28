@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Deep Agents CLI Changelog
 
 From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and

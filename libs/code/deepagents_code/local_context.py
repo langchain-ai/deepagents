@@ -64,7 +64,7 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
         if not server.tools:
             status = getattr(server, "status", None)
             error = getattr(server, "error", None)
-            if status in ("error", "unauthenticated"):
+            if status in {"error", "unauthenticated"}:
                 detail = f"FAILED TO LOAD — {error or status}"
                 lines.append(
                     f"- **{server.name}** ({server.transport}): {detail}. "
@@ -74,8 +74,7 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
                 )
             else:
                 lines.append(
-                    f"- **{server.name}** ({server.transport}): "
-                    "(no tools registered)"
+                    f"- **{server.name}** ({server.transport}): (no tools registered)"
                 )
             continue
 

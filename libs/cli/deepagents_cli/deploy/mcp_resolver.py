@@ -69,6 +69,7 @@ def resolve_referenced_servers(
 
     out: dict[str, str] = {}
     uninvokable: set[str] = set()
+    connect_hints: list[str] = []
     for server in client.list_mcp_servers():
         url = server.get("url")
         if isinstance(url, str) and url:
@@ -76,6 +77,14 @@ def resolve_referenced_servers(
             server_id = server.get("id")
             if key in referenced and server.get("can_invoke") is False:
                 uninvokable.add(key)
+                if (
+                    server.get("auth_type") == "oauth"
+                    and isinstance(server_id, str)
+                    and server_id
+                ):
+                    connect_hints.append(
+                        f"  deepagents mcp-servers connect {server_id}"
+                    )
             elif key in referenced and isinstance(server_id, str):
                 out[key] = server_id
 
@@ -85,8 +94,16 @@ def resolve_referenced_servers(
         msg = (
             "The following MCP server URLs referenced in your tools are "
             f"registered but this identity cannot invoke them:\n{listed}\n\n"
-            "Update MCP server permissions or reference a server this identity "
-            "can invoke."
+        )
+        if connect_hints:
+            hints = "\n".join(sorted(set(connect_hints)))
+            msg += (
+                "If these servers use OAuth, connect your user credentials with:\n"
+                f"{hints}\n\n"
+            )
+        msg += (
+            "Otherwise update MCP server permissions or reference a server this "
+            "identity can invoke."
         )
         raise UninvokableServersError(msg, urls=urls)
 

@@ -229,6 +229,7 @@ class ApiClient:
         url: str,
         headers: list[dict[str, str]] | None = None,
         auth_type: str = "headers",
+        oauth_mode: str | None = None,
     ) -> dict[str, Any]:
         """Register a new MCP server in this workspace."""
         payload: dict[str, Any] = {
@@ -238,6 +239,8 @@ class ApiClient:
         }
         if headers:
             payload["headers"] = headers
+        if oauth_mode is not None:
+            payload["oauth_mode"] = oauth_mode
         return self._request("POST", f"{_DEPLOY_PATH}/mcp-servers", json=payload)
 
     def update_mcp_server(
@@ -263,6 +266,45 @@ class ApiClient:
     def delete_mcp_server(self, mcp_server_id: str) -> None:
         """Delete an MCP server by ID."""
         self._request("DELETE", f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}")
+
+    def register_mcp_oauth_provider(self, mcp_server_id: str) -> dict[str, Any]:
+        """Register the caller's per-user OAuth provider for an MCP server."""
+        return self._request(
+            "POST",
+            f"{_DEPLOY_PATH}/mcp-servers/{mcp_server_id}/oauth-provider",
+            json={},
+        )
+
+    def create_auth_session(
+        self,
+        *,
+        provider_id: str,
+        scopes: list[str],
+        strategy: str,
+    ) -> dict[str, Any]:
+        """Start an OAuth authorization session for the caller."""
+        return self._request(
+            "POST",
+            f"{_DEPLOY_PATH}/auth-sessions",
+            json={
+                "provider_id": provider_id,
+                "scopes": scopes,
+                "strategy": strategy,
+            },
+        )
+
+    def get_auth_session(
+        self,
+        session_id: str,
+        *,
+        wait_seconds: int,
+    ) -> dict[str, Any]:
+        """Fetch or long-poll an OAuth authorization session."""
+        return self._request(
+            "GET",
+            f"{_DEPLOY_PATH}/auth-sessions/{session_id}",
+            params={"wait_seconds": wait_seconds},
+        )
 
     # --- hub directories -------------------------------------------------
 

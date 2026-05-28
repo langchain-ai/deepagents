@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -438,7 +439,13 @@ def _add_mcp_servers_parser(
     a.add_argument("--url", required=True)
     a.add_argument("--name", default=None)
     a.add_argument("--header", action="append", default=[], metavar="KEY=VALUE")
-    a.add_argument("--auth-type", default="headers", choices=["headers"])
+    a.add_argument("--auth-type", default="headers", choices=["headers", "oauth"])
+    a.add_argument(
+        "--connect",
+        action="store_true",
+        help="Start OAuth connection after creating an OAuth MCP server",
+    )
+    _add_oauth_connect_options(a)
     g = sub.add_parser("get")
     g.add_argument("mcp_server_id")
     u = sub.add_parser("update")
@@ -450,6 +457,35 @@ def _add_mcp_servers_parser(
     d = sub.add_parser("delete")
     d.add_argument("mcp_server_id")
     d.add_argument("--yes", action="store_true")
+    c = sub.add_parser("connect")
+    c.add_argument("mcp_server_id")
+    _add_oauth_connect_options(c)
+
+
+def _add_oauth_connect_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        metavar="SCOPE",
+        help="OAuth scope to request; repeat for multiple scopes",
+    )
+    parser.add_argument(
+        "--force-new",
+        action="store_true",
+        help="Create a fresh OAuth session instead of reusing an existing token",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for OAuth completion; use 0 to skip polling",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the verification URL without opening a browser",
+    )
 
 
 def execute_mcp_servers_command(args: argparse.Namespace) -> None:
@@ -466,6 +502,12 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
             for srv in client.list_mcp_servers():
                 print(f"{srv.get('id')}\t{srv.get('name', '')}\t{srv.get('url', '')}")
         elif args.mcp_cmd == "add":
+            if args.auth_type == "oauth" and args.header:
+                print("Error: --header cannot be used with --auth-type oauth.")
+                raise SystemExit(1)
+            if args.auth_type != "oauth" and getattr(args, "connect", False):
+                print("Error: --connect requires --auth-type oauth.")
+                raise SystemExit(1)
             headers = _parse_header_args(args.header)
             name = args.name or urlparse(args.url).hostname or args.url
             srv = client.create_mcp_server(
@@ -473,11 +515,26 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                 url=args.url,
                 headers=headers,
                 auth_type=args.auth_type,
+                oauth_mode=(
+                    "per_user_dynamic_client" if args.auth_type == "oauth" else None
+                ),
             )
             srv_id = srv.get("id")
             srv_name = srv.get("name")
             srv_url = srv.get("url")
             print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
+            if getattr(args, "connect", False):
+                if not isinstance(srv_id, str) or not srv_id:
+                    print("Error: created OAuth MCP server did not include an id.")
+                    raise SystemExit(1)
+                _connect_mcp_server_oauth(
+                    client,
+                    srv_id,
+                    scopes=args.scope,
+                    force_new=args.force_new,
+                    timeout_seconds=args.timeout,
+                    no_browser=args.no_browser,
+                )
         elif args.mcp_cmd == "get":
             server = client.get_mcp_server(args.mcp_server_id)
             print(json.dumps(_redact_mcp_server(server), indent=2))
@@ -513,9 +570,127 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                     return
             client.delete_mcp_server(args.mcp_server_id)
             print(f"Deleted {args.mcp_server_id}")
+        elif args.mcp_cmd == "connect":
+            _connect_mcp_server_oauth(
+                client,
+                args.mcp_server_id,
+                scopes=args.scope,
+                force_new=args.force_new,
+                timeout_seconds=args.timeout,
+                no_browser=args.no_browser,
+            )
     except ApiError as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
+
+
+def _connect_mcp_server_oauth(
+    client: ApiClient,
+    mcp_server_id: str,
+    *,
+    scopes: list[str],
+    force_new: bool,
+    timeout_seconds: int,
+    no_browser: bool,
+) -> None:
+    if timeout_seconds < 0:
+        print("Error: --timeout must be greater than or equal to 0.")
+        raise SystemExit(1)
+
+    provider = client.register_mcp_oauth_provider(mcp_server_id)
+    provider_id = provider.get("oauth_provider_id")
+    if not isinstance(provider_id, str) or not provider_id:
+        print("Error: OAuth provider registration did not return oauth_provider_id.")
+        raise SystemExit(1)
+
+    strategy = "CREATE" if force_new else "REUSE"
+    session = client.create_auth_session(
+        provider_id=provider_id,
+        scopes=scopes,
+        strategy=strategy,
+    )
+    _handle_auth_session(
+        client,
+        session,
+        timeout_seconds=timeout_seconds,
+        no_browser=no_browser,
+    )
+
+
+def _handle_auth_session(
+    client: ApiClient,
+    session: dict[str, Any],
+    *,
+    timeout_seconds: int,
+    no_browser: bool,
+) -> None:
+    status = _auth_session_status(session)
+    if status == "COMPLETED":
+        print("MCP OAuth connection is ready.")
+        return
+    if status != "PENDING":
+        _raise_auth_session_status(status)
+
+    verification_url = session.get("verification_url")
+    if not isinstance(verification_url, str) or not verification_url:
+        print("Error: OAuth session is pending but no verification_url was returned.")
+        raise SystemExit(1)
+
+    print("Open this URL to authorize the MCP server:")
+    print(f"  {verification_url}")
+    if not no_browser:
+        _open_browser(verification_url)
+
+    session_id = session.get("id")
+    if not isinstance(session_id, str) or not session_id:
+        print("Error: OAuth session is pending but no session id was returned.")
+        raise SystemExit(1)
+    if timeout_seconds == 0:
+        print("Authorization started. Re-run `deepagents mcp-servers connect` later.")
+        return
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print("Timed out waiting for OAuth completion.")
+            raise SystemExit(1)
+        wait_seconds = max(1, min(5, int(remaining)))
+        session = client.get_auth_session(session_id, wait_seconds=wait_seconds)
+        status = _auth_session_status(session)
+        if status == "COMPLETED":
+            print("MCP OAuth connection is ready.")
+            return
+        if status != "PENDING":
+            _raise_auth_session_status(status)
+
+
+def _auth_session_status(session: dict[str, Any]) -> str:
+    status = session.get("status")
+    return status.upper() if isinstance(status, str) else ""
+
+
+def _raise_auth_session_status(status: str) -> None:
+    if status in {"CONNECTION_REQUIRED", "TOKEN_EXPIRED"}:
+        print(
+            "Error: OAuth connection is required or expired. "
+            "Run `deepagents mcp-servers connect` again."
+        )
+    else:
+        print(f"Error: OAuth session ended with status {status or '<missing>'}.")
+    raise SystemExit(1)
+
+
+def _open_browser(url: str) -> None:
+    import webbrowser
+
+    try:
+        opened = webbrowser.open(url)
+    except Exception as exc:
+        print(f"Could not open browser automatically: {exc}")
+        return
+    if not opened:
+        print("Could not open browser automatically.")
 
 
 def _parse_header_args(raw: list[str]) -> list[dict[str, str]]:

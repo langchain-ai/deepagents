@@ -77,7 +77,9 @@ def test_uninvokable_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
             json=[
                 {
                     "id": "s1",
+                    "name": "GitHub",
                     "url": "https://tools.example",
+                    "auth_type": "oauth",
                     "can_invoke": False,
                 }
             ],
@@ -91,6 +93,7 @@ def test_uninvokable_server_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         resolve_referenced_servers(client, payload, cache={})
     assert excinfo.value.urls == ("https://tools.example",)
     assert "cannot invoke" in str(excinfo.value)
+    assert "deepagents mcp-servers connect s1" in str(excinfo.value)
 
 
 def test_cached_ids_are_refreshed_from_list_call(

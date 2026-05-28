@@ -290,6 +290,33 @@ def test_create_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
 
+def test_create_oauth_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            201,
+            json={"id": "s1", "name": "GitHub", "url": "https://tools.example/mcp"},
+        )
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    out = client.create_mcp_server(
+        name="GitHub",
+        url="https://tools.example/mcp",
+        auth_type="oauth",
+        oauth_mode="per_user_dynamic_client",
+    )
+    assert out["id"] == "s1"
+    assert captured["body"] == {
+        "name": "GitHub",
+        "url": "https://tools.example/mcp",
+        "auth_type": "oauth",
+        "oauth_mode": "per_user_dynamic_client",
+    }
+
+
 def test_update_mcp_server_patches_body(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -331,6 +358,57 @@ def test_delete_mcp_server(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGSMITH_API_KEY", "k")
     client = ApiClient.from_env(transport=_transport(handler))
     assert client.delete_mcp_server("s1") is None
+
+
+def test_mcp_oauth_provider_and_auth_session_methods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict[str, object], str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        query = request.url.query.decode()
+        requests.append((request.method, request.url.path, body, query))
+        if request.url.path.endswith("/oauth-provider"):
+            return httpx.Response(200, json={"oauth_provider_id": "provider-1"})
+        if request.method == "POST" and request.url.path.endswith("/auth-sessions"):
+            return httpx.Response(
+                201,
+                json={
+                    "id": "session-1",
+                    "provider_id": "provider-1",
+                    "status": "PENDING",
+                    "verification_url": "https://auth.example/authorize",
+                },
+            )
+        return httpx.Response(200, json={"id": "session-1", "status": "COMPLETED"})
+
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    client = ApiClient.from_env(transport=_transport(handler))
+    assert client.register_mcp_oauth_provider("s1") == {
+        "oauth_provider_id": "provider-1"
+    }
+    assert (
+        client.create_auth_session(
+            provider_id="provider-1",
+            scopes=[],
+            strategy="REUSE",
+        )["status"]
+        == "PENDING"
+    )
+    assert client.get_auth_session("session-1", wait_seconds=5)["status"] == (
+        "COMPLETED"
+    )
+    assert requests == [
+        ("POST", "/v1/deepagents/mcp-servers/s1/oauth-provider", {}, ""),
+        (
+            "POST",
+            "/v1/deepagents/auth-sessions",
+            {"provider_id": "provider-1", "scopes": [], "strategy": "REUSE"},
+            "",
+        ),
+        ("GET", "/v1/deepagents/auth-sessions/session-1", {}, "wait_seconds=5"),
+    ]
 
 
 def test_agent_directory_methods(monkeypatch: pytest.MonkeyPatch) -> None:

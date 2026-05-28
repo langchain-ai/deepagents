@@ -60,7 +60,7 @@ from deepagents.profiles.harness.harness_profiles import (
 logger = logging.getLogger(__name__)
 
 
-class _DeepAgentState(AgentState):
+class DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
@@ -227,7 +227,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
-    state_schema: type[_DeepAgentState] | None = None,
+    state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -440,7 +440,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of
-            [`_DeepAgentState`][deepagents.graph._DeepAgentState] so the
+            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
             built-in `DeltaChannel` reducer on `messages` is preserved.
 
             Generally, prefer defining state extensions with middleware so
@@ -463,10 +463,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             specs likewise use the schema configured on the remote graph.
 
             ```python
-            from deepagents.graph import _DeepAgentState
+            from deepagents.graph import DeepAgentState
 
 
-            class MyState(_DeepAgentState):
+            class MyState(DeepAgentState):
                 page_url: str
                 file_urls: list[str]
 
@@ -510,7 +510,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
-    # `_DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
+    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
     # subclass constraint on `state_schema` is enforced by typing alone and not
     # validated at runtime.
 
@@ -815,7 +815,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
-        state_schema=state_schema if state_schema is not None else _DeepAgentState,
+        state_schema=state_schema if state_schema is not None else DeepAgentState,
         transformers=[_subagent_factory],
     ).with_config(
         {

@@ -20,7 +20,7 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
-    _DeepAgentState,
+    DeepAgentState,
     create_deep_agent,
     get_default_model,
 )
@@ -713,10 +713,10 @@ class TestStateSchema:
         ):
             create_deep_agent(model="testprov:some-model")
 
-        assert mock_create.call_args.kwargs["state_schema"] is _DeepAgentState
+        assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
 
     def test_custom_state_schema_passed_through(self) -> None:
-        class MyState(_DeepAgentState):
+        class MyState(DeepAgentState):
             page_url: str
             file_urls: list[str]
 
@@ -735,7 +735,7 @@ class TestStateSchema:
     def test_custom_state_schema_propagates_to_subagent_middleware(self) -> None:
         """Custom schema reaches `SubAgentMiddleware` so declarative subagents compile with it."""
 
-        class MyState(_DeepAgentState):
+        class MyState(DeepAgentState):
             page_url: str
 
         fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))

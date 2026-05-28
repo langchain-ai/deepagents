@@ -26,8 +26,10 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import ValidationError
 
 from deepagents.middleware.rubric import (
+    RUBRIC_GRADER_MESSAGE_SOURCE,
     GraderResponse,
     RubricEvaluation,
     RubricMiddleware,
@@ -200,7 +202,10 @@ class TestBeforeAgent:
         assert result["_active_rubric"] == "- write a limerick"
         assert result["_current_grading_run_id"] != "rubric-prev"
 
-    @pytest.mark.parametrize("terminal_status", ["satisfied", "max_iterations_reached", "failed"])
+    @pytest.mark.parametrize(
+        "terminal_status",
+        ["satisfied", "max_iterations_reached", "failed", "grader_error"],
+    )
     def test_same_rubric_after_terminal_resets_attempt(self, terminal_status: str) -> None:
         """Same rubric on a follow-up invocation gets a fresh budget.
 
@@ -266,16 +271,21 @@ class TestAfterAgentDirect:
         assert update["_rubric_status"] == "failed"
         assert "jump_to" not in update
 
-    def test_grader_exception_becomes_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_grader_exception_becomes_grader_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Infrastructure failures get the distinct `grader_error` status.
+
+        Separate from `"failed"`, which the grader *itself* returns when
+        the rubric is malformed -- callers need to tell those two apart.
+        """
         mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=3)
         _stub_grader(mw, monkeypatch, exc=RuntimeError("grader exploded"))
         update = mw.after_agent(self._state(), _runtime())
         assert update is not None
-        assert update["_rubric_status"] == "failed"
+        assert update["_rubric_status"] == "grader_error"
         assert "jump_to" not in update
         evals = update["_rubric_evaluations"]
         assert len(evals) == 1
-        assert evals[0]["result"] == "failed"
+        assert evals[0]["result"] == "grader_error"
         assert "grader exploded" in evals[0]["explanation"]
 
     def test_keyboard_interrupt_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -657,3 +667,147 @@ class TestRubricTracking:
         assert first_id != second_id
         # Both evaluations are retained across the rubric change.
         assert len(second_evals) == 2
+
+
+# ---------------------------------------------------------------------- #
+# `GraderResponse` validation (discriminated union + cross-field rules)
+# ---------------------------------------------------------------------- #
+
+
+class TestGraderResponseValidation:
+    """Pydantic-level rejection of grader output the LLM may hallucinate."""
+
+    def test_passing_criterion_gap_is_dropped(self) -> None:
+        # `CriterionPass` has no `gap` field, so a stray one is normalized
+        # away. The grader's mental model stays "pass means no gap" without
+        # rejecting otherwise-valid output.
+        graded = GraderResponse.model_validate(
+            {
+                "result": "satisfied",
+                "explanation": "ok",
+                "criteria": [{"name": "x", "passed": True, "gap": "ignored"}],
+            }
+        )
+        assert graded.criteria == [{"name": "x", "passed": True}]
+
+    def test_failing_criterion_without_gap_rejected(self) -> None:
+        # `CriterionFail` requires `gap`; missing it is a hard validation error.
+        with pytest.raises(ValidationError):
+            GraderResponse.model_validate(
+                {
+                    "result": "needs_revision",
+                    "explanation": "missing detail",
+                    "criteria": [{"name": "x", "passed": False}],
+                }
+            )
+
+    def test_satisfied_with_failing_criterion_rejected(self) -> None:
+        # The model_validator catches self-inconsistent verdicts where the
+        # top-level result contradicts the per-criterion data.
+        with pytest.raises(ValidationError, match="satisfied"):
+            GraderResponse.model_validate(
+                {
+                    "result": "satisfied",
+                    "explanation": "ok",
+                    "criteria": [{"name": "x", "passed": False, "gap": "still wrong"}],
+                }
+            )
+
+    def test_needs_revision_with_all_passing_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="needs_revision"):
+            GraderResponse.model_validate(
+                {
+                    "result": "needs_revision",
+                    "explanation": "?",
+                    "criteria": [{"name": "x", "passed": True}],
+                }
+            )
+
+    def test_needs_revision_with_no_criteria_allowed(self) -> None:
+        # An empty `criteria` list is permitted alongside any verdict --
+        # the cross-field check only fires when criteria are present.
+        graded = GraderResponse.model_validate(
+            {
+                "result": "needs_revision",
+                "explanation": "general feedback",
+                "criteria": [],
+            }
+        )
+        assert graded.result == "needs_revision"
+
+
+# ---------------------------------------------------------------------- #
+# Transcript builder: self-injected message filter
+# ---------------------------------------------------------------------- #
+
+
+class TestTranscriptSkipsSelfInjected:
+    def test_grader_feedback_is_not_treated_as_original_prompt(self) -> None:
+        """A grader-injected `HumanMessage` must not stand in for the user prompt.
+
+        After one revision loop, the conversation has two `HumanMessage`s:
+        the real user prompt and the middleware's own feedback. The
+        transcript builder should ignore the latter when looking for the
+        "first human" to retain across truncation, otherwise the grader
+        sees its own feedback as the request.
+        """
+        real_prompt = HumanMessage(content="REAL_USER_REQUEST")
+        injected = HumanMessage(
+            content="GRADER_FEEDBACK",
+            name=RUBRIC_GRADER_MESSAGE_SOURCE,
+            additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE},
+        )
+        # 40 filler messages so the head (which contains both humans) gets
+        # clipped by the `_MAX_TRANSCRIPT_MESSAGES = 30` window.
+        filler = [AIMessage(content=f"draft-{i}") for i in range(40)]
+        messages = [real_prompt, injected, *filler]
+
+        text = _build_grader_transcript(messages)
+
+        # Real prompt prepended (it would otherwise fall outside the tail).
+        assert "REAL_USER_REQUEST" in text
+        # Injected feedback should NOT be the prepended "first human" --
+        # it fell outside the tail and is correctly absent.
+        assert "GRADER_FEEDBACK" not in text
+
+
+# ---------------------------------------------------------------------- #
+# `max_iterations_reached` observability
+# ---------------------------------------------------------------------- #
+
+
+class TestMaxIterationsObservability:
+    def test_logger_warning_emitted_when_cap_hits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The cap fires a `WARNING`-level log so it's visible under default config.
+
+        The terminal `max_iterations_reached` status lives in private state,
+        so this log is the only out-of-band signal a caller gets without
+        explicitly opting into `on_evaluation` or the stream event.
+        """
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=1)
+        _stub_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="needs_revision",
+                explanation="not yet",
+                criteria=[{"name": "c", "passed": False, "gap": "missing"}],
+            ),
+        )
+        state: dict[str, Any] = {
+            "messages": [HumanMessage(content="do it"), AIMessage(content="draft")],
+            "rubric": "- thing",
+            "_active_rubric": "- thing",
+            "_current_grading_run_id": "grading-cap",
+            "_rubric_iterations": 0,
+        }
+        with caplog.at_level("WARNING", logger="deepagents.middleware.rubric"):
+            update = mw.after_agent(state, _runtime())
+        assert update is not None
+        assert update["_rubric_status"] == "max_iterations_reached"
+        assert "jump_to" not in update
+        assert any("exhausted max_iterations" in rec.message and "grading-cap" in rec.message for rec in caplog.records)

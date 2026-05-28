@@ -40,7 +40,7 @@ from langchain_core.messages import (
     HumanMessage,
     ToolMessage,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
@@ -53,19 +53,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-RubricResult = Literal[
-    "satisfied",
-    "needs_revision",
-    "max_iterations_reached",
-    "failed",
-]
-"""Status reported by the grader for a single evaluation.
+GraderVerdict = Literal["satisfied", "needs_revision", "failed"]
+"""Verdict the grader sub-agent emits via structured output.
 
-Only `needs_revision` continues the loop; the other three end the grading run.
+- `satisfied`: every criterion passes.
+- `needs_revision`: at least one criterion fails; loop continues.
+- `failed`: the rubric itself is malformed or impossible to evaluate
+  against the transcript.
+"""
+
+RubricResult = GraderVerdict | Literal["max_iterations_reached", "grader_error"]
+"""Status recorded on each evaluation.
+
+Superset of `GraderVerdict` with two middleware-synthesized terminal
+statuses the grader cannot emit itself:
+
+- `max_iterations_reached`: the iteration cap fired on a `needs_revision`
+  verdict; the agent terminates with its last response intact.
+- `grader_error`: the grader sub-agent raised an exception (provider
+  timeout, missing credentials, malformed structured response, etc.).
+  Distinct from `failed`, which the grader returns about the *rubric*,
+  not about its own machinery.
+
+Only `needs_revision` continues the loop; every other status ends the
+grading run.
 """
 
 
-_TERMINAL_RESULTS: frozenset[RubricResult] = frozenset({"satisfied", "max_iterations_reached", "failed"})
+_TERMINAL_RESULTS: frozenset[RubricResult] = frozenset({"satisfied", "max_iterations_reached", "failed", "grader_error"})
 """Statuses that signal a completed grading run; a same-rubric invocation
 after one of these starts a fresh run with a new `grading_run_id` and a reset
 iteration budget."""
@@ -138,21 +153,37 @@ constrains the grader to one of the allowed `result` values.
 """
 
 
-class CriterionEval(TypedDict):
-    """Per-criterion grader verdict."""
+class CriterionPass(TypedDict):
+    """Per-criterion grader verdict when the criterion passes."""
 
     name: str
     """Short label identifying the criterion (e.g., the rubric bullet)."""
 
-    passed: bool
-    """Whether the criterion is satisfied by the transcript."""
+    passed: Literal[True]
+    """Discriminator: this verdict variant has no `gap`."""
 
-    gap: NotRequired[str]
-    """When `passed` is False, a short, actionable description of what's
-    missing or incorrect.
 
-    Omitted when `passed` is True.
-    """
+class CriterionFail(TypedDict):
+    """Per-criterion grader verdict when the criterion fails."""
+
+    name: str
+    """Short label identifying the criterion (e.g., the rubric bullet)."""
+
+    passed: Literal[False]
+    """Discriminator: this verdict variant requires `gap`."""
+
+    gap: str
+    """Short, actionable description of what's missing or incorrect."""
+
+
+CriterionEval = Annotated[CriterionPass | CriterionFail, Discriminator("passed")]
+"""Per-criterion verdict.
+
+Discriminated union on `passed`: pass-verdicts have no `gap`; fail-verdicts
+require one. `GraderResponse.model_validate` enforces the shape at the
+trust boundary so a grader cannot emit `{passed: True, gap: ...}` or
+`{passed: False}` with no gap.
+"""
 
 
 class RubricEvaluation(TypedDict):
@@ -227,7 +258,7 @@ class GraderResponse(BaseModel):
     underlying provider's structured output strategy is auto-selected.
     """
 
-    result: Literal["satisfied", "needs_revision", "failed"] = Field(
+    result: GraderVerdict = Field(
         description=(
             "Terminal verdict for this evaluation. Use 'satisfied' only when every "
             "criterion passes; 'needs_revision' when at least one criterion fails; "
@@ -242,8 +273,27 @@ class GraderResponse(BaseModel):
         description=("Per-criterion verdicts. Each criterion should appear once with `passed` True/False and a `gap` string when failing."),
     )
 
+    @model_validator(mode="after")
+    def _check_result_consistency(self) -> GraderResponse:
+        """Reject grader output where `result` contradicts the per-criterion verdicts.
 
-@beta()
+        The grader is an LLM and can hallucinate self-inconsistent
+        responses (e.g. claiming `satisfied` while flagging a failing
+        criterion). The discriminated union on `CriterionEval` enforces
+        the per-criterion `gap` invariant; this validator catches the
+        cross-field one.
+        """
+        has_fail = any(not c["passed"] for c in self.criteria)
+        if self.result == "satisfied" and has_fail:
+            msg = "GraderResponse: result='satisfied' but at least one criterion has passed=False."
+            raise ValueError(msg)
+        if self.result == "needs_revision" and self.criteria and not has_fail:
+            msg = "GraderResponse: result='needs_revision' but every criterion has passed=True."
+            raise ValueError(msg)
+        return self
+
+
+@beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
 
@@ -251,6 +301,21 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     invocation state. With no rubric, both `before_agent` and `after_agent`
     return without modifying state, so the middleware is safe to include
     unconditionally in a `create_deep_agent` stack.
+
+    !!! note "Observing non-satisfied terminations"
+        When grading ends with `failed`, `max_iterations_reached`, or
+        `grader_error`, the middleware does **not** mutate the response
+        messages. The last `AIMessage` in the agent's output is whatever
+        the model produced just before the grader gave up. Callers who
+        need to branch on non-satisfied termination must inspect one of:
+
+        - `_rubric_status` on the returned state (or `agent.get_state(...)`
+          on a checkpointed thread),
+        - the `on_evaluation` callback,
+        - the `rubric_evaluation_end` stream event.
+
+        A `logger.warning` is also emitted when `max_iterations_reached`
+        fires.
 
     Args:
         model: Model used by the grader sub-agent. Accepts either a model
@@ -264,9 +329,12 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         max_iterations: Hard cap on grader iterations per rubric attempt;
             hard-capped at 20. When the cap is reached without a
             `satisfied` verdict, the agent terminates with status
-            `'max_iterations_reached'`.
+            `'max_iterations_reached'` (see the note above on how to
+            observe this).
         on_evaluation: Optional callback one can invoke with each `RubricEvaluation` after
-            grading.
+            grading. Exceptions raised by the callback are logged at
+            error level and suppressed; do not use this callback to
+            enforce control flow.
 
     Raises:
         ValueError: If `max_iterations` is outside `[1, 20]`, or if `model`
@@ -557,7 +625,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         self,
         state: RubricState,
         evaluation: RubricEvaluation,
-        graded_result: Literal["satisfied", "needs_revision", "failed"],
+        graded_result: GraderVerdict,
     ) -> dict[str, Any]:
         iteration = evaluation["iteration"]
         next_iteration = iteration + 1
@@ -578,6 +646,14 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
 
         # needs_revision
         if next_iteration >= self.max_iterations:
+            # Default logging level is WARNING, so this surfaces under
+            # the default config -- the alternative would be silent: see
+            # the class docstring "Observing non-satisfied terminations".
+            logger.warning(
+                "RubricMiddleware exhausted max_iterations=%d without 'satisfied' verdict (grading_run_id=%s)",
+                self.max_iterations,
+                evaluation["grading_run_id"],
+            )
             update["_rubric_status"] = "max_iterations_reached"
             return update
 
@@ -609,7 +685,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         evaluation: RubricEvaluation = {
             "grading_run_id": grading_run_id,
             "iteration": iteration,
-            "result": "failed",
+            "result": "grader_error",
             "explanation": f"Grader raised {type(exc).__name__}: {exc}",
             "criteria": [],
         }
@@ -624,7 +700,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         return {
             "_rubric_evaluations": evals,
             "_rubric_iterations": iteration + 1,
-            "_rubric_status": "failed",
+            "_rubric_status": "grader_error",
         }
 
     def _emit(
@@ -665,15 +741,23 @@ def _build_grader_transcript(messages: list[AnyMessage]) -> str:
     so the grader can see the request. The rest of the transcript is taken
     from the tail up to `_MAX_TRANSCRIPT_MESSAGES`. Each message is
     truncated to `_MAX_TRANSCRIPT_CHARS_PER_MESSAGE`.
+
+    `HumanMessage`s the middleware injected itself (`lc_source ==
+    RUBRIC_GRADER_MESSAGE_SOURCE`) are skipped when identifying the
+    original prompt -- otherwise, after the first revision loop the
+    grader would see its own prior feedback as the user's request.
     """
     if not messages:
         return "(empty transcript)"
 
     first_human: AnyMessage | None = None
     for msg in messages:
-        if isinstance(msg, HumanMessage):
-            first_human = msg
-            break
+        if not isinstance(msg, HumanMessage):
+            continue
+        if msg.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE:
+            continue
+        first_human = msg
+        break
 
     tail = messages[-_MAX_TRANSCRIPT_MESSAGES:]
     selected: list[AnyMessage] = []

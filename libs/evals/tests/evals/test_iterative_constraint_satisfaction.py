@@ -23,8 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
-from deepagents.middleware.outcomes import RubricMiddleware
+from deepagents import RubricMiddleware, create_deep_agent
 from langchain_core.tools import tool
 
 from tests.evals.utils import (

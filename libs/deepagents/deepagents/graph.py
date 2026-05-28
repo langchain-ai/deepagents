@@ -227,6 +227,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
+    state_schema: type[_DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -437,6 +438,29 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
         response_format: A structured output response format to use for the agent.
+        state_schema: Custom state class to use for the agent graph.
+
+            Must be a subclass of
+            [`_DeepAgentState`][deepagents.graph._DeepAgentState], which
+            itself extends [`AgentState`][langchain.agents.AgentState] and
+            adds a `DeltaChannel` reducer that keeps checkpoint size O(N)
+            rather than O(N²). Attach extra fields here to carry per-run
+            data (e.g. page metadata or file URLs) that tools and middleware
+            can read from the graph state:
+
+            ```python
+            from deepagents.graph import _DeepAgentState
+
+
+            class MyState(_DeepAgentState):
+                page_url: str
+                file_urls: list[str]
+
+
+            agent = create_deep_agent(model=..., state_schema=MyState)
+            ```
+
+            Passed through to [`create_agent`][langchain.agents.create_agent].
         context_schema: Schema class that defines immutable run-scoped context.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -774,7 +798,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
-        state_schema=_DeepAgentState,
+        state_schema=state_schema if state_schema is not None else _DeepAgentState,
         transformers=[_subagent_factory],
     ).with_config(
         {

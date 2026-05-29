@@ -1003,6 +1003,23 @@ class ToolCallMessage(Vertical):
             Content.styled(text, theme.get_theme_colors(self).warning)
         )
 
+    def pause_running(self) -> None:
+        """Pause the running spinner while the tool awaits a user decision.
+
+        Reverts the row to its pending appearance (status hidden) and stops the
+        animation so a tool blocked on HITL approval or `ask_user` input does
+        not misleadingly display "Running...". Resume with `set_running`, which
+        restarts the elapsed timer from the moment execution actually begins.
+        """
+        if self._status != "running":
+            return
+        self._stop_animation()
+        self._status = "pending"
+        self._start_time = None
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.display = False
+
     def _stop_animation(self) -> None:
         """Stop the running animation."""
         if self._animation_timer is not None:
@@ -1123,7 +1140,10 @@ class ToolCallMessage(Vertical):
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
             return
-        if not self._expanded and not self._has_expandable_output():
+        # No-op in both directions when nothing is hidden: the collapsed and
+        # expanded forms are identical, so toggling only flickers the hint.
+        # This also covers force-expanded errors (see `set_error`).
+        if not self._has_expandable_output():
             return
         self._expanded = not self._expanded
         self._update_output_display()
@@ -1199,11 +1219,16 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
+        if self._tool_name == "write_todos":
+            return self._format_output(output, is_preview=True).truncation is not None
+
         lines = output.split("\n")
         if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
-            return True
-
-        if self._tool_name == "write_todos":
+            # The outer size threshold is necessary but not sufficient: only
+            # treat output as expandable if the formatter actually hides
+            # content. Formatters that truncate by line count (e.g. grep/glob)
+            # leave long single-line output fully visible, so expanding it
+            # would reveal nothing.
             return self._format_output(output, is_preview=True).truncation is not None
 
         return False
@@ -1472,6 +1497,51 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return FormattedOutput(content=Content(output))
 
+    @staticmethod
+    def _compact_line_gutter(output: str) -> str:
+        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+
+        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — so even single-digit line numbers carry five
+        leading spaces and the tab pushes content to a distant tab stop. The
+        model needs that raw format for edits, but the TUI renders a compact
+        gutter instead: numbers right-justified to the widest number actually
+        present, then two spaces, mirroring how grep/glob results sit flush
+        left. Source indentation after the gutter is preserved untouched.
+
+        Lines that don't match the cat -n shape (e.g. test fixtures or
+        non-numbered output) are passed through unchanged.
+
+        Returns:
+            The output with compacted gutters, or the original string if no
+                line-numbered content was found.
+        """
+        lines = output.split("\n")
+        # Split each line on its gutter tab into (number, source). The gutter
+        # tab is always the first one; any tabs in `text` are real source
+        # indentation and stay put. The head must be a bare `N` or `N.M` (the
+        # latter is a wrapped-line continuation marker) — both sides of the dot
+        # are required, so a stray `.5` head marks a non-gutter line.
+        parsed: list[tuple[str, str] | None] = []
+        width = 0
+        for line in lines:
+            head, tab, text = line.partition("\t")
+            num = head.strip()
+            whole, dot, frac = num.partition(".")
+            if tab and whole.isdigit() and (not dot or frac.isdigit()):
+                parsed.append((num, text))
+                width = max(width, len(num))
+            else:
+                parsed.append(None)
+
+        if width == 0:
+            return output
+
+        return "\n".join(
+            f"{row[0]:>{width}}  {row[1]}" if row else line
+            for line, row in zip(lines, parsed, strict=True)
+        )
+
     def _format_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -1484,6 +1554,7 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with file content and optional truncation info.
         """
+        output = self._compact_line_gutter(output)
         lines = output.split("\n")
         # Files conventionally end in "\n"; the trailing empty element isn't a
         # real line and would inflate truncation counts.
@@ -1579,7 +1650,7 @@ class ToolCallMessage(Vertical):
                         display = str(rel)
                     except ValueError:
                         display = path.name
-                    parts.append(Content(f"    {display}"))
+                    parts.append(Content(display))
 
                 truncation = None
                 if is_preview and len(items) > max_items:
@@ -1596,7 +1667,7 @@ class ToolCallMessage(Vertical):
         max_lines = 5 if is_preview else len(lines)
 
         parts = [
-            Content(f"    {raw_line.strip()}")
+            Content(raw_line.strip())
             for raw_line in lines[:max_lines]
             if raw_line.strip()
         ]
@@ -1812,53 +1883,49 @@ class ToolCallMessage(Vertical):
             prefixed = self._prefix_output(result.content)
             self._full_widget.update(prefixed)
             self._full_widget.display = True
-            # Show collapse hint underneath
-            self._hint_widget.update(
-                Content.styled("click or Ctrl+O to collapse", "dim italic")
-            )
-            self._hint_widget.display = True
-        else:
-            # Show preview
-            self._full_widget.display = False
-            if needs_truncation:
-                result = self._format_output(self._output, is_preview=True)
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-
-                # Build hint with truncation info if available
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
-                        "dim",
-                    )
-                else:
-                    hint = Content.styled("click or Ctrl+O to expand", "dim italic")
-                self._hint_widget.update(hint)
-                self._hint_widget.display = True
-            elif output_stripped:
-                # Output fits in preview, show formatted
-                is_tool_preview = self._tool_name == "write_todos"
-                result = self._format_output(
-                    output_stripped,
-                    is_preview=is_tool_preview,
+            # Only offer a collapse affordance when collapsing would actually
+            # hide something. Errors are force-expanded (see `set_error`), so a
+            # short single-line error has no smaller collapsed form — showing
+            # "click to collapse" there is misleading.
+            if self._has_expandable_output():
+                self._hint_widget.update(
+                    Content.styled("click or Ctrl+O to collapse", "dim italic")
                 )
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
+                self._hint_widget.display = True
+            else:
+                self._hint_widget.display = False
+        else:
+            # Show collapsed preview
+            self._full_widget.display = False
+            if not output_stripped:
+                self._preview_widget.display = False
+                self._hint_widget.display = False
+                return
+
+            # Truncate the preview only when the output is large enough to
+            # warrant it; `write_todos` always uses its compact per-item preview
+            # regardless of size.
+            is_preview = needs_truncation or self._tool_name == "write_todos"
+            result = self._format_output(output_stripped, is_preview=is_preview)
+            prefixed = self._prefix_output(result.content)
+            self._preview_widget.update(prefixed)
+            self._preview_widget.display = True
+
+            # Offer expansion only when the formatter actually hid content.
+            # The raw size threshold can trip without anything being hidden
+            # (e.g. a long single-line grep/glob result, which only truncates
+            # by line count), and promising an expansion that reveals nothing
+            # is misleading.
+            if result.truncation:
+                ellipsis = get_glyphs().ellipsis
+                self._hint_widget.update(
+                    Content.styled(
                         f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
                         "dim",
                     )
-                    self._hint_widget.update(hint)
-                    self._hint_widget.display = True
-                else:
-                    self._hint_widget.display = False
+                )
+                self._hint_widget.display = True
             else:
-                self._preview_widget.display = False
                 self._hint_widget.display = False
 
     @property

@@ -1117,6 +1117,91 @@ class TestToolCallMessageFileOutput:
 
         assert result.truncation == "2 more lines"
 
+    def test_format_output_compacts_line_number_gutter(self) -> None:
+        r"""Line-number gutters are tightened, all rows aligned to one column.
+
+        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — which renders far from the line numbers and (when
+        the first row's padding was stripped) misaligned. The TUI recomputes a
+        compact gutter: numbers right-justified to the widest number present,
+        two spaces, then the original source indentation.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # cat -n style: 6-wide right-justified number + tab + source line.
+        output = '     1\t"""doc"""\n     2\t\n     3\t    indented'
+        result = msg._format_output(output, is_preview=False)
+
+        # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
+        # indentation (the 4 spaces on line 3) preserved verbatim.
+        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+
+    def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
+        r"""Multi-digit line numbers set a uniform, right-justified gutter."""
+        # Lines 9 and 10: single- vs double-digit numbers must align right.
+        output = "     9\tnine\n    10\tten"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  nine\n10  ten"
+
+    def test_compact_line_gutter_handles_continuation_markers(self) -> None:
+        r"""`N.M` wrapped-line markers are gutters and drive the column width.
+
+        Long lines are chunked by the SDK with decimal continuation markers
+        (`f"{line_num}.{chunk_idx}"`). The marker's width (e.g. `1.1` = 3)
+        must set the right-justified column like any other line number.
+        """
+        output = "     1\tfirst\n   1.1\twrapped"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "  1  first\n1.1  wrapped"
+
+    def test_compact_line_gutter_preserves_source_tabs(self) -> None:
+        r"""Only the first (gutter) tab is consumed; source tabs stay put.
+
+        Tab-indented source means a tab immediately after the gutter tab.
+        `partition` splits on the first tab only, so the source tab survives.
+        """
+        output = "     1\t\tdef foo():"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  \tdef foo():"
+
+    def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
+        """Output without a cat -n gutter is returned unchanged."""
+        output = "plain text\nno line numbers here"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_rejects_malformed_number_heads(self) -> None:
+        r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
+
+        Guards against corrupting tab-separated data whose first column merely
+        resembles a number (leading/trailing dot, multiple dots).
+        """
+        # Leading dot, trailing dot, and multi-dot heads must all pass through.
+        output = "   .5\tweird\n   5.\talso\n 1.2.3\tnope"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_preview_truncates_with_compacted_gutters(
+        self,
+    ) -> None:
+        """Compaction runs before truncation: previews show compact gutters.
+
+        The char budget and `more lines` hint operate on the already-compacted
+        string, so a long cat -n file previews with tight gutters and a
+        line-count hint.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"{i:6d}\tline {i}" for i in range(1, 21))
+        result = msg._format_file_output(output, is_preview=True)
+
+        rendered = result.content.plain.split("\n")
+        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
+        assert result.truncation == "16 more lines"
+
+    def test_compact_line_gutter_empty_output(self) -> None:
+        """Empty output has no gutter lines and is returned unchanged."""
+        assert ToolCallMessage._compact_line_gutter("") == ""
+
 
 class TestToolCallMessageAwaitingApproval:
     """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""

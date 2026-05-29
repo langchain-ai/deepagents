@@ -1480,6 +1480,51 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return FormattedOutput(content=Content(output))
 
+    @staticmethod
+    def _compact_line_gutter(output: str) -> str:
+        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+
+        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — so even single-digit line numbers carry five
+        leading spaces and the tab pushes content to a distant tab stop. The
+        model needs that raw format for edits, but the TUI renders a compact
+        gutter instead: numbers right-justified to the widest number actually
+        present, then two spaces, mirroring how grep/glob results sit flush
+        left. Source indentation after the gutter is preserved untouched.
+
+        Lines that don't match the cat -n shape (e.g. test fixtures or
+        non-numbered output) are passed through unchanged.
+
+        Returns:
+            The output with compacted gutters, or the original string if no
+                line-numbered content was found.
+        """
+        lines = output.split("\n")
+        # Split each line on its gutter tab into (number, source). The gutter
+        # tab is always the first one; any tabs in `text` are real source
+        # indentation and stay put. The head must be a bare `N` or `N.M` (the
+        # latter is a wrapped-line continuation marker) — both sides of the dot
+        # are required, so a stray `.5` head marks a non-gutter line.
+        parsed: list[tuple[str, str] | None] = []
+        width = 0
+        for line in lines:
+            head, tab, text = line.partition("\t")
+            num = head.strip()
+            whole, dot, frac = num.partition(".")
+            if tab and whole.isdigit() and (not dot or frac.isdigit()):
+                parsed.append((num, text))
+                width = max(width, len(num))
+            else:
+                parsed.append(None)
+
+        if width == 0:
+            return output
+
+        return "\n".join(
+            f"{row[0]:>{width}}  {row[1]}" if row else line
+            for line, row in zip(lines, parsed, strict=True)
+        )
+
     def _format_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -1492,6 +1537,7 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with file content and optional truncation info.
         """
+        output = self._compact_line_gutter(output)
         lines = output.split("\n")
         # Files conventionally end in "\n"; the trailing empty element isn't a
         # real line and would inflate truncation counts.

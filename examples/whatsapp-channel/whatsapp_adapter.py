@@ -920,7 +920,7 @@ class WhatsAppAdapter:
     ) -> SendResult:
         """Send a media file via the bridge.
 
-        The caption always carries the same ``*deepagents bot*`` header and
+        The caption always carries the same bot-header and
         markdown formatting as :meth:`send` text, so the bridge's self-only
         filter can skip our own outbound media — otherwise the agent would
         see its own image as a new inbound message and reply to itself.
@@ -932,7 +932,7 @@ class WhatsAppAdapter:
 
         import aiohttp
 
-        caption_body = f"**deepagents bot**\n{caption}" if caption else "**deepagents bot**"
+        caption_body = f"**{self._bot_header}\n{caption}" if caption else f"**{self._bot_header}**"
         formatted_caption = format_message(caption_body)
 
         payload: dict[str, Any] = {
@@ -989,7 +989,7 @@ class WhatsAppAdapter:
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
 
-        formatted = format_message(f"**deepagents bot**\n{content}")
+        formatted = format_message(f"**{self._bot_header}\n{content}")
         if len(formatted) > self.MAX_MESSAGE_LENGTH:
             formatted = formatted[: self.MAX_MESSAGE_LENGTH - 3] + "..."
 

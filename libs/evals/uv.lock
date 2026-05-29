@@ -486,7 +486,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=nh%2Fsubagent-projection" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&rev=a89a9339ee042c2cb82b06b874ace5f28c99f348" },
     { name = "langchain-anthropic", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
@@ -1401,7 +1401,7 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.3.2"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=nh%2Fsubagent-projection#1f8864f4c3a9dd2fdd970cdb609e16ecad39eb1c" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&rev=a89a9339ee042c2cb82b06b874ace5f28c99f348#a89a9339ee042c2cb82b06b874ace5f28c99f348" }
 dependencies = [
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langgraph", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1439,7 +1439,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.4.0"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=nh%2Fbasetool-subagent-name#41d1c352709d3a22e192a185bf8632efab788d09" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-protocol", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1450,6 +1450,10 @@ dependencies = [
     { name = "tenacity", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "typing-extensions", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uuid-utils", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/de/679a53472c25860837e32c0442c962fa86e95317a36460e2c9d5c91b17c2/langchain_core-1.4.0.tar.gz", hash = "sha256:1dc341eed802ed9c117c0df3923c991e5e9e226571e5725c194eeb5bd93d1a7f", size = 920260, upload-time = "2026-05-11T18:42:35.919Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/1a/86c38c27b81913a1c6c12448cab55defb5a1097c7dc9a4cea83f55477a2d/langchain_core-1.4.0-py3-none-any.whl", hash = "sha256:23cbbdb46e38ddd1dd5247e6167e96013eae74bea4c5949c550809970a9e565c", size = 548120, upload-time = "2026-05-11T18:42:33.992Z" },
 ]
 
 [[package]]
@@ -1665,7 +1669,7 @@ wheels = [
 [[package]]
 name = "langgraph"
 version = "1.2.2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&rev=577ee12cc90d4c1cdaed0eca1121b060153698f9#577ee12cc90d4c1cdaed0eca1121b060153698f9" }
 dependencies = [
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langgraph-checkpoint", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1719,7 +1723,7 @@ wheels = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.1.1"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&rev=577ee12cc90d4c1cdaed0eca1121b060153698f9#577ee12cc90d4c1cdaed0eca1121b060153698f9" }
 dependencies = [
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "ormsgpack", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1764,7 +1768,7 @@ inmem = [
 [[package]]
 name = "langgraph-prebuilt"
 version = "1.1.0"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&rev=577ee12cc90d4c1cdaed0eca1121b060153698f9#577ee12cc90d4c1cdaed0eca1121b060153698f9" }
 dependencies = [
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langgraph-checkpoint", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1790,8 +1794,8 @@ wheels = [
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.15"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=nh%2Fsubagent-name-langgraph#766a881c58c1eb5c9b0ad1205942f4c0ffe731e7" }
+version = "0.4.0"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&rev=577ee12cc90d4c1cdaed0eca1121b060153698f9#577ee12cc90d4c1cdaed0eca1121b060153698f9" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

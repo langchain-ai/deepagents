@@ -45,30 +45,34 @@ logger = logging.getLogger(__name__)
 
 
 def _apply_timestamp_tooltip(widget: Static | Vertical) -> None:
-    """Set the message creation timestamp as the widget tooltip."""
-    # Store registration happens before app mounts widgets and after history load.
+    """Set the message creation timestamp as the widget tooltip.
+
+    Safe to call from a widget's `on_mount`: `_mount_message` appends the
+    message to the store before mounting, and hydrated widgets are rebuilt
+    from an already-populated store, so the lookup below succeeds in both
+    paths. No-ops silently for the expected cases (widget not yet mounted,
+    no id, message not registered).
+    """
     try:
         app = widget.app
     except NoActiveAppError:
         return
     if not widget.id:
         return
+    # `_message_store` is set in `DeepAgentsApp.__init__`; the guard only
+    # matters for non-`DeepAgentsApp` hosts (e.g. test harnesses).
     store = getattr(app, "_message_store", None)
     if store is None:
         return
     data = store.get_message(widget.id)
     if data is None:
         return
-    dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
+    try:
+        dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
+    except (ValueError, OSError, OverflowError, TypeError):
+        logger.warning("Invalid timestamp for message %s", widget.id)
+        return
     widget.tooltip = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
-
-
-class _TimestampTooltipMixin:
-    """Mixin that applies a timestamp tooltip on mount."""
-
-    def on_mount(self) -> None:
-        """Apply timestamp tooltip on mount."""
-        _apply_timestamp_tooltip(self)  # type: ignore[arg-type]
 
 
 def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
@@ -153,7 +157,7 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
-class UserMessage(_TimestampTooltipMixin, Static):
+class UserMessage(Static):
     """Widget displaying a user message."""
 
     DEFAULT_CSS = """
@@ -272,6 +276,7 @@ class QueuedUserMessage(Static):
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -570,7 +575,7 @@ class SkillMessage(Vertical):
             self.toggle_body()
 
 
-class AssistantMessage(_TimestampTooltipMixin, Vertical):
+class AssistantMessage(Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -1131,7 +1136,7 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion, or show timestamp if nothing expands."""
+        """Toggle output/argument expansion; no-op when nothing is expandable."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
@@ -1942,7 +1947,7 @@ class ToolCallMessage(Vertical):
         return filtered
 
 
-class DiffMessage(_TimestampTooltipMixin, Static):
+class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting."""
 
     DEFAULT_CSS = """
@@ -2016,7 +2021,7 @@ class DiffMessage(_TimestampTooltipMixin, Static):
             self.styles.border = ("ascii", colors.primary)
 
 
-class ErrorMessage(_TimestampTooltipMixin, Static):
+class ErrorMessage(Static):
     """Widget displaying an error message."""
 
     DEFAULT_CSS = """

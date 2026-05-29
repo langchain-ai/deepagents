@@ -85,7 +85,6 @@ from deepagents_code.widgets.messages import (
     SkillMessage,
     ToolCallMessage,
     UserMessage,
-    _apply_timestamp_tooltip,
 )
 from deepagents_code.widgets.status import StatusBar
 from deepagents_code.widgets.welcome import WelcomeBanner
@@ -1021,6 +1020,9 @@ class DeepAgentsApp(App):
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
+
+    TOOLTIP_DELAY = 0.2
+    """Hover delay before tooltips appear (reduced from Textual default of 0.5)."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -6669,8 +6671,9 @@ class DeepAgentsApp(App):
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
-        # Ensure the widget's DOM id matches the store id so that
-        # features like click-to-show-timestamp can look it up.
+        # Ensure the widget's DOM id matches the store id so the on-mount
+        # timestamp tooltip can look the message up. Appending before mount
+        # guarantees the store entry exists when the widget's on_mount fires.
         if not widget.id:
             widget.id = message_data.id
         self._message_store.append(message_data)
@@ -6681,7 +6684,6 @@ class DeepAgentsApp(App):
             await messages.mount(widget)
         else:
             await self._mount_before_queued(messages, widget)
-        _apply_timestamp_tooltip(widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()

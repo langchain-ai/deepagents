@@ -21,6 +21,13 @@ Screen {
 
 /* Main content goes on base layer by default */
 
+
+Tooltip {
+    background: $surface;
+    color: $foreground;
+    padding: 0 1;
+}
+
 /* Chat area - main scrollable messages area */
 #chat {
     height: 1fr;

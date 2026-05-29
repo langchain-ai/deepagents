@@ -8,7 +8,6 @@ import logging
 import re
 import textwrap
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -42,37 +41,6 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
-
-
-def _apply_timestamp_tooltip(widget: Static | Vertical) -> None:
-    """Set the message creation timestamp as the widget tooltip.
-
-    Safe to call from a widget's `on_mount`: `_mount_message` appends the
-    message to the store before mounting, and hydrated widgets are rebuilt
-    from an already-populated store, so the lookup below succeeds in both
-    paths. No-ops silently for the expected cases (widget not yet mounted,
-    no id, message not registered).
-    """
-    try:
-        app = widget.app
-    except NoActiveAppError:
-        return
-    if not widget.id:
-        return
-    # `_message_store` is set in `DeepAgentsApp.__init__`; the guard only
-    # matters for non-`DeepAgentsApp` hosts (e.g. test harnesses).
-    store = getattr(app, "_message_store", None)
-    if store is None:
-        return
-    data = store.get_message(widget.id)
-    if data is None:
-        return
-    try:
-        dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
-    except (ValueError, OSError, OverflowError, TypeError):
-        logger.warning("Invalid timestamp for message %s", widget.id)
-        return
-    widget.tooltip = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
 
 
 def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
@@ -183,7 +151,6 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        _apply_timestamp_tooltip(self)
         mode_match = detect_mode_prefix(self._content)
         if mode_match:
             _prefix, mode = mode_match
@@ -276,7 +243,6 @@ class QueuedUserMessage(Static):
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -460,7 +426,6 @@ class SkillMessage(Vertical):
         or `_deferred_expanded` assignment, because either may set
         `_expanded` which fires `watch__expanded` synchronously.
         """
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.skill)
@@ -626,7 +591,6 @@ class AssistantMessage(Vertical):
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
-        _apply_timestamp_tooltip(self)
         from textual.widgets import Markdown
 
         self._markdown = self.query_one("#assistant-content", Markdown)
@@ -878,7 +842,6 @@ class ToolCallMessage(Vertical):
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -1136,7 +1099,7 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion; no-op when nothing is expandable."""
+        """Toggle output/argument expansion."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
@@ -2015,7 +1978,6 @@ class DiffMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border = ("ascii", colors.primary)
@@ -2062,7 +2024,6 @@ class ErrorMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
@@ -2180,10 +2141,6 @@ class AppMessage(Static):
         else:
             rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
-
-    def on_mount(self) -> None:
-        """Apply timestamp tooltip on mount."""
-        _apply_timestamp_tooltip(self)
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""

@@ -26,6 +26,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -3419,7 +3420,7 @@ class TestChatScrollKeepsInputFocus:
                     ctrl=False,
                     screen_x=x,
                     screen_y=y,
-                    style=None,  # type: ignore[arg-type]
+                    style=None,
                 )
             )
             await pilot.pause()
@@ -3437,6 +3438,64 @@ class TestChatScrollKeepsInputFocus:
             # Stays focusable (keyboard scrolling) but doesn't grab focus on click.
             assert chat.focusable
             assert chat.focus_on_click() is False
+
+
+class TestMessageTimestampFooters:
+    """Tests for toggleable message timestamp footers."""
+
+    @staticmethod
+    def _sync_tz() -> None:
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    async def test_toggle_adds_and_removes_footers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `/timestamps` toggle adds and removes visible footer widgets."""
+        previous_tz = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "UTC")
+        self._sync_tz()
+        app = DeepAgentsApp()
+
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._mount_message(UserMessage("hello", id="msg-fixed"))
+                data = app._message_store.get_message("msg-fixed")
+                assert data is not None
+                data.timestamp = 1_704_110_405.0
+
+                await app._toggle_message_timestamp_footers()
+                await pilot.pause()
+
+                footer = app.query_one("#msg-fixed-timestamp-footer", Static)
+                rendered = footer.render()
+                assert isinstance(rendered, Content)
+                assert rendered.plain == "Jan 1, 12:00:05 PM"
+
+                await app._toggle_message_timestamp_footers()
+                await pilot.pause()
+
+                with pytest.raises(NoMatches):
+                    app.query_one("#msg-fixed-timestamp-footer", Static)
+        finally:
+            if previous_tz is None:
+                monkeypatch.delenv("TZ", raising=False)
+            else:
+                monkeypatch.setenv("TZ", previous_tz)
+            self._sync_tz()
+
+    async def test_mount_message_adds_footer_when_enabled(self) -> None:
+        """New messages receive a footer while timestamps are enabled."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(UserMessage("hello", id="msg-live"))
+            await pilot.pause()
+
+            assert app.query_one("#msg-live-timestamp-footer", Static)
 
 
 class TestAppBlurPausesCursorBlink:

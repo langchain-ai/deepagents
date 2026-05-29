@@ -8,6 +8,7 @@ import logging
 import re
 import textwrap
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -43,46 +44,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _show_timestamp_toast(widget: Static | Vertical) -> None:  # noqa: ARG001  # temporarily disabled
-    """Show a toast with the message's creation timestamp.
+def _apply_timestamp_tooltip(widget: Static | Vertical) -> None:
+    """Set the message creation timestamp as the widget tooltip.
 
-    No-ops silently if the widget is not mounted or has no associated message
-    data in the store.
-
-    Args:
-        widget: The message widget whose timestamp to display.
+    Safe to call from a widget's `on_mount`: `_mount_message` appends the
+    message to the store before mounting, and hydrated widgets are rebuilt
+    from an already-populated store, so the lookup below succeeds in both
+    paths. No-ops silently for the expected cases (widget not yet mounted,
+    no id, message not registered).
     """
-    # TODO: temporarily disabled — uncomment to restore click-to-show-timestamp
-    return  # early return while feature is disabled
-    # from datetime import UTC, datetime  # noqa: ERA001
-    #
-    # try:  # noqa: ERA001
-    #     app = widget.app  # noqa: ERA001
-    # except Exception:  # Textual raises when widget has no app  # noqa: ERA001
-    #     return  # noqa: ERA001
-    # if not widget.id:
-    #     return  # noqa: ERA001
-    # store = app._message_store  # noqa: ERA001
-    # data = store.get_message(widget.id)  # noqa: ERA001
-    # if not data:
-    #     return  # noqa: ERA001
-    # dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()  # noqa: ERA001
-    # label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"  # noqa: ERA001, E501
-    # app.notify(label, timeout=3)  # noqa: ERA001
-
-
-class _TimestampClickMixin:
-    """Mixin that shows a timestamp toast on click.
-
-    Add to any message widget that should display its creation timestamp when
-    clicked. Widgets needing additional click behavior (e.g. `ToolCallMessage`,
-    `AppMessage`) should override `on_click` and call `_show_timestamp_toast`
-    directly instead.
-    """
-
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)  # type: ignore[arg-type]
+    try:
+        app = widget.app
+    except NoActiveAppError:
+        return
+    if not widget.id:
+        return
+    # `_message_store` is set in `DeepAgentsApp.__init__`; the guard only
+    # matters for non-`DeepAgentsApp` hosts (e.g. test harnesses).
+    store = getattr(app, "_message_store", None)
+    if store is None:
+        return
+    data = store.get_message(widget.id)
+    if data is None:
+        return
+    try:
+        dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
+    except (ValueError, OSError, OverflowError, TypeError):
+        logger.warning("Invalid timestamp for message %s", widget.id)
+        return
+    widget.tooltip = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
 
 
 def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
@@ -167,7 +157,7 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
-class UserMessage(_TimestampClickMixin, Static):
+class UserMessage(Static):
     """Widget displaying a user message."""
 
     DEFAULT_CSS = """
@@ -193,6 +183,7 @@ class UserMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
+        _apply_timestamp_tooltip(self)
         mode_match = detect_mode_prefix(self._content)
         if mode_match:
             _prefix, mode = mode_match
@@ -285,6 +276,7 @@ class QueuedUserMessage(Static):
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -468,6 +460,7 @@ class SkillMessage(Vertical):
         or `_deferred_expanded` assignment, because either may set
         `_expanded` which fires `watch__expanded` synchronously.
         """
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.skill)
@@ -580,11 +573,9 @@ class SkillMessage(Vertical):
         event.stop()
         if self._stripped_body.strip():
             self.toggle_body()
-        else:
-            _show_timestamp_toast(self)
 
 
-class AssistantMessage(_TimestampClickMixin, Vertical):
+class AssistantMessage(Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -635,6 +626,7 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
+        _apply_timestamp_tooltip(self)
         from textual.widgets import Markdown
 
         self._markdown = self.query_one("#assistant-content", Markdown)
@@ -886,6 +878,7 @@ class ToolCallMessage(Vertical):
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -1143,14 +1136,12 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion, or show timestamp if nothing expands."""
+        """Toggle output/argument expansion; no-op when nothing is expandable."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
-        else:
-            _show_timestamp_toast(self)
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -1956,7 +1947,7 @@ class ToolCallMessage(Vertical):
         return filtered
 
 
-class DiffMessage(_TimestampClickMixin, Static):
+class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting."""
 
     DEFAULT_CSS = """
@@ -2024,12 +2015,13 @@ class DiffMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border = ("ascii", colors.primary)
 
 
-class ErrorMessage(_TimestampClickMixin, Static):
+class ErrorMessage(Static):
     """Widget displaying an error message."""
 
     DEFAULT_CSS = """
@@ -2070,16 +2062,15 @@ class ErrorMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
+        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
 
-    def on_click(self, event: Click) -> None:
-        """Open clicked URLs; otherwise show the timestamp toast."""
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
-            return
-        _show_timestamp_toast(self)
 
 
 class _MutedRichMarkdown:
@@ -2190,10 +2181,13 @@ class AppMessage(Static):
             rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
 
-    def on_click(self, event: Click) -> None:
-        """Open style-embedded hyperlinks on single click and show timestamp."""
+    def on_mount(self) -> None:
+        """Apply timestamp tooltip on mount."""
+        _apply_timestamp_tooltip(self)
+
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
-        _show_timestamp_toast(self)
 
 
 class SummarizationMessage(AppMessage):

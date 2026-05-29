@@ -33,7 +33,7 @@ def _normalize_chat_id(chat_id: str | None) -> str:
         return ""
     chat_id = str(chat_id).strip()
     # Handle group IDs (120363...@g.us) — leave as-is
-    if chat_id.endswith("@g.us") or chat_id.endswith("@g.us"):
+    if chat_id.endswith("@g.us"):
         return chat_id
     # For individual chats, strip the domain suffix (@c.us or @s.whatsapp.net)
     for suffix in ("@s.whatsapp.net", "@c.us"):

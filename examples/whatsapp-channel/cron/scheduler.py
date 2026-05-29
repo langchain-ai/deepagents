@@ -92,7 +92,12 @@ async def _deliver_success(
     text: str,
 ) -> str | None:
     """Send *text* to the job's origin chat. Returns an error string on failure."""
-    if text.strip().upper() == SILENT_MARKER:
+    stripped = text.strip()
+    if not stripped:
+        logger.info("cron: job %s returned empty text — skipping delivery",
+                    job.get("id"))
+        return None
+    if stripped.upper() == SILENT_MARKER:
         logger.info("cron: job %s returned %s — skipping delivery",
                     job.get("id"), SILENT_MARKER)
         return None

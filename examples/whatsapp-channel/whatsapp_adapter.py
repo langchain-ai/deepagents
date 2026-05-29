@@ -375,11 +375,13 @@ def truncate_message(text: str, max_length: int = 4096) -> list[str]:
             break
         # Try to split at the last newline within the limit
         cut = text.rfind("\n", 0, max_length)
-        if cut <= 0:
+        if cut < 0:
             cut = max_length
-        chunks.append(text[:cut])
+        chunk = text[:cut]
+        if chunk:
+            chunks.append(chunk)
         text = text[cut:].lstrip("\n")
-    return chunks
+    return [c for c in chunks if c]
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,9 @@ import os
 import re
 import tempfile
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 _DURATION_RE = re.compile(
     r"^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$",
@@ -60,9 +62,6 @@ def parse_duration(s: str) -> int:
     unit = match.group(2)[0].lower()
     return value * _UNIT_TO_MINUTES[unit]
 
-
-from datetime import datetime, timedelta
-from typing import Any
 
 
 def _now_aware() -> datetime:

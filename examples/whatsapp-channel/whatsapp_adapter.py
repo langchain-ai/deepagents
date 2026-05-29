@@ -694,7 +694,7 @@ class WhatsAppAdapter:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("status") == "connected":
-                            print(f"[whatsapp] Using existing bridge (connected)")
+                            print("[whatsapp] Using existing bridge (connected)")
                             self._http_session = aiohttp.ClientSession()
                             self._running = True
                             self._poll_task = asyncio.create_task(self._poll_messages())
@@ -971,7 +971,7 @@ class WhatsAppAdapter:
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": chat_id},
                 timeout=aiohttp.ClientTimeout(total=5),
-            ) as resp:
+            ):
                 pass  # Fire-and-forget; response consumed to avoid leaks
         except Exception:
             pass

@@ -1467,25 +1467,91 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return FormattedOutput(content=Content(output))
 
-    def _format_file_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format file read/write output.
+
+        Preview mode caps both line count and total characters so that files
+        with very long lines (minified HTML/JS/CSS) don't wrap and overflow
+        the widget.
 
         Returns:
             FormattedOutput with file content and optional truncation info.
         """
         lines = output.split("\n")
+        # Files conventionally end in "\n"; the trailing empty element isn't a
+        # real line and would inflate truncation counts.
+        had_trailing_newline = bool(lines) and not lines[-1]
+        if had_trailing_newline:
+            lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
 
-        parts = [Content(line) for line in lines[:max_lines]]
-        content = Content("\n").join(parts)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
+        parts: list[Content] = []
+        chars_used = 0
+        char_truncated = False
+        for line in lines[:max_lines]:
+            display_line = line
+            if char_budget is not None:
+                separator_cost = 1 if parts else 0
+                remaining = char_budget - chars_used - separator_cost
+                if remaining <= 0:
+                    char_truncated = True
+                    break
+                if len(line) > remaining:
+                    display_line = line[:remaining]
+                    char_truncated = True
+                chars_used += separator_cost + len(display_line)
+            parts.append(Content(display_line))
+            if char_truncated:
+                break
 
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
+        content = Content("\n").join(parts) if parts else Content("")
+
+        truncation = self._build_truncation_hint(
+            output=output,
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=had_trailing_newline,
+            is_preview=is_preview,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
+
+    @staticmethod
+    def _build_truncation_hint(
+        *,
+        output: str,
+        lines: list[str],
+        parts_count: int,
+        chars_used: int,
+        char_truncated: bool,
+        had_trailing_newline: bool,
+        is_preview: bool,
+    ) -> str | None:
+        """Compose the truncation hint, preferring line counts over char counts.
+
+        When both the line cap and the char cap were hit, hidden-line count is
+        the more useful signal for the user — char counts dominate the hint
+        for big files where what they really want to know is "how many more
+        lines am I missing?".
+
+        Returns:
+            Hint string for the UI, or `None` if nothing was truncated.
+        """
+        if not is_preview:
+            return None
+        hidden_lines = len(lines) - parts_count
+        if hidden_lines > 0:
+            return f"{hidden_lines} more lines"
+        if char_truncated:
+            effective_output_len = len(output) - (1 if had_trailing_newline else 0)
+            hidden_chars = effective_output_len - chars_used
+            return f"{hidden_chars} more chars"
+        return None
 
     def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
         self, output: str, *, is_preview: bool = False
@@ -1546,6 +1612,9 @@ class ToolCallMessage(Vertical):
             FormattedOutput with shell output and optional truncation info.
         """
         lines = output.split("\n")
+        had_trailing_newline = bool(lines) and not lines[-1]
+        if had_trailing_newline:
+            lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
 
         char_budget = self._PREVIEW_CHARS if is_preview else None
@@ -1574,14 +1643,15 @@ class ToolCallMessage(Vertical):
 
         content = Content("\n").join(parts) if parts else Content("")
 
-        truncation = None
-        if is_preview:
-            hidden_lines = len(lines) - len(parts)
-            hidden_chars = len(output) - chars_used
-            if char_truncated:
-                truncation = f"{hidden_chars} more chars"
-            elif hidden_lines > 0:
-                truncation = f"{hidden_lines} more lines"
+        truncation = self._build_truncation_hint(
+            output=output,
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=had_trailing_newline,
+            is_preview=is_preview,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
 

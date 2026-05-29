@@ -724,15 +724,18 @@ class TestToolCallMessageShellCommand:
         assert result.content.plain == output
 
     def test_format_shell_output_preview_cumulative_chars_exceed_budget(self) -> None:
-        """Many small lines whose total exceeds the budget should char-truncate."""
+        """Many small lines whose total exceeds the budget should char-truncate.
+
+        Char budget is hit, but some lines weren't even attempted — hidden line
+        count is the more useful signal than hidden char count.
+        """
         msg = ToolCallMessage("execute", {"command": "noisy"})
         # 4 lines of 200 chars => 800 + 3 separators, well past 400.
-        # The preview formatter caps at max_lines=4 regardless.
         output = "\n".join("x" * 200 for _ in range(4))
         result = msg._format_shell_output(output, is_preview=True)
 
         assert result.truncation is not None
-        assert "more chars" in result.truncation
+        assert "more lines" in result.truncation
         # Rendered content stays under budget.
         assert len(result.content.plain) <= msg._PREVIEW_CHARS
 
@@ -756,6 +759,132 @@ class TestToolCallMessageShellCommand:
 
         assert result.truncation is None
         assert result.content.plain == output
+
+
+class TestToolCallMessageFileOutput:
+    """Tests for `_format_file_output` char-budget handling.
+
+    Files with very long lines (minified HTML/JS/CSS) used to overflow the
+    preview because only line count was capped. Preview now caps both, and
+    prefers line counts over char counts in the truncation hint when both
+    were hit.
+    """
+
+    def test_format_file_output_preview_truncates_long_single_line(self) -> None:
+        """A single huge line must be char-clipped under the preview budget.
+
+        Single-line input: no lines hidden, so the hint reports remaining chars.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        output = "x" * 5000
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == f"{5000 - msg._PREVIEW_CHARS} more chars"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_file_output_preview_cumulative_chars_exceed_budget(self) -> None:
+        """Within the 4-line cap, total chars past budget prefers `more lines`.
+
+        Some lines weren't even attempted — line count is more useful than
+        char count when the line cap also kicked in.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        # 4 x 200-char lines: line 0 fits (200), line 1 clips (199), lines 2-3
+        # are never attempted, so 2 lines are hidden.
+        output = "\n".join("x" * 200 for _ in range(4))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "2 more lines"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_file_output_preview_line_truncation_when_under_char_budget(
+        self,
+    ) -> None:
+        """Many short lines should report `more lines` truncation."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"line {i}" for i in range(20))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "16 more lines"
+
+    def test_format_file_output_preview_short_no_truncation(self) -> None:
+        """Short file content should render fully with no truncation hint."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "hello\nworld"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_full_never_truncates(self) -> None:
+        """`is_preview=False` must render full output regardless of size."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        output = "x" * 5000
+        result = msg._format_file_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_exact_budget_boundary(self) -> None:
+        """A single line that exactly fills the budget should not truncate."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_trailing_newline_at_budget(self) -> None:
+        r"""Trailing newline at exact budget shouldn't produce a phantom hint.
+
+        File content fits in the budget exactly; the trailing `\n` is a
+        text-file convention, not real hidden content.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS + "\n"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+
+    def test_format_file_output_preview_trailing_newline_short_file(self) -> None:
+        r"""Short file ending in `\n` should not report a phantom extra line."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "hello\nworld\n"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == "hello\nworld"
+
+    def test_format_file_output_preview_empty_output(self) -> None:
+        """Empty output should produce empty content with no truncation hint."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/empty"})
+        result = msg._format_file_output("", is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == ""
+
+    def test_format_file_output_preview_exactly_four_short_lines(self) -> None:
+        """Exactly 4 short lines should render fully with no truncation."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"line {i}" for i in range(4))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_budget_hit_on_separator(self) -> None:
+        """Separator-cost path must trigger truncation when line 0 fills budget.
+
+        When line 0 exactly fills the budget, the next line's separator
+        triggers the `remaining <= 0` branch (distinct from the
+        `len(line) > remaining` branch). Line count should be reported since
+        lines were hidden.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS + "\nsecond\nthird"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "2 more lines"
 
 
 class TestToolCallMessageAwaitingApproval:

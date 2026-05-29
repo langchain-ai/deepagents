@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Deep Agents Code Changelog
 
 ## [0.1.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.5...deepagents-code==0.1.6) (2026-05-27)

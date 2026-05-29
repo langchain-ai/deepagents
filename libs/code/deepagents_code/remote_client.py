@@ -15,10 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-from deepagents_code._debug import configure_debug_logging
-
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on

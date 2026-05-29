@@ -1,5 +1,7 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
+from typing import get_type_hints
+
 import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
@@ -44,6 +46,12 @@ class TestSubagentMiddlewareInit:
         assert "Available subagent types:" in middleware.system_prompt
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
+
+    def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
+        """Public constructor annotations should support runtime introspection."""
+        hints = get_type_hints(SubAgentMiddleware.__init__)
+
+        assert "state_schema" in hints
 
     def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""

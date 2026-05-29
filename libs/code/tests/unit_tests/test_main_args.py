@@ -1,6 +1,7 @@
 """Tests for command-line argument parsing."""
 
 import argparse
+import asyncio
 import io
 import os
 import sys
@@ -60,11 +61,11 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv(
-        "--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"
+        "--shell-allow-list", "ls,cat", "--model", "gpt-5.5", "--auto-approve"
     ):
         parsed_args = parse_args()
         assert parsed_args.shell_allow_list == "ls,cat"
-        assert parsed_args.model == "gpt-4o"
+        assert parsed_args.model == "gpt-5.5"
         assert parsed_args.auto_approve is True
 
 
@@ -366,6 +367,177 @@ class TestMaxTurnsArgument:
         assert exc_info.value.code == 2
 
 
+def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
+    """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
+
+    Handles both positional and keyword call styles so the assertion does not
+    depend on how production code passes the argument.
+    """
+    import inspect
+
+    call = mock_wait_for.call_args
+    bound = inspect.signature(asyncio.wait_for).bind(*call.args, **call.kwargs)
+    return bound.arguments["timeout"]
+
+
+class TestTimeoutArgument:
+    """Tests for --timeout argument parsing, validation, and runtime behavior."""
+
+    def test_parses_integer(self, mock_argv: MockArgvType) -> None:
+        """--timeout N stores an integer."""
+        with mock_argv("-n", "task", "--timeout", "60"):
+            parsed = parse_args()
+            assert parsed.timeout == 60
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        """Timeout is None when --timeout is not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.timeout is None
+
+    def test_combined_with_non_interactive(self, mock_argv: MockArgvType) -> None:
+        """--timeout works alongside -n and --max-turns."""
+        with mock_argv("-n", "run tests", "--timeout", "120", "--max-turns", "10"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "run tests"
+            assert parsed.timeout == 120
+            assert parsed.max_turns == 10
+
+    def test_requires_non_interactive_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--timeout without -n or piped stdin exits with code 2 and warns on stderr."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--timeout", "30"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "--timeout" in stderr
+        assert "-n" in stderr
+
+    def test_allowed_with_piped_stdin(self) -> None:
+        """--timeout without -n is allowed when stdin is piped.
+
+        Also asserts that `max_turns` (None by default) is still forwarded to
+        `run_non_interactive`, guarding against kwarg drops in the surrounding
+        try/except refactor.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "piped task"
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--timeout", "30", "--max-turns", "5"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        mock_run.assert_awaited_once()
+        await_args = mock_run.await_args
+        assert await_args is not None
+        assert await_args.kwargs["max_turns"] == 5
+
+    def test_forwarded_via_wait_for(self) -> None:
+        """--timeout value is used as the asyncio.wait_for timeout."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "do the thing", "--timeout", "45"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert _wait_for_timeout(mock_wait_for) == 45
+
+    def test_timeout_exits_124(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Exits with 124 and warns on stderr when `asyncio.TimeoutError` is raised."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "slow task", "--timeout", "1"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "asyncio.wait_for",
+                side_effect=asyncio.TimeoutError,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 124
+        stderr = capsys.readouterr().err
+        assert "timed out" in stderr
+        assert "1s" in stderr
+
+    def test_no_timeout_when_omitted(self) -> None:
+        """When --timeout is omitted, wait_for is called with timeout=None."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert _wait_for_timeout(mock_wait_for) is None
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-60", "abc"])
+    def test_rejects_non_positive_and_non_integer(
+        self, mock_argv: MockArgvType, bad_value: str
+    ) -> None:
+        """Argparse rejects 0, negatives, and non-integers with exit 2."""
+        with (
+            mock_argv("-n", "task", "--timeout", bad_value),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""
 
@@ -385,12 +557,12 @@ class TestModelParamsArgument:
         """Test --model-params works alongside --model."""
         with mock_argv(
             "--model",
-            "gpt-4o",
+            "gpt-5.5",
             "--model-params",
             '{"temperature": 0.5, "max_tokens": 2048}',
         ):
             parsed = parse_args()
-            assert parsed.model == "gpt-4o"
+            assert parsed.model == "gpt-5.5"
             assert parsed.model_params == '{"temperature": 0.5, "max_tokens": 2048}'
 
 
@@ -413,12 +585,12 @@ class TestProfileOverrideArgument:
         """--profile-override works alongside --model."""
         with mock_argv(
             "--model",
-            "gpt-4o",
+            "gpt-5.5",
             "--profile-override",
             '{"max_input_tokens": 4096}',
         ):
             parsed = parse_args()
-            assert parsed.model == "gpt-4o"
+            assert parsed.model == "gpt-5.5"
             assert parsed.profile_override == '{"max_input_tokens": 4096}'
 
     def test_invalid_json_exits(self) -> None:
@@ -928,7 +1100,7 @@ class TestUpdateSubcommand:
     """Control-flow tests for `deepagents update` and `--update`.
 
     Each branch has a destructive or user-visible failure mode (editable
-    install would have pip clobber a dev checkout; PyPI-unreachable must
+    install would clobber a dev checkout; PyPI-unreachable must
     not be confused with up-to-date). These tests pin the dispatch order.
     """
 
@@ -973,8 +1145,8 @@ class TestUpdateSubcommand:
     def test_editable_install_skips_upgrade(self) -> None:
         """Editable install exits 0 without calling `is_update_available`/upgrade.
 
-        A regression here would run `pip install --upgrade` on an editable
-        checkout and overwrite the dev install.
+        A regression here would run `uv tool upgrade deepagents-code` on an
+        editable checkout and clobber the dev install with a PyPI copy.
         """
         code, is_update_mock, perform_upgrade_mock = self._run_update(
             editable=True,
@@ -1030,3 +1202,197 @@ class TestUpdateSubcommand:
         )
         assert code == 0
         perform_upgrade_mock.assert_awaited_once()
+
+
+class TestInstallExtraSubcommand:
+    """Control-flow tests for `dcode --install <extra>`."""
+
+    @staticmethod
+    def _run_install(
+        extra: str,
+        *,
+        editable: bool = False,
+        yes: bool = False,
+        interactive: bool = False,
+        perform_return: tuple[bool, str] = (True, ""),
+    ) -> tuple[int, MagicMock]:
+        """Invoke `cli_main()` with `--install`; return exit code + mock."""
+        from deepagents_code.main import cli_main
+
+        argv = ["deepagents", "--install", extra]
+        if yes:
+            argv.append("--yes")
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = interactive
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.config._is_editable_install", return_value=editable),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=perform_return,
+            ) as perform_mock,
+            patch("builtins.input", return_value="n"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        return int(exc_info.value.code or 0), perform_mock
+
+    def test_known_extra_runs_install(self) -> None:
+        """A known extra invokes `perform_install_extra` and exits 0."""
+        code, perform_mock = self._run_install("quickjs")
+        assert code == 0
+        perform_mock.assert_awaited_once()
+
+    def test_editable_install_refuses(self) -> None:
+        """Editable install short-circuits with a `uv sync` hint, exit 1."""
+        code, perform_mock = self._run_install("quickjs", editable=True)
+        assert code == 1
+        perform_mock.assert_not_awaited()
+
+    def test_unknown_extra_non_interactive_refuses(self) -> None:
+        """Non-TTY stdin + unknown extra + no --yes must exit 2 (refusal)."""
+        code, perform_mock = self._run_install("not-a-real-extra", interactive=False)
+        assert code == 2
+        perform_mock.assert_not_awaited()
+
+    def test_invalid_extra_refuses_even_with_yes(self) -> None:
+        """Malformed extras must never reach the installer command path."""
+        code, perform_mock = self._run_install(
+            "quickjs']; echo nope; '",
+            yes=True,
+            interactive=False,
+        )
+        assert code == 2
+        perform_mock.assert_not_awaited()
+
+    def test_unknown_extra_with_yes_runs(self) -> None:
+        """`--yes` bypasses the unknown-extra confirmation."""
+        code, perform_mock = self._run_install(
+            "not-a-real-extra", yes=True, interactive=False
+        )
+        assert code == 0
+        perform_mock.assert_awaited_once()
+
+    @staticmethod
+    def _run_install_capture(
+        extra: str,
+        *,
+        editable: bool = False,
+        yes: bool = False,
+        interactive: bool = False,
+        perform_return: tuple[bool, str] = (True, ""),
+        perform_side_effect: BaseException | None = None,
+        input_reply: str = "n",
+    ) -> tuple[int, MagicMock, MagicMock]:
+        """Invoke `cli_main()` with `--install` and capture console output.
+
+        Returns:
+            `(exit_code, perform_mock, console_mock)` — *console_mock* is a
+                `MagicMock` substituted for `deepagents_code.main.console`,
+                so assertions can run against the recorded `.print(...)` calls.
+        """
+        from deepagents_code.main import cli_main
+
+        argv = ["deepagents", "--install", extra]
+        if yes:
+            argv.append("--yes")
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = interactive
+        console_mock = MagicMock()
+        perform_mock = AsyncMock()
+        if perform_side_effect is not None:
+            perform_mock.side_effect = perform_side_effect
+        else:
+            perform_mock.return_value = perform_return
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            # `cli_main` resolves `console` via a lazy `__getattr__` on
+            # `deepagents_code.config`, so patch with `create=True` to
+            # install the mock before the import line runs.
+            patch("deepagents_code.config.console", console_mock, create=True),
+            patch("deepagents_code.config._is_editable_install", return_value=editable),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/deepagents-install.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                perform_mock,
+            ),
+            patch("builtins.input", return_value=input_reply),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        return int(exc_info.value.code or 0), perform_mock, console_mock
+
+    @staticmethod
+    def _printed_text(console_mock: MagicMock) -> str:
+        """Return the concatenated positional args of every `.print()` call."""
+        chunks: list[str] = []
+        for call in console_mock.print.call_args_list:
+            chunks.extend(str(arg) for arg in call.args)
+        return "\n".join(chunks)
+
+    def test_success_renders_installed_message(self) -> None:
+        """Successful install prints a green confirmation and exits 0."""
+        code, _perform, console_mock = self._run_install_capture("quickjs")
+        assert code == 0
+        text = self._printed_text(console_mock)
+        assert "Installed extra 'quickjs'" in text
+
+    def test_failure_renders_log_path_and_manual_command(self) -> None:
+        """A failed install surfaces both the log path and the manual uv command."""
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_return=(False, "resolver: conflict"),
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "Install failed" in text
+        assert "resolver: conflict" in text
+        assert "/tmp/deepagents-install.log" in text
+        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+
+    def test_keyboard_interrupt_exits_130(self) -> None:
+        """Ctrl-C during install exits 130 with an Aborted message."""
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_side_effect=KeyboardInterrupt(),
+        )
+        assert code == 130
+        assert "Aborted" in self._printed_text(console_mock)
+
+    def test_unexpected_exception_includes_class_and_log(self) -> None:
+        """Outer except prints the exception class, message, and log path."""
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_side_effect=RuntimeError("disk full"),
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "RuntimeError" in text
+        assert "disk full" in text
+        assert "/tmp/deepagents-install.log" in text
+        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+
+    def test_interactive_decline_aborts(self) -> None:
+        """Interactive TTY + reply 'n' to unknown extra aborts with exit 1."""
+        code, perform_mock, console_mock = self._run_install_capture(
+            "not-a-real-extra",
+            interactive=True,
+            input_reply="n",
+        )
+        assert code == 1
+        perform_mock.assert_not_awaited()
+        assert "Aborted" in self._printed_text(console_mock)

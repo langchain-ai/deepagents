@@ -1,4 +1,4 @@
-# Advisory check: posts a comment on CLI/Code release PRs when the deepagents
+# Advisory check: posts a comment on Code release PRs when the deepagents
 # SDK pin drifts from the actual SDK version. Does not block merge — the
 # release workflow enforces the pin at publish time. Removes the comment
 # once resolved.
@@ -11,7 +11,6 @@ on:
   pull_request:
     paths:
       - "libs/deepagents/pyproject.toml"
-      - "libs/cli/pyproject.toml"
       - "libs/code/pyproject.toml"
 
 concurrency:
@@ -24,9 +23,7 @@ permissions:
 
 jobs:
   check-sdk-pin:
-    if: |
-      startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-cli')
-      || startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-code')
+    if: startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-code')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -38,12 +35,6 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: |
           case "$HEAD_REF" in
-            release-please--branches--main--components--deepagents-cli*)
-              echo "name=deepagents-cli" >> "$GITHUB_OUTPUT"
-              echo "label=CLI" >> "$GITHUB_OUTPUT"
-              echo "pyproject=libs/cli/pyproject.toml" >> "$GITHUB_OUTPUT"
-              echo "lockdir=libs/cli" >> "$GITHUB_OUTPUT"
-              ;;
             release-please--branches--main--components--deepagents-code*)
               echo "name=deepagents-code" >> "$GITHUB_OUTPUT"
               echo "label=Code" >> "$GITHUB_OUTPUT"
@@ -90,18 +81,13 @@ jobs:
         with:
           script: |
             // Hidden HTML marker to identify comments posted by this workflow.
-            // Scoped per-package so CLI and Code release PRs don't clobber each other.
+            // Scoped per-package so each release PR gets its own comment if
+            // additional packages are added to this check.
             const pkgName = process.env.PKG_NAME;
             const pkgLabel = process.env.PKG_LABEL;
             const pkgPyproject = process.env.PKG_PYPROJECT;
             const pkgLockdir = process.env.PKG_LOCKDIR;
             const marker = `<!-- sdk-pin-check:${pkgName} -->`;
-            // Legacy unscoped marker — only ever used for deepagents-cli runs
-            // before per-package scoping was introduced. Still matched on
-            // CLI runs so existing comments on open release PRs at the time
-            // of rollout get updated/deleted instead of orphaned.
-            const legacyMarker = '<!-- sdk-pin-check -->';
-            const acceptLegacy = pkgName === 'deepagents-cli';
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
 
@@ -109,12 +95,7 @@ jobs:
               github.rest.issues.listComments,
               { owner, repo, issue_number: prNumber, per_page: 100 },
             );
-            const existing = comments.find(c => {
-              const body = c.body ?? '';
-              if (body.includes(marker)) return true;
-              if (acceptLegacy && body.includes(legacyMarker)) return true;
-              return false;
-            });
+            const existing = comments.find(c => (c.body ?? '').includes(marker));
 
             const match = process.env.PIN_MATCH === 'true';
             const sdkVersion = process.env.SDK_VERSION;
@@ -163,7 +144,7 @@ jobs:
                 '>',
                 `> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled. Ensure the ${pkgLabel} does not contain any code that depends on functionality introduced in the newer SDK version — otherwise the published package will fail at runtime.`,
                 '>',
-                '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-cli-sdk-pin-mismatch) for the full recovery procedure.',
+                '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-mismatch) for the full recovery procedure.',
               ].join('\n');
 
               try {

@@ -24,8 +24,8 @@ def _make_backend(
 ) -> tuple[ContextHubBackend, MagicMock]:
     """Build a ContextHubBackend with a mocked langsmith.Client.
 
-    ``files`` pre-populates the ``pull_agent`` return as ``AgentContext.files``.
-    Entry values can be ``FileEntry``/``AgentEntry``/``SkillEntry`` instances.
+    `files` pre-populates the `pull_agent` return as `AgentContext.files`.
+    Entry values can be `FileEntry`/`AgentEntry`/`SkillEntry` instances.
     """
     mock_client = MagicMock()
     context = SimpleNamespace(
@@ -480,8 +480,8 @@ def test_default_client_constructed_when_not_provided() -> None:
 def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
     """Paths through a CompositeBackend route reach the hub with the prefix stripped.
 
-    Wires a ContextHubBackend under ``/memories/`` and verifies write/read/ls/
-    grep/glob round-trip: writes to ``/memories/x`` land at hub key ``x``,
+    Wires a ContextHubBackend under `/memories/` and verifies write/read/ls/
+    grep/glob round-trip: writes to `/memories/x` land at hub key `x`,
     reads come back with the route prefix restored, and writes outside the
     route go to the default backend.
     """

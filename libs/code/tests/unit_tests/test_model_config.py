@@ -36,12 +36,14 @@ from deepagents_code.model_config import (
     is_warning_suppressed,
     load_default_agent,
     load_recent_agent,
+    load_recent_models,
     load_thread_columns,
     save_default_agent,
     save_recent_agent,
     save_recent_model,
     save_thread_columns,
     suppress_warning,
+    touch_recent_model,
     unsuppress_warning,
 )
 
@@ -81,10 +83,10 @@ class TestModelSpec:
 
     def test_try_parse_returns_spec_on_success(self) -> None:
         """try_parse() returns ModelSpec for valid input."""
-        spec = ModelSpec.try_parse("openai:gpt-4o")
+        spec = ModelSpec.try_parse("openai:gpt-5.5")
         assert spec is not None
         assert spec.provider == "openai"
-        assert spec.model == "gpt-4o"
+        assert spec.model == "gpt-5.5"
 
     def test_try_parse_returns_none_on_failure(self) -> None:
         """try_parse() returns None for invalid input."""
@@ -98,20 +100,20 @@ class TestModelSpec:
 
     def test_equality(self) -> None:
         """ModelSpec instances with same values are equal."""
-        spec1 = ModelSpec(provider="openai", model="gpt-4o")
-        spec2 = ModelSpec.parse("openai:gpt-4o")
+        spec1 = ModelSpec(provider="openai", model="gpt-5.5")
+        spec2 = ModelSpec.parse("openai:gpt-5.5")
         assert spec1 == spec2
 
     def test_immutable(self) -> None:
         """ModelSpec is immutable (frozen dataclass)."""
-        spec = ModelSpec(provider="openai", model="gpt-4o")
+        spec = ModelSpec(provider="openai", model="gpt-5.5")
         with pytest.raises(AttributeError):
             spec.provider = "anthropic"  # type: ignore[misc]
 
     def test_validates_empty_provider(self) -> None:
         """ModelSpec raises on empty provider."""
         with pytest.raises(ValueError, match="Provider cannot be empty"):
-            ModelSpec(provider="", model="gpt-4o")
+            ModelSpec(provider="", model="gpt-5.5")
 
     def test_validates_empty_model(self) -> None:
         """ModelSpec raises on empty model."""
@@ -720,7 +722,7 @@ models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 
 [models.providers.openai]
-models = ["gpt-4o"]
+models = ["gpt-5.5"]
 api_key_env = "OPENAI_API_KEY"
 """)
         config = ModelConfig.load(config_path)
@@ -794,14 +796,14 @@ class TestModelConfigGetAllModels:
 models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 
 [models.providers.openai]
-models = ["gpt-4o"]
+models = ["gpt-5.5"]
 """)
         config = ModelConfig.load(config_path)
         models = config.get_all_models()
 
         assert ("claude-sonnet-4-5", "anthropic") in models
         assert ("claude-haiku-4-5", "anthropic") in models
-        assert ("gpt-4o", "openai") in models
+        assert ("gpt-5.5", "openai") in models
 
 
 class TestModelConfigGetProviderForModel:
@@ -3572,6 +3574,63 @@ default = "ollama:qwen3:4b"
         save_recent_model("anthropic:claude-sonnet-4-5", config_path)
 
         assert config_path.exists()
+
+
+class TestRecentModelsMRU:
+    """`load_recent_models` / `touch_recent_model` round-trip + MRU semantics."""
+
+    def test_missing_file_returns_empty_list(self, tmp_path):
+        """A missing recent-models cache should yield an empty list."""
+        assert load_recent_models(state_dir=tmp_path) == []
+
+    def test_touch_creates_file_with_single_entry(self, tmp_path):
+        """First touch should create the JSON file with one entry."""
+        assert touch_recent_model("openai:gpt-5.4", state_dir=tmp_path) is True
+        assert load_recent_models(state_dir=tmp_path) == ["openai:gpt-5.4"]
+
+    def test_touch_promotes_existing_entry_without_duplicating(self, tmp_path):
+        """Touching an existing spec should move it to front, not duplicate."""
+        touch_recent_model("openai:gpt-5.4", state_dir=tmp_path)
+        touch_recent_model("anthropic:claude-opus-4-7", state_dir=tmp_path)
+        touch_recent_model("openai:gpt-5.4", state_dir=tmp_path)
+
+        assert load_recent_models(state_dir=tmp_path) == [
+            "openai:gpt-5.4",
+            "anthropic:claude-opus-4-7",
+        ]
+
+    def test_touch_caps_list_at_five_entries(self, tmp_path):
+        """The MRU list should never exceed RECENT_MODELS_LIMIT entries."""
+        for i in range(8):
+            touch_recent_model(f"openai:model-{i}", state_dir=tmp_path)
+
+        recents = load_recent_models(state_dir=tmp_path)
+        assert len(recents) == 5
+        assert recents[0] == "openai:model-7"
+        assert recents[-1] == "openai:model-3"
+
+    def test_touch_rejects_spec_without_provider_prefix(self, tmp_path):
+        """Specs missing the `provider:` prefix should not be persisted."""
+        assert touch_recent_model("just-a-model", state_dir=tmp_path) is False
+        assert load_recent_models(state_dir=tmp_path) == []
+
+    def test_load_ignores_malformed_payload(self, tmp_path):
+        """A corrupt cache file should be treated as empty, not crash."""
+        (tmp_path / "recent_models.json").write_text("not json{{", encoding="utf-8")
+        assert load_recent_models(state_dir=tmp_path) == []
+
+    def test_load_drops_invalid_entries(self, tmp_path):
+        """Non-string or prefix-less entries should be silently filtered out."""
+        cache = tmp_path / "recent_models.json"
+        cache.write_text(
+            '{"models": ["openai:gpt-5.4", 42, "no-prefix", "openai:gpt-5.4", '
+            '"anthropic:claude-opus-4-7"]}',
+            encoding="utf-8",
+        )
+        assert load_recent_models(state_dir=tmp_path) == [
+            "openai:gpt-5.4",
+            "anthropic:claude-opus-4-7",
+        ]
 
 
 class TestRecentAgent:

@@ -270,7 +270,7 @@ class TestCreateDeepAgentAstreamV2:
         assert parent_message_count > 0
 
     async def test_subagent_error_surfaces_failed_status(self) -> None:
-        """A subagent whose model raises mid-run lands as ``status='failed'``.
+        """A subagent whose model raises mid-run lands as `status='failed'`.
 
         The error propagates up through Pregel into the parent stream, so
         every projection drain may raise — that's fine. The handle should

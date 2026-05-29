@@ -1,4 +1,4 @@
-"""Tests for the `deepagents mcp` command group."""
+"""Tests for the `dcode mcp` command group."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class TestSetupMCPParsers:
     """Argument parser wiring for the `mcp` subcommand."""
 
     def test_mcp_login_accepts_server_arg(self) -> None:
-        """The parser recognizes `deepagents mcp login <server>`."""
+        """The parser recognizes `dcode mcp login <server>`."""
         parser = _build_parser()
         ns = parser.parse_args(["mcp", "login", "notion"])
         assert ns.command == "mcp"
@@ -243,7 +243,7 @@ class TestRunMCPLogin:
         assert exit_code == 1
         mock_login.assert_not_awaited()
         assert "Skipping untrusted project MCP config" in err
-        assert "pass --config <path> to use it explicitly" in err
+        assert "pass --mcp-config <path> to use it explicitly" in err
 
     async def test_user_level_config_is_trusted_without_approval(
         self,
@@ -282,7 +282,14 @@ class TestRunMCPLogin:
     async def test_login_runtime_error_returns_exit_1(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Login raising `RuntimeError` prints the reason and exits 1."""
+        """Login raising `RuntimeError` exits 1 and prints a token-safe summary.
+
+        The CLI used to surface the raw `RuntimeError` message; that was
+        unsafe because upstream MCP-SDK errors can wrap an `OAuthToken` in
+        their `args`. `format_login_failure` now degrades unknown error
+        types to a class-name chain, so the user sees the failure class
+        but not its (potentially-token-bearing) message.
+        """
         from deepagents_code.mcp_commands import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
@@ -301,8 +308,13 @@ class TestRunMCPLogin:
                 config_path=str(config_path),
             )
 
+        captured_err = capsys.readouterr().err
         assert exit_code == 1
-        assert "Login failed: provider offline" in capsys.readouterr().err
+        assert "Login failed:" in captured_err
+        assert "RuntimeError" in captured_err
+        # Token-safety: an arbitrary RuntimeError message must not bleed
+        # into the user-facing output, since its `args` could carry tokens.
+        assert "provider offline" not in captured_err
 
     async def test_login_http_error_returns_exit_1(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -1,5 +1,6 @@
 """Tests for non-interactive mode HITL decision logic."""
 
+import asyncio
 import io
 import signal
 import sys
@@ -290,6 +291,51 @@ class TestSandboxTypeForwarding:
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+
+    async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
+        """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(
+                message="test task",
+                sandbox_type="langsmith",
+                sandbox_snapshot_name="my-snap",
+            )
+
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_snapshot_name"] == "my-snap"
 
 
 class TestQuietMode:
@@ -1483,6 +1529,31 @@ class TestRunStartupCommand:
         mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
         mock_proc.kill.assert_not_called()
         assert "timed out" in buf.getvalue()
+
+    async def test_cancellation_kills_process_group_on_posix(self) -> None:
+        """Outer cancellation should still clean up the startup process group."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_proc.wait = AsyncMock()
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=mock_proc),
+            patch.object(sys, "platform", "darwin"),
+            patch("os.getpgid", return_value=12345),
+            patch("os.killpg") as mock_killpg,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _run_startup_command("sleep 999", console, quiet=False)
+
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+        mock_proc.kill.assert_not_called()
+        assert "timed out" not in buf.getvalue()
 
     async def test_timeout_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
         """If SIGTERM + 5s wait also times out, SIGKILL must follow."""

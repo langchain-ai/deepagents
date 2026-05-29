@@ -19,6 +19,7 @@ from mcp.shared.auth import AnyUrl, OAuthClientMetadata
 
 if TYPE_CHECKING:
     from deepagents_code.mcp_auth import FileTokenStorage
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,38 @@ class OAuthProvider(ABC):
     def matches(self, server_url: str) -> bool:
         """Return `True` when this provider owns `server_url`."""
 
-    def client_metadata(self) -> OAuthClientMetadata:  # noqa: PLR6301  # subclass hook
+    def supports_loopback_callback(self) -> bool:  # noqa: PLR6301  # subclass hook
+        """Return whether this provider can use a runtime loopback redirect URI.
+
+        When `False`, `client_metadata()` ignores the `redirect_uri` argument
+        and uses the provider's own pre-registered static URI instead.
+
+        Returns:
+            `True` when the provider accepts dynamically registered redirect URIs.
+        """
+        return True
+
+    def loopback_port(self) -> int | None:  # noqa: PLR6301  # subclass hook
+        """Return a fixed loopback port, or `None` for a random ephemeral port.
+
+        Override when the provider's app registration requires a specific
+        pre-registered port (e.g. Slack registers `http://localhost:3118/callback`).
+        Ignored when `supports_loopback_callback()` is `False`.
+
+        Returns:
+            A fixed TCP port, or `None` to pick a random ephemeral port.
+        """
+        return None
+
+    def client_metadata(  # noqa: PLR6301  # subclass hook
+        self,
+        *,
+        redirect_uri: str | None = None,
+    ) -> OAuthClientMetadata:
         """Return the `OAuthClientMetadata` used to build the auth provider.
+
+        Args:
+            redirect_uri: Optional runtime redirect URI for CLI loopback auth.
 
         Returns:
             Metadata for the spec-compliant Authorization Code + PKCE +
@@ -54,7 +85,7 @@ class OAuthProvider(ABC):
         """
         return OAuthClientMetadata(
             client_name="deepagents-code",
-            redirect_uris=[AnyUrl("http://localhost/callback")],
+            redirect_uris=[AnyUrl(redirect_uri or "http://localhost/callback")],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
         )
@@ -65,6 +96,7 @@ class OAuthProvider(ABC):
         server_name: str,
         server_url: str,
         storage: FileTokenStorage,
+        ui: OAuthInteraction,
     ) -> LoginResult:
         """Perform any provider-specific pre-handshake work.
 
@@ -72,6 +104,8 @@ class OAuthProvider(ABC):
             server_name: MCP server name from `mcpServers`.
             server_url: Remote MCP endpoint URL.
             storage: File-backed token storage for this server identity.
+            ui: Interaction surface used for any provider-specific
+                prompts (e.g. device-code instructions, workspace IDs).
 
         Returns:
             `LoginResult.completed=True` if the provider finished the
@@ -79,7 +113,7 @@ class OAuthProvider(ABC):
             the standard Authorization Code handshake and passes any
             returned `extra_auth_params` to the redirect URL.
         """
-        del server_name, server_url, storage
+        del server_name, server_url, storage, ui
         return LoginResult()
 
 

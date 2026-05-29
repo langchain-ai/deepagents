@@ -108,7 +108,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         Formatted string for display (e.g., "(*) read_file(config.py)" in ASCII mode)
 
     Examples:
-        read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
+        read_file(file_path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
         execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """
@@ -183,6 +183,14 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
             return f'{prefix} {tool_name}("{command}")'
+
+    elif tool_name == "js_eval":
+        # JS interpreter: show the first line of the snippet, truncated.
+        code = tool_args.get("code")
+        if isinstance(code, str) and code.strip():
+            snippet = _sanitize_display_value(code, max_length=120)
+            return f'{prefix} {tool_name}("{snippet}")'
+        return f"{prefix} {tool_name}()"
 
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory

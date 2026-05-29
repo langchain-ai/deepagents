@@ -26,7 +26,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -53,9 +53,16 @@ from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
-    sanitize_tool_call_id,
+    sanitize_tool_call_id as sanitize_tool_call_id,
     truncate_if_too_long,
     validate_path,
+)
+from deepagents.middleware._message_eviction import (
+    TOO_LARGE_TOOL_MSG as TOO_LARGE_TOOL_MSG,
+    _aoffload_tool_message_content,
+    _create_content_preview,
+    _extract_text_from_message,
+    _offload_tool_message_content,
 )
 from deepagents.middleware._utils import append_to_system_message
 
@@ -338,12 +345,12 @@ Assume this tool is able to read all files. If the User provides a path to a fil
 Usage:
 - By default, it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-  - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
+    - First scan: read_file(file_path="...", limit=100) to see file structure
+    - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
+    - Only omit limit (read full file) when necessary for editing
+- Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
+- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
@@ -523,17 +530,6 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 )
 
 
-TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
-
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
-
-{content_sample}
-"""
-
 TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
 
 You can read the full content using the read_file tool with pagination (offset and limit parameters).
@@ -591,74 +587,6 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     )
     evicted = _build_evicted_human_content(message, replacement_text)
     return message.model_copy(update={"content": evicted})
-
-
-def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
-    """Create a preview of content showing head and tail with truncation marker.
-
-    Args:
-        content_str: The full content string to preview.
-        head_lines: Number of lines to show from the start.
-        tail_lines: Number of lines to show from the end.
-
-    Returns:
-        Formatted preview string with line numbers.
-    """
-    lines = content_str.splitlines()
-
-    if len(lines) <= head_lines + tail_lines:
-        # If file is small enough, show all lines
-        preview_lines = [line[:1000] for line in lines]
-        return format_content_with_line_numbers(preview_lines, start_line=1)
-
-    # Show head and tail with truncation marker
-    head = [line[:1000] for line in lines[:head_lines]]
-    tail = [line[:1000] for line in lines[-tail_lines:]]
-
-    head_sample = format_content_with_line_numbers(head, start_line=1)
-    truncation_notice = f"\n... [{len(lines) - head_lines - tail_lines} lines truncated] ...\n"
-    tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
-
-    return head_sample + truncation_notice + tail_sample
-
-
-def _extract_text_from_message(message: BaseMessage) -> str:
-    """Extract text from a message using its `content_blocks` property.
-
-    Joins all text content blocks and ignores non-text blocks (images, audio, etc.)
-    so that binary payloads don't inflate the size measurement.
-
-    Args:
-        message: The BaseMessage to extract text from.
-
-    Returns:
-        Joined text from all text content blocks, or stringified content as fallback.
-    """
-    texts = [block["text"] for block in message.content_blocks if block["type"] == "text"]
-    return "\n".join(texts)
-
-
-def _build_evicted_content(message: ToolMessage, replacement_text: str) -> str | list[ContentBlock]:
-    """Build replacement content for an evicted message, preserving non-text blocks.
-
-    For plain string content, returns the replacement text directly. For list content
-    with mixed block types (e.g., text + image), replaces all text blocks with a single
-    text block containing the replacement text while keeping non-text blocks intact.
-
-    Args:
-        message: The original ToolMessage being evicted.
-        replacement_text: The truncation notice and preview text.
-
-    Returns:
-        Replacement content: a string or list of content blocks.
-    """
-    if isinstance(message.content, str):
-        return replacement_text
-    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
-    if not media_blocks:
-        # All content is text, so a plain string replacement is sufficient.
-        return replacement_text
-    return [cast("ContentBlock", {"type": "text", "text": replacement_text}), *media_blocks]
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -916,11 +844,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
 
-        def _truncate(content: str, file_path: str, limit: int) -> str:
-            lines = content.splitlines(keepends=True)
-            if len(lines) > limit:
-                lines = lines[:limit]
-                content = "".join(lines)
+        def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
+            if line_limit is not None:
+                lines = content.splitlines(keepends=True)
+                if len(lines) > line_limit:
+                    content = "".join(lines[:line_limit])
 
             if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
@@ -949,7 +877,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
                 # Legacy backends already format with line numbers
                 return ToolMessage(
-                    content=_truncate(read_result, validated_path, limit),
+                    content=_truncate(read_result, validated_path, line_limit=limit),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="success",
@@ -994,10 +922,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
-            # We apply truncation again after formatting content as continuation lines
-            # can increase line count
+            # `limit` already bounded raw source lines at the backend; do not
+            # re-truncate by row count here, or wrapped continuation rows would
+            # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate(content, validated_path, limit),
+                content=_truncate(content, validated_path),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",
@@ -1835,32 +1764,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, False
 
-        # Write content to filesystem
-        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
-        result = resolved_backend.write(file_path, content_str)
-        if result.error:
+        processed_message = _offload_tool_message_content(
+            message,
+            content_str,
+            resolved_backend,
+            self._large_tool_results_prefix,
+        )
+        if processed_message is None:
             return message, False
-
-        # Create preview showing head and tail of the result
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_TOOL_MSG.format(
-            tool_call_id=message.tool_call_id,
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-
-        evicted = _build_evicted_content(message, replacement_text)
-        processed_message = ToolMessage(
-            content=cast("str | list[str | dict]", evicted),
-            tool_call_id=message.tool_call_id,
-            name=message.name,
-            id=message.id,
-            artifact=message.artifact,
-            status=message.status,
-            additional_kwargs=dict(message.additional_kwargs),
-            response_metadata=dict(message.response_metadata),
-        )
         return processed_message, True
 
     async def _aprocess_large_message(
@@ -1882,32 +1793,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
             return message, False
 
-        # Write content to filesystem using async method
-        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"{self._large_tool_results_prefix}/{sanitized_id}"
-        result = await resolved_backend.awrite(file_path, content_str)
-        if result.error:
+        processed_message = await _aoffload_tool_message_content(
+            message,
+            content_str,
+            resolved_backend,
+            self._large_tool_results_prefix,
+        )
+        if processed_message is None:
             return message, False
-
-        # Create preview showing head and tail of the result
-        content_sample = _create_content_preview(content_str)
-        replacement_text = TOO_LARGE_TOOL_MSG.format(
-            tool_call_id=message.tool_call_id,
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-
-        evicted = _build_evicted_content(message, replacement_text)
-        processed_message = ToolMessage(
-            content=cast("str | list[str | dict]", evicted),
-            tool_call_id=message.tool_call_id,
-            name=message.name,
-            id=message.id,
-            artifact=message.artifact,
-            status=message.status,
-            additional_kwargs=dict(message.additional_kwargs),
-            response_metadata=dict(message.response_metadata),
-        )
         return processed_message, True
 
     def _get_backend_from_runtime(

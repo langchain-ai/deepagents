@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import json
 import logging
 import os
 import tempfile
@@ -94,7 +95,7 @@ def resolve_env_var(name: str) -> str | None:
 
 
 PROVIDERS_DOCS_URL = (
-    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
+    "https://docs.langchain.com/oss/python/deepagents/code/providers#provider-reference"
 )
 """Public docs page for configuring model providers.
 
@@ -181,6 +182,30 @@ class MissingCredentialsError(ModelConfigError):
         super().__init__(message)
         self.provider = provider
         self.env_var = env_var
+
+
+class MissingProviderPackageError(ModelConfigError):
+    """Raised when a provider is selected but its LangChain package is not installed.
+
+    Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
+    keep working. Carries the `provider` name and the `package` to install so
+    callers can render targeted recovery hints (e.g., suggest `/install fireworks`
+    or the `/model` slash command) without string-matching on the formatted
+    exception message.
+    """
+
+    def __init__(self, message: str, *, provider: str, package: str) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable message describing the missing package.
+            provider: The provider whose package is missing (e.g., `'fireworks'`).
+            package: The pip-installable package name (e.g.,
+                `'langchain-fireworks'`).
+        """
+        super().__init__(message)
+        self.provider = provider
+        self.package = package
 
 
 class ProviderAuthState(StrEnum):
@@ -296,7 +321,7 @@ class ModelSpec:
     """The provider name (e.g., `'anthropic'`, `'openai'`)."""
 
     model: str
-    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-4o'`)."""
+    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-5.5'`)."""
 
     def __post_init__(self) -> None:
         """Validate the model spec after initialization.
@@ -447,6 +472,16 @@ Holds files the app writes for its own bookkeeping — OAuth tokens, the
 sessions database, version-check caches, input history. Kept separate from
 top-level user-facing config and agent directories so listing/iterating
 `~/.deepagents` doesn't conflate state with agents.
+"""
+
+RECENT_MODELS_FILENAME = "recent_models.json"
+"""Filename under `DEFAULT_STATE_DIR` for the MRU list shown in `/model`."""
+
+RECENT_MODELS_LIMIT = 5
+"""Maximum number of `provider:model` specs retained in the recent list.
+
+Sized to fit comfortably above the provider-grouped list in `/model` without
+pushing the rest of the catalog off-screen on a typical terminal.
 """
 
 PROVIDER_API_KEY_ENV: dict[str, str] = {
@@ -2599,6 +2634,95 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
         This function does not preserve comments in the config file.
     """
     return _save_model_field("recent", model_spec, config_path)
+
+
+def _recent_models_path(state_dir: Path | None = None) -> Path:
+    """Resolve the JSON file path for the recent-models MRU cache.
+
+    Args:
+        state_dir: Override for the state directory (test hook).
+
+    Returns:
+        Absolute path to `recent_models.json` under the chosen state dir.
+    """
+    return (state_dir or DEFAULT_STATE_DIR) / RECENT_MODELS_FILENAME
+
+
+def load_recent_models(state_dir: Path | None = None) -> list[str]:
+    """Read the most-recent-first list of `provider:model` specs.
+
+    Missing or malformed files yield an empty list rather than raising; the
+    recent section is a non-essential UI affordance and must not block the
+    selector from rendering.
+
+    Args:
+        state_dir: Override for the state directory (test hook).
+
+    Returns:
+        Ordered list of recent `provider:model` specs, most recent first.
+            Capped at `RECENT_MODELS_LIMIT` and de-duplicated.
+    """
+    path = _recent_models_path(state_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Could not read recent models cache at %s", path, exc_info=True)
+        return []
+    raw = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or ":" not in entry or entry in seen:
+            continue
+        seen.add(entry)
+        out.append(entry)
+        if len(out) >= RECENT_MODELS_LIMIT:
+            break
+    return out
+
+
+def touch_recent_model(model_spec: str, state_dir: Path | None = None) -> bool:
+    """Promote `model_spec` to the front of the recent-models MRU list.
+
+    Existing entries for the same spec are moved (not duplicated); the list
+    is capped at `RECENT_MODELS_LIMIT`. Best-effort: returns `False` on I/O
+    error so callers can degrade silently — recents are a nice-to-have, not
+    a correctness requirement.
+
+    Args:
+        model_spec: The `provider:model` string just selected.
+        state_dir: Override for the state directory (test hook).
+
+    Returns:
+        `True` on success, `False` on I/O error or invalid spec.
+    """
+    if not model_spec or ":" not in model_spec:
+        return False
+    existing = load_recent_models(state_dir)
+    deduped = [entry for entry in existing if entry != model_spec]
+    new_list = [model_spec, *deduped][:RECENT_MODELS_LIMIT]
+    path = _recent_models_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"models": new_list}, f)
+            Path(tmp_path).replace(path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except OSError:
+        logger.warning(
+            "Could not update recent models cache at %s", path, exc_info=True
+        )
+        return False
+    return True
 
 
 def save_recent_agent(agent_name: str, config_path: Path | None = None) -> bool:

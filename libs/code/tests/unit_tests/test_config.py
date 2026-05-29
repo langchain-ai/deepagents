@@ -766,7 +766,7 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
         mock_init_chat_model.return_value = mock_model
 
-        result = create_model("openai:gpt-4o")
+        result = create_model("openai:gpt-5.5")
         assert result.unsupported_modalities == frozenset()
 
     @patch("langchain.chat_models.init_chat_model")
@@ -2087,7 +2087,7 @@ use_responses_api = false
         assert exact_kwargs.get("temperature") == pytest.approx(0.42)
 
         mock_init.reset_mock()
-        create_model("openai:gpt-4o")
+        create_model("openai:gpt-5.5")
         _, other_kwargs = mock_init.call_args
         assert "temperature" not in other_kwargs
 
@@ -2483,7 +2483,7 @@ class TestCreateModelEdgeCaseParsing:
         self, mock_init_chat_model: Mock, mock_default: Mock
     ) -> None:
         """Empty string falls through to _get_default_model_spec."""
-        mock_default.return_value = "openai:gpt-4o"
+        mock_default.return_value = "openai:gpt-5.5"
         mock_model = Mock()
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
@@ -2498,17 +2498,49 @@ class TestCreateModelViaInitImportError:
     @patch("langchain.chat_models.init_chat_model")
     def test_missing_package_error(self, mock_init: Mock) -> None:
         """Shows install hint when provider package is not installed."""
+        from deepagents_code.model_config import MissingProviderPackageError
+
         mock_init.side_effect = ImportError(
             "No module named 'langchain_nvidia_ai_endpoints'"
         )
         with (
             patch("importlib.util.find_spec", return_value=None),
             pytest.raises(
-                ModelConfigError,
+                MissingProviderPackageError,
                 match="Missing package for provider 'nvidia'",
-            ),
+            ) as exc_info,
         ):
             _create_model_via_init("nemotron", "nvidia", {})
+        assert exc_info.value.provider == "nvidia"
+        assert exc_info.value.package == "langchain-nvidia-ai-endpoints"
+        # Subclasses ModelConfigError so existing handlers keep working.
+        assert isinstance(exc_info.value, ModelConfigError)
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_missing_vertexai_package_uses_declared_extra(
+        self, mock_init: Mock
+    ) -> None:
+        """Vertex AI provider id does not match its optional extra name."""
+        from deepagents_code.model_config import MissingProviderPackageError
+
+        mock_init.side_effect = ImportError(
+            "No module named 'langchain_google_vertexai'"
+        )
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.extra_for_package",
+                return_value="vertex",
+            ) as mock_extra_for_package,
+            pytest.raises(
+                MissingProviderPackageError,
+                match=r"Install: /install vertex",
+            ) as exc_info,
+        ):
+            _create_model_via_init("claude-sonnet-4-5", "google_vertexai", {})
+        mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+        assert exc_info.value.provider == "google_vertexai"
+        assert exc_info.value.package == "langchain-google-vertexai"
 
     @patch("langchain.chat_models.init_chat_model")
     def test_installed_but_broken_import(self, mock_init: Mock) -> None:
@@ -2546,7 +2578,10 @@ class TestCreateModelViaInitImportError:
             patch("importlib.util.find_spec", return_value=None),
             pytest.raises(
                 ModelConfigError,
-                match=r"pip install langchain-custom_provider",
+                match=(
+                    "Install with: uv tool install -U deepagents-code "
+                    "--with langchain-custom_provider"
+                ),
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})
@@ -2611,7 +2646,7 @@ class TestDetectProvider:
     @pytest.mark.parametrize(
         ("model_name", "expected"),
         [
-            ("gpt-4o", "openai"),
+            ("gpt-5.5", "openai"),
             ("gpt-5.2", "openai"),
             ("o1-preview", "openai"),
             ("o3-mini", "openai"),
@@ -2674,7 +2709,7 @@ class TestDetectProvider:
         settings.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
-            assert detect_provider("GPT-4o") == "openai"
+            assert detect_provider("gpt-5.5") == "openai"
         finally:
             settings.anthropic_api_key = None
 
@@ -3002,3 +3037,71 @@ class TestDetectModePrefix:
     def test_double_bang_wins_over_single_bang(self) -> None:
         """Regression guard: `!!` must beat `!` even if iteration order changes."""
         assert detect_mode_prefix("!!whoami") == ("!!", "shell_incognito")
+
+
+class TestInterpreterSettings:
+    """Tests for `[interpreter]` config.toml loading and validation."""
+
+    def test_defaults_when_config_absent(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"  # does not exist
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.enable_interpreter is False
+        assert settings_obj.interpreter_timeout_seconds == 5.0
+        assert settings_obj.interpreter_memory_limit_mb == 64
+        assert settings_obj.interpreter_max_ptc_calls == 256
+        assert settings_obj.interpreter_max_result_chars == 4000
+        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
+
+    def test_round_trip_through_toml(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+enable_interpreter = true
+timeout_seconds = 12.5
+memory_limit_mb = 128
+max_ptc_calls = 64
+max_result_chars = 8000
+ptc = "safe"
+ptc_acknowledge_unsafe = true
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.enable_interpreter is True
+        assert settings_obj.interpreter_timeout_seconds == 12.5
+        assert settings_obj.interpreter_memory_limit_mb == 128
+        assert settings_obj.interpreter_max_ptc_calls == 64
+        assert settings_obj.interpreter_max_result_chars == 8000
+        assert settings_obj.interpreter_ptc == "safe"
+        assert settings_obj.interpreter_ptc_acknowledge_unsafe is True
+
+    def test_ptc_explicit_list_round_trip(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = ["grep", "read_file"]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc == ["grep", "read_file"]
+
+    def test_invalid_ptc_list_entry_falls_back(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = [""]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc is False

@@ -16,10 +16,12 @@ jobs:
     # Serialize per-PR. Rapid `edited`/`synchronize` events on a PR open can
     # otherwise produce two concurrent runs that both observe "no existing
     # sticky" and both call `createComment`, leaving a duplicate failure
-    # comment that the find-first updater will never reconcile.
+    # comment that the find-first updater will never reconcile. We queue
+    # (cancel-in-progress: false) rather than cancel, so the in-flight run
+    # finishes its sticky write before the next event evaluates.
     concurrency:
       group: pr-trailer-lint-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       - name: Check PR title and body for banned trailer
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -42,11 +44,11 @@ jobs:
 
             // Mirrors the org ruleset regex on `main`. Keep in lock-step:
             // the live source of truth is the ruleset's `commit_message_pattern.pattern`
-            // field at GitHub org settings → Rulesets → (the ruleset that targets
-            // `main`). The pattern below is informational; verify against the
-            // live ruleset when updating either side, or this check silently
-            // passes pushes that the ruleset will then reject (defeating the
-            // entire purpose).
+            // field at GitHub org settings → Rulesets → `block-anthropic-coauthor`
+            // (or whichever ruleset blocks this trailer on `main`).
+            // The pattern below is informational; verify against the live ruleset
+            // when updating either side, or this check silently passes pushes
+            // that the ruleset will then reject (defeating the entire purpose).
             //
             // Case-folding is intentionally narrow (`[Aa]`/`[Bb]`) because the
             // ruleset's pattern is narrow. Do NOT add the `i` flag — that would
@@ -75,9 +77,13 @@ jobs:
             // remediation manually. The check still fails — `setFailed` is
             // invoked before this function, so the failure signal is already
             // recorded by the time the comment write is attempted.
+            //
+            // The try/catch wraps ONLY the write call so that a bug in
+            // `findStickyComment` (e.g., pagination throwing) surfaces with
+            // its true cause instead of being misattributed to "fork PR token".
             async function postStickyOrSummary(commentBody, summaryHeading) {
+              const existing = await findStickyComment();
               try {
-                const existing = await findStickyComment();
                 if (existing) {
                   if (existing.body !== commentBody) {
                     await github.rest.issues.updateComment({
@@ -113,23 +119,29 @@ jobs:
 
             if (offendingIndices.length === 0) {
               core.info('No banned trailer in squash-merge message.');
-              // Clean up any prior failure comment. Wrapped in try/catch
-              // because a transient API failure during cleanup must NOT turn
-              // a green check into red.
+              // Mark any prior failure comment as resolved. We update rather
+              // than delete because `deleteComment` 403s under restricted
+              // fork-PR tokens, whereas `updateComment` on a bot-authored
+              // comment works in both modes. Wrapped in try/catch because a
+              // transient API failure during cleanup must NOT turn a green
+              // check into red.
               try {
                 const existing = await findStickyComment();
                 if (existing) {
-                  await github.rest.issues.deleteComment({
-                    ...context.repo,
-                    comment_id: existing.id,
-                  });
+                  const resolvedBody = [
+                    STICKY_MARKER,
+                    '✅ **Trailer fixed.** The previous warning is resolved.',
+                  ].join('\n');
+                  if (existing.body !== resolvedBody) {
+                    await github.rest.issues.updateComment({
+                      ...context.repo,
+                      comment_id: existing.id,
+                      body: resolvedBody,
+                    });
+                  }
                 }
               } catch (cleanupErr) {
-                // Fork PRs land here with a 403 — the restricted token cannot
-                // delete bot comments. The stale comment then misleads the
-                // author into thinking the PR is still broken; a maintainer
-                // must manually delete it.
-                core.warning(`Check passed but could not clean up prior failure comment (delete the stale sticky manually if this is a fork PR): ${cleanupErr.message}`);
+                core.warning(`Check passed but could not update prior failure comment to resolved: ${cleanupErr.message}`);
               }
               return;
             }

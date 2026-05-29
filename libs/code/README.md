@@ -12,20 +12,13 @@
 ## Quick Install
 
 ```bash
-curl -LsSf https://langch.in/gh-da-cli | bash
+curl -LsSf https://langch.in/dcode | bash
 ```
 
 ```bash
 # With model provider extras
 # OpenAI, Anthropic, and Gemini are included by default
-DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/gh-da-cli | bash
-```
-
-Or install directly with `uv`:
-
-```bash
-# Install with chosen model providers
-uv tool install 'deepagents-code[nvidia,ollama]'
+DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
 Run:
@@ -51,7 +44,7 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 
 ## 📖 Resources
 
-- **[CLI Documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)**
+- **[Documentation](https://docs.langchain.com/deepagents-code)**
 - **[Changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md)**
 - **[Source code](https://github.com/langchain-ai/deepagents/tree/main/libs/code)**
 - **[Deep Agents SDK](https://github.com/langchain-ai/deepagents)** — underlying agent harness

@@ -1,4 +1,4 @@
-"""``CodeInterpreterMiddleware``: exposes a persistent JavaScript REPL as an agent tool.
+"""`CodeInterpreterMiddleware`: exposes a persistent JavaScript REPL as an agent tool.
 
 State persists across tool calls within a LangGraph thread (each thread
 gets its own QuickJS context).
@@ -52,7 +52,7 @@ _DEFAULT_TOOL_NAME = "eval"
 
 
 class REPLState(AgentState):
-    """State schema for ``CodeInterpreterMiddleware``."""
+    """State schema for `CodeInterpreterMiddleware`."""
 
     _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
 
@@ -69,15 +69,15 @@ class EvalSchema(BaseModel):
 
 
 def _resolve_thread_id(fallback: str) -> str:
-    """Extract ``thread_id`` from langgraph config or use ``fallback``.
+    """Extract `thread_id` from langgraph config or use `fallback`.
 
     The fallback is a middleware-instance-scoped id: when the caller
-    didn't configure a ``thread_id`` (common for ad-hoc
-    ``agent.invoke(...)`` in tests or single-shot scripts), we still need
+    didn't configure a `thread_id` (common for ad-hoc
+    `agent.invoke(...)` in tests or single-shot scripts), we still need
     all resolver calls within one CodeInterpreterMiddleware lifetime to return the
-    same id — otherwise ``wrap_model_call`` installs tools on one REPL
+    same id — otherwise `wrap_model_call` installs tools on one REPL
     and the eval tool looks up a different one, and the model sees
-    ``ReferenceError: tools is not defined``.
+    `ReferenceError: tools is not defined`.
     """
     try:
         config = get_config()
@@ -101,47 +101,48 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call wall-clock timeout in seconds. Applied to every
-            ``eval`` on every context. Default 5.
-        max_ptc_calls: Maximum number of ``tools.*`` bridge calls allowed
-            during one ``eval`` execution. Exceeding this budget throws
+            `eval` on every context. Default 5.
+        max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
+            during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
-            Uncaught overflows surface as ``PTCCallBudgetExceeded``.
-            ``None`` disables the budget (unsafe for untrusted prompts;
+            Uncaught overflows surface as `PTCCallBudgetExceeded`.
+            `None` disables the budget (unsafe for untrusted prompts;
             enables PTC-call DoS patterns). Default 256.
 
             !!! warning
-                Setting ``max_ptc_calls=None`` disables the call budget and can allow
+
+                Setting `max_ptc_calls=None` disables the call budget and can allow
                 unbounded PTC host-call loops (DoS risk). Only disable in trusted
                 environments.
 
-        tool_name: Name of the tool exposed to the model. Default ``eval``.
+        tool_name: Name of the tool exposed to the model. Default `eval`.
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
             the model. Console buffering is also bounded to this value
             during collection. Default 4000.
-        capture_console: If ``True``, install a ``console`` object that
-            buffers ``console.log/warn/error`` calls and emits them in
-            ``<stdout>`` blocks alongside the result. Default ``True``.
-        skills_backend: Optional ``BackendProtocol`` the REPL reads skill
+        capture_console: If `True`, install a `console` object that
+            buffers `console.log/warn/error` calls and emits them in
+            `<stdout>` blocks alongside the result. Default `True`.
+        skills_backend: Optional `BackendProtocol` the REPL reads skill
             source files from. When set and a paired
-            ``SkillsMiddleware`` populates ``skills_metadata`` in state,
-            skills with a ``module`` frontmatter key become dynamic-
-            importable from the REPL as ``await import("@/skills/<name>")``.
-            When ``None``, skill modules are not installed
-            (``import(...)`` fails at the resolver). This must be the
-            same backend ``SkillsMiddleware`` uses.
+            `SkillsMiddleware` populates `skills_metadata` in state,
+            skills with a `module` frontmatter key become dynamic-
+            importable from the REPL as `await import("@/skills/<name>")`.
+            When `None`, skill modules are not installed
+            (`import(...)` fails at the resolver). This must be the
+            same backend `SkillsMiddleware` uses.
         ptc: Programmatic tool calling — expose agent tools inside the
-            REPL as ``tools.<camelCase>(input) => Promise<string>``. One
-            ``eval`` call can then orchestrate many tool calls (loops,
-            ``Promise.all``, conditional branching). Accepts:
+            REPL as `tools.<camelCase>(input) => Promise<string>`. One
+            `eval` call can then orchestrate many tool calls (loops,
+            `Promise.all`, conditional branching). Accepts:
 
-            - ``None`` (default) — disabled.
-            - ``list[str | BaseTool]`` — allowlist entries may be:
-              - ``str`` tool names, matched against the agent's toolset.
-              - ``BaseTool`` instances, exposed directly even if not on
+            - `None` (default) — disabled.
+            - `list[str | BaseTool]` — allowlist entries may be:
+              - `str` tool names, matched against the agent's toolset.
+              - `BaseTool` instances, exposed directly even if not on
                 the agent's tool list.
 
-            Mixed lists are supported. Explicit ``BaseTool`` entries are
+            Mixed lists are supported. Explicit `BaseTool` entries are
             considered first; then name-matched agent tools are added.
             Duplicate names are deduplicated.
 
@@ -152,15 +153,15 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 enforced per PTC-invoked tool call.
 
             The REPL's own tool is always excluded; a model asking for
-            ``tools.eval("...")`` would recurse pointlessly.
-        snapshot_between_turns: If ``True`` (default), persist REPL state
-            across agent turns by creating a snapshot in ``after_agent`` and
-            restoring it in ``before_agent``. If ``False``, preserve the
+            `tools.eval("...")` would recurse pointlessly.
+        snapshot_between_turns: If `True` (default), persist REPL state
+            across agent turns by creating a snapshot in `after_agent` and
+            restoring it in `before_agent`. If `False`, preserve the
             previous behavior where state resets each turn.
         max_snapshot_bytes: Maximum serialized snapshot payload size allowed
             in middleware state. If a snapshot exceeds this size, it is
-            dropped (``_quickjs_snapshot_payload=None``). Defaults to
-            ``memory_limit``.
+            dropped (`_quickjs_snapshot_payload=None`). Defaults to
+            `memory_limit`.
 
     Example:
         ```python
@@ -224,11 +225,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             snapshot_between_turns=snapshot_between_turns,
         )
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
-        # Stable fallback thread id — used when ``thread_id`` isn't in
-        # langgraph config. Must be instance-scoped so ``wrap_model_call``
-        # and ``eval`` invocations within one conversation resolve to the
+        # Stable fallback thread id — used when `thread_id` isn't in
+        # langgraph config. Must be instance-scoped so `wrap_model_call`
+        # and `eval` invocations within one conversation resolve to the
         # same REPL; otherwise the PTC install happens on one REPL and the
-        # eval runs on another (and sees ``tools`` undefined).
+        # eval runs on another (and sees `tools` undefined).
         self._fallback_thread_id = f"session_{uuid.uuid4().hex[:8]}"
         self.tools: list[BaseTool] = [self._build_tool()]
 
@@ -239,8 +240,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         fallback_id = self._fallback_thread_id
         middleware = self
 
-        def _run(outcome_fn: Any, code: str, tool_call_id: str | None) -> ToolMessage:
-            outcome = outcome_fn(code)
+        def _make_tool_message(
+            outcome: Any,
+            tool_call_id: str | None,
+        ) -> ToolMessage:
             return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
@@ -257,16 +260,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
-            return _run(
-                lambda c: repl.eval_sync(
-                    c,
-                    skills=skills,
-                    skills_backend=middleware._skills_backend,
-                    outer_runtime=runtime,
-                ),
+            outcome = repl.eval_sync(
                 code,
-                runtime.tool_call_id,
+                skills=skills,
+                skills_backend=middleware._skills_backend,
+                outer_runtime=runtime,
             )
+            return _make_tool_message(outcome, runtime.tool_call_id)
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
@@ -281,11 +281,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 outer_runtime=runtime,
                 outer_loop=asyncio.get_running_loop(),
             )
-            return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
-                tool_call_id=runtime.tool_call_id,
-                name=tool_name,
-            )
+            return _make_tool_message(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
             name=tool_name,
@@ -303,6 +299,16 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             metadata={"ls_code_input_language": "javascript"},
         )
 
+    def _ptc_tool_names(self) -> set[str]:
+        """Collect tool names from the PTC configuration."""
+        names: set[str] = set()
+        for entry in self._ptc or []:
+            if isinstance(entry, str):
+                names.add(entry)
+            elif isinstance(entry, BaseTool):
+                names.add(entry.name)
+        return names
+
     def _skills_for_eval(
         self,
         runtime: ToolRuntime[None, Any],
@@ -313,7 +319,40 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         metadata_list = (
             runtime.state.get("skills_metadata", []) if runtime.state else []
         )
-        return {m["name"]: m for m in metadata_list}
+        ptc_names = self._ptc_tool_names()
+        result: dict[str, SkillMetadata] = {}
+        for m in metadata_list:
+            raw = m.get("metadata", {}).get("required-ptc-tools", "")
+            required = str(raw).split() if raw else []
+            missing = [t for t in required if t not in ptc_names]
+            if missing:
+                logger.warning(
+                    "Skill '%s' requires PTC tools not in ptc config: %s",
+                    m["name"],
+                    ", ".join(missing),
+                )
+                continue
+            result[m["name"]] = m
+        return result
+
+    def _validate_required_ptc_tools(self, state: REPLState) -> None:
+        """Raise if any skill requires PTC tools not in the config."""
+        if self._skills_backend is None:
+            return
+        metadata_list: list[SkillMetadata] = state.get("skills_metadata", [])  # type: ignore[assignment]
+        ptc_names = self._ptc_tool_names()
+        for skill in metadata_list:
+            raw = skill.get("metadata", {}).get("required-ptc-tools", "")
+            required = str(raw).split() if raw else []
+            missing = [t for t in required if t not in ptc_names]
+            if missing:
+                msg = (
+                    f"Skill '{skill['name']}' requires PTC tools"
+                    " that are not configured: "
+                    f"{', '.join(missing)}. "
+                    f"Add them to CodeInterpreterMiddleware(ptc=[...])."
+                )
+                raise ValueError(msg)
 
     def before_agent(
         self,
@@ -321,6 +360,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Restore REPL snapshot bytes into the current thread slot."""
+        self._validate_required_ptc_tools(state)
         if not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
@@ -344,7 +384,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of ``before_agent`` snapshot restore."""
+        """Async variant of `before_agent` snapshot restore."""
+        self._validate_required_ptc_tools(state)
         if not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
@@ -398,7 +439,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         live tool list off the request (middlewares upstream may have
         filtered it), decides what PTC exposes this turn, registers any
         missing host-function bridges on the current thread's REPL, and
-        rebuilds ``globalThis.tools`` if the exposed name set changed.
+        rebuilds `globalThis.tools` if the exposed name set changed.
         """
         if self._ptc is None:
             return self._base_system_prompt
@@ -488,7 +529,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Async variant of ``after_agent`` snapshot+evict behavior."""
+        """Async variant of `after_agent` snapshot+evict behavior."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         if not self._snapshot_between_turns:
             await self._registry.aevict(thread_id)
@@ -516,7 +557,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""
-        # Wrapped in ``contextlib.suppress`` because __del__ must not raise
+        # Wrapped in `contextlib.suppress` because __del__ must not raise
         # during interpreter shutdown, when dependencies may already be
         # half-unloaded.
         with contextlib.suppress(Exception):

@@ -49,7 +49,9 @@ def _update_entry() -> PendingNotification:
             NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),
             NotificationAction(ActionId.SKIP_VERSION, "Skip this version"),
         ),
-        payload=UpdateAvailablePayload(latest="2.0.0", upgrade_cmd="pip install"),
+        payload=UpdateAvailablePayload(
+            latest="2.0.0", upgrade_cmd="uv tool upgrade deepagents-code"
+        ),
     )
 
 

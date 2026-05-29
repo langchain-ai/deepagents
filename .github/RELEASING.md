@@ -45,7 +45,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> **(CLI only)** The CLI pins an exact `deepagents==` version in `libs/cli/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version the CLI actually requires. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if a mismatch slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
 
 ### Version Bumping
 
@@ -310,7 +310,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
-   - (CLI only): leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
 5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
 
@@ -528,35 +528,35 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
 
-### Release Failed: CLI SDK Pin Mismatch
+### Release Failed: Code SDK Pin Mismatch
 
-If the release workflow fails at the "Verify CLI pins latest SDK version" step with:
+If the release workflow fails at the "Verify package pins latest SDK version" step with:
 
 ```txt
-CLI SDK pin does not match SDK version!
+deepagents-code SDK pin does not match SDK version!
 SDK version (libs/deepagents/pyproject.toml): 0.4.2
-CLI SDK pin (libs/cli/pyproject.toml): 0.4.1
+deepagents-code SDK pin (libs/code/pyproject.toml): 0.4.1
 ```
 
-This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the CLI's pin isn't updated before the CLI release PR is merged.
+This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged.
 
 **To fix:**
 
 1. **Hotfix the pin on `main`:**
 
    ```bash
-   # Update the pin in libs/cli/pyproject.toml
+   # Update the pin in libs/code/pyproject.toml
    # e.g., change deepagents==0.4.1 to deepagents==0.4.2
-   cd libs/cli && uv lock
-   git add libs/cli/pyproject.toml libs/cli/uv.lock
-   git commit -m "hotfix(cli): bump SDK pin to <VERSION>"
+   cd libs/code && uv lock
+   git add libs/code/pyproject.toml libs/code/uv.lock
+   git commit -m "hotfix(code): bump SDK pin to <VERSION>"
    git push origin main
    ```
 
-2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/cli/CHANGELOG.md`):
+2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/code/CHANGELOG.md`):
    - Go to **Actions** > `⚠️ Manual Package Release`
    - Click **Run workflow**
-   - Select `main` branch and `deepagents-cli` package
+   - Select `main` branch and `deepagents-code` package
 
 3. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
 

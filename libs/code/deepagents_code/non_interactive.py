@@ -61,6 +61,8 @@ from deepagents_code.unicode_security import (
 )
 
 if TYPE_CHECKING:
+    from asyncio.subprocess import Process
+
     from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
@@ -149,6 +151,81 @@ class _ConsoleSpinner:
                 logger.warning("Spinner stop failed: %s", exc)
             finally:
                 self._live = None
+
+
+async def _terminate_startup_process(proc: Process) -> None:
+    """Terminate and reap a startup command subprocess.
+
+    Args:
+        proc: Process returned by `asyncio.create_subprocess_shell`.
+    """
+    import asyncio
+    import sys
+
+    if proc.returncode is not None:
+        return
+
+    try:
+        if sys.platform != "win32":
+            import os
+            import signal
+
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.warning(
+            "Failed to terminate startup command (pid=%s)",
+            proc.pid,
+            exc_info=True,
+        )
+        return
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except TimeoutError:
+        logger.warning(
+            "Startup command (pid=%s) did not exit after termination; sending SIGKILL",
+            proc.pid,
+        )
+        try:
+            if sys.platform != "win32":
+                import os
+                import signal
+
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to SIGKILL startup command (pid=%s); process may leak",
+                proc.pid,
+                exc_info=True,
+            )
+            return
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.warning(
+                "Failed to reap startup command (pid=%s) after SIGKILL",
+                proc.pid,
+                exc_info=True,
+            )
+    except ProcessLookupError:
+        pass
+    except OSError:
+        logger.warning(
+            "Failed to wait on startup command (pid=%s) after SIGTERM; "
+            "process may leak",
+            proc.pid,
+            exc_info=True,
+        )
 
 
 @dataclass
@@ -780,6 +857,10 @@ async def _run_startup_command(
         quiet: When `True`, suppresses the "Running startup command" header
             so piped output stays minimal; warnings still appear (on stderr
             when the caller wired the console there).
+
+    Raises:
+        asyncio.CancelledError: If the caller cancels while the startup command
+            is running.
     """
     import asyncio
     import sys
@@ -805,69 +886,11 @@ async def _run_startup_command(
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=60
         )
+    except asyncio.CancelledError:
+        await _terminate_startup_process(proc)
+        raise
     except TimeoutError:
-        if proc.returncode is None:
-            try:
-                if sys.platform != "win32":
-                    import os
-                    import signal
-
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                else:
-                    proc.kill()
-            except ProcessLookupError:
-                pass
-            except OSError:
-                logger.warning(
-                    "Failed to terminate startup command (pid=%s)",
-                    proc.pid,
-                    exc_info=True,
-                )
-            else:
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except TimeoutError:
-                    logger.warning(
-                        "Startup command (pid=%s) did not exit after termination; "
-                        "sending SIGKILL",
-                        proc.pid,
-                    )
-                    try:
-                        if sys.platform != "win32":
-                            import os
-                            import signal
-
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        else:
-                            proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        logger.warning(
-                            "Failed to SIGKILL startup command (pid=%s); "
-                            "process may leak",
-                            proc.pid,
-                            exc_info=True,
-                        )
-                    try:
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        logger.warning(
-                            "Failed to reap startup command (pid=%s) after SIGKILL",
-                            proc.pid,
-                            exc_info=True,
-                        )
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    logger.warning(
-                        "Failed to wait on startup command (pid=%s) after SIGTERM; "
-                        "process may leak",
-                        proc.pid,
-                        exc_info=True,
-                    )
+        await _terminate_startup_process(proc)
         console.print("[yellow]Warning:[/yellow] startup command timed out (60s limit)")
         return
 
@@ -895,6 +918,7 @@ async def run_non_interactive(
     model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     *,
     initial_skill: str | None = None,
@@ -905,6 +929,9 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
@@ -934,6 +961,8 @@ async def run_non_interactive(
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         initial_skill: Optional skill name whose `SKILL.md` instructions wrap
@@ -960,6 +989,12 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
+        enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
+            on the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
+            allowlist for `js_eval`).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
 
@@ -1129,9 +1164,13 @@ async def run_non_interactive(
             shell_allow_list=restrictive_allow_list,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=sandbox_setup,
             enable_shell=enable_shell,
             enable_ask_user=False,
+            enable_interpreter=enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

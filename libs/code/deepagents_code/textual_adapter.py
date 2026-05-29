@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -47,7 +48,6 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext  # noqa: TC001
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     SessionStats as SessionStats,
@@ -70,7 +70,6 @@ from deepagents_code.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -1150,15 +1149,22 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        # Hide shell tool widgets while the approval renders the
-                        # same command; restore before processing the decision
-                        # so subsequent status updates render on the visible
-                        # widget.
-                        suppressed_tool_msgs = [
-                            tool_msg
-                            for tool_msg in adapter._current_tool_messages.values()
-                            if tool_msg.tool_name == "execute"
-                        ]
+                        # Hide shell tool widgets while the approval renders
+                        # the same command; restore before processing the
+                        # decision so subsequent status updates render on the
+                        # visible widget. Only applies to single-tool
+                        # approvals — the batch dialog doesn't render
+                        # per-tool commands, so hiding the rows would leave
+                        # the user with no preview of what's being approved.
+                        suppressed_tool_msgs = (
+                            [
+                                tool_msg
+                                for tool_msg in adapter._current_tool_messages.values()
+                                if tool_msg.tool_name == "execute"
+                            ]
+                            if len(action_requests) == 1
+                            else []
+                        )
                         for tool_msg in suppressed_tool_msgs:
                             tool_msg.set_awaiting_approval()
                         try:
@@ -1305,13 +1311,13 @@ async def execute_task_textual(
                     )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
-                    await _report_and_persist_tokens(
+                    # Model call already completed (HITL interrupt fires after
+                    # the model node); `ResumeStateMiddleware.after_model`
+                    # persisted the count, so only refresh UI here.
+                    _report_tokens(
                         adapter,
-                        agent,
-                        config,
                         captured_input_tokens,
                         captured_output_tokens,
-                        shield=True,
                     )
                     return turn_stats
 
@@ -1333,12 +1339,11 @@ async def execute_task_textual(
         )
         return turn_stats
 
-    # Update token count and return stats
+    # Update token count and return stats. Persistence is handled inside the
+    # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_and_persist_tokens(
+    _report_tokens(
         adapter,
-        agent,
-        config,
         captured_input_tokens,
         captured_output_tokens,
     )
@@ -1390,19 +1395,47 @@ async def _handle_interrupt_cleanup(
 
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
-    try:
-        if interrupted_msg:
-            await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+    from langsmith import tracing_context
 
-        cancellation_msg = HumanMessage(
-            content="[SYSTEM] Task interrupted by user. "
-            "Previous operation was cancelled."
-        )
-        await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    try:
+        # tracing_context(enabled=False) suppresses only the UpdateState traced
+        # run that each aupdate_state call would otherwise emit in LangSmith — it
+        # does not affect any other tracing in the surrounding turn. These writes
+        # are internal interrupt-recovery mechanics (partial AI message +
+        # cancellation notice), not user-driven agent activity; surfacing them as
+        # standalone peer runs alongside real agent turns clutters the trace view.
+        with tracing_context(enabled=False):
+            if interrupted_msg:
+                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
+            cancellation_msg = HumanMessage(
+                content="[SYSTEM] Task interrupted by user. "
+                "Previous operation was cancelled."
+            )
+            cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+            # Piggy-back the latest token count on this already-required write
+            # instead of issuing a separate `aupdate_state`. `after_model` never
+            # ran on the partial turn, so without this the count would be stale
+            # on resume.
+            captured_total = captured_input_tokens + captured_output_tokens
+            if captured_total:
+                cancellation_values["_context_tokens"] = captured_total
+            await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
-    except Exception:
+    except Exception as exc:  # interrupt cleanup must not propagate
         logger.warning("Failed to save interrupted state", exc_info=True)
+        # Surface via the chat surface — silent file-only warnings have
+        # masked real state-write failures (validation, checkpointer
+        # corruption) in past incidents. The mount is best-effort; the
+        # adapter may already be tearing down.
+        with contextlib.suppress(Exception):
+            await adapter._mount_message(
+                AppMessage(
+                    f"Could not save interrupted state ({type(exc).__name__}). "
+                    "Subsequent turns may see stale state."
+                )
+            )
 
     # Mark tools as rejected AFTER saving state
     for tool_msg in list(adapter._current_tool_messages.values()):
@@ -1414,91 +1447,37 @@ async def _handle_interrupt_cleanup(
     approximate = interrupted_msg is not None
 
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_and_persist_tokens(
+    _report_tokens(
         adapter,
-        agent,
-        config,
         captured_input_tokens,
         captured_output_tokens,
-        shield=True,
         approximate=approximate,
     )
 
 
-async def _persist_context_tokens(
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
-    config: RunnableConfig,
-    tokens: int,
-) -> None:
-    """Best-effort persist of the context token count into graph state.
-
-    The `aupdate_state` call is wrapped in `tracing_context(enabled=False)` so
-    this purely-internal bookkeeping write does not surface as a separate
-    `UpdateState` run in LangSmith. `_context_tokens` is already marked
-    `PrivateStateAttr`, but `aupdate_state` itself creates its own traced run
-    that would otherwise clutter the project's traces.
-
-    Args:
-        agent: The LangGraph agent (must support `aupdate_state`).
-        config: Runnable config with `thread_id`.
-        tokens: Total context tokens to persist.
-    """
-    from langsmith import tracing_context
-
-    try:
-        with tracing_context(enabled=False):
-            await agent.aupdate_state(config, {"_context_tokens": tokens})
-    except (httpx.TransportError, httpx.TimeoutException) as e:
-        logger.warning(
-            "Could not persist _context_tokens=%d (network): %s; "
-            "token count may be stale on resume",
-            tokens,
-            e,
-        )
-    except Exception:  # non-critical; stale count on resume is acceptable
-        logger.warning(
-            "Failed to persist _context_tokens=%d; token count may be stale on resume",
-            tokens,
-            exc_info=True,
-        )
-
-
-async def _report_and_persist_tokens(
+def _report_tokens(
     adapter: TextualUIAdapter,
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
-    config: RunnableConfig,
     captured_input_tokens: int,
     captured_output_tokens: int,
     *,
-    shield: bool = False,
     approximate: bool = False,
 ) -> None:
-    """Update the token display and best-effort persist to graph state.
+    """Refresh the token-count UI display.
+
+    Persistence into graph state is owned by `ResumeStateMiddleware.after_model`
+    (normal turns), `_handle_offload` (offload turns), and the interrupt-cleanup
+    `aupdate_state` write (partial turns) — never this helper.
 
     Args:
         adapter: UI adapter with token callbacks.
-        agent: The LangGraph agent.
-        config: Runnable config with `thread_id` in its configurable dict.
         captured_input_tokens: Total input tokens captured during the turn.
         captured_output_tokens: Total output tokens captured during the turn.
-        shield: When `True`, suppress exceptions and `CancelledError` from the
-            persist call so that interrupt handlers can safely await this.
         approximate: When `True`, signal to the UI that the count is stale
             (e.g. after an interrupted generation) by appending "+".
     """
     if captured_input_tokens or captured_output_tokens:
         if adapter._on_tokens_update:
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
-        if shield:
-            try:
-                await _persist_context_tokens(agent, config, captured_input_tokens)
-            except (Exception, asyncio.CancelledError):
-                logger.debug(
-                    "Token persist suppressed during interrupt cleanup",
-                    exc_info=True,
-                )
-        else:
-            await _persist_context_tokens(agent, config, captured_input_tokens)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
 

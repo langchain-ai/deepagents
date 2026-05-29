@@ -549,15 +549,32 @@ class TestBuildConnectingFooter:
         assert "Connecting" not in footer.plain
 
     def test_local_server_message(self) -> None:
-        """Footer should say 'local server' when local_server is True."""
+        """Footer should say 'Connecting to local server' on first connect."""
         footer = build_connecting_footer(local_server=True)
         assert "Connecting to local server..." in footer.plain
+        assert "Reconnecting" not in footer.plain
+
+    def test_local_server_reconnecting_message(self) -> None:
+        """Footer should say 'Reconnecting to local server' on mid-session restart."""
+        footer = build_connecting_footer(local_server=True, reconnecting=True)
+        assert "Reconnecting to local server..." in footer.plain
 
     def test_resuming_takes_precedence_over_local(self) -> None:
         """Resuming text should win when both resuming and local_server are set."""
         footer = build_connecting_footer(resuming=True, local_server=True)
         assert "Resuming..." in footer.plain
         assert "local server" not in footer.plain
+
+    def test_dots_parameter_animates_ellipsis(self) -> None:
+        """Custom dots string should appear in footer text."""
+        assert "Connecting to server." in build_connecting_footer(dots=".").plain
+        assert "Connecting to server.." in build_connecting_footer(dots="..").plain
+        assert (
+            "Reconnecting to local server."
+            in build_connecting_footer(
+                local_server=True, reconnecting=True, dots="."
+            ).plain
+        )
 
 
 class TestBannerConnectingFooterVariants:
@@ -580,11 +597,12 @@ class TestBannerConnectingFooterVariants:
         assert "Connecting" not in plain
 
     def test_connecting_local_server(self) -> None:
-        """Banner forwards local_server flag to footer."""
+        """Banner shows 'Connecting' (not 'Reconnecting') on first connect."""
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner(connecting=True, local_server=True)
         plain = widget._build_banner().plain
         assert "Connecting to local server..." in plain
+        assert "Reconnecting" not in plain
 
     def test_connecting_resuming_precedence(self) -> None:
         """Resuming wins over local_server at the banner level."""
@@ -663,3 +681,73 @@ class TestDeferredConnectingDisplay:
             widget.set_connecting()
         assert widget._defer_connecting_display is False
         assert "Connecting to server..." in widget._build_banner().plain
+
+
+class TestMcpServerCounters:
+    """Tests for the MCP server status counter lines on the splash banner."""
+
+    def test_unauthenticated_line_singular(self) -> None:
+        """A single unauthenticated server reads `'server'`, not `'servers'`."""
+        # Suppress the random splash tip; one tip mentions `/mcp login`, which
+        # would otherwise spuriously match the negative assertion below.
+        with patch.dict(
+            "os.environ", {"DEEPAGENTS_CODE_HIDE_SPLASH_TIPS": "1"}, clear=True
+        ):
+            widget = WelcomeBanner(mcp_unauthenticated=1)
+        plain = widget._build_banner().plain
+        assert "1 MCP server need login — open /mcp" in plain
+        assert "/mcp login" not in plain
+
+    def test_errored_line_plural(self) -> None:
+        """Two errored servers read `'servers'` and route to `/mcp` for details."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(mcp_errored=2)
+        plain = widget._build_banner().plain
+        assert "2 MCP servers failed to load" in plain
+        assert "open /mcp for details" in plain
+
+    def test_awaiting_reconnect_line_singular(self) -> None:
+        """A single awaiting-reconnect server prompts `/mcp reconnect`."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(mcp_awaiting_reconnect=1)
+        plain = widget._build_banner().plain
+        assert "1 MCP server ready to load" in plain
+        assert "/mcp reconnect" in plain
+
+    def test_awaiting_reconnect_line_plural(self) -> None:
+        """Multiple awaiting-reconnect servers use plural noun."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(mcp_awaiting_reconnect=3)
+        plain = widget._build_banner().plain
+        assert "3 MCP servers ready to load" in plain
+
+    def test_no_counter_lines_when_all_zero(self) -> None:
+        """Banner has no MCP status warning when all counters are zero."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner()
+        plain = widget._build_banner().plain
+        assert "need login" not in plain
+        assert "ready to load" not in plain
+        assert "failed to load" not in plain
+
+    def test_all_three_counters_render_independently(self) -> None:
+        """Unauth, errored, and awaiting-reconnect lines can coexist."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(
+                mcp_unauthenticated=1,
+                mcp_errored=1,
+                mcp_awaiting_reconnect=1,
+            )
+        plain = widget._build_banner().plain
+        assert "need login" in plain
+        assert "failed to load" in plain
+        assert "ready to load" in plain
+
+    def test_set_connected_updates_awaiting_reconnect(self) -> None:
+        """`set_connected` plumbs the new counter onto the banner."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        with patch.object(widget, "update"):
+            widget.set_connected(0, mcp_awaiting_reconnect=2)
+        assert widget._mcp_awaiting_reconnect == 2
+        assert "2 MCP servers ready to load" in widget._build_banner().plain

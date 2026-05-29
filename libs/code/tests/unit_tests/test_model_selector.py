@@ -53,7 +53,12 @@ class ModelSelectorTestApp(App):
         yield Container(id="main")
 
     def show_selector(self) -> None:
-        """Show the model selector screen."""
+        """Show the model selector screen.
+
+        Starts in the full-list (`_recommended_only=False`) state so that
+        legacy assertions about the full catalog continue to hold. Tests for
+        the recommended-only toggle construct their own screen directly.
+        """
 
         def handle_result(result: tuple[str, str] | None) -> None:
             self.result = result
@@ -63,6 +68,7 @@ class ModelSelectorTestApp(App):
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
         )
+        screen._recommended_only = False
         self.push_screen(screen, handle_result)
 
     def show_selector_with_result_callback(self) -> None:
@@ -72,6 +78,7 @@ class ModelSelectorTestApp(App):
             current_provider="anthropic",
             result_callback=self.callback_results.append,
         )
+        screen._recommended_only = False
         self.push_screen(screen)
 
 
@@ -229,6 +236,230 @@ class TestModelSelectorChrome:
             help_text = screen.query_one(".model-selector-help", Static)
 
             assert "Esc cancel" in str(help_text.content)
+
+
+class TestRecommendedToggle:
+    """Tests for the Ctrl+R recommended-only toggle in `/model`."""
+
+    async def test_default_view_is_recommended(self) -> None:
+        """Opening `/model` should land on the curated recommended subset."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._recommended_only is True
+            info = screen.query_one("#model-selector-info", Static)
+            assert "Showing recommended models" in str(info.content)
+
+    async def test_toggle_expands_to_full_list(self) -> None:
+        """Ctrl+R from the default recommended view should expand to all."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            recommended_count = len(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is False
+            assert len(screen._filtered_models) >= recommended_count
+
+    async def test_toggle_round_trip_restores_recommended(self) -> None:
+        """Pressing Ctrl+R twice should return to the recommended subset."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            original = list(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is True
+            assert screen._filtered_models == original
+
+    async def test_toggle_updates_info_line(self) -> None:
+        """Info line should advertise the inverse state after toggling."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+            assert "Ctrl+R for all" in str(info.content)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert "Ctrl+R for recommended" in str(info.content)
+
+    async def test_toggle_disabled_in_curated_onboarding_mode(self) -> None:
+        """Curated/onboarding mode should ignore Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            before = list(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is False
+            assert screen._filtered_models == before
+
+    async def test_help_text_advertises_toggle_in_standard_mode(self) -> None:
+        """Standard `/model` help footer should mention Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+R" in str(help_text.content)
+
+    async def test_help_text_omits_toggle_in_curated_mode(self) -> None:
+        """Onboarding's curated help footer should not mention Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+R" not in str(help_text.content)
+
+
+class TestRecentModelsSection:
+    """Tests for the "Recent" pseudo-provider section pinned at the top."""
+
+    async def test_recent_header_renders_when_recents_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A populated recents file should produce a `Recent` header."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["anthropic:claude-opus-4-7"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert headers, "expected at least one provider header"
+            assert "Recent" in headers[0]
+
+    async def test_no_recent_header_when_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No recents file means the Recent header is not rendered."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert not any("Recent" in h for h in headers)
+
+    async def test_recent_entries_appear_in_provider_section_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recent spec is also kept in its real provider section below."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["anthropic:claude-opus-4-7"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            specs = [w.model_spec for w in screen._option_widgets]
+            assert specs.count("anthropic:claude-opus-4-7") == 2
+
+    async def test_recent_entries_survive_recommended_toggle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recents not on the curated list should still show in recommended mode."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["anthropic:claude-sonnet-4-5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._recommended_only is True
+            specs = [spec for spec, _ in screen._filtered_models]
+            assert "anthropic:claude-sonnet-4-5" in specs
+
+    async def test_recent_section_hidden_during_filter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once the user is searching, recents fold into the match results."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["anthropic:claude-opus-4-7"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            for char in "claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert not any("Recent" in h for h in headers)
 
 
 class TestModelSelectorAvailabilityHint:
@@ -482,7 +713,7 @@ class TestModelSelectorFuzzyMatching:
             )
 
     async def test_fuzzy_across_hyphen(self) -> None:
-        """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-4o')."""
+        """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-5.5')."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -827,7 +1058,7 @@ class TestCuratedModelSelection:
     def test_curated_models_limit_to_frontier_subset(self) -> None:
         """Current/default models outside the frontier subset should stay hidden."""
         all_models = [
-            ("openai:gpt-4o", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
             ("anthropic:claude-opus-4-6", "anthropic"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
         ]
@@ -842,14 +1073,14 @@ class TestCuratedModelSelection:
         """Onboarding should show normal switcher entries if frontier is absent."""
         all_models = [
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-4o", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-4o", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
         ]
 
 

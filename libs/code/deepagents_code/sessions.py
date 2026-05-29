@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
@@ -61,6 +62,35 @@ def _patch_aiosqlite() -> None:
     _aiosqlite_patched = True
 
 
+async def _drain_aiosqlite_worker(conn: aiosqlite.Connection) -> None:
+    """Join the aiosqlite worker thread after its connection is closed.
+
+    `aiosqlite.Connection` wraps a daemon `Thread` (`conn._thread`) that
+    drains its tx queue independently of the caller's event loop. The
+    library's `close()` puts a stop sentinel on the queue and awaits the
+    sentinel's future, but does not explicitly join the worker thread.
+
+    If the connection is leaked (no explicit close) and the surrounding
+    event loop has already shut down, the worker can still pop a queued
+    item (typically from `Connection.__del__` calling `stop()`) and call
+    `future.get_loop().call_soon_threadsafe(...)` on the closed loop. That
+    raises `RuntimeError: Event loop is closed`, which pytest surfaces as
+    `PytestUnhandledThreadExceptionWarning` (and GitHub Actions then
+    surfaces as a workflow annotation).
+
+    Explicitly joining the worker thread after close guarantees it has
+    exited before this coroutine returns, eliminating the race for any
+    connection routed through `_connect` / `get_checkpointer`.
+    """
+    worker = getattr(conn, "_thread", None)
+    if worker is None or not worker.is_alive():
+        return
+    # `RuntimeError` covers the "thread was never started" case; treat as
+    # already drained.
+    with contextlib.suppress(RuntimeError):
+        await asyncio.to_thread(worker.join, 5.0)
+
+
 @asynccontextmanager
 async def _connect() -> AsyncIterator[aiosqlite.Connection]:
     """Import aiosqlite, apply the compatibility patch, and connect.
@@ -75,8 +105,14 @@ async def _connect() -> AsyncIterator[aiosqlite.Connection]:
 
     _patch_aiosqlite()
 
-    async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as conn:
-        yield conn
+    conn: aiosqlite.Connection | None = None
+    try:
+        async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as opened:
+            conn = opened
+            yield opened
+    finally:
+        if conn is not None:
+            await _drain_aiosqlite_worker(conn)
 
 
 class ThreadInfo(TypedDict):
@@ -718,22 +754,40 @@ async def _populate_checkpoint_fields(
 
     # Phase 2: batch-fetch all uncached threads.
     uncached_ids = [t["thread_id"] for t in uncached]
-    batch_results = await _load_latest_checkpoint_summaries_batch(
-        conn, uncached_ids, serde
-    )
+    batch_results: dict[str, _CheckpointSummary] = {}
+    if include_message_count or include_initial_prompt:
+        batch_results = await _load_latest_checkpoint_summaries_batch(
+            conn, uncached_ids, serde
+        )
+    # `initial_prompt` cannot be recovered from the latest checkpoint alone:
+    # `after_model` middleware (e.g., `ResumeStateMiddleware`) writes partial
+    # checkpoints whose `channel_values` omit `messages`. Read the very first
+    # write to the `messages` channel from the `writes` table instead — that
+    # row holds the user's original input.
+    prompt_results: dict[str, str | None] = {}
+    if include_initial_prompt:
+        prompt_results = await _load_initial_prompts_from_writes_batch(
+            conn, uncached_ids, serde
+        )
 
     # Phase 3: apply results and update caches.
     for thread in uncached:
         thread_id = thread["thread_id"]
         freshness = _thread_freshness(thread)
-        summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
 
         if include_message_count and "message_count" not in thread:
+            summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
             thread["message_count"] = summary.message_count
             _cache_message_count(thread_id, freshness, summary.message_count)
         if include_initial_prompt and "initial_prompt" not in thread:
-            thread["initial_prompt"] = summary.initial_prompt
-            _cache_initial_prompt(thread_id, freshness, summary.initial_prompt)
+            if thread_id in prompt_results:
+                prompt = prompt_results[thread_id]
+            else:
+                prompt = batch_results.get(
+                    thread_id, _CheckpointSummary(0, None)
+                ).initial_prompt
+            thread["initial_prompt"] = prompt
+            _cache_initial_prompt(thread_id, freshness, prompt)
 
 
 _SQLITE_MAX_VARIABLE_NUMBER = 500
@@ -808,6 +862,72 @@ async def _load_latest_checkpoint_summaries_batch(
     return results
 
 
+async def _load_initial_prompts_from_writes_batch(
+    conn: aiosqlite.Connection,
+    thread_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, str | None]:
+    """Batch-load initial prompts from the LangGraph `writes` table.
+
+    For each thread, returns the first human/user message extracted from the
+    earliest write to the `messages` channel (ordered by `checkpoint_id` ASC,
+    then `idx` ASC).
+
+    Args:
+        conn: Database connection.
+        thread_ids: Thread IDs to look up.
+        serde: Serializer for decoding write blobs.
+
+    Returns:
+        Dict mapping thread IDs to their initial prompt text. Threads with no
+        write to the `messages` channel are absent from the result; threads
+        whose first such write decoded but contained no human/user entry map
+        to `None`.
+    """
+    if not thread_ids:
+        return {}
+
+    results: dict[str, str | None] = {}
+    loop = asyncio.get_running_loop()
+    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
+        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
+        placeholders = ",".join("?" * len(chunk))
+        query = f"""
+            SELECT thread_id, type, value FROM (
+                SELECT thread_id, type, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY thread_id
+                           ORDER BY checkpoint_id ASC, idx ASC
+                       ) AS rn
+                FROM writes
+                WHERE thread_id IN ({placeholders}) AND channel = 'messages'
+            ) WHERE rn = 1
+        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
+        async with conn.execute(query, chunk) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            tid, type_str, value_blob = row
+            if not type_str or not value_blob:
+                continue
+            try:
+                messages = await loop.run_in_executor(
+                    None, serde.loads_typed, (type_str, value_blob)
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to deserialize initial messages write for thread %s",
+                    tid,
+                    exc_info=True,
+                )
+                continue
+            if not isinstance(messages, list):
+                continue
+            results[tid] = _initial_prompt_from_messages(cast("list[object]", messages))
+
+    return results
+
+
 async def _load_latest_checkpoint_summary(
     conn: aiosqlite.Connection,
     thread_id: str,
@@ -877,10 +997,23 @@ def _checkpoint_messages(data: object) -> list[object]:
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a checkpoint message list."""
+    """Return the first human message content from a message list.
+
+    Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
+    plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
+    first write to the `messages` channel is the raw user input passed to the
+    agent, which is preserved verbatim as a dict; subsequent writes are
+    serialized `BaseMessage` instances produced after the model runs.
+    """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
             return _coerce_prompt_text(getattr(msg, "content", None))
+        if isinstance(msg, dict):
+            msg_dict = cast("dict[str, object]", msg)
+            role = msg_dict.get("role")
+            type_ = msg_dict.get("type")
+            if role in {"user", "human"} or type_ == "human":
+                return _coerce_prompt_text(msg_dict.get("content"))
     return None
 
 
@@ -1037,8 +1170,18 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
 
     _patch_aiosqlite()
 
-    async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
-        yield checkpointer
+    saver: AsyncSqliteSaver | None = None
+    try:
+        async with AsyncSqliteSaver.from_conn_string(
+            str(get_db_path())
+        ) as checkpointer:
+            saver = checkpointer
+            yield checkpointer
+    finally:
+        if saver is not None:
+            conn = getattr(saver, "conn", None)
+            if conn is not None:
+                await _drain_aiosqlite_worker(conn)
 
 
 _DEFAULT_THREAD_LIMIT = 20

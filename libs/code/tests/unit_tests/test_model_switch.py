@@ -83,7 +83,7 @@ def mock_create_model() -> Iterator[Mock]:
         "anthropic:claude-sonnet-4-5": 200_000,
         "fireworks:llama-v3p1-70b": 131_072,
         "ollama:llama3": 8_192,
-        "openai:gpt-4o": 128_000,
+        "openai:gpt-5.5": 128_000,
     }
 
     def fake_create_model(
@@ -194,6 +194,75 @@ class TestModelSwitchNoOp:
         assert "Switched to" not in captured_messages[0]
         assert app._model_switching is False
 
+    async def test_duplicate_same_model_message_is_suppressed(self) -> None:
+        """Repeated same-model switches should only emit one unchanged notice."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert captured_messages == ["Already using anthropic:claude-opus-4-5"]
+        assert app._model_switching is False
+
+    async def test_same_model_changed_params_emit_new_message(self) -> None:
+        """A changed same-model notice should still be shown to the user."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={"temperature": 0.2},
+            )
+
+        assert app._mount_message.call_count == 2  # type: ignore[union-attr]
+        assert captured_messages == [
+            "Already using anthropic:claude-opus-4-5",
+            (
+                "Already using anthropic:claude-opus-4-5 "
+                'with model params {"temperature": 0.2}'
+            ),
+        ]
+        assert app._model_switching is False
+
     async def test_same_model_can_skip_unchanged_message(self) -> None:
         """Onboarding can re-select the active model without adding chat noise."""
         app = DeepAgentsApp()
@@ -298,7 +367,7 @@ class TestModelSwitchErrorHandling:
         app._agent = _make_remote_agent()
 
         # Set a different current model
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_errors: list[str] = []
@@ -333,7 +402,7 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_errors: list[str] = []
@@ -376,7 +445,7 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_messages: list[str] = []
@@ -414,7 +483,7 @@ class TestModelSwitchErrorHandling:
         app._agent = _make_remote_agent()
         app._profile_override = {"max_input_tokens": 180_000}
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
         settings.model_context_limit = 128_000
 
@@ -445,7 +514,7 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         with (
@@ -472,7 +541,7 @@ class TestModelSwitchErrorHandling:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_messages: list[str] = []
@@ -531,7 +600,7 @@ class TestModelSwitchConcurrencyGuard:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         with (
@@ -600,7 +669,7 @@ class TestModelSwitchSessionReadiness:
         app._agent = None
         app._connecting = True
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         with (
@@ -786,7 +855,7 @@ api_key_env = "FIREWORKS_API_KEY"
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_messages: list[str] = []
@@ -828,7 +897,7 @@ api_key_env = "FIREWORKS_API_KEY"
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_errors: list[str] = []
@@ -861,7 +930,7 @@ models = ["llama3"]
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_messages: list[str] = []
@@ -891,7 +960,7 @@ class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
     async def test_bare_model_name_auto_detects_provider(self) -> None:
-        """Bare model name like 'gpt-4o' auto-detects provider and switches."""
+        """Bare model name like 'gpt-5.5' auto-detects provider and switches."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
@@ -917,13 +986,13 @@ class TestModelSwitchBareModelName:
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_init),
         ):
-            await app._switch_model("gpt-4o")
+            await app._switch_model("gpt-5.5")
 
-        mock_save.assert_called_once_with("openai:gpt-4o")
-        assert app._model_override == "openai:gpt-4o"
-        assert settings.model_name == "gpt-4o"
+        mock_save.assert_called_once_with("openai:gpt-5.5")
+        assert app._model_override == "openai:gpt-5.5"
+        assert settings.model_name == "gpt-5.5"
         assert settings.model_provider == "openai"
-        assert any("Switched to openai:gpt-4o" in m for m in captured_messages)
+        assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
@@ -953,7 +1022,7 @@ class TestModelSwitchBareModelName:
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
-            await app._switch_model("gpt-4o")
+            await app._switch_model("gpt-5.5")
 
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_errors) == 1
@@ -966,7 +1035,7 @@ class TestModelSwitchBareModelName:
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
 
-        settings.model_name = "gpt-4o"
+        settings.model_name = "gpt-5.5"
         settings.model_provider = "openai"
 
         captured_messages: list[str] = []
@@ -984,7 +1053,7 @@ class TestModelSwitchBareModelName:
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
-            await app._switch_model("gpt-4o")
+            await app._switch_model("gpt-5.5")
 
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1

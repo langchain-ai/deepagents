@@ -110,6 +110,11 @@ jobs:
         shell: bash
         run: uv sync --group test
 
+      - name: "🔍 Install ripgrep"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: "🧪 Run Unit Tests"
         if: runner.os != 'Windows'
         shell: bash

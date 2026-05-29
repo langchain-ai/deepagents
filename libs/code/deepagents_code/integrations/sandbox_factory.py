@@ -73,7 +73,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 _PROVIDER_TO_WORKING_DIR = {
     "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
-    "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
+    "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
     "modal": "/workspace",
     "runloop": "/home/user",
 }
@@ -85,6 +85,7 @@ def create_sandbox(
     provider: str,
     *,
     sandbox_id: str | None = None,
+    snapshot_name: str | None = None,
     setup_script_path: str | None = None,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
@@ -96,20 +97,43 @@ def create_sandbox(
         provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
+        snapshot_name: Optional sandbox snapshot name to use or create.
+            Currently only honored by the `'langsmith'` provider; must be
+            `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         `SandboxBackendProtocol` instance
+
+    Raises:
+        ValueError: If `snapshot_name` is provided for a non-LangSmith provider,
+            or combined with `sandbox_id` (snapshots only apply to fresh sandboxes).
     """
+    if snapshot_name is not None and provider != "langsmith":
+        msg = (
+            f"snapshot_name is only supported for provider='langsmith' "
+            f"(got provider={provider!r})"
+        )
+        raise ValueError(msg)
+    if snapshot_name is not None and sandbox_id is not None:
+        msg = (
+            "snapshot_name cannot be combined with sandbox_id; "
+            "snapshots only apply when creating a fresh sandbox"
+        )
+        raise ValueError(msg)
+
     # Get provider instance
     provider_obj = _get_provider(provider)
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
+    provider_kwargs: dict[str, str | None] = {}
+    if snapshot_name is not None:
+        provider_kwargs["snapshot"] = snapshot_name
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **provider_kwargs)
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
@@ -199,7 +223,8 @@ def _import_provider_module(
     except ImportError as exc:
         msg = (
             f"The '{provider}' sandbox provider requires the '{package}' package. "
-            f"Install it with: pip install 'deepagents-code[{provider}]'"
+            f"Install it with: /install {provider} (in-app) or "
+            f"dcode --install {provider} (CLI)"
         )
         raise ImportError(msg) from exc
 
@@ -271,10 +296,9 @@ class _LangSmithProvider(SandboxProvider):
             snapshot: Snapshot name to boot from.
 
                 Resolved to a snapshot ID, creating the snapshot from
-                `snapshot_image` if missing. Overridden by the env vars
-                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything)
-                and `LANGSMITH_SANDBOX_SNAPSHOT_NAME` (name, wins over this
-                kwarg).
+                `snapshot_image` if missing. Overrides
+                `LANGSMITH_SANDBOX_SNAPSHOT_NAME`; overridden by
+                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything).
             snapshot_image: Docker image used when building the snapshot.
             fs_capacity_bytes: Filesystem capacity when building the snapshot.
             **kwargs: Additional LangSmith-specific parameters.
@@ -887,7 +911,8 @@ def verify_sandbox_deps(provider: str) -> None:
     if not found:
         msg = (
             f"Missing dependencies for '{provider}' sandbox. "
-            f"Install with: pip install 'deepagents-code[{extra}]'"
+            f"Install with: /install {extra} (in-app) or "
+            f"dcode --install {extra} (CLI)"
         )
         raise ImportError(msg)
 

@@ -7,6 +7,7 @@ in either plain text (for stdout) or markdown (for rich UI contexts).
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import re
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from importlib.metadata import (
 )
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "openrouter",
         "perplexity",
         "together",
-        "vertexai",
+        "vertex",
         "xai",
     }
 )
@@ -61,6 +63,26 @@ Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 
 SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
 """Optional extras that add sandbox integrations."""
+
+STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
+"""Optional extras that don't fit the provider/sandbox taxonomy.
+
+These integrations layer onto the main agent (e.g. a JS REPL via
+`langchain-quickjs`) and aren't grouped under `all-providers` or
+`all-sandboxes`.
+"""
+
+KNOWN_EXTRAS: frozenset[str] = (
+    MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+)
+"""Union of all individually-installable extras.
+
+Excludes the composite meta-extras (`all-providers`, `all-sandboxes`) since
+those expand to other extras and don't add anything on their own.
+Drift-protected by `test_model_config.TestProviderApiKeyEnv` and the
+model-provider-drift checks; new extras must be added to the corresponding
+category frozenset above.
+"""
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
@@ -191,6 +213,98 @@ def get_optional_dependency_status(
         )
         for name in names
     )
+
+
+def extra_for_package(
+    package: str,
+    distribution_name: str = "deepagents-code",
+) -> str | None:
+    """Return the installable extra that declares a package.
+
+    Resolves recovery hints from the package that is actually missing
+    instead of guessing from a provider identifier. For example,
+    `langchain-google-vertexai` maps to the `vertex` extra even though the
+    provider id is `google_vertexai`.
+
+    Args:
+        package: Distribution package name to find in optional dependencies.
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        The known extra name that declares `package`, or `None` when the
+            package is not declared by an individually-installable extra,
+            or when the distribution's metadata could not be read (logged
+            at `warning` level — callers should treat both cases the same
+            since the right fallback in either is `install_package_command`).
+    """
+    try:
+        dist = distribution(distribution_name)
+    except PackageNotFoundError:
+        logger.warning(
+            "Distribution %s not found; cannot resolve extra for package %s",
+            distribution_name,
+            package,
+        )
+        return None
+
+    own_name = canonicalize_name(distribution_name)
+    target = canonicalize_name(package)
+    for raw in dist.requires or []:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            logger.warning("Could not parse Requires-Dist entry: %s", raw)
+            continue
+        if canonicalize_name(req.name) != target:
+            continue
+        if canonicalize_name(req.name) == own_name:
+            continue
+        if not req.marker:
+            continue
+        extra = _extract_extra_name(str(req.marker))
+        if extra in KNOWN_EXTRAS:
+            return extra
+    return None
+
+
+def verify_interpreter_deps() -> None:
+    """Check that `langchain-quickjs` is installed for the `--interpreter` flag.
+
+    Uses `importlib.util.find_spec` for a lightweight check with no actual
+    imports. Call this in the app process *before* spawning the server
+    subprocess so users get a clear, actionable error instead of an opaque
+    server crash when the optional `quickjs` extra is not installed.
+
+    Returns silently when the package is importable.
+
+    Raises:
+        ImportError: If `langchain_quickjs` is not importable.
+    """
+    try:
+        found = importlib.util.find_spec("langchain_quickjs") is not None
+    except (ImportError, ValueError):
+        # A broken-but-installed `langchain_quickjs` (e.g., parent package
+        # raises during import) would otherwise masquerade as "not installed";
+        # capture the underlying cause for debug logs.
+        logger.debug("find_spec failed for langchain_quickjs", exc_info=True)
+        found = False
+
+    if not found:
+        from deepagents_code.config import _is_editable_install
+
+        if _is_editable_install():
+            from deepagents_code.update_check import editable_extra_hint
+
+            msg = (
+                "Missing dependencies for --interpreter. Editable install "
+                f"detected — {editable_extra_hint('quickjs')}"
+            )
+        else:
+            msg = (
+                "Missing dependencies for --interpreter. "
+                "Install with: dcode --install quickjs"
+            )
+        raise ImportError(msg)
 
 
 def format_extras_status_plain(status: ExtrasStatus) -> str:

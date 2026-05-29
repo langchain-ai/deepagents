@@ -60,7 +60,7 @@ from deepagents.profiles.harness.harness_profiles import (
 logger = logging.getLogger(__name__)
 
 
-class _DeepAgentState(AgentState):
+class DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
@@ -93,6 +93,7 @@ When the user asks you to do something:
 Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
 
 **When things go wrong:**
+
 - If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
 - If you're blocked, tell the user what's wrong and ask for guidance.
 
@@ -226,6 +227,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
+    state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -317,9 +319,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
                 [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
                 — are available)
-            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 
@@ -436,6 +438,41 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
         response_format: A structured output response format to use for the agent.
+        state_schema: Custom state schema for the agent graph. Must be a
+            `TypedDict` subclass of
+            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
+            built-in `DeltaChannel` reducer on `messages` is preserved.
+
+            Generally, prefer defining state extensions with middleware so
+            the extra fields stay scoped to the hooks and tools that use
+            them.
+
+            When provided, this schema is used as the base graph schema and
+            is merged with state schemas contributed by middleware. It is
+            also forwarded when compiling declarative
+            [`SubAgent`][deepagents.middleware.subagents.SubAgent] specs for
+            the `task` tool, so subagents see the same custom fields as the
+            parent.
+
+            [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
+            runnables do not inherit this schema because they are already
+            compiled — compile those runnables with a compatible state
+            schema if they need access to the same custom state fields.
+            Remote
+            [`AsyncSubAgent`][deepagents.middleware.async_subagents.AsyncSubAgent]
+            specs likewise use the schema configured on the remote graph.
+
+            ```python
+            from deepagents.graph import DeepAgentState
+
+
+            class MyState(DeepAgentState):
+                page_url: str
+                file_urls: list[str]
+
+
+            agent = create_deep_agent(model=..., state_schema=MyState)
+            ```
         context_schema: Schema class that defines immutable run-scoped context.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -473,6 +510,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
+    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
+    # subclass constraint on `state_schema` is enforced by typing alone and not
+    # validated at runtime.
+
     _model_spec: str | None = model if isinstance(model, str) else None
 
     if model is None:
@@ -691,6 +732,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # see which subagents exist. None (default) uses the built-in
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
+            state_schema=state_schema,
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
@@ -773,7 +815,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
-        state_schema=_DeepAgentState,
+        state_schema=state_schema if state_schema is not None else DeepAgentState,
         transformers=[_subagent_factory],
     ).with_config(
         {

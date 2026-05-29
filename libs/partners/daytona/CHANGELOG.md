@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
 
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.5...langchain-daytona==0.0.6) (2026-05-12)

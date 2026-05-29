@@ -796,6 +796,193 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     return unique
 
 
+INTERPRETER_PTC_SAFE_PRESET: frozenset[str] = frozenset({"read_file", "glob", "grep"})
+"""Strictly read-only PTC allowlist for `interpreter_ptc="safe"`.
+
+Limited to tools that are **not** in `_add_interrupt_on()` to begin with, so
+exposing them through PTC does not introduce a new HITL bypass. Network
+tools (`web_search`, `fetch_url`), subagent dispatch (`task`), shell
+execution (`execute`), and file writes (`write_file`, `edit_file`, MCP
+write tools) are deliberately excluded — they are HITL-gated outside the
+REPL, and PTC bypasses `interrupt_on`, so including them would silently
+escalate privileges. Users who need network or subagent access from inside
+the REPL must list those tools explicitly (which signals intent at config
+time) or use `interpreter_ptc="all"` with the unsafe acknowledgement.
+"""
+
+INTERPRETER_PTC_ALL_SENTINEL = "all"
+"""Sentinel string for `interpreter_ptc="all"` — resolved at agent-build time
+from the live tool list. Requires `interpreter_ptc_acknowledge_unsafe=True`
+when `auto_approve` is `False`."""
+
+INTERPRETER_PTC_SAFE_SENTINEL = "safe"
+"""Sentinel string for `interpreter_ptc="safe"` — expanded from
+`INTERPRETER_PTC_SAFE_PRESET`."""
+
+
+def _read_config_toml_interpreter() -> dict[str, Any] | None:
+    """Read `[interpreter]` from `~/.deepagents/config.toml`.
+
+    Returns:
+        Mapping of interpreter setting names to raw values, or `None` if the
+        section is absent or the file cannot be read.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read interpreter config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    section = data.get("interpreter")
+    if isinstance(section, dict):
+        return section
+    return None
+
+
+def _parse_interpreter_ptc(
+    raw: Any,  # noqa: ANN401  # accepts TOML-shaped value
+) -> str | bool | list[str]:
+    """Coerce a raw `interpreter_ptc` value into the canonical shape.
+
+    Args:
+        raw: Value loaded from TOML or supplied by the CLI.
+
+    Returns:
+        `False` for `False`/`None`/`[]`, the string `"safe"`/`"all"` when
+        either sentinel is given, otherwise a validated list of tool names.
+
+    Raises:
+        ValueError: If `raw` is a list with empty or non-string entries, or
+            a string other than `"safe"`/`"all"`.
+    """
+    if raw is None or raw is False:
+        return False
+    if raw is True:
+        msg = (
+            "`interpreter_ptc` cannot be set to True; use 'safe', 'all', or "
+            "an explicit list of tool names."
+        )
+        raise ValueError(msg)
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {INTERPRETER_PTC_SAFE_SENTINEL, INTERPRETER_PTC_ALL_SENTINEL}:
+            return normalized
+        msg = (
+            f"Invalid `interpreter_ptc` string {raw!r}; expected 'safe', 'all', "
+            "or a list of tool names."
+        )
+        raise ValueError(msg)
+    if isinstance(raw, list):
+        if not raw:
+            return False
+        names: list[str] = []
+        for entry in raw:
+            if not isinstance(entry, str) or not entry.strip():
+                msg = (
+                    "`interpreter_ptc` list entries must be non-empty strings; "
+                    f"got {entry!r}."
+                )
+                raise ValueError(msg)
+            names.append(entry.strip())
+        return names
+    msg = (
+        f"`interpreter_ptc` must be False, 'safe', 'all', or a list of tool "
+        f"names; got {type(raw).__name__}."
+    )
+    raise ValueError(msg)
+
+
+def _resolve_interpreter_kwargs(
+    section: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Translate the `[interpreter]` TOML section into `Settings` kwargs.
+
+    Unknown keys are ignored; invalid values fall back to the dataclass
+    default and emit a warning so a malformed config never blocks startup.
+
+    Args:
+        section: Raw mapping returned by `_read_config_toml_interpreter`, or
+            `None` when the section is absent.
+
+    Returns:
+        Subset of `Settings` field kwargs to splat into the constructor.
+    """
+    if not section:
+        return {}
+
+    kwargs: dict[str, Any] = {}
+
+    def _coerce(name: str, expected: type, raw: Any) -> None:  # noqa: ANN401
+        if isinstance(raw, expected):
+            kwargs[name] = raw
+            return
+        logger.warning(
+            "Ignoring [interpreter].%s=%r in config.toml (expected %s)",
+            name,
+            raw,
+            expected.__name__,
+        )
+
+    if "enable_interpreter" in section:
+        _coerce("enable_interpreter", bool, section["enable_interpreter"])
+    if "timeout_seconds" in section:
+        raw = section["timeout_seconds"]
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            kwargs["interpreter_timeout_seconds"] = float(raw)
+        else:
+            logger.warning(
+                "Ignoring [interpreter].timeout_seconds=%r in config.toml", raw
+            )
+    if "memory_limit_mb" in section:
+        raw = section["memory_limit_mb"]
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            kwargs["interpreter_memory_limit_mb"] = raw
+        else:
+            logger.warning(
+                "Ignoring [interpreter].memory_limit_mb=%r in config.toml", raw
+            )
+    if "max_ptc_calls" in section:
+        raw = section["max_ptc_calls"]
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            kwargs["interpreter_max_ptc_calls"] = raw
+        else:
+            logger.warning(
+                "Ignoring [interpreter].max_ptc_calls=%r in config.toml", raw
+            )
+    if "max_result_chars" in section:
+        raw = section["max_result_chars"]
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            kwargs["interpreter_max_result_chars"] = raw
+        else:
+            logger.warning(
+                "Ignoring [interpreter].max_result_chars=%r in config.toml", raw
+            )
+    if "ptc" in section:
+        try:
+            kwargs["interpreter_ptc"] = _parse_interpreter_ptc(section["ptc"])
+        except ValueError as exc:
+            logger.warning("Ignoring [interpreter].ptc in config.toml: %s", exc)
+    if "ptc_acknowledge_unsafe" in section:
+        _coerce(
+            "interpreter_ptc_acknowledge_unsafe",
+            bool,
+            section["ptc_acknowledge_unsafe"],
+        )
+
+    return kwargs
+
+
 def _read_config_toml_skills_dirs() -> list[str] | None:
     """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
 
@@ -939,6 +1126,53 @@ class Settings:
     `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
     """
 
+    enable_interpreter: bool = False
+    """Wire `CodeInterpreterMiddleware` from `langchain-quickjs` into the main
+    agent. Local-mode only; raises `ValueError` at agent-build time when a
+    remote sandbox is active. Subagents never receive the interpreter in v1.
+
+    The `quickjs` optional extra must be installed when this flag is `True`.
+    """
+
+    interpreter_timeout_seconds: float = 5.0
+    """Per-`js_eval`-call wall-clock timeout (seconds) for the QuickJS REPL."""
+
+    interpreter_memory_limit_mb: int = 64
+    """QuickJS heap memory cap (MB), shared across all calls within a session."""
+
+    interpreter_max_ptc_calls: int = 256
+    """Maximum `tools.*` host-bridge invocations allowed per `js_eval` call.
+
+    PTC calls bypass `interrupt_on`/HITL approval — this budget is the only
+    runtime limiter on bursty tool fan-out from inside the REPL.
+    """
+
+    interpreter_max_result_chars: int = 4000
+    """Independent cap (chars) on `js_eval` result and stdout blocks before
+    truncation."""
+
+    interpreter_ptc: str | bool | list[str] = False
+    """Programmatic tool calling allowlist for `js_eval`.
+
+    Accepted values:
+
+    - `False` or `[]`: pure REPL, no `tools.*` bridge.
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` intersected with the
+        live toolset.
+    - `"all"`: every live tool is exposed. Requires
+        `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
+    - `list[str]`: explicit tool names, validated at agent-build time.
+    """
+
+    interpreter_ptc_acknowledge_unsafe: bool = False
+    """Explicit acknowledgement required when `interpreter_ptc="all"` is set
+    without `auto_approve`.
+
+    `"all"` exposes every host tool to `tools.*` calls from inside the REPL,
+    bypassing HITL approval — this flag is a deliberate sanity gate, not a
+    feature toggle.
+    """
+
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> Settings:
         """Create settings by detecting the current environment.
@@ -995,6 +1229,10 @@ class Settings:
             _read_config_toml_skills_dirs(),
         )
 
+        interpreter_kwargs = _resolve_interpreter_kwargs(
+            _read_config_toml_interpreter()
+        )
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -1007,6 +1245,7 @@ class Settings:
             project_root=project_root,
             shell_allow_list=shell_allow_list,
             extra_skills_dirs=extra_skills_dirs,
+            **interpreter_kwargs,
         )
 
     def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
@@ -1657,8 +1896,47 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
-def fetch_langsmith_project_url(project_name: str) -> str | None:
-    """Fetch the LangSmith project URL via the LangSmith client.
+class LangSmithLookupError(Exception):
+    """Base class for typed LangSmith project URL lookup failures.
+
+    Concrete subclasses (`LangSmithImportError`, `LangSmithLookupTimeoutError`,
+    `LangSmithApiError`) let interactive callers like `/trace` show the user
+    the actual cause instead of collapsing every failure into a generic
+    "could not reach LangSmith" message.
+    """
+
+
+class LangSmithImportError(LangSmithLookupError):
+    """The `langsmith` package is not installed."""
+
+
+class LangSmithLookupTimeoutError(LangSmithLookupError):
+    """The LangSmith project URL lookup exceeded its hard timeout."""
+
+
+class LangSmithApiError(LangSmithLookupError):
+    """The LangSmith SDK call raised — auth, 404, network, etc.
+
+    Wraps the underlying SDK exception in `__cause__`.
+    """
+
+
+def _assemble_langsmith_thread_url(project_url: str, thread_id: str) -> str:
+    """Format a LangSmith thread URL from a project URL prefix.
+
+    Args:
+        project_url: Project URL prefix from `fetch_langsmith_project_url`
+            (e.g. `https://smith.langchain.com/o/<org>/projects/p/<proj>`).
+        thread_id: Thread identifier to append.
+
+    Returns:
+        Full thread URL with the `deepagents-code` utm tag.
+    """
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-code"
+
+
+def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
+    """Fetch the LangSmith project URL, raising on any failure.
 
     Successful results are cached at module level so repeated calls do not
     make additional network requests.
@@ -1667,15 +1945,17 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
     calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any failure: missing `langsmith` package,
-    network errors, invalid project names, client initialization issues,
-    or timeouts.
-
     Args:
         project_name: LangSmith project name to look up.
 
     Returns:
-        Project URL string if found, None otherwise.
+        Project URL string.
+
+    Raises:
+        LangSmithImportError: `langsmith` is not installed.
+        LangSmithLookupTimeoutError: lookup exceeded the hard timeout.
+        LangSmithApiError: the SDK call raised (auth, 404, network, etc.);
+            wraps the original exception in `__cause__`.
     """
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
@@ -1687,13 +1967,14 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-    except ImportError:
+    except ImportError as exc:
         logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
+            "langsmith package not installed; cannot fetch project URL for '%s'",
             project_name,
             exc_info=True,
         )
-        return None
+        msg = "langsmith package is not installed"
+        raise LangSmithImportError(msg) from exc
 
     result: str | None = None
     lookup_error: Exception | None = None
@@ -1725,7 +2006,11 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
             project_name,
             _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
         )
-        return None
+        msg = (
+            f"LangSmith project URL lookup timed out after "
+            f"{_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS:.1f}s"
+        )
+        raise LangSmithLookupTimeoutError(msg)
 
     if lookup_error is not None:
         logger.debug(
@@ -1737,11 +2022,36 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
                 lookup_error.__traceback__,
             ),
         )
-        return None
+        msg = str(lookup_error) or repr(lookup_error)
+        raise LangSmithApiError(msg) from lookup_error
 
-    if result is not None:
-        _langsmith_url_cache = (project_name, result)
+    if not result:
+        # SDK returned a project with an empty URL — treat as an API anomaly.
+        msg = f"LangSmith returned no URL for project '{project_name}'"
+        raise LangSmithApiError(msg)
+
+    _langsmith_url_cache = (project_name, result)
     return result
+
+
+def fetch_langsmith_project_url(project_name: str) -> str | None:
+    """Fetch the LangSmith project URL, returning None on any failure.
+
+    Thin back-compat wrapper around `fetch_langsmith_project_url_or_raise`
+    for passive callers (status banners, non-interactive output) that just
+    want a URL-or-nothing answer. Interactive callers that need to tell the
+    user *why* the lookup failed should use the raising variant directly.
+
+    Args:
+        project_name: LangSmith project name to look up.
+
+    Returns:
+        Project URL string if found, None otherwise.
+    """
+    try:
+        return fetch_langsmith_project_url_or_raise(project_name)
+    except LangSmithLookupError:
+        return None
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -1765,7 +2075,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-code"
+    return _assemble_langsmith_thread_url(project_url, thread_id)
 
 
 def reset_langsmith_url_cache() -> None:
@@ -2104,11 +2414,18 @@ def _create_model_via_init(
             `init_chat_model` also fails to infer one. Carries the
             model spec and docs URL as attributes so the UI can render
             a clickable link.
+        MissingProviderPackageError: When the provider's LangChain package
+            is not installed. Carries the `provider` and `package` to install
+            so the UI can render a targeted recovery hint.
         ModelConfigError: On other import, value, or runtime errors.
     """
     from langchain.chat_models import init_chat_model
 
-    from deepagents_code.model_config import ModelConfigError, UnknownProviderError
+    from deepagents_code.model_config import (
+        MissingProviderPackageError,
+        ModelConfigError,
+        UnknownProviderError,
+    )
 
     try:
         if provider:
@@ -2129,7 +2446,15 @@ def _create_model_via_init(
         module_name = package.replace("-", "_")
         try:
             spec_found = importlib.util.find_spec(module_name) is not None
-        except (ImportError, ValueError):
+        except (ImportError, ValueError) as spec_exc:
+            # A broken finder is indistinguishable from "not installed" here;
+            # log so a real corruption doesn't masquerade as the missing-package
+            # hint without leaving a trail.
+            logger.debug(
+                "find_spec failed for %s; treating provider package as missing: %s",
+                module_name,
+                spec_exc,
+            )
             spec_found = False
         if spec_found:
             # Package is installed but an internal import failed — surface
@@ -2139,10 +2464,30 @@ def _create_model_via_init(
                 f"import for provider '{provider}': {e}"
             )
         else:
-            msg = (
-                f"Missing package for provider '{provider}'. "
-                f"Install: pip install {package}"
-            )
+            from deepagents_code.extras_info import extra_for_package
+
+            extra = extra_for_package(package)
+            if extra is not None:
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"Install: /install {extra}"
+                )
+            else:
+                from deepagents_code.update_check import install_package_command
+
+                try:
+                    install_cmd = install_package_command(package)
+                except ValueError:
+                    install_hint = f"Install the '{package}' package manually"
+                else:
+                    install_hint = f"Install with: {install_cmd}"
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"{install_hint}, then retry with `/model`."
+                )
+            raise MissingProviderPackageError(
+                msg, provider=provider, package=package
+            ) from e
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
         if not provider:
@@ -2277,8 +2622,8 @@ def create_model(
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
-        >>> model = create_model("openai:gpt-4o")
-        >>> model = create_model("gpt-4o")  # Auto-detects openai
+        >>> model = create_model("openai:gpt-5.5")
+        >>> model = create_model("gpt-5.5")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
     from deepagents_code.model_config import (

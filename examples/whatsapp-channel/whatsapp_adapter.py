@@ -934,7 +934,7 @@ class WhatsAppAdapter:
 
         import aiohttp
 
-        caption_body = f"**{self._bot_header}\n{caption}" if caption else f"**{self._bot_header}**"
+        caption_body = f"**{self._bot_header}**\n{caption}" if caption else f"**{self._bot_header}**"
         formatted_caption = format_message(caption_body)
 
         payload: dict[str, Any] = {

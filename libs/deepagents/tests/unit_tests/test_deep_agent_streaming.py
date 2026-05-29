@@ -11,6 +11,10 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from typing import Any
 
+from langchain.agents._subagent_transformer import (
+    AsyncSubagentRunStream,
+    SubagentRunStream,
+)
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall
@@ -176,7 +180,7 @@ class TestCreateDeepAgentAstreamV2:
         agent = _build_agent_with_one_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[Any] = []
+        handles: list[AsyncSubagentRunStream] = []
         async for sub in run.subagents:
             handles.append(sub)
             async for _ in sub.messages:
@@ -187,6 +191,7 @@ class TestCreateDeepAgentAstreamV2:
 
         assert len(handles) == 1
         (sub,) = handles
+        assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
         assert sub.cause == {"type": "toolCall", "tool_call_id": "call-parent-1"}
         assert sub.status == "completed"
@@ -229,7 +234,7 @@ class TestCreateDeepAgentAstreamV2:
         run = await agent.astream_events({"messages": [HumanMessage(content="hi")]}, version="v3")
 
         # No subagents should surface.
-        handles = [sub async for sub in run.subagents]
+        handles: list[AsyncSubagentRunStream] = [sub async for sub in run.subagents]
         async for _ in run.messages:
             pass
 
@@ -273,7 +278,7 @@ class TestCreateDeepAgentAstreamV2:
         agent = _build_agent_with_failing_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[Any] = []
+        handles: list[AsyncSubagentRunStream] = []
 
         async def collect_subagents() -> None:
             with suppress(RuntimeError):
@@ -294,6 +299,7 @@ class TestCreateDeepAgentAstreamV2:
 
         assert len(handles) == 1
         (sub,) = handles
+        assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
         assert sub.status == "failed"
         assert sub.error is not None
@@ -314,7 +320,7 @@ class TestCreateDeepAgentStreamV2:
         agent = _build_agent_with_one_subagent()
         run = agent.stream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
-        handles: list[Any] = []
+        handles: list[SubagentRunStream] = []
         for sub in run.subagents:
             handles.append(sub)
             for _ in sub.messages:
@@ -324,5 +330,6 @@ class TestCreateDeepAgentStreamV2:
             pass
 
         assert len(handles) == 1
+        assert isinstance(handles[0], SubagentRunStream)
         assert handles[0].name == "researcher"
         assert handles[0].status == "completed"

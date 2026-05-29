@@ -2675,10 +2675,19 @@ def create_model(
     # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
     # because their env-var mapping is not a reliable indicator.
     if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
+        from deepagents_code.model_config import CODEX_PROVIDER
+
         cred_status = has_provider_credentials(provider)
         if cred_status is False:
             from deepagents_code.model_config import MissingCredentialsError
 
+            if provider == CODEX_PROVIDER:
+                # No env var to set; point the user at `/auth` instead.
+                msg = (
+                    "Not signed in to ChatGPT. Run `/auth` and select "
+                    "openai_codex to sign in with your ChatGPT account."
+                )
+                raise MissingCredentialsError(msg, provider=provider, env_var=None)
             env_var = get_credential_env_var(provider)
             display_env = env_var or f"<{provider} API key>"
             msg = (
@@ -2729,7 +2738,36 @@ def create_model(
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
+    from deepagents_code.model_config import CODEX_PROVIDER
+
+    if provider == CODEX_PROVIDER:
+        # Codex models are constructed directly via `ChatOpenAICodex` so the
+        # `token_provider=` kwarg is wired to the on-disk OAuth token store
+        # before any request goes out. `init_chat_model` does not know about
+        # this class and would route through API-key `ChatOpenAI` instead.
+        from deepagents_code.integrations import openai_codex as _codex
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            ModelConfigError,
+        )
+
+        # `_get_provider_kwargs` may have left an `api_key` from a residual
+        # `OPENAI_API_KEY`; drop it so the bearer always comes from the
+        # OAuth provider rather than a stale shell export.
+        kwargs.pop("api_key", None)
+        try:
+            model = _codex.build_chat_model(model_name, **kwargs)
+        except FileNotFoundError as exc:
+            msg = (
+                "Not signed in to ChatGPT. Run `/auth` and select "
+                "openai_codex to sign in with your ChatGPT account."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except Exception as exc:
+            spec = f"{provider}:{model_name}"
+            msg = f"Failed to initialize Codex model '{spec}': {exc}"
+            raise ModelConfigError(msg) from exc
+    elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)

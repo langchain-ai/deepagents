@@ -516,6 +516,15 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+CODEX_PROVIDER = "openai_codex"
+"""Provider name for `ChatOpenAICodex` models authenticated via ChatGPT OAuth.
+
+Distinct from `"openai"` (which uses an `OPENAI_API_KEY`) because the auth
+source, model class, and request endpoint all differ. See
+`deepagents_code.integrations.openai_codex` for the OAuth flow.
+"""
+
+
 IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
 """Providers that support ambient auth outside app env-var checks.
 
@@ -858,8 +867,39 @@ def get_available_models() -> dict[str, list[str]]:
                 endpoint or OLLAMA_DEFAULT_BASE_URL,
             )
 
+    # Project ChatGPT-OAuth-eligible Codex models out of the standard openai
+    # profile data into a dedicated `openai_codex` provider entry, so the
+    # switcher offers them under their own auth context. The actual model
+    # selection (which IDs are Codex-eligible) is delegated to
+    # `_get_codex_model_ids` so it can be unit-tested.
+    if config.is_provider_enabled(CODEX_PROVIDER):
+        codex_models = _get_codex_model_ids(available.get("openai", []))
+        if codex_models:
+            available[CODEX_PROVIDER] = codex_models
+
     _available_models_cache = available
     return available
+
+
+def _get_codex_model_ids(openai_models: list[str]) -> list[str]:
+    """Filter the `openai` provider's model list to ChatGPT Codex models.
+
+    The ChatGPT Codex backend (`ChatOpenAICodex`) accepts the same Codex
+    model IDs that the API-key-backed `ChatOpenAI` exposes (e.g.,
+    `gpt-5.2-codex`, `gpt-5.3-codex`). Rather than maintain a hand-curated
+    list, we derive Codex eligibility from the model name: an ID is
+    considered Codex if `-codex` appears anywhere in it (matches upstream's
+    naming convention for every Codex variant we have shipped to date).
+
+    Args:
+        openai_models: The current `openai` provider model list returned
+            by the registry-driven discovery step above.
+
+    Returns:
+        A new list containing only the Codex model IDs from `openai_models`,
+            preserving the input order.
+    """
+    return [name for name in openai_models if "-codex" in name]
 
 
 def _build_entry(
@@ -964,6 +1004,22 @@ def get_model_profiles(
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             result[spec] = _build_entry(upstream_profile, overrides, cli_override)
+            # Mirror Codex-eligible openai profiles under the `openai_codex`
+            # provider so `/model openai_codex:gpt-5.2-codex` resolves to
+            # the same upstream profile without duplicating data.
+            if (
+                provider == "openai"
+                and "-codex" in model_name
+                and config.is_provider_enabled(CODEX_PROVIDER)
+            ):
+                codex_spec = f"{CODEX_PROVIDER}:{model_name}"
+                seen_specs.add(codex_spec)
+                codex_overrides = config.get_profile_overrides(
+                    CODEX_PROVIDER, model_name=model_name
+                )
+                result[codex_spec] = _build_entry(
+                    upstream_profile, codex_overrides, cli_override
+                )
 
     # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():
@@ -1491,6 +1547,56 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
     return None
 
 
+def _get_codex_auth_status() -> ProviderAuthStatus:
+    """Translate the ChatGPT OAuth on-disk state into a `ProviderAuthStatus`.
+
+    The codex provider uses a file-backed OAuth token store rather than
+    `auth_store`'s API-key map, so it gets its own branch in
+    `get_provider_auth_status`. The `STORED` source is reused so existing
+    UI badges (`[stored]`) render unchanged.
+
+    Returns:
+        `CONFIGURED` / `STORED` when a valid (non-expired) token sits at the
+            upstream default store path; `MISSING` otherwise. An expired
+            token is reported as `MISSING` because the file provider would
+            refresh on read, so persistent expiry implies the refresh
+            token itself has been revoked.
+    """
+    from deepagents_code.integrations import openai_codex
+
+    status = openai_codex.get_status()
+    if status.unreadable_reason:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=CODEX_PROVIDER,
+            detail=f"token store unreadable: {status.unreadable_reason}",
+        )
+    if not status.logged_in:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=CODEX_PROVIDER,
+            detail="not signed in to ChatGPT",
+        )
+    if status.is_expired:
+        # The file provider refreshes on read, so an expired token here
+        # implies the refresh token has been revoked; treat as missing so
+        # `/auth` surfaces "sign in again" instead of pretending it's fine.
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=CODEX_PROVIDER,
+            detail="ChatGPT token expired",
+        )
+    detail = "signed in to ChatGPT"
+    if status.plan_type:
+        detail = f"signed in to ChatGPT ({status.plan_type})"
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail=detail,
+    )
+
+
 def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     """Return credential readiness details for a provider.
 
@@ -1529,6 +1635,13 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         Provider auth status for selectors, startup checks, and compatibility
             wrappers.
     """
+    # ChatGPT-OAuth-backed codex provider has no env var and stores tokens
+    # in its own on-disk JSON; route it through a dedicated helper before
+    # the standard config / env-var lookup so callers get a meaningful
+    # `[stored]` / `[missing]` badge and a "signed in as <plan>" detail.
+    if provider == CODEX_PROVIDER:
+        return _get_codex_auth_status()
+
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     provider_config = config.providers.get(provider)

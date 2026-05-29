@@ -54,6 +54,7 @@ _TIPS: dict[str, int] = {
     "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Use /auto-update to toggle automatic updates": 1,
+    "Use /auth and select openai_codex to sign in with your ChatGPT account": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,

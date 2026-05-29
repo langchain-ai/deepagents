@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
+from textual.app import App
 from textual.content import Content
 
 from deepagents_code import theme
@@ -499,6 +500,236 @@ class TestToolCallMessageTodos:
 
         assert len(lines) > todo_start + 1
         assert lines[todo_start + 1].startswith("             ")
+
+
+def _tool_msg_app(tool_name: str, args: dict | None = None) -> App[None]:
+    """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
+
+    Args:
+        tool_name: Tool name the message represents.
+        args: Optional tool-call arguments.
+
+    Returns:
+        An unmounted `App` exposing the message as `app.msg`.
+    """
+    from textual.app import ComposeResult
+
+    class _Harness(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.msg = ToolCallMessage(tool_name, args)
+
+        def compose(self) -> ComposeResult:
+            yield self.msg
+
+    return _Harness()
+
+
+class TestToolCallMessageSearchOutput:
+    """Tests for grep/glob result formatting in `_format_search_output`."""
+
+    def test_glob_list_output_has_no_hardcoded_indent(self) -> None:
+        """Glob (list) results must not carry a hardcoded leading indent.
+
+        Alignment is owned by `_prefix_output`; the formatter emits bare paths
+        so results aren't double-indented under the output marker.
+        """
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        result = msg._format_search_output(
+            "['/tmp/zzz_a.py', '/tmp/zzz_b.py']", is_preview=False
+        )
+        lines = result.content.plain.split("\n")
+        assert lines
+        assert all(not line.startswith(" ") for line in lines)
+
+    def test_grep_line_output_has_no_hardcoded_indent(self) -> None:
+        """Grep (line-based) results must not carry a hardcoded leading indent.
+
+        This is a distinct branch from the glob list path: `ast.literal_eval`
+        fails for grep output, so it falls through to line-based formatting.
+        """
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        result = msg._format_search_output(
+            "file.py:1:match one\nfile.py:2:match two", is_preview=False
+        )
+        assert result.content.plain.split("\n") == [
+            "file.py:1:match one",
+            "file.py:2:match two",
+        ]
+
+
+class TestToolCallMessageExpandHint:
+    """Tests for the preview/expand hint on collapsed tool output."""
+
+    async def test_long_single_line_search_output_has_no_expand_hint(self) -> None:
+        """Long-but-single-line grep/glob output should not offer expansion.
+
+        The outer collapse threshold counts characters, but `_format_search_output`
+        only truncates by line count. A long single-line result (e.g. a glob
+        error string returned as normal output) trips the char threshold while
+        leaving nothing hidden, so the preview must not promise an expansion
+        that would reveal identical content.
+        """
+        from textual.app import App, ComposeResult
+
+        # Single line, no newlines, comfortably over the character threshold.
+        output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
+        assert "\n" not in output
+        assert len(output) > ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            # Nothing is hidden, so no expand affordance and no toggle.
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is False
+
+    async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
+        """A short force-expanded error must not show a collapse affordance.
+
+        `set_error` force-expands so the full error is always visible. When the
+        error is short enough that the collapsed form would be identical, there
+        is nothing to collapse — so no hint, and toggling is a no-op.
+        """
+        from textual.app import App, ComposeResult
+
+        error = "Error: glob timed out after 20.0s. Try a narrower path."
+        assert "\n" not in error
+        assert len(error) < ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            # Nothing to collapse — stays expanded with the hint hidden.
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is False
+
+    async def test_multiline_error_force_expanded_offers_collapse(self) -> None:
+        """A long force-expanded error should still offer a collapse affordance.
+
+        The positive counterpart to the short-error case: a multi-line error
+        exceeds the line threshold and the formatter truncates it, so a smaller
+        collapsed form exists and the collapse hint must appear.
+        """
+        error = "\n".join(f"line {index} of the traceback" for index in range(10))
+        assert error.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("glob", {"pattern": "**/*.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "collapse" in hint.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is True
+            collapsed = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "expand" in collapsed.plain
+
+    async def test_long_grep_output_truncates_and_expands(self) -> None:
+        """A multi-line grep result should preview-truncate then expand on toggle."""
+        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
+        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("grep", {"pattern": "hit"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._preview_widget is not None
+            assert app.msg._full_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "expand" in hint.plain
+            # The preview hides the trailing lines.
+            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert "hit 7" not in preview.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            full = app.msg._full_widget._Static__content  # type: ignore[attr-defined]
+            assert "hit 7" in full.plain
+            collapsed = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "collapse" in collapsed.plain
+
+    async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
+        """Short non-todo output uses non-preview formatting and shows no hint.
+
+        Guards the merged collapsed branch: `is_preview` must stay `False` for
+        a non-`write_todos` tool below the size threshold, so the full content
+        is shown rather than a truncated preview.
+        """
+        # Five lines: under `_PREVIEW_LINES` (6) but over the file formatter's
+        # own four-line preview cap, so a stray `is_preview=True` would truncate.
+        output = "\n".join(f"line {index}" for index in range(5))
+        assert output.count("\n") + 1 < ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is False
+            assert app.msg._preview_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert "line 0" in preview.plain
+            assert "line 4" in preview.plain
 
 
 class TestToolCallMessageExpandableArgs:

@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage
 
-from cron.jobs import create_job as db_create_job, get_job, load_jobs, save_jobs
+from conftest import _now_helper
+from cron.jobs import create_job as db_create_job, load_jobs, save_jobs
 from cron.scheduler import (
     SILENT_MARKER,
     _build_prompt,
@@ -139,7 +140,7 @@ class TestTickOnce:
         assert adapter.sent[0]["text"] == "here is the report"
         assert adapter.sent[0]["reply_to"] == "msg1"
         # One-shot disabled after firing
-        assert get_job(jobs_path, j["id"])["enabled"] is False
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["enabled"] is False
 
     async def test_silent_marker_suppresses_delivery(self, jobs_path) -> None:
         j = db_create_job(jobs_path, prompt="p", schedule="30m",
@@ -151,7 +152,7 @@ class TestTickOnce:
         await _tick_once(jobs_path, adapter, agent, {})
 
         assert adapter.sent == []
-        assert get_job(jobs_path, j["id"])["last_status"] == "ok"
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["last_status"] == "ok"
 
     async def test_failure_delivers_error_notice(self, jobs_path) -> None:
         j = db_create_job(jobs_path, prompt="p", schedule="30m",
@@ -165,7 +166,7 @@ class TestTickOnce:
         assert len(adapter.sent) == 1
         assert adapter.sent[0]["text"].startswith("⚠️")
         assert "nope" in adapter.sent[0]["text"]
-        assert get_job(jobs_path, j["id"])["last_status"] == "error"
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["last_status"] == "error"
 
     async def test_delivery_failure_captured_in_last_error(self, jobs_path) -> None:
         j = db_create_job(jobs_path, prompt="p", schedule="30m",
@@ -176,7 +177,7 @@ class TestTickOnce:
         agent = FakeAgent("ok")
         await _tick_once(jobs_path, adapter, agent, {})
 
-        updated = get_job(jobs_path, j["id"])
+        updated = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)
         assert updated["last_status"] == "error"
         assert "delivery failed" in (updated["last_error"] or "")
 
@@ -190,7 +191,7 @@ class TestTickOnce:
         agent = FakeAgent("ok")
         await _tick_once(jobs_path, adapter, agent, {})
 
-        updated = get_job(jobs_path, j["id"])
+        updated = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)
         assert updated["enabled"] is True
         assert updated["next_run_at"] != first_next
 
@@ -210,7 +211,7 @@ class TestTickOnce:
         class ReadBackAgent:
             async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
                 # At the moment the agent runs, next_run_at should already be advanced
-                captured["next_run_at_during_run"] = get_job(jobs_path, j["id"])["next_run_at"]
+                captured["next_run_at_during_run"] = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["next_run_at"]
                 return {"messages": [*state["messages"], AIMessage(content="ok")]}
 
         adapter = FakeAdapter()
@@ -251,9 +252,7 @@ def _force_due(jobs_path, job_id) -> None:
     save_jobs(jobs_path, jobs)
 
 
-def _now_helper():
-    from datetime import datetime
-    return datetime.now().astimezone()
+
 
 
 class TestStartTicker:

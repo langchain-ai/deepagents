@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import _now_helper
 from cron.jobs import parse_duration
 
 
@@ -229,7 +230,7 @@ class TestCreateJob:
             )
 
 
-from cron.jobs import get_job, list_jobs_for_chat, remove_job, update_job
+from cron.jobs import list_jobs_for_chat, load_jobs, remove_job, update_job
 
 
 class TestListJobsForChat:
@@ -250,10 +251,10 @@ class TestGetJob:
     def test_hit(self, jobs_path) -> None:
         j = create_job(jobs_path, prompt="p", schedule="30m",
                        origin={"chat_id": "123", "message_id": None})
-        assert get_job(jobs_path, j["id"])["id"] == j["id"]
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == "does-not-exist"), None)["id"] == j["id"]
 
     def test_miss(self, jobs_path) -> None:
-        assert get_job(jobs_path, "does-not-exist") is None
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == "does-not-exist"), None) is None
 
 
 class TestRemoveJob:
@@ -337,7 +338,7 @@ class TestMarkJobRun:
         j = create_job(jobs_path, prompt="p", schedule="30m",
                        origin={"chat_id": "1", "message_id": None})
         mark_job_run(jobs_path, j["id"], success=True)
-        updated = get_job(jobs_path, j["id"])
+        updated = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)
         assert updated["last_status"] == "ok"
         assert updated["last_error"] is None
         assert updated["enabled"] is False
@@ -348,7 +349,7 @@ class TestMarkJobRun:
         j = create_job(jobs_path, prompt="p", schedule="30m",
                        origin={"chat_id": "1", "message_id": None})
         mark_job_run(jobs_path, j["id"], success=False, error="boom")
-        updated = get_job(jobs_path, j["id"])
+        updated = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "boom"
 
@@ -356,15 +357,15 @@ class TestMarkJobRun:
         j = create_job(jobs_path, prompt="p", schedule="every 10m",
                        origin={"chat_id": "1", "message_id": None}, repeat=2)
         mark_job_run(jobs_path, j["id"], success=True)
-        assert get_job(jobs_path, j["id"])["repeat"]["completed"] == 1
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["repeat"]["completed"] == 1
         mark_job_run(jobs_path, j["id"], success=True)
-        assert get_job(jobs_path, j["id"]) is None  # removed
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None) is None  # removed
 
     def test_interval_forever_keeps_going(self, jobs_path) -> None:
         j = create_job(jobs_path, prompt="p", schedule="every 10m",
                        origin={"chat_id": "1", "message_id": None})  # repeat=None
         mark_job_run(jobs_path, j["id"], success=True)
-        updated = get_job(jobs_path, j["id"])
+        updated = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)
         assert updated is not None
         assert updated["enabled"] is True
         assert updated["next_run_at"] is not None
@@ -381,7 +382,7 @@ class TestAdvanceNextRun:
         first_next = j["next_run_at"]
         changed = advance_next_run(jobs_path, j["id"])
         assert changed is True
-        second_next = get_job(jobs_path, j["id"])["next_run_at"]
+        second_next = next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["next_run_at"]
         assert second_next != first_next
 
     def test_one_shot_is_left_alone(self, jobs_path) -> None:
@@ -390,7 +391,7 @@ class TestAdvanceNextRun:
         first_next = j["next_run_at"]
         changed = advance_next_run(jobs_path, j["id"])
         assert changed is False
-        assert get_job(jobs_path, j["id"])["next_run_at"] == first_next
+        assert next((j for j in load_jobs(jobs_path) if j["id"] == j["id"]), None)["next_run_at"] == first_next
 
 
 class TestGetDueJobs:
@@ -434,7 +435,4 @@ class TestGetDueJobs:
         assert [j["id"] for j in get_due_jobs(jobs_path)] == ["earlier", "later"]
 
 
-def _now_helper():
-    """Local helper mirroring cron.jobs._now_aware for test timestamps."""
-    from datetime import datetime
-    return datetime.now().astimezone()
+

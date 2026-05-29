@@ -280,14 +280,6 @@ def list_jobs_for_chat(jobs_path: Path, chat_id: str) -> list[dict[str, Any]]:
     return results
 
 
-def get_job(jobs_path: Path, job_id: str) -> dict[str, Any] | None:
-    """Return the job with id *job_id*, or ``None``."""
-    for j in load_jobs(jobs_path):
-        if j.get("id") == job_id:
-            return j
-    return None
-
-
 def update_job(
     jobs_path: Path,
     job_id: str,

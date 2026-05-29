@@ -106,21 +106,12 @@ def _sniff_image_mime(path: str) -> str:
 
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 
+def _mask_code_blocks(text: str) -> tuple[str, list[str], list[str]]:
+    """Mask fenced code blocks and inline code, returning masked text and placeholders.
 
-def extract_markdown_media(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Strip ``![alt](path)`` references from *text* and return them in order.
-
-    The agent uses standard markdown image syntax for both images and videos;
-    classification by file extension happens at the call site. Matches inside
-    fenced ``` ``` blocks or inline `` ` `` backtick runs are ignored (same
-    mask-and-restore trick as :func:`format_message`). The cleaned text has
-    the markdown removed, and runs of 3+ consecutive newlines (a common
-    artifact when a media ref lived on its own line) are collapsed back to
-    one blank line.
+    Returns ``(masked_text, fences, codes)``. Callers transform *masked_text*
+    and restore the original blocks by iterating the placeholder lists.
     """
-    if not text:
-        return text, []
-
     _FENCE_PH = "\x00MDFENCE"
     fences: list[str] = []
 
@@ -138,6 +129,35 @@ def extract_markdown_media(text: str) -> tuple[str, list[tuple[str, str]]]:
         return f"{_CODE_PH}{len(codes) - 1}\x00"
 
     masked = re.sub(r"`[^`\n]+`", _save_code, masked)
+    return masked, fences, codes
+
+
+def _restore_placeholders(
+    text: str, fences: list[str], codes: list[str],
+) -> str:
+    """Restore masked fence/code placeholders back into *text*."""
+    _FENCE_PH = "\x00MDFENCE"
+    _CODE_PH = "\x00MDCODE"
+    for i, fence in enumerate(fences):
+        text = text.replace(f"{_FENCE_PH}{i}\x00", fence)
+    for i, code in enumerate(codes):
+        text = text.replace(f"{_CODE_PH}{i}\x00", code)
+    return text
+
+def extract_markdown_media(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Strip ``![alt](path)`` references from *text* and return them in order.
+
+    The agent uses standard markdown image syntax for both images and videos;
+    classification by file extension happens at the call site. Matches inside
+    fenced ``` ``` blocks or inline `` ` `` backtick runs are ignored.
+    The cleaned text has the markdown removed, and runs of 3+ consecutive
+    newlines (a common artifact when a media ref lived on its own line)
+    are collapsed back to one blank line.
+    """
+    if not text:
+        return text, []
+
+    masked, fences, codes = _mask_code_blocks(text)
 
     refs: list[tuple[str, str]] = []
 
@@ -147,13 +167,7 @@ def extract_markdown_media(text: str) -> tuple[str, list[tuple[str, str]]]:
 
     cleaned = _MD_IMAGE_RE.sub(_record, masked)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-
-    for i, fence in enumerate(fences):
-        cleaned = cleaned.replace(f"{_FENCE_PH}{i}\x00", fence)
-    for i, code in enumerate(codes):
-        cleaned = cleaned.replace(f"{_CODE_PH}{i}\x00", code)
-
-    return cleaned, refs
+    return _restore_placeholders(cleaned, fences, codes), refs
 
 
 _MAX_INBOUND_IMAGE_BYTES = 5 * 1024 * 1024
@@ -320,44 +334,20 @@ def format_message(content: str) -> str:
     if not content:
         return content
 
-    # 1. Protect fenced code blocks
-    _FENCE_PH = "\x00FENCE"
-    fences: list[str] = []
+    masked, fences, codes = _mask_code_blocks(content)
 
-    def _save_fence(m: re.Match) -> str:
-        fences.append(m.group(0))
-        return f"{_FENCE_PH}{len(fences) - 1}\x00"
-
-    result = re.sub(r"```[\s\S]*?```", _save_fence, content)
-
-    # 2. Protect inline code
-    _CODE_PH = "\x00CODE"
-    codes: list[str] = []
-
-    def _save_code(m: re.Match) -> str:
-        codes.append(m.group(0))
-        return f"{_CODE_PH}{len(codes) - 1}\x00"
-
-    result = re.sub(r"`[^`\n]+`", _save_code, result)
-
-    # 3. Markdown -> WhatsApp
-    result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
+    # Markdown -> WhatsApp
+    result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", masked)
     result = re.sub(r"__(.+?)__", r"*\1*", result)
     result = re.sub(r"~~(.+?)~~", r"~\1~", result)
 
-    # 4. Headers -> bold
+    # Headers -> bold
     result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
 
-    # 5. Links: [text](url) -> text (url)
+    # Links: [text](url) -> text (url)
     result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
 
-    # 6. Restore protected sections
-    for i, fence in enumerate(fences):
-        result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
-    for i, code in enumerate(codes):
-        result = result.replace(f"{_CODE_PH}{i}\x00", code)
-
-    return result
+    return _restore_placeholders(result, fences, codes)
 
 
 def truncate_message(text: str, max_length: int = 4096) -> list[str]:

@@ -20,6 +20,7 @@ from deepagents.middleware.summarization import create_summarization_middleware,
 from tools import fetch_url, http_request, web_search
 from config import build_adapter_config
 from cron import build_cron_tools, origin_ctx, start_ticker
+from cron.scheduler import _extract_final_text
 from mcp_tools import MCPSessionManager, get_mcp_tools
 from whatsapp_adapter import (
     MessageEvent,
@@ -126,27 +127,6 @@ def _build_status_text(actions: list[dict], *, done: bool = False) -> str:
 
     return "\n".join(lines)
 
-
-def _extract_response_text(final_output: dict | None) -> str:
-    """Extract the final AIMessage text from an agent output dict.
-
-    Walks messages in reverse to find the last non-empty AI text block.
-    Mirrors the cron runner's extraction logic.
-    """
-    if not final_output:
-        return ""
-    response_messages = final_output.get("messages", [])
-    for msg in reversed(response_messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            if isinstance(msg.content, str):
-                return msg.content
-            if isinstance(msg.content, list):
-                for block in reversed(msg.content):
-                    if isinstance(block, str):
-                        return block
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        return block["text"]
-    return ""
 
 
 async def _stream_agent_run(
@@ -302,7 +282,7 @@ async def run_until_complete(
             status_msg_id=status_msg_id,
         )
 
-        response_text = _extract_response_text(final_output)
+        response_text = _extract_final_text(final_output)
         if response_text:
             return actions, final_output, response_text
 
@@ -330,7 +310,7 @@ async def run_until_complete(
             chat_id=chat_id,
             status_msg_id=status_msg_id,
         )
-        return summary_actions, summary_output, _extract_response_text(summary_output)
+        return summary_actions, summary_output, _extract_final_text(summary_output)
     except asyncio.CancelledError:
         raise
     except Exception:

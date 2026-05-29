@@ -53,3 +53,9 @@ def oversize_image(tmp_path: Path) -> Path:
         f.seek(6 * 1024 * 1024)
         f.write(b"\x00")
     return p
+
+
+def _now_helper():
+    """Current timezone-aware datetime, mirroring cron.jobs._now_aware."""
+    from datetime import datetime
+    return datetime.now().astimezone()

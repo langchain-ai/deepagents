@@ -231,7 +231,6 @@ async def _stream_agent_run(
                     "exceed_context_size_error" in err_str
                     or "exceeds the available context size" in err_str
                 )
-                or status_code == 413
             )
             if is_context_overflow:
                 if attempt + 1 < _MAX_RETRIES and len(history) > 2:

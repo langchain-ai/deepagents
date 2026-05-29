@@ -39,6 +39,19 @@ deepagents mcp-servers add --url https://tools.langchain.com \
                             --header X-Api-Key=$LANGSMITH_API_KEY \
                             --name Fleet
 
+# Reference the server's tools in tools.json (otherwise the agent has no tools)
+cat > my-agent/tools.json <<'JSON'
+{
+  "tools": [
+    {
+      "name": "tavily_web_search",
+      "mcp_server_url": "https://tools.langchain.com",
+      "mcp_server_name": "Fleet"
+    }
+  ]
+}
+JSON
+
 # Upsert the project as a managed agent on /v1/deepagents/*
 cd my-agent && deepagents deploy
 ```

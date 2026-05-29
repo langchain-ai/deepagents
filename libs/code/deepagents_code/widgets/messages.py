@@ -609,6 +609,11 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         margin: 0;
         pointer: text;
     }
+
+    AssistantMessage MarkdownFence {
+        overflow-x: auto;
+        scrollbar-size-horizontal: 1;
+    }
     """
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:

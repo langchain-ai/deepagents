@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.summarization import create_summarization_middleware, create_summarization_tool_middleware
 from tools import fetch_url, http_request, web_search
 from config import build_adapter_config
 from cron import build_cron_tools, origin_ctx, start_ticker
@@ -506,6 +506,13 @@ async def main() -> None:
         )
 
     backend = LocalShellBackend(virtual_mode=False)
+
+    # Auto-summarization middleware fires when context approaches the trigger
+    # threshold (85% of AGENT_CONTEXT_SIZE by default). The tool middleware
+    # gives the agent a ``compact_conversation`` tool for on-demand compaction.
+    # Both are needed — the tool middleware alone does not auto-summarize.
+    summ_mw = create_summarization_middleware(model, backend)
+    summ_tool_mw = create_summarization_tool_middleware(model, backend)
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -519,7 +526,7 @@ async def main() -> None:
         skills=skill_sources or None,
         memory=memory_sources,
         system_prompt=_SYSTEM_PROMPT,
-        middleware=[create_summarization_tool_middleware(model, backend)],
+        middleware=[summ_mw, summ_tool_mw],
     )
 
     # --- Per-chat conversation history (in-memory) ---

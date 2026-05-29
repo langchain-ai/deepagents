@@ -25,7 +25,6 @@ Screen {
 Tooltip {
     background: $surface;
     color: $foreground;
-    border: solid $panel;
     padding: 0 1;
 }
 

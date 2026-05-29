@@ -587,7 +587,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description=description,
         infer_schema=False,
         args_schema=TaskToolSchema,
-        subagent_name=lambda call: call["args"]["subagent_type"],
     )
 
 

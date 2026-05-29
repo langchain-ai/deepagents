@@ -1003,6 +1003,23 @@ class ToolCallMessage(Vertical):
             Content.styled(text, theme.get_theme_colors(self).warning)
         )
 
+    def pause_running(self) -> None:
+        """Pause the running spinner while the tool awaits a user decision.
+
+        Reverts the row to its pending appearance (status hidden) and stops the
+        animation so a tool blocked on HITL approval or `ask_user` input does
+        not misleadingly display "Running...". Resume with `set_running`, which
+        restarts the elapsed timer from the moment execution actually begins.
+        """
+        if self._status != "running":
+            return
+        self._stop_animation()
+        self._status = "pending"
+        self._start_time = None
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.display = False
+
     def _stop_animation(self) -> None:
         """Stop the running animation."""
         if self._animation_timer is not None:

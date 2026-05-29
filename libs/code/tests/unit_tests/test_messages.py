@@ -1253,6 +1253,116 @@ class TestToolCallMessageAwaitingApproval:
             assert msg.display is True
 
 
+class TestToolCallMessageRunningSpinner:
+    """Tests for `set_running` / `pause_running` spinner state."""
+
+    async def test_set_running_shows_status_widget(self) -> None:
+        """`set_running` should reveal the status row and start the timer."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status_widget is not None
+            # Pending tools hide the status row until they run.
+            assert msg._status_widget.display is False
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._status_widget.display is True
+            assert msg._animation_timer is not None
+
+    async def test_pause_running_hides_status_and_stops_timer(self) -> None:
+        """`pause_running` should revert a running tool to its pending look."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._start_time is None
+            assert msg._animation_timer is None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_pause_running_no_op_when_not_running(self) -> None:
+        """Pausing a pending tool should leave its status untouched."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status == "pending"
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_set_running_resumes_after_pause(self) -> None:
+        """A paused tool should be resumable via `set_running` (HITL approve)."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_file", {"file_path": "a.txt"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._start_time is not None
+            assert msg._animation_timer is not None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is True
+
+
 class TestToolCallMessageRejectReason:
     """Tests for surfacing a user-supplied HITL reject reason."""
 

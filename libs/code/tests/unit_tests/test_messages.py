@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.content import Content
 
 from deepagents_code import theme
@@ -502,7 +502,18 @@ class TestToolCallMessageTodos:
         assert lines[todo_start + 1].startswith("             ")
 
 
-def _tool_msg_app(tool_name: str, args: dict | None = None) -> App[None]:
+class _ToolMsgApp(App[None]):
+    """Single-`ToolCallMessage` Textual app for pilot-driven tests."""
+
+    def __init__(self, tool_name: str, args: dict | None = None) -> None:
+        super().__init__()
+        self.msg = ToolCallMessage(tool_name, args)
+
+    def compose(self) -> ComposeResult:
+        yield self.msg
+
+
+def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
 
     Args:
@@ -512,17 +523,7 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> App[None]:
     Returns:
         An unmounted `App` exposing the message as `app.msg`.
     """
-    from textual.app import ComposeResult
-
-    class _Harness(App[None]):
-        def __init__(self) -> None:
-            super().__init__()
-            self.msg = ToolCallMessage(tool_name, args)
-
-        def compose(self) -> ComposeResult:
-            yield self.msg
-
-    return _Harness()
+    return _ToolMsgApp(tool_name, args)
 
 
 class TestToolCallMessageSearchOutput:
@@ -669,7 +670,7 @@ class TestToolCallMessageExpandHint:
 
             assert app.msg._expanded is False
             assert app.msg._hint_widget.display is True
-            collapsed = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            collapsed = app.msg._hint_widget._Static__content
             assert "expand" in collapsed.plain
 
     async def test_long_grep_output_truncates_and_expands(self) -> None:
@@ -699,9 +700,9 @@ class TestToolCallMessageExpandHint:
             await pilot.pause()
 
             assert app.msg._expanded is True
-            full = app.msg._full_widget._Static__content  # type: ignore[attr-defined]
+            full = app.msg._full_widget._Static__content
             assert "hit 7" in full.plain
-            collapsed = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            collapsed = app.msg._hint_widget._Static__content
             assert "collapse" in collapsed.plain
 
     async def test_short_non_todo_output_renders_full_without_hint(self) -> None:

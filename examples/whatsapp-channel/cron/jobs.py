@@ -314,10 +314,9 @@ def update_job(
     for job in jobs:
         if job.get("id") != job_id:
             continue
-        if job.get("origin", {}).get("chat_id") != chat_id:
-            # Also try normalized comparison for @c.us ↔ @s.whatsapp.net
-            if _normalize_chat_id(job.get("origin", {}).get("chat_id")) != _normalize_chat_id(chat_id):
-                return None
+        job_chat = job.get("origin", {}).get("chat_id")
+        if job_chat != chat_id and _normalize_chat_id(job_chat) != _normalize_chat_id(chat_id):
+            continue
 
         if name is not None:
             cleaned = name.strip()

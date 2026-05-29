@@ -439,7 +439,7 @@ class WelcomeBanner(Static):
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
             unauth_text = (
                 f"{self._mcp_unauthenticated} MCP {server_label} need login "
-                "— open /mcp or run `/mcp login <server>`\n"
+                "— open /mcp\n"
             )
             parts.extend(
                 [

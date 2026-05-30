@@ -5454,7 +5454,7 @@ class DeepAgentsApp(App):
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
-                "/skill-creator, /theme, /tokens, /threads, /trace, "
+                "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"

@@ -1,3 +1,4 @@
+import mimetypes
 import time
 from unittest.mock import patch
 
@@ -1256,9 +1257,14 @@ class TestFilesystemMiddleware:
         assert isinstance(result.content, list)
         assert result.content[0]["type"] == "file"
         assert result.content[0]["base64"] == "<docx_base64_data>"
-        # `mimetypes` resolves `.docx` even though it is absent from the
-        # extension-to-block-type map.
-        assert result.content[0]["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        # The block carries the best media type `mimetypes` can resolve for the
+        # extension, falling back to `application/octet-stream`. The resolved
+        # value is platform-dependent (`.docx` maps to the full Office type on
+        # macOS/Linux but to `application/octet-stream` on Windows, where
+        # `mimetypes` reads the registry), so mirror the production logic rather
+        # than hardcoding a single value.
+        expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
+        assert result.content[0]["mime_type"] == expected_mime
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

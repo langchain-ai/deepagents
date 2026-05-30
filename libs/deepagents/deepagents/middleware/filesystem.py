@@ -2064,6 +2064,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+
+        Note:
+            Tool-execution exceptions (including `ToolException`) propagate
+            through this wrapper unhandled by design.
         """
         tool_result = handler(request)
 
@@ -2085,6 +2089,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+
+        Note:
+            Tool-execution exceptions (including `ToolException`) propagate
+            through this wrapper unhandled by design.
         """
         tool_result = await handler(request)
 

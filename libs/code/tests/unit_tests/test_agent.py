@@ -2755,3 +2755,23 @@ class TestResolvePtcOption:
         from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
 
         assert frozenset({"read_file", "glob", "grep"}) == INTERPRETER_PTC_SAFE_PRESET
+
+
+def test_system_prompt_contains_rendering_raw_tool_output_rule() -> None:
+    """Regression: prompt must carve out a 'render raw tool output' rule for Kimi K2."""
+    prompt = get_system_prompt("default", interactive=True)
+
+    assert "Rendering raw tool output" in prompt
+    assert "do NOT summarize" in prompt
+    assert "render verbatim" in prompt
+    forbidden_acks = (
+        "Done.",
+        "rendered above",
+        "All N tool outputs have been rendered",
+    )
+    for forbidden in forbidden_acks:
+        assert forbidden in prompt, (
+            f"system_prompt.md should forbid meta-ack '{forbidden}' so the rule "
+            "covers the observed Kimi K2 failure shapes"
+        )
+    assert "fenced code block" in prompt

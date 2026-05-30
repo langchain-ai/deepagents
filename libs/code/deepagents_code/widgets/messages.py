@@ -1177,7 +1177,13 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with content and optional truncation info.
         """
-        output = output.strip()
+        # Trim surrounding blank lines and trailing whitespace, but preserve the
+        # command's own leading indentation on the first content line. A bare
+        # `strip()` would lstrip the first line only — continuation lines keep
+        # their indent — so output that indents every row (e.g. `git branch -r`,
+        # which prefixes each branch with two spaces) renders with line 0 flush
+        # and the rest indented beside the fixed glyph gutter.
+        output = output.rstrip().lstrip("\n")
         if not output:
             return FormattedOutput(content=Content(""))
 
@@ -1888,7 +1894,12 @@ class ToolCallMessage(Vertical):
             # warrant it; `write_todos` always uses its compact per-item preview
             # regardless of size.
             is_preview = needs_truncation or self._tool_name == "write_todos"
-            result = self._format_output(output_stripped, is_preview=is_preview)
+            # Pass the raw output, not `output_stripped`: `_format_output`
+            # normalizes whitespace while preserving the first line's leading
+            # indentation. Pre-stripping here flattens that indent on line 0 only,
+            # misaligning uniformly indented output (e.g. `git branch -r`). The
+            # expanded branch above already passes raw `self._output`.
+            result = self._format_output(self._output, is_preview=is_preview)
             self._preview_widget.update(result.content)
             self._preview_row.display = True
 

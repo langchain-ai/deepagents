@@ -568,6 +568,35 @@ class TestToolCallMessageOutputGutter:
             gutter_content = gutters.first()._Static__content  # type: ignore[attr-defined]
             assert gutter_content == glyph
 
+    async def test_collapsed_preview_preserves_uniform_leading_indent(self) -> None:
+        """Collapsed preview keeps line 0's indent so indented rows align.
+
+        Regression: the preview branch pre-stripped the output, lstripping the
+        first line only while continuation lines kept their indent. Uniformly
+        indented output (e.g. `git branch -r`, which prefixes every branch with
+        two spaces) then rendered with line 0 flush and the rest indented. The
+        formatter must preserve the shared leading indent across all rows.
+        """
+        # Mirror `git branch -r`: every row indented by two spaces, > preview
+        # line budget so the collapsed preview is shown.
+        output = "\n".join(f"  origin/branch-{i}" for i in range(8))
+
+        app = _tool_msg_app("execute", {"command": "git branch -r"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._expanded is False
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+
+            preview_lines = content.plain.split("\n")
+            # Every visible row — including the first — keeps git's two-space
+            # indent, so they share a left edge beside the glyph gutter.
+            assert preview_lines
+            assert all(line.startswith("  origin/") for line in preview_lines)
+
 
 class TestToolCallMessageSearchOutput:
     """Tests for grep/glob result formatting in `_format_search_output`."""
@@ -1034,6 +1063,36 @@ class TestToolCallMessageShellCommand:
 
         assert result.truncation is None
         assert result.content.plain == output
+
+    def test_format_output_preserves_first_line_leading_indent(self) -> None:
+        """`_format_output` must keep the first line's own leading indentation.
+
+        A bare `strip()` lstrips only the first line while continuation lines
+        keep their indent, so uniformly indented command output (e.g.
+        `git branch -r`, which prefixes every branch with two spaces) renders
+        misaligned. All rows should retain their leading spaces.
+        """
+        msg = ToolCallMessage("execute", {"command": "git branch -r"})
+        # Mirror `git branch -r`: every row indented by two spaces, trailing \n.
+        output = "  origin/HEAD -> origin/main\n  origin/main\n  origin/dev\n"
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        assert lines == [
+            "  origin/HEAD -> origin/main",
+            "  origin/main",
+            "  origin/dev",
+        ]
+        # Every line shares the same leading indent, so they align beside the
+        # fixed glyph gutter.
+        assert all(line.startswith("  ") for line in lines)
+
+    def test_format_output_still_trims_leading_blank_lines(self) -> None:
+        """Leading blank lines are trimmed while first-line indent survives."""
+        msg = ToolCallMessage("execute", {"command": "noop"})
+        result = msg._format_output("\n\n  indented\n", is_preview=False)
+
+        assert result.content.plain == "  indented"
 
 
 class TestToolCallMessageFileOutput:

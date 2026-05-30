@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import locale
 import logging
 import os
 import signal
@@ -49,6 +50,7 @@ from deepagents_code.widgets.messages import (
     AppMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SummarizationMessage,
     UserMessage,
 )
 
@@ -3449,13 +3451,21 @@ class TestMessageTimestampFooters:
             time.tzset()
 
     async def test_toggle_adds_and_removes_footers(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The `/timestamps` toggle adds and removes visible footer widgets."""
         previous_tz = os.environ.get("TZ")
         monkeypatch.setenv("TZ", "UTC")
+        # Sandbox config so the toggle's persistence starts from "hidden" and
+        # does not touch the real user config.
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
         # Pin the clock style so the assertion is locale-independent.
-        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
+        monkeypatch.setattr(
+            "deepagents_code.formatting.uses_24_hour_clock", lambda: False
+        )
         self._sync_tz()
         app = DeepAgentsApp()
 
@@ -3513,64 +3523,101 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#msg-app-timestamp-footer", Static)
 
-    def test_today_timestamp_omits_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Footers for today's messages show only the time, not the date."""
-        from datetime import datetime
+    async def test_summarization_message_has_no_footer(self) -> None:
+        """`SUMMARIZATION` system notices never receive a footer."""
+        app = DeepAgentsApp()
 
-        from deepagents_code.app import _format_message_timestamp
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(
+                SummarizationMessage("Summarized prior turns", id="msg-summ")
+            )
+            await pilot.pause()
 
-        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
-        today = (
-            datetime.now()
-            .astimezone()
-            .replace(hour=12, minute=0, second=5, microsecond=0)
-        )
-        formatted = _format_message_timestamp(today.timestamp())
-        assert formatted == "12:00:05 PM"
+            assert app.query_one("#msg-summ", SummarizationMessage)
+            with pytest.raises(NoMatches):
+                app.query_one("#msg-summ-timestamp-footer", Static)
 
-    def test_other_day_timestamp_includes_date(
-        self, monkeypatch: pytest.MonkeyPatch
+
+class TestMessageTimestampsPersistence:
+    """Tests for persisting the timestamp-footer visibility to config."""
+
+    def test_load_defaults_false_when_config_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Footers for messages from other days keep the leading date."""
-        from deepagents_code.app import _format_message_timestamp
+        """A missing config yields the hidden default."""
+        from deepagents_code.app import _load_message_timestamps_visible
 
-        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
-        previous_tz = os.environ.get("TZ")
-        os.environ["TZ"] = "UTC"
-        if hasattr(time, "tzset"):
-            time.tzset()
-        try:
-            # 2024-01-01 12:00:05 UTC — a fixed past date.
-            formatted = _format_message_timestamp(1_704_110_405.0)
-            assert formatted == "Jan 1, 12:00:05 PM"
-        finally:
-            if previous_tz is None:
-                os.environ.pop("TZ", None)
-            else:
-                os.environ["TZ"] = previous_tz
-            if hasattr(time, "tzset"):
-                time.tzset()
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _load_message_timestamps_visible() is False
 
-    def test_24_hour_clock_drops_am_pm(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A 24-hour locale renders time without an AM/PM suffix."""
-        from deepagents_code.app import _format_message_timestamp
+    def test_load_reads_saved_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `true` preference is read back."""
+        from deepagents_code.app import _load_message_timestamps_visible
 
-        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: True)
-        previous_tz = os.environ.get("TZ")
-        os.environ["TZ"] = "UTC"
-        if hasattr(time, "tzset"):
-            time.tzset()
-        try:
-            # 2024-01-01 13:00:05 UTC — a fixed past afternoon time.
-            formatted = _format_message_timestamp(1_704_114_005.0)
-            assert formatted == "Jan 1, 13:00:05"
-        finally:
-            if previous_tz is None:
-                os.environ.pop("TZ", None)
-            else:
-                os.environ["TZ"] = previous_tz
-            if hasattr(time, "tzset"):
-                time.tzset()
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_message_timestamps = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_message_timestamps_visible() is True
+
+    def test_load_ignores_non_boolean(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-boolean preference is ignored with a warning."""
+        from deepagents_code.app import _load_message_timestamps_visible
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\nshow_message_timestamps = "yes"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_message_timestamps_visible() is False
+        assert any(
+            "show_message_timestamps" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_message_timestamps_visible,
+            _save_message_timestamps_visible_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_message_timestamps_visible_result(True).ok is True
+        assert _load_message_timestamps_visible() is True
+        assert _save_message_timestamps_visible_result(False).ok is True
+        assert _load_message_timestamps_visible() is False
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_message_timestamps_visible_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_message_timestamps_visible_result(True).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_message_timestamps"] is True
 
 
 class TestAppBlurPausesCursorBlink:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import locale
 import logging
 import os
 import shlex
@@ -17,8 +16,6 @@ import webbrowser
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
@@ -62,6 +59,7 @@ from deepagents_code._session_stats import (
 # after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.config import is_ascii_mode
+from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
     ActionId,
@@ -122,56 +120,6 @@ reason.
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
     return f"{message_id}-timestamp-footer"
-
-
-@cache
-def _uses_24_hour_clock() -> bool:
-    """Whether the system locale formats time on a 24-hour clock.
-
-    Platform agnostic: probes the active `LC_TIME` locale's time
-    representation rather than reading per-OS preferences. The result is
-    cached because resolving it mutates process-global locale state via
-    `locale.setlocale(locale.LC_TIME, "")` (scoped to the time category, and
-    only ever performed once).
-
-    Returns:
-        `True` for a 24-hour clock (or when the locale cannot be resolved,
-        matching the C locale's 24-hour default), `False` for 12-hour.
-    """
-    try:
-        locale.setlocale(locale.LC_TIME, "")
-        # 13:00 renders as "13:..." only on a 24-hour clock; a 12-hour locale
-        # shows "01:... PM".
-        probe = datetime(2000, 1, 1, 13, 0, 0).strftime("%X")  # noqa: DTZ001  # naive probe; tz irrelevant to clock style
-    except (locale.Error, ValueError):
-        return True
-    return "13" in probe
-
-
-def _format_message_timestamp(timestamp: float) -> str | None:
-    """Format a message timestamp for display.
-
-    Shows only the time of day for messages from the current local date and
-    prefixes the date otherwise. The 12- versus 24-hour clock follows the
-    system locale (see `_uses_24_hour_clock`).
-
-    Args:
-        timestamp: Unix epoch timestamp.
-
-    Returns:
-        A formatted timestamp, or `None` when invalid.
-    """
-    try:
-        dt = datetime.fromtimestamp(timestamp, tz=UTC).astimezone()
-    except (ValueError, OSError, OverflowError, TypeError):
-        return None
-    if _uses_24_hour_clock():
-        time_str = f"{dt:%H:%M:%S}"
-    else:
-        time_str = f"{dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
-    if dt.date() == datetime.now(tz=dt.tzinfo).date():
-        return time_str
-    return f"{dt:%b} {dt.day}, {time_str}"
 
 
 def _is_message_timestamp_footer(widget: Widget) -> bool:
@@ -442,6 +390,46 @@ def _load_theme_preference() -> str:
     return theme.DEFAULT_THEME
 
 
+def _load_message_timestamps_visible() -> bool:
+    """Load the saved message-timestamp-footer visibility preference.
+
+    Reads `[ui].show_message_timestamps` from `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved preference, or `False` when it is unset or unreadable.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for timestamp preference: %s", exc)
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading timestamp preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("show_message_timestamps")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].show_message_timestamps should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
 def _replace_malformed_ui(
     data: dict[str, object],
 ) -> tuple[dict[str, object], str | None]:
@@ -459,8 +447,7 @@ def _replace_malformed_ui(
     ui = {}
     data["ui"] = ui
     return ui, (
-        "Existing [ui] was not a table and was replaced while saving the theme "
-        "configuration."
+        "Existing [ui] was not a table and was replaced while saving UI settings."
         if replaced_malformed
         else None
     )
@@ -645,6 +632,65 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
             occurred.
     """
     return _save_terminal_theme_mapping_result(term_program, name).ok
+
+
+def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
+    """Persist the timestamp-footer visibility preference.
+
+    Writes `[ui].show_message_timestamps` atomically (temp file +
+    `Path.replace`). Mirrors `_save_theme_preference_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["show_message_timestamps"] = visible
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save timestamp preference")
+        return _ConfigWriteResult(
+            False,
+            f"Timestamps toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -1510,8 +1556,11 @@ class DeepAgentsApp(App):
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
 
-        self._message_timestamps_visible = False
-        """Whether message timestamp footers are shown in the chat surface."""
+        self._message_timestamps_visible = _load_message_timestamps_visible()
+        """Whether message timestamp footers are shown in the chat surface.
+
+        Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
+        """
 
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
@@ -6744,14 +6793,15 @@ class DeepAgentsApp(App):
             data: Message data carrying the timestamp.
 
         Returns:
-            A footer widget, or `None` when disabled, invalid, or the message
-                is an app-status note rather than a conversation turn.
+            A footer widget, or `None` when disabled, when the timestamp is
+            invalid, or when the message type is in
+            `_TIMESTAMP_FOOTER_EXCLUDED_TYPES`.
         """
         if not self._message_timestamps_visible:
             return None
         if data.type in _TIMESTAMP_FOOTER_EXCLUDED_TYPES:
             return None
-        label = _format_message_timestamp(data.timestamp)
+        label = format_message_timestamp(data.timestamp)
         if label is None:
             logger.warning("Invalid timestamp for message %s", data.id)
             return None
@@ -6762,12 +6812,33 @@ class DeepAgentsApp(App):
         )
 
     async def _toggle_message_timestamp_footers(self) -> None:
-        """Toggle visible timestamp footers for mounted messages."""
+        """Toggle visible timestamp footers and persist the preference."""
         self._message_timestamps_visible = not self._message_timestamps_visible
         if self._message_timestamps_visible:
             await self._show_message_timestamp_footers()
         else:
             await self._hide_message_timestamp_footers()
+        await self._persist_message_timestamps_visible()
+
+    async def _persist_message_timestamps_visible(self) -> None:
+        """Persist the timestamp-footer preference without blocking the loop."""
+        try:
+            status = await asyncio.to_thread(
+                _save_message_timestamps_visible_result,
+                self._message_timestamps_visible,
+            )
+            if status.message is not None:
+                self.notify(
+                    status.message,
+                    severity=status.severity,
+                    timeout=6,
+                    markup=False,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist message timestamp preference",
+                exc_info=True,
+            )
 
     async def _show_message_timestamp_footers(self) -> None:
         """Insert timestamp footers under mounted message widgets."""
@@ -6784,6 +6855,12 @@ class DeepAgentsApp(App):
                 continue
             data = self._message_store.get_message(widget.id)
             if data is None:
+                # Mounted widget without a backing store entry => DOM/store
+                # desync; skip it but leave a breadcrumb (mirrors pruning).
+                logger.debug(
+                    "No store entry for mounted widget %s; skipping footer",
+                    widget.id,
+                )
                 continue
             footer_id = _message_timestamp_footer_id(data.id)
             with suppress(NoMatches):
@@ -6844,6 +6921,8 @@ class DeepAgentsApp(App):
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         if not widget.id:
+            # Keep the widget DOM id == store id so timestamp-footer toggling
+            # can map a mounted widget back to its MessageData.
             widget.id = message_data.id
         self._message_store.append(message_data)
         footer = self._build_message_timestamp_footer(message_data)

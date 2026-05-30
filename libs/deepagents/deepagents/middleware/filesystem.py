@@ -900,12 +900,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             file_type = _get_file_type(validated_path)
+            encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
-            if file_type != "text":
+            # Route on the backend-declared encoding first: `"base64"` means the
+            # content is binary and must never be line-numbered as text, even
+            # when the extension is absent from `_EXTENSION_TO_FILE_TYPE` (#3657).
+            # The extension map is only consulted to pick the multimodal block
+            # type; unknown binary extensions fall back to the generic `"file"`.
+            if encoding == "base64" or file_type != "text":
+                block_type = file_type if file_type != "text" else "file"
                 mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(
-                    content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
+                    content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},

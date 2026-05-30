@@ -952,8 +952,20 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                if adapter._set_spinner and keep_thinking_spinner:
-                                    await adapter._set_spinner("Thinking")
+                                if keep_thinking_spinner:
+                                    # The argument/approval phase uses the global
+                                    # "Thinking" spinner instead of a per-tool one.
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner("Thinking")
+                                else:
+                                    # Show a per-tool running spinner immediately so
+                                    # auto-executed tools such as grep, glob,
+                                    # read_file, and ls display activity instead of
+                                    # sitting idle until their result arrives. Every
+                                    # tool outside the frozenset hits this branch;
+                                    # those that go on to interrupt for approval are
+                                    # paused again below.
+                                    tool_msg.set_running()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -997,6 +1009,22 @@ async def execute_task_textual(
                 any_rejected = False
                 ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
+
+                # Tools mounted above start their spinner immediately, but a
+                # tool blocked on HITL approval or `ask_user` input is not
+                # actually running. Pause every in-flight row so none shows a
+                # misleading "Running..."; the approve branches below call
+                # `set_running` again to resume those that proceed. Guard each
+                # row individually so a single bad widget can't abort the whole
+                # interrupt handler (mirrors `clear_awaiting_approval` below).
+                for tool_msg in adapter._current_tool_messages.values():
+                    try:
+                        tool_msg.pause_running()
+                    except Exception:
+                        logger.exception(
+                            "Failed to pause running state on tool widget %s",
+                            tool_msg.tool_name,
+                        )
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
                     questions = ask_req["questions"]

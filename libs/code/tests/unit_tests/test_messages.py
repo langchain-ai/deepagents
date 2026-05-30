@@ -526,14 +526,57 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
     return _ToolMsgApp(tool_name, args)
 
 
+class TestToolCallMessageOutputGutter:
+    """The output glyph lives in a fixed gutter so wrapped lines stay aligned."""
+
+    async def test_glyph_in_gutter_not_baked_into_content(self) -> None:
+        """The output marker renders in its own gutter column, not in content.
+
+        Regression: when a single long output line soft-wraps, the wrapped
+        remainder must not fall under the glyph. Keeping the glyph in a fixed
+        gutter (instead of baked into the first content line) lets the content
+        widget own a single hanging indent for every wrapped line.
+        """
+        from deepagents_code.config import get_glyphs
+
+        # Two logical lines; the first is long enough to soft-wrap in a terminal.
+        output = (
+            "[stderr] fatal: ambiguous argument 'main..branch': unknown revision "
+            "or path not in the working tree.\n[stderr] Use '--' to separate paths."
+        )
+
+        app = _tool_msg_app("execute", {"command": "git diff main..branch"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            glyph = get_glyphs().output_prefix
+            assert app.msg._preview_widget is not None
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+
+            # Content is bare: no glyph, and no hand-rolled hanging indent on
+            # any logical line (alignment is owned by the gutter layout).
+            assert glyph not in content.plain
+            assert all(not line.startswith(" ") for line in content.plain.split("\n"))
+
+            # The glyph renders exactly once, in the gutter beside the content.
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is True
+            gutters = app.msg._preview_row.query(".tool-output-gutter")
+            assert len(gutters) == 1
+            gutter_content = gutters.first()._Static__content  # type: ignore[attr-defined]
+            assert gutter_content == glyph
+
+
 class TestToolCallMessageSearchOutput:
     """Tests for grep/glob result formatting in `_format_search_output`."""
 
     def test_glob_list_output_has_no_hardcoded_indent(self) -> None:
         """Glob (list) results must not carry a hardcoded leading indent.
 
-        Alignment is owned by `_prefix_output`; the formatter emits bare paths
-        so results aren't double-indented under the output marker.
+        Alignment is owned by the output gutter layout; the formatter emits
+        bare paths so results aren't double-indented under the output marker.
         """
         msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
         result = msg._format_search_output(

@@ -13,7 +13,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
 from textual.message_pump import NoActiveAppError
@@ -731,16 +731,32 @@ class ToolCallMessage(Vertical):
         color: $text-muted;
     }
 
+    ToolCallMessage .tool-output-row {
+        layout: horizontal;
+        height: auto;
+        width: 1fr;
+    }
+
+    /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
+       aligned to a single hanging indent instead of falling under the glyph. */
+    ToolCallMessage .tool-output-gutter {
+        width: 2;
+        height: 1;
+        color: $text-muted;
+    }
+
     ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-preview {
         margin-left: 0;
         margin-top: 0;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-hint {
@@ -785,8 +801,10 @@ class ToolCallMessage(Vertical):
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
+        self._preview_row: Horizontal | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
+        self._full_row: Horizontal | None = None
         self._reject_reason_widget: Static | None = None
         # Animation state
         self._spinner_position = 0
@@ -841,9 +859,22 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-status", id="status")
         # Optional HITL reject reason (only shown when user rejected with a message)
         yield Static("", classes="tool-reject-reason", id="reject-reason")
-        # Output area - hidden initially, shown when output is set
-        yield Static("", classes="tool-output-preview", id="output-preview")
-        yield Static("", classes="tool-output", id="output-full")
+        # Output area - hidden initially, shown when output is set. The glyph
+        # lives in a fixed-width gutter so wrapped content aligns to a single
+        # hanging indent rather than wrapping back under the glyph.
+        output_prefix = get_glyphs().output_prefix
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output-preview", id="output-preview"),
+            classes="tool-output-row",
+            id="output-preview-row",
+        )
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output", id="output-full"),
+            classes="tool-output-row",
+            id="output-full-row",
+        )
         yield Static("", classes="tool-output-hint", id="output-hint")
 
     def on_mount(self) -> None:
@@ -855,16 +886,18 @@ class ToolCallMessage(Vertical):
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
+        self._preview_row = self.query_one("#output-preview-row", Horizontal)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
+        self._full_row = self.query_one("#output-full-row", Horizontal)
         self._reject_reason_widget = self.query_one("#reject-reason", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
         self._args_widget.display = False
         self._args_hint_widget.display = False
-        self._preview_widget.display = False
+        self._preview_row.display = False
         self._hint_widget.display = False
-        self._full_widget.display = False
+        self._full_row.display = False
         self._reject_reason_widget.display = False
         self._update_args_display()
 
@@ -1202,24 +1235,6 @@ class ToolCallMessage(Vertical):
 
         return False
 
-    def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
-        """Prefix output with output marker and indent continuation lines.
-
-        Args:
-            content: The styled output content to prefix and indent.
-
-        Returns:
-            `Content` with output prefix on first line and indented
-                continuation.
-        """
-        if not content.plain:
-            return Content("")
-        output_prefix = get_glyphs().output_prefix
-        lines = content.split("\n")
-        prefixed = [Content.assemble(f"{output_prefix} ", lines[0])]
-        prefixed.extend(Content.assemble("  ", line) for line in lines[1:])
-        return Content("\n").join(prefixed)
-
     def _format_todos_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -1339,13 +1354,10 @@ class ToolCallMessage(Vertical):
             except NoActiveAppError:
                 display_width = _DEFAULT_TODO_WRAP_WIDTH
 
-        output_prefix_width = len(get_glyphs().output_prefix) + 1
-        available = (
-            display_width
-            - output_prefix_width
-            - indent_width
-            - _TODO_WRAP_GUARD_COLUMNS
-        )
+        # The content widgets measured above live inside the gutter row, so
+        # their width already excludes the output glyph column; the guard
+        # columns absorb the gutter offset for the self/app fallback width.
+        available = display_width - indent_width - _TODO_WRAP_GUARD_COLUMNS
         return max(20, available)
 
     def _format_todo_line(
@@ -1830,7 +1842,9 @@ class ToolCallMessage(Vertical):
         if (
             not self._output
             or not self._preview_widget
+            or not self._preview_row
             or not self._full_widget
+            or not self._full_row
             or not self._hint_widget
         ):
             return
@@ -1847,11 +1861,10 @@ class ToolCallMessage(Vertical):
 
         if self._expanded:
             # Show full output with formatting
-            self._preview_widget.display = False
+            self._preview_row.display = False
             result = self._format_output(self._output, is_preview=False)
-            prefixed = self._prefix_output(result.content)
-            self._full_widget.update(prefixed)
-            self._full_widget.display = True
+            self._full_widget.update(result.content)
+            self._full_row.display = True
             # Only offer a collapse affordance when collapsing would actually
             # hide something. Errors are force-expanded (see `set_error`), so a
             # short single-line error has no smaller collapsed form — showing
@@ -1865,9 +1878,9 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = False
         else:
             # Show collapsed preview
-            self._full_widget.display = False
+            self._full_row.display = False
             if not output_stripped:
-                self._preview_widget.display = False
+                self._preview_row.display = False
                 self._hint_widget.display = False
                 return
 
@@ -1876,9 +1889,8 @@ class ToolCallMessage(Vertical):
             # regardless of size.
             is_preview = needs_truncation or self._tool_name == "write_todos"
             result = self._format_output(output_stripped, is_preview=is_preview)
-            prefixed = self._prefix_output(result.content)
-            self._preview_widget.update(prefixed)
-            self._preview_widget.display = True
+            self._preview_widget.update(result.content)
+            self._preview_row.display = True
 
             # Offer expansion only when the formatter actually hid content.
             # The raw size threshold can trip without anything being hidden

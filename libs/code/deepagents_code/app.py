@@ -59,6 +59,7 @@ from deepagents_code._session_stats import (
 # after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.config import is_ascii_mode
+from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
     ActionId,
@@ -101,6 +102,29 @@ _DEFERRED_START_NOTICE = (
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
 _CONFIG_WRITE_LOCK = threading.Lock()
+
+_MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
+
+_TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
+    {MessageType.APP, MessageType.SUMMARIZATION}
+)
+"""Message types that never receive a timestamp footer.
+
+App-status notes (e.g. "Resumed thread: ...", version/update notices, command
+feedback) are not conversation turns, so they do not get timestamp footers.
+`SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
+reason.
+"""
+
+
+def _message_timestamp_footer_id(message_id: str) -> str:
+    """Return the DOM id for a message timestamp footer."""
+    return f"{message_id}-timestamp-footer"
+
+
+def _is_message_timestamp_footer(widget: Widget) -> bool:
+    """Return whether `widget` is a timestamp footer."""
+    return widget.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS)
 
 
 @dataclass(frozen=True)
@@ -366,6 +390,46 @@ def _load_theme_preference() -> str:
     return theme.DEFAULT_THEME
 
 
+def _load_message_timestamps_visible() -> bool:
+    """Load the saved message-timestamp-footer visibility preference.
+
+    Reads `[ui].show_message_timestamps` from `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved preference, or `False` when it is unset or unreadable.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for timestamp preference: %s", exc)
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading timestamp preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("show_message_timestamps")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].show_message_timestamps should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
 def _replace_malformed_ui(
     data: dict[str, object],
 ) -> tuple[dict[str, object], str | None]:
@@ -383,8 +447,7 @@ def _replace_malformed_ui(
     ui = {}
     data["ui"] = ui
     return ui, (
-        "Existing [ui] was not a table and was replaced while saving the theme "
-        "configuration."
+        "Existing [ui] was not a table and was replaced while saving UI settings."
         if replaced_malformed
         else None
     )
@@ -569,6 +632,65 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
             occurred.
     """
     return _save_terminal_theme_mapping_result(term_program, name).ok
+
+
+def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
+    """Persist the timestamp-footer visibility preference.
+
+    Writes `[ui].show_message_timestamps` atomically (temp file +
+    `Path.replace`). Mirrors `_save_theme_preference_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["show_message_timestamps"] = visible
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save timestamp preference")
+        return _ConfigWriteResult(
+            False,
+            f"Timestamps toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -1021,9 +1143,6 @@ class DeepAgentsApp(App):
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
 
-    TOOLTIP_DELAY = 0.2
-    """Hover delay before tooltips appear (reduced from Textual default of 0.5)."""
-
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
         Binding(
@@ -1436,6 +1555,12 @@ class DeepAgentsApp(App):
 
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
+
+        self._message_timestamps_visible = _load_message_timestamps_visible()
+        """Whether message timestamp footers are shown in the chat surface.
+
+        Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
+        """
 
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
@@ -3576,10 +3701,17 @@ class DeepAgentsApp(App):
 
         for widget, msg_data in reversed(hydrated_widgets):
             try:
+                footer = self._build_message_timestamp_footer(msg_data)
                 if first_child:
-                    await messages_container.mount(widget, before=first_child)
+                    if footer is not None:
+                        await messages_container.mount(footer, before=first_child)
+                        await messages_container.mount(widget, before=footer)
+                    else:
+                        await messages_container.mount(widget, before=first_child)
                 else:
                     await messages_container.mount(widget)
+                    if footer is not None:
+                        await messages_container.mount(footer)
                 first_child = widget
                 hydrated_count += 1
                 # Render Markdown content for hydrated assistant messages
@@ -5322,7 +5454,7 @@ class DeepAgentsApp(App):
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
-                "/skill-creator, /theme, /tokens, /threads, /trace, "
+                "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -5436,6 +5568,9 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/timestamps":
+            await self._mount_message(UserMessage(command))
+            await self._toggle_message_timestamp_footers()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -6600,7 +6735,13 @@ class DeepAgentsApp(App):
             # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
             widgets = [msg_data.to_widget() for msg_data in visible]
             if widgets:
-                await messages_container.mount(*widgets)
+                nodes: list[Widget] = []
+                for widget, msg_data in zip(widgets, visible, strict=False):
+                    nodes.append(widget)
+                    footer = self._build_message_timestamp_footer(msg_data)
+                    if footer is not None:
+                        nodes.append(footer)
+                await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
@@ -6645,6 +6786,111 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
+    def _build_message_timestamp_footer(self, data: MessageData) -> Static | None:
+        """Build a visible timestamp footer for a message.
+
+        Args:
+            data: Message data carrying the timestamp.
+
+        Returns:
+            A footer widget, or `None` when disabled, when the timestamp is
+            invalid, or when the message type is in
+            `_TIMESTAMP_FOOTER_EXCLUDED_TYPES`.
+        """
+        if not self._message_timestamps_visible:
+            return None
+        if data.type in _TIMESTAMP_FOOTER_EXCLUDED_TYPES:
+            return None
+        label = format_message_timestamp(data.timestamp)
+        if label is None:
+            logger.warning("Invalid timestamp for message %s", data.id)
+            return None
+        return Static(
+            Content.styled(label, "dim"),
+            id=_message_timestamp_footer_id(data.id),
+            classes=_MESSAGE_TIMESTAMP_FOOTER_CLASS,
+        )
+
+    async def _toggle_message_timestamp_footers(self) -> None:
+        """Toggle visible timestamp footers and persist the preference."""
+        self._message_timestamps_visible = not self._message_timestamps_visible
+        if self._message_timestamps_visible:
+            await self._show_message_timestamp_footers()
+        else:
+            await self._hide_message_timestamp_footers()
+        await self._persist_message_timestamps_visible()
+
+    async def _persist_message_timestamps_visible(self) -> None:
+        """Persist the timestamp-footer preference without blocking the loop."""
+        try:
+            status = await asyncio.to_thread(
+                _save_message_timestamps_visible_result,
+                self._message_timestamps_visible,
+            )
+            if status.message is not None:
+                self.notify(
+                    status.message,
+                    severity=status.severity,
+                    timeout=6,
+                    markup=False,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist message timestamp preference",
+                exc_info=True,
+            )
+
+    async def _show_message_timestamp_footers(self) -> None:
+        """Insert timestamp footers under mounted message widgets."""
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        for widget in list(messages.children):
+            if (
+                _is_message_timestamp_footer(widget)
+                or isinstance(widget, QueuedUserMessage)
+                or not widget.id
+            ):
+                continue
+            data = self._message_store.get_message(widget.id)
+            if data is None:
+                # Mounted widget without a backing store entry => DOM/store
+                # desync; skip it but leave a breadcrumb (mirrors pruning).
+                logger.debug(
+                    "No store entry for mounted widget %s; skipping footer",
+                    widget.id,
+                )
+                continue
+            footer_id = _message_timestamp_footer_id(data.id)
+            with suppress(NoMatches):
+                messages.query_one(f"#{footer_id}")
+                continue
+            footer = self._build_message_timestamp_footer(data)
+            if footer is None:
+                continue
+            children = list(messages.children)
+            try:
+                index = children.index(widget)
+            except ValueError:
+                await messages.mount(footer)
+                continue
+            next_child = children[index + 1] if index + 1 < len(children) else None
+            if next_child is not None:
+                await messages.mount(footer, before=next_child)
+            else:
+                await messages.mount(footer)
+
+    async def _hide_message_timestamp_footers(self) -> None:
+        """Remove all mounted timestamp footers."""
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        for widget in list(messages.children):
+            if _is_message_timestamp_footer(widget):
+                await widget.remove()
+
     async def _mount_message(
         self,
         widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
@@ -6674,12 +6920,12 @@ class DeepAgentsApp(App):
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
-        # Ensure the widget's DOM id matches the store id so the on-mount
-        # timestamp tooltip can look the message up. Appending before mount
-        # guarantees the store entry exists when the widget's on_mount fires.
         if not widget.id:
+            # Keep the widget DOM id == store id so timestamp-footer toggling
+            # can map a mounted widget back to its MessageData.
             widget.id = message_data.id
         self._message_store.append(message_data)
+        footer = self._build_message_timestamp_footer(message_data)
 
         # Queued-message widgets must always stay at the bottom so they
         # remain visually anchored below the current agent response.
@@ -6687,6 +6933,8 @@ class DeepAgentsApp(App):
             await messages.mount(widget)
         else:
             await self._mount_before_queued(messages, widget)
+            if footer is not None:
+                await self._mount_before_queued(messages, footer)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -6721,6 +6969,10 @@ class DeepAgentsApp(App):
         for msg_data in to_prune:
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
+                footer_id = _message_timestamp_footer_id(msg_data.id)
+                with suppress(NoMatches):
+                    footer = messages_container.query_one(f"#{footer_id}")
+                    await footer.remove()
                 await widget.remove()
                 pruned_ids.append(msg_data.id)
             except NoMatches:

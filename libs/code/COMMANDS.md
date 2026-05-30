@@ -6,7 +6,7 @@ Canonical list of slash commands for `deepagents-code`, derived from
 regenerate after editing the registry.
 
 
-## Public (26)
+## Public (27)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -32,6 +32,7 @@ regenerate after editing the registry.
 | `/skill-creator` |  | Guide for creating effective agent skills |
 | `/theme` |  | Switch color theme |
 | `/threads` |  | Browse and resume previous threads |
+| `/timestamps` |  | Toggle message timestamp footers |
 | `/tokens` |  | Token usage |
 | `/trace` |  | Open current thread in LangSmith |
 | `/update` |  | Check for and install updates |

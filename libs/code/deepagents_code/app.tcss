@@ -25,8 +25,8 @@ Screen {
     height: auto;
     color: $text-muted;
     text-style: dim;
-    margin: -1 0 1 2;
-    padding: 0 1;
+    margin: -1 0 1 0;
+    padding: 0;
 }
 
 /* Chat area - main scrollable messages area */

@@ -565,6 +565,12 @@ class AssistantMessage(Vertical):
         margin: 0;
         pointer: text;
     }
+
+    /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
+       on the final block so the message has no trailing blank row. */
+    AssistantMessage Markdown > *:last-child {
+        margin-bottom: 0;
+    }
     """
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:

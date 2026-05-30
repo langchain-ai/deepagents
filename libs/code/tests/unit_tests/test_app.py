@@ -3454,6 +3454,8 @@ class TestMessageTimestampFooters:
         """The `/timestamps` toggle adds and removes visible footer widgets."""
         previous_tz = os.environ.get("TZ")
         monkeypatch.setenv("TZ", "UTC")
+        # Pin the clock style so the assertion is locale-independent.
+        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
         self._sync_tz()
         app = DeepAgentsApp()
 
@@ -3496,6 +3498,79 @@ class TestMessageTimestampFooters:
             await pilot.pause()
 
             assert app.query_one("#msg-live-timestamp-footer", Static)
+
+    async def test_app_message_has_no_footer_when_enabled(self) -> None:
+        """App-status notes (e.g. resumed-thread) never receive a footer."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(AppMessage("Resumed thread: abc123", id="msg-app"))
+            await pilot.pause()
+
+            assert app.query_one("#msg-app", AppMessage)
+            with pytest.raises(NoMatches):
+                app.query_one("#msg-app-timestamp-footer", Static)
+
+    def test_today_timestamp_omits_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Footers for today's messages show only the time, not the date."""
+        from datetime import datetime
+
+        from deepagents_code.app import _format_message_timestamp
+
+        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
+        today = (
+            datetime.now()
+            .astimezone()
+            .replace(hour=12, minute=0, second=5, microsecond=0)
+        )
+        formatted = _format_message_timestamp(today.timestamp())
+        assert formatted == "12:00:05 PM"
+
+    def test_other_day_timestamp_includes_date(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footers for messages from other days keep the leading date."""
+        from deepagents_code.app import _format_message_timestamp
+
+        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: False)
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        try:
+            # 2024-01-01 12:00:05 UTC — a fixed past date.
+            formatted = _format_message_timestamp(1_704_110_405.0)
+            assert formatted == "Jan 1, 12:00:05 PM"
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+
+    def test_24_hour_clock_drops_am_pm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 24-hour locale renders time without an AM/PM suffix."""
+        from deepagents_code.app import _format_message_timestamp
+
+        monkeypatch.setattr("deepagents_code.app._uses_24_hour_clock", lambda: True)
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        try:
+            # 2024-01-01 13:00:05 UTC — a fixed past afternoon time.
+            formatted = _format_message_timestamp(1_704_114_005.0)
+            assert formatted == "Jan 1, 13:00:05"
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
 
 
 class TestAppBlurPausesCursorBlink:

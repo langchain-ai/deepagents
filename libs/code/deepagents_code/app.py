@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import locale
 import logging
 import os
 import shlex
@@ -17,6 +18,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
@@ -105,14 +107,53 @@ _CONFIG_WRITE_LOCK = threading.Lock()
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 
+_TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
+    {MessageType.APP, MessageType.SUMMARIZATION}
+)
+"""Message types that never receive a timestamp footer.
+
+App-status notes (e.g. "Resumed thread: ...", version/update notices, command
+feedback) are not conversation turns, so they do not get timestamp footers.
+`SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
+reason.
+"""
+
 
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
     return f"{message_id}-timestamp-footer"
 
 
+@cache
+def _uses_24_hour_clock() -> bool:
+    """Whether the system locale formats time on a 24-hour clock.
+
+    Platform agnostic: probes the active `LC_TIME` locale's time
+    representation rather than reading per-OS preferences. The result is
+    cached because resolving it mutates process-global locale state via
+    `locale.setlocale(locale.LC_TIME, "")` (scoped to the time category, and
+    only ever performed once).
+
+    Returns:
+        `True` for a 24-hour clock (or when the locale cannot be resolved,
+        matching the C locale's 24-hour default), `False` for 12-hour.
+    """
+    try:
+        locale.setlocale(locale.LC_TIME, "")
+        # 13:00 renders as "13:..." only on a 24-hour clock; a 12-hour locale
+        # shows "01:... PM".
+        probe = datetime(2000, 1, 1, 13, 0, 0).strftime("%X")  # noqa: DTZ001  # naive probe; tz irrelevant to clock style
+    except (locale.Error, ValueError):
+        return True
+    return "13" in probe
+
+
 def _format_message_timestamp(timestamp: float) -> str | None:
     """Format a message timestamp for display.
+
+    Shows only the time of day for messages from the current local date and
+    prefixes the date otherwise. The 12- versus 24-hour clock follows the
+    system locale (see `_uses_24_hour_clock`).
 
     Args:
         timestamp: Unix epoch timestamp.
@@ -124,7 +165,13 @@ def _format_message_timestamp(timestamp: float) -> str | None:
         dt = datetime.fromtimestamp(timestamp, tz=UTC).astimezone()
     except (ValueError, OSError, OverflowError, TypeError):
         return None
-    return f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
+    if _uses_24_hour_clock():
+        time_str = f"{dt:%H:%M:%S}"
+    else:
+        time_str = f"{dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
+    if dt.date() == datetime.now(tz=dt.tzinfo).date():
+        return time_str
+    return f"{dt:%b} {dt.day}, {time_str}"
 
 
 def _is_message_timestamp_footer(widget: Widget) -> bool:
@@ -6697,9 +6744,12 @@ class DeepAgentsApp(App):
             data: Message data carrying the timestamp.
 
         Returns:
-            A footer widget, or `None` when disabled or invalid.
+            A footer widget, or `None` when disabled, invalid, or the message
+                is an app-status note rather than a conversation turn.
         """
         if not self._message_timestamps_visible:
+            return None
+        if data.type in _TIMESTAMP_FOOTER_EXCLUDED_TYPES:
             return None
         label = _format_message_timestamp(data.timestamp)
         if label is None:
@@ -6716,10 +6766,8 @@ class DeepAgentsApp(App):
         self._message_timestamps_visible = not self._message_timestamps_visible
         if self._message_timestamps_visible:
             await self._show_message_timestamp_footers()
-            await self._mount_message(AppMessage("Message timestamp footers shown."))
         else:
             await self._hide_message_timestamp_footers()
-            await self._mount_message(AppMessage("Message timestamp footers hidden."))
 
     async def _show_message_timestamp_footers(self) -> None:
         """Insert timestamp footers under mounted message widgets."""

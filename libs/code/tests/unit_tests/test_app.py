@@ -3419,7 +3419,7 @@ class TestChatScrollKeepsInputFocus:
                     ctrl=False,
                     screen_x=x,
                     screen_y=y,
-                    style=None,  # type: ignore[arg-type]
+                    style=None,
                 )
             )
             await pilot.pause()

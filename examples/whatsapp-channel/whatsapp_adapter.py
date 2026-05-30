@@ -981,7 +981,7 @@ class WhatsAppAdapter:
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
 
-        formatted = format_message(f"**{self._bot_header}\n{content}")
+        formatted = format_message(f"**{self._bot_header}**\n{content}")
         if len(formatted) > self.MAX_MESSAGE_LENGTH:
             formatted = formatted[: self.MAX_MESSAGE_LENGTH - 3] + "..."
 

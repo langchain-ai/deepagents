@@ -10,6 +10,7 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
         curl \
+        git \
         ffmpeg \
         fonts-liberation \
         libnss3 \
@@ -30,6 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv (https://docs.astral.sh/uv/getting-started/installation/)
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# Install Codex CLI and Grafana GCX
+RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh && \
+    curl -fsSL https://raw.githubusercontent.com/grafana/gcx/main/scripts/install.sh | sh
 
 # Point puppeteer/whatsapp-web.js at the system Chromium
 ENV PUPPETEER_SKIP_DOWNLOAD=true

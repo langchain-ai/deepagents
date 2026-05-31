@@ -16,6 +16,8 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -87,10 +89,12 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
+        glyphs = get_glyphs()
         with Vertical():
             yield Static(
                 Content.from_markup(
-                    "Connected to [bold]$name[/bold]",
+                    "$check Connected to [bold]$name[/bold]",
+                    check=glyphs.checkmark,
                     name=self._server_name,
                 ),
                 classes="mcp-reconnect-title",

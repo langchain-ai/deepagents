@@ -265,6 +265,65 @@ class TestCopySelectionToClipboard:
         assert "Failed to get selection from widget" in caplog.text
         assert "No selection" in caplog.text
 
+    def test_skips_detached_widget_without_reading_text_selection(self) -> None:
+        """Un-attached widgets are skipped before `text_selection` is read.
+
+        Guards the contract that `is_attached` short-circuits the property
+        access — `widget.text_selection` raises `NoScreen` for detached
+        widgets, so reading it would re-introduce the crash this fix
+        addresses.
+        """
+        from unittest.mock import PropertyMock
+
+        mock_app = MagicMock()
+        detached = MagicMock()
+        detached.is_attached = False
+        type(detached).text_selection = PropertyMock(
+            side_effect=AssertionError("text_selection must not be read"),
+        )
+        mock_app.query.return_value = [detached]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_not_called()
+
+    def test_skips_widget_when_text_selection_raises_noscreen(self, caplog) -> None:
+        """`NoScreen` from a lifecycle race is logged; sibling copy proceeds."""
+        from unittest.mock import PropertyMock
+
+        from textual.dom import NoScreen
+
+        mock_app = MagicMock()
+
+        racy = MagicMock()
+        racy.is_attached = True
+        type(racy).text_selection = PropertyMock(
+            side_effect=NoScreen("node has no screen"),
+        )
+
+        sibling = MagicMock()
+        sibling.is_attached = True
+        sibling.text_selection = MagicMock(end=1)
+        sibling.get_selection.return_value = ("sibling text", None)
+
+        mock_app.query.return_value = [racy, sibling]
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy,
+        ):
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "sibling text")
+        assert "Skipping widget" in caplog.text
+
 
 class TestClipboardLogger:
     """Sanity check: module exposes a properly named logger."""

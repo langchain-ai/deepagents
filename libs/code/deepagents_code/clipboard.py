@@ -8,6 +8,8 @@ import os
 import pathlib
 from typing import TYPE_CHECKING
 
+from textual.dom import NoScreen
+
 from deepagents_code.config import get_glyphs
 
 logger = logging.getLogger(__name__)
@@ -102,10 +104,27 @@ def copy_selection_to_clipboard(app: App) -> None:
     selected_texts = []
 
     for widget in app.query("*"):
-        if not hasattr(widget, "text_selection") or not widget.text_selection:
+        # Skip detached widgets before touching `text_selection` — the
+        # property reads `widget.screen.selections`, which raises `NoScreen`
+        # for transient toasts mid-mount. `hasattr` is not a safe precheck
+        # because it would itself invoke the property and propagate
+        # `NoScreen`. The try/except handles lifecycle races between the
+        # `is_attached` check and the property read.
+        if not getattr(widget, "is_attached", False):
             continue
 
-        selection = widget.text_selection
+        try:
+            selection = widget.text_selection
+        except (NoScreen, AttributeError) as e:
+            logger.debug(
+                "Skipping widget %s during selection copy: %s",
+                type(widget).__name__,
+                e,
+            )
+            continue
+
+        if not selection:
+            continue
 
         if selection.end is None:
             continue

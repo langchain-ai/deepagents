@@ -916,6 +916,23 @@ class ChatTextArea(TextArea):
         if self._paste_burst_buffer:
             await self._flush_paste_burst()
 
+        # On macOS, "Copy Image" (e.g. right-click → Copy Image in a browser)
+        # puts binary data in the clipboard that terminals cannot forward as
+        # text.  The paste event fires with empty text while the image lives in
+        # the system clipboard — read it directly via pngpaste / osascript.
+        if not event.text and self._chat_input_owner is not None:
+            from deepagents_code.media_utils import get_clipboard_image
+
+            image_data = await asyncio.to_thread(get_clipboard_image)
+            if image_data is not None:
+                tracker = self._chat_input_owner._image_tracker
+                if tracker is not None:
+                    placeholder = tracker.add_media(image_data, "image")
+                    self.insert(placeholder + " ")
+                    event.prevent_default()
+                    event.stop()
+                    return
+
         from deepagents_code.input import parse_pasted_path_payload
 
         try:

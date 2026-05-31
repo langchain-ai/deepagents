@@ -2235,6 +2235,90 @@ class TestDroppedImagePaste:
             assert len(app.tracker.get_images()) == 1
 
 
+class TestClipboardImagePaste:
+    """Tests for macOS clipboard image paste (empty-text paste event path)."""
+
+    async def test_empty_paste_with_clipboard_image_attaches_image(self) -> None:
+        """Empty paste + macOS clipboard image should insert `[image 1]`."""
+        from unittest.mock import AsyncMock, patch
+
+        from deepagents_code.media_utils import ImageData
+
+        fake_image = ImageData(base64_data="aGVsbG8=", format="png", placeholder="")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_code.widgets.chat_input.asyncio.to_thread",
+                new=AsyncMock(return_value=fake_image),
+            ):
+                await chat._text_area._on_paste(events.Paste(""))
+                await pilot.pause()
+
+            assert chat._text_area.text.strip() == "[image 1]"
+            assert len(app.tracker.get_images()) == 1
+
+    async def test_empty_paste_without_clipboard_image_is_noop(self) -> None:
+        """Empty paste + no clipboard image should leave the input unchanged."""
+        from unittest.mock import AsyncMock, patch
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            with patch(
+                "deepagents_code.widgets.chat_input.asyncio.to_thread",
+                new=AsyncMock(return_value=None),
+            ):
+                await chat._text_area._on_paste(events.Paste(""))
+                await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+    async def test_nonempty_paste_skips_clipboard_image_check(
+        self, tmp_path: Path
+    ) -> None:
+        """When paste text is non-empty the clipboard check is bypassed."""
+        from unittest.mock import AsyncMock, patch
+
+        img_path = tmp_path / "skip.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="yellow").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            mock_clipboard = AsyncMock()
+            with patch(
+                "deepagents_code.widgets.chat_input.asyncio.to_thread",
+                new=mock_clipboard,
+            ):
+                await chat._text_area._on_paste(events.Paste(str(img_path)))
+                await pilot.pause()
+
+            # to_thread should have been called for parse_pasted_path_payload,
+            # not for get_clipboard_image — confirm no clipboard ImageData was
+            # returned (the mock returns an AsyncMock, not ImageData, so tracker
+            # should not have accumulated an image via the clipboard path).
+            # The path-based attachment may have added one image via the normal
+            # file-path paste flow; what we care about is that the clipboard
+            # branch was NOT taken (no extra image beyond the path attachment).
+            calls = mock_clipboard.call_args_list
+            # First call is parse_pasted_path_payload (non-empty text), not
+            # get_clipboard_image.
+            assert calls, "to_thread should have been called for path parsing"
+            first_fn = calls[0][0][0]
+            assert "clipboard" not in getattr(first_fn, "__name__", "")
+
+
 def _make_mp4_bytes() -> bytes:
     """Return minimal valid MP4 ftyp box bytes."""
     return (

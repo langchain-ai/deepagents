@@ -857,7 +857,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(
+        def _handle_read_result(  # noqa: PLR0911
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
@@ -909,6 +909,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # The extension map is only consulted to pick the multimodal block
             # type; unknown binary extensions fall back to the generic `"file"`.
             if encoding == "base64" or file_type != "text":
+                empty_msg = check_empty_content(content)
+                if empty_msg:
+                    return ToolMessage(
+                        content=empty_msg,
+                        name="read_file",
+                        tool_call_id=tool_call_id,
+                        status="success",
+                    )
                 block_type = file_type if file_type != "text" else "file"
                 mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(

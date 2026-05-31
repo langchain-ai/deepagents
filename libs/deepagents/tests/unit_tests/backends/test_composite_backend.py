@@ -1042,7 +1042,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend()
@@ -1061,7 +1061,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Backend error occurred"
 
     error_backend = ErrorBackend()
@@ -1080,7 +1080,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Default backend error"
 
     error_default = ErrorDefaultBackend()

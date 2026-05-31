@@ -928,7 +928,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend()
@@ -947,7 +947,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Backend error occurred"
 
     error_backend = ErrorBackend()
@@ -966,7 +966,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, use_regex: bool = False):  # noqa: FBT001, FBT002
             return "Default backend error"
 
     error_default = ErrorDefaultBackend()

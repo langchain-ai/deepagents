@@ -515,3 +515,57 @@ def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
             warnings.simplefilter("always")
             with pytest.raises(ValueError, match="disallowed characters"):
                 be.write("/test.txt", "content")
+
+
+# ---------------------------------------------------------------------------
+# grep use_regex tests (StoreBackend via grep_matches_from_files)
+# ---------------------------------------------------------------------------
+
+
+def _make_store_backend() -> StoreBackend:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    files = {
+        "/funcs.py": "def get_value():\n    pass\ndef set_value(v):\n    pass\n",
+        "/log.py": "error1 occurred\nerror42 recorded\n",
+        "/other.py": "nothing relevant here\n",
+    }
+    for path, content in files.items():
+        be.write(path, content)
+    return be
+
+
+def test_store_grep_regex_alternation() -> None:
+    """use_regex=True matches alternation patterns."""
+    be = _make_store_backend()
+    result = be.grep("def (get|set)_value", use_regex=True)
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    assert any("funcs.py" in p for p in matched)
+    assert not any("other.py" in p for p in matched)
+
+
+def test_store_grep_regex_quantifier() -> None:
+    """use_regex=True matches quantifier patterns."""
+    be = _make_store_backend()
+    result = be.grep("error\\d+", use_regex=True)
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    assert any("log.py" in p for p in matched)
+    assert not any("funcs.py" in p for p in matched)
+
+
+def test_store_grep_regex_invalid_pattern_returns_error() -> None:
+    """An invalid regex returns a GrepResult with an error field."""
+    be = _make_store_backend()
+    result = be.grep("[invalid", use_regex=True)
+    assert result.error is not None
+    assert "Invalid regex pattern" in result.error
+
+
+def test_store_grep_literal_unchanged_with_special_chars() -> None:
+    """Default literal mode is not affected by the new use_regex param."""
+    be = _make_store_backend()
+    result = be.grep("def (get|set)_value")  # literal — pipe and parens are not regex
+    assert result.error is None
+    assert not result.matches  # literal string not present in any file

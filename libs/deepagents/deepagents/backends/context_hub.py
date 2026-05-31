@@ -237,6 +237,7 @@ class ContextHubBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        use_regex: bool = False,  # noqa: FBT001, FBT002
     ) -> GrepResult:
         """Search contents for `pattern` (optional `path` / `glob` filters)."""
         try:
@@ -247,7 +248,7 @@ class ContextHubBackend(BackendProtocol):
         matches: list[GrepMatch] = []
 
         try:
-            regex = re.compile(pattern)
+            regex = re.compile(pattern if use_regex else re.escape(pattern))
         except re.error as e:
             return GrepResult(error=f"Invalid regex pattern: {e}")
 

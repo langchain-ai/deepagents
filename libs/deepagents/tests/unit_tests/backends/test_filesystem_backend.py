@@ -1180,3 +1180,107 @@ class TestReadTrailingNewlineRoundtrip:
         assert result.error is not None
         assert "old_string ends with a newline" in result.error
         assert target.read_text() == "# Agent Role:\nyou are an assistant"
+
+
+# ---------------------------------------------------------------------------
+# grep use_regex tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_files", "unexpected_files"),
+    [
+        # Alternation
+        ("def (get|set)_value", ["funcs.py"], ["other.py"]),
+        # Quantifier
+        ("error\\d+", ["log.py"], ["other.py"]),
+        # Wildcard
+        ("TODO.*refactor", ["todo.py"], ["other.py"]),
+    ],
+)
+def test_grep_regex_matches_patterns(tmp_path: Path, pattern: str, expected_files: list, unexpected_files: list) -> None:
+    """use_regex=True returns results that only regex (not literal) matching finds."""
+    (tmp_path / "funcs.py").write_text("def get_value():\n    pass\ndef set_value(v):\n    pass\n")
+    (tmp_path / "log.py").write_text("error1 occurred\nerror42 recorded\n")
+    (tmp_path / "todo.py").write_text("# TODO: refactor this module\n")
+    (tmp_path / "other.py").write_text("nothing relevant here\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep(pattern, path="/", use_regex=True)
+
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    for f in expected_files:
+        assert any(f in p for p in matched), f"Expected {f} in results for pattern {pattern!r}, got {matched}"
+    for f in unexpected_files:
+        assert not any(f in p for p in matched), f"Unexpected {f} in results for pattern {pattern!r}"
+
+
+def test_grep_regex_special_chars_not_escaped(tmp_path: Path) -> None:
+    """With use_regex=True, special chars are NOT escaped — (.*) matches as regex."""
+    (tmp_path / "a.py").write_text("anything on this line\n")
+    (tmp_path / "b.py").write_text("no match\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep("(.*)", path="/", use_regex=True)
+
+    assert result.error is None
+    assert result.matches  # (.*) matches every non-empty line as regex
+
+
+def test_grep_literal_special_chars_unchanged(tmp_path: Path) -> None:
+    """With use_regex=False (default), (.*) is treated literally and matches only that exact string."""
+    (tmp_path / "a.py").write_text("pattern = '(.*)'\n")
+    (tmp_path / "b.py").write_text("anything on this line\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep("(.*)", path="/")  # default use_regex=False
+
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    assert any("a.py" in p for p in matched), "Literal (.*) should match file containing that exact string"
+    assert not any("b.py" in p for p in matched), "Literal (.*) should not match arbitrary lines"
+
+
+def test_grep_invalid_regex_returns_error(tmp_path: Path) -> None:
+    """An invalid regex pattern returns a GrepResult with an error, not an exception."""
+    (tmp_path / "a.py").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep("[invalid", path="/", use_regex=True)
+
+    assert result.error is not None
+    assert "Invalid regex pattern" in result.error
+
+
+def test_grep_regex_python_fallback(tmp_path: Path) -> None:
+    """use_regex=True works through the Python fallback when ripgrep is unavailable."""
+    (tmp_path / "src.py").write_text("def calculate_total():\n    return 42\n")
+    (tmp_path / "other.py").write_text("unrelated content\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    # Force Python fallback by making ripgrep appear unavailable
+    original_ripgrep_search = be._ripgrep_search
+    be._ripgrep_search = lambda *_, **__: None  # type: ignore[method-assign]
+
+    result = be.grep("def \\w+_total", path="/", use_regex=True)
+    be._ripgrep_search = original_ripgrep_search
+
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    assert any("src.py" in p for p in matched)
+    assert not any("other.py" in p for p in matched)
+
+
+def test_grep_regex_glob_combined(tmp_path: Path) -> None:
+    """use_regex=True can be combined with glob to restrict file types."""
+    (tmp_path / "main.py").write_text("def get_user():\n    pass\n")
+    (tmp_path / "readme.md").write_text("def get_user() is documented here\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.grep("def \\w+_user", path="/", glob="*.py", use_regex=True)
+
+    assert result.error is None
+    matched = [m["path"] for m in (result.matches or [])]
+    assert any("main.py" in p for p in matched)
+    assert not any("readme.md" in p for p in matched)

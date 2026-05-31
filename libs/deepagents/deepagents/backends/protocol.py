@@ -402,13 +402,20 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        use_regex: bool = False,  # noqa: FBT001, FBT002, ARG002  # legacy shim path passes to grep_raw which lacks this param
     ) -> "GrepResult":
-        """Search for a literal text pattern in files.
+        """Search for a text pattern in files.
 
         Args:
-            pattern: Literal string to search for (NOT regex).
+            pattern: Text pattern to search for.
 
-                Performs exact substring matching within file content.
+                When `use_regex=False` (default), treated as a literal string —
+                special characters like `(`, `[`, `|` are matched verbatim.
+
+                When `use_regex=True`, treated as a regular expression.
+                Returns an error if the pattern is invalid. Note: regex
+                syntax may differ between backends (Python ``re`` vs. POSIX
+                ERE in sandbox environments).
 
                 Example: "TODO" matches any line containing "TODO"
 
@@ -428,6 +435,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `**` matches any directories recursively
                 - `?` matches single character
                 - `[abc]` matches one character from set
+
+            use_regex: If `True`, treat `pattern` as a regular expression.
+                If `False` (default), treat `pattern` as a literal string.
 
         Examples:
             - `'*.py'` - only search Python files
@@ -461,9 +471,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        use_regex: bool = False,  # noqa: FBT001, FBT002
     ) -> "GrepResult":
         """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        return await asyncio.to_thread(self.grep, pattern, path, glob, use_regex)
 
     def glob(self, pattern: str, path: str = "/") -> "GlobResult":
         """Find files matching a glob pattern.

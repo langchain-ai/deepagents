@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shlex
 from abc import ABC, abstractmethod
 from typing import Final
@@ -761,26 +762,37 @@ except PermissionError:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        use_regex: bool = False,  # noqa: FBT001, FBT002
     ) -> GrepResult:
-        """Search file contents for a literal string using `grep -F`.
+        """Search file contents for a text pattern.
 
         Args:
-            pattern: Literal string to search for (not a regex).
+            pattern: Text pattern to search for. Treated as a literal string
+                when `use_regex=False` (default), or as an extended regular
+                expression when `use_regex=True`.
             path: Directory or file to search in.
 
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).
+            use_regex: If True, treat pattern as an extended regular expression.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
+        if use_regex:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                return GrepResult(error=f"Invalid regex pattern: {e}", matches=[])
+
         search_path = shlex.quote(path or ".")
 
         # Build grep command to get structured output
         # `-Z` separates the filename from line data with NUL, so filenames may
         # contain `:` without making the output ambiguous.
-        grep_opts = "-rHnFZ"
+        # -F: fixed-string (literal); -E: extended regex
+        grep_opts = "-rHnEZ" if use_regex else "-rHnFZ"
 
         # Add glob pattern if specified
         glob_pattern = ""

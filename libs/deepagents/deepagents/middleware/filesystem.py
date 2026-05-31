@@ -314,12 +314,16 @@ class GlobSchema(BaseModel):
 class GrepSchema(BaseModel):
     """Input schema for the `grep` tool."""
 
-    pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+    pattern: str = Field(description="Text pattern to search for. Literal string by default; set use_regex=True for regular expressions.")
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
     glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+    )
+    use_regex: bool = Field(
+        default=False,
+        description="If True, treat pattern as a regular expression. If False (default), pattern is matched as a literal string and special characters like (, [, | are treated verbatim.",
     )
 
 
@@ -390,14 +394,16 @@ Examples:
 
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-Searches for literal text (not regex) and returns matching files or content based on output_mode.
-Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
+Searches for text patterns and returns matching files or content based on output_mode.
+By default, pattern is treated as a literal string — special characters like (, [, | are matched verbatim.
+Set use_regex=True to search with regular expressions.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`
-- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
+- Search for code with special chars: `grep(pattern="def __init__(self):")`
+- Regex search: `grep(pattern="def (get|set)_\\w+", glob="*.py", use_regex=True)`"""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -1310,7 +1316,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
         def sync_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: Annotated[str, "Text pattern to search for. Literal string by default; set use_regex=True for regular expressions."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
@@ -1318,6 +1324,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            use_regex: Annotated[  # noqa: FBT002
+                bool, "If True, treat pattern as a regular expression. If False (default), pattern is matched as a literal string."
+            ] = False,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -1338,7 +1347,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob, use_regex=use_regex)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,
@@ -1357,7 +1366,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: Annotated[str, "Text pattern to search for. Literal string by default; set use_regex=True for regular expressions."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
             glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
@@ -1365,6 +1374,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Literal["files_with_matches", "content", "count"],
                 "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
             ] = "files_with_matches",
+            use_regex: Annotated[  # noqa: FBT002
+                bool, "If True, treat pattern as a regular expression. If False (default), pattern is matched as a literal string."
+            ] = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -1385,7 +1397,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob, use_regex=use_regex)
             if grep_result.error:
                 return ToolMessage(
                     content=grep_result.error,

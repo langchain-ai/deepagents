@@ -305,9 +305,40 @@ def test_grep_with_path_prefix() -> None:
 
 def test_grep_invalid_regex() -> None:
     backend, _ = _make_backend()
-    result = backend.grep("[unclosed")
+    result = backend.grep("[unclosed", use_regex=True)
     assert result.error is not None
     assert "Invalid regex" in result.error
+
+
+def test_grep_literal_special_chars_not_treated_as_regex() -> None:
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="api_key = 'secret'\n"),
+            "b.md": FileEntry(type="file", content="api.key lookup\n"),
+        }
+    )
+    # use_regex=False (default): "api.key" matches only literal "api.key", not "api_key"
+    result = backend.grep("api.key")
+    assert result.error is None
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert "/b.md" in paths
+    assert "/a.md" not in paths
+
+
+def test_grep_regex_matches_pattern() -> None:
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="def get_user():\n    pass\n"),
+            "b.md": FileEntry(type="file", content="unrelated content\n"),
+        }
+    )
+    result = backend.grep("def \\w+_user", use_regex=True)
+    assert result.error is None
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert "/a.md" in paths
+    assert "/b.md" not in paths
 
 
 def test_glob_matches_pattern() -> None:

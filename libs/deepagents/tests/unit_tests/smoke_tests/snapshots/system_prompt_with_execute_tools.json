@@ -170,7 +170,7 @@
   },
   {
     "function": {
-      "description": "Search for a text pattern across files.\n\nSearches for literal text (not regex) and returns matching files or content based on output_mode.\nSpecial characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`",
+      "description": "Search for a text pattern across files.\n\nSearches for text patterns and returns matching files or content based on output_mode.\nBy default, pattern is treated as a literal string \u2014 special characters like (, [, | are matched verbatim.\nSet use_regex=True to search with regular expressions.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`\n- Regex search: `grep(pattern=\"def (get|set)_\\w+\", glob=\"*.py\", use_regex=True)`",
       "name": "grep",
       "parameters": {
         "properties": {
@@ -209,8 +209,13 @@
             "description": "Directory to search in. Defaults to current working directory."
           },
           "pattern": {
-            "description": "Text pattern to search for (literal string, not regex).",
+            "description": "Text pattern to search for. Literal string by default; set use_regex=True for regular expressions.",
             "type": "string"
+          },
+          "use_regex": {
+            "default": false,
+            "description": "If True, treat pattern as a regular expression. If False (default), pattern is matched as a literal string and special characters like (, [, | are treated verbatim.",
+            "type": "boolean"
           }
         },
         "required": [

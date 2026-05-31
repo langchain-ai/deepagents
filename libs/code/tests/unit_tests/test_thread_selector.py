@@ -462,11 +462,16 @@ class TestThreadSelectorTabSort:
                     Checkbox,
                 )
 
+                agent_select = screen.query_one("#thread-agent-select", Select)
                 assert filter_input.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
                 assert scope_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
@@ -504,6 +509,7 @@ class TestThreadSelectorTabSort:
 
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
+                agent_select = screen.query_one("#thread-agent-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 assert filter_input.has_focus
 
@@ -513,7 +519,15 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.pause()
+                assert agent_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
                 assert sort_switch.has_focus
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert agent_select.has_focus
 
                 await pilot.press("shift+tab")
                 await pilot.pause()
@@ -555,7 +569,7 @@ class TestThreadSelectorTabSort:
                     assert screen._filter_focus_order() == controls
                     assert controls[0] is filter_input
                     assert controls[1] is scope_select
-                    assert controls[2] is sort_switch
+                    assert controls[3] is sort_switch
 
                     screen.on_key(event)
 
@@ -577,6 +591,7 @@ class TestThreadSelectorTabSort:
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -602,6 +617,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -632,6 +648,7 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
 
@@ -660,6 +677,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -3662,3 +3680,147 @@ class TestThreadSelectorDomSkip:
 
                 # Same widget objects should still be mounted (no rebuild)
                 assert screen._option_widgets == initial_widgets
+
+
+class TestThreadSelectorAgentFilter:
+    """Tests for the agent filter dropdown in the Options panel."""
+
+    def test_agent_filtered_threads_no_filter(self) -> None:
+        """No agent filter returns all threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        assert screen._filter_agent is None
+        result = screen._agent_filtered_threads()
+        assert len(result) == 3
+
+    def test_agent_filtered_threads_with_filter(self) -> None:
+        """Agent filter returns only matching threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "my-agent"
+        result = screen._agent_filtered_threads()
+        assert len(result) == 2
+        assert all(t["agent_name"] == "my-agent" for t in result)
+
+    def test_agent_filtered_threads_unknown_agent(self) -> None:
+        """Threads with no agent_name are matched by the '(unknown)' sentinel."""
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "t1",
+                "agent_name": None,
+                "updated_at": "2025-01-01T00:00:00",
+                "created_at": "2025-01-01T00:00:00",
+            },
+            {
+                "thread_id": "t2",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-01T00:00:00",
+                "created_at": "2025-01-01T00:00:00",
+            },
+        ]
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=threads,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "(unknown)"
+        result = screen._agent_filtered_threads()
+        assert len(result) == 1
+        assert result[0]["thread_id"] == "t1"
+
+    def test_update_filtered_list_respects_agent_filter(self) -> None:
+        """_update_filtered_list applies agent filter before fuzzy search."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "other-agent"
+        screen._filter_text = ""
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 1
+        assert screen._filtered_threads[0]["thread_id"] == "def67890"
+
+    def test_update_filtered_list_agent_and_text_combined(self) -> None:
+        """Agent filter and text filter are ANDed together."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "my-agent"
+        screen._filter_text = "Hello"
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 1
+        assert screen._filtered_threads[0]["thread_id"] == "abc12345"
+
+    def test_collect_agent_options_all_sentinel_first(self) -> None:
+        """collect_agent_options always returns 'All agents' as the first option."""
+        from deepagents_code.widgets.thread_selector import _AGENT_VALUE_ALL
+
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        options = screen._collect_agent_options()
+        assert options[0] == ("All agents", _AGENT_VALUE_ALL)
+
+    def test_collect_agent_options_sorted_unique(self) -> None:
+        """collect_agent_options returns sorted unique agent names."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        options = screen._collect_agent_options()
+        # First is the sentinel; rest should be the two unique agents sorted
+        labels = [label for label, _ in options[1:]]
+        assert labels == sorted(labels, key=str.casefold)
+        assert "my-agent" in labels
+        assert "other-agent" in labels
+        assert len(set(labels)) == len(labels)  # no duplicates
+
+    async def test_agent_select_widget_present(self) -> None:
+        """The agent Select widget is rendered inside the Options panel."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                assert agent_select is not None
+
+    async def test_agent_select_filters_thread_list(self) -> None:
+        """Changing the agent dropdown filters the visible thread list."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._filtered_threads) == 3
+
+                # Set agent filter directly and re-run filtering
+                screen._filter_agent = "my-agent"
+                screen._update_filtered_list()
+
+                assert len(screen._filtered_threads) == 2
+                assert all(
+                    t["agent_name"] == "my-agent" for t in screen._filtered_threads
+                )

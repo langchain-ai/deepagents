@@ -11,6 +11,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
+from deepagents.middleware.stagehand import StagehandBrowserToolsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
@@ -37,6 +38,7 @@ __all__ = [
     "MemoryMiddleware",
     "ProviderProfile",
     "RubricMiddleware",
+    "StagehandBrowserToolsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
     "SubagentRunStream",

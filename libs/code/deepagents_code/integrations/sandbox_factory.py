@@ -98,21 +98,21 @@ def create_sandbox(
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
-            Currently only honored by the `'langsmith'` provider; must be
-            `None` for other providers.
+            Honored by `'langsmith'` (snapshot) and `'runloop'` (blueprint);
+            must be `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         `SandboxBackendProtocol` instance
 
     Raises:
-        ValueError: If `snapshot_name` is provided for a non-LangSmith provider,
+        ValueError: If `snapshot_name` is provided for an unsupported provider,
             or combined with `sandbox_id` (snapshots only apply to fresh sandboxes).
     """
-    if snapshot_name is not None and provider != "langsmith":
+    if snapshot_name is not None and provider not in {"langsmith", "runloop"}:
         msg = (
-            f"snapshot_name is only supported for provider='langsmith' "
-            f"(got provider={provider!r})"
+            f"snapshot_name is only supported for provider='langsmith' or "
+            f"'runloop' (got provider={provider!r})"
         )
         raise ValueError(msg)
     if snapshot_name is not None and sandbox_id is not None:
@@ -632,11 +632,11 @@ class _ModalProvider(SandboxProvider):
 
 
 class _RunloopProvider(SandboxProvider):
-    """Runloop sandbox provider — lifecycle management for Runloop devboxes."""
+    """Runloop sandbox provider — delegates to `langchain_runloop.RunloopProvider`."""
 
     def __init__(self) -> None:
         runloop_module = _import_provider_module(
-            "runloop_api_client",
+            "langchain_runloop",
             provider="runloop",
             package="langchain-runloop",
         )
@@ -650,64 +650,47 @@ class _RunloopProvider(SandboxProvider):
                 "or DEEPAGENTS_CODE_RUNLOOP_API_KEY."
             )
             raise ValueError(msg)
-        self._client = runloop_module.Runloop(bearer_token=api_key)
+        self._provider = runloop_module.RunloopProvider(
+            api_key=api_key,
+            resolve_env_var=resolve_env_var,
+        )
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get or create a Runloop devbox.
 
         Args:
             sandbox_id: Existing devbox ID, or None to create.
-            timeout: Seconds to wait for startup.
-            **kwargs: Unused.
+            timeout: Seconds to wait for startup (forwarded where supported).
+            **kwargs: Runloop-specific options (`snapshot` blueprint name,
+                `blueprint_dockerfile`).
 
         Returns:
             `RunloopSandbox` instance.
 
         Raises:
-            RuntimeError: If the devbox fails to start.
             SandboxNotFoundError: If `sandbox_id` does not exist.
+            KeyError: If a `sandbox_id` is not supplied and the SDK raises one.
         """
-        runloop_backend = _import_provider_module(
-            "langchain_runloop",
-            provider="runloop",
-            package="langchain-runloop",
-        )
-        runloop_sdk = _import_provider_module(
-            "runloop_api_client.sdk",
-            provider="runloop",
-            package="langchain-runloop",
-        )
-
-        if sandbox_id:
-            try:
-                self._client.devboxes.retrieve(id=sandbox_id)
-            except KeyError as e:
-                raise SandboxNotFoundError(sandbox_id) from e
-        else:
-            view = self._client.devboxes.create()
-            sandbox_id = view.id
-            for _ in range(timeout // 2):
-                status = self._client.devboxes.retrieve(id=sandbox_id)
-                if status.status == "running":
-                    break
-                time.sleep(2)
-            else:
-                self._client.devboxes.shutdown(id=sandbox_id)
-                msg = f"Devbox failed to start within {timeout} seconds"
-                raise RuntimeError(msg)
-
-        devbox = runloop_sdk.Devbox(self._client, sandbox_id)
-        return runloop_backend.RunloopSandbox(devbox=devbox)
+        try:
+            return self._provider.get_or_create(
+                sandbox_id=sandbox_id,
+                timeout=timeout,
+                **kwargs,
+            )
+        except KeyError as e:
+            if sandbox_id is None:
+                raise
+            raise SandboxNotFoundError(sandbox_id) from e
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Shut down a Runloop devbox by id."""
-        self._client.devboxes.shutdown(id=sandbox_id)
+        self._provider.delete(sandbox_id=sandbox_id)
 
 
 class _AgentCoreProvider(SandboxProvider):

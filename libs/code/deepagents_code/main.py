@@ -919,7 +919,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Sandbox snapshot name to use or create (langsmith only)",
+        help="Sandbox snapshot/blueprint name to use or create (langsmith, runloop)",
     )
 
     parser.add_argument(
@@ -1034,8 +1034,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    if args.sandbox_snapshot_name is not None and args.sandbox not in {
+        "langsmith",
+        "runloop",
+    }:
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith or runloop")
     return args
 
 
@@ -1073,8 +1076,7 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
-            (langsmith only).
+        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use

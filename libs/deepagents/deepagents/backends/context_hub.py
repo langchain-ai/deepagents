@@ -103,13 +103,18 @@ class ContextHubBackend(BackendProtocol):
         self._ensure_cache()
         return self._commit_hash is not None
 
-    def _commit(self, files: dict[str, str]) -> None:
-        """Push `files` as one commit; update the cache on success."""
-        if not files:
+    def _commit(self, changes: dict[str, str | None]) -> None:
+        """Push `changes` as one commit; update the cache on success.
+
+        Each value is either new file content or `None`. A `None` value is the
+        deletion marker: relative to `parent_commit`, the server drops that path
+        from the tree.
+        """
+        if not changes:
             return
 
         payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) for path, content in files.items()
+            path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
         }
         url = self._client.push_agent(
             self._identifier,
@@ -121,31 +126,11 @@ class ContextHubBackend(BackendProtocol):
             self._commit_hash = match.group(1)
 
         if self._cache is not None:
-            for path, content in files.items():
-                self._cache[path] = content
-
-    def _commit_deletions(self, paths: list[str]) -> None:
-        """Push a commit removing `paths`; update the cache on success.
-
-        A `None` entry in the push payload is the deletion marker: relative to
-        `parent_commit`, the server drops that path from the tree.
-        """
-        if not paths:
-            return
-
-        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = dict.fromkeys(paths)
-        url = self._client.push_agent(
-            self._identifier,
-            files=payload,
-            parent_commit=self._commit_hash,
-        )
-        match = _URL_COMMIT_SUFFIX_RE.search(url)
-        if match:
-            self._commit_hash = match.group(1)
-
-        if self._cache is not None:
-            for path in paths:
-                self._cache.pop(path, None)
+            for path, content in changes.items():
+                if content is None:
+                    self._cache.pop(path, None)
+                else:
+                    self._cache[path] = content
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -231,7 +216,7 @@ class ContextHubBackend(BackendProtocol):
             cache = self._ensure_cache()
             if hub_path not in cache:
                 return DeleteResult(error=f"Error: File '{file_path}' not found")
-            self._commit_deletions([hub_path])
+            self._commit({hub_path: None})
         except LangSmithError as exc:
             logger.exception("Hub delete failed for %r", self._identifier)
             self._cache = None
@@ -320,7 +305,7 @@ class ContextHubBackend(BackendProtocol):
         """Upload text files in one commit; non-UTF-8 inputs rejected per file."""
         # Decode each input; `None` text means we'll reject this entry as invalid.
         decoded: list[tuple[str, str | None]] = []
-        valid_files: dict[str, str] = {}
+        valid_files: dict[str, str | None] = {}
         for path, content in files:
             try:
                 text = content.decode("utf-8")

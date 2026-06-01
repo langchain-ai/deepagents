@@ -451,6 +451,98 @@ class TestExpiryAwareOAuthClientProvider:
         assert provider.context.token_expiry_time is None
         assert provider.context.current_tokens is not None
 
+    async def test_delegated_flow_forwards_responses_into_sdk(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Responses sent into the outer flow reach the delegated SDK flow.
+
+        Regression test: the override used to delegate with `async for`, which
+        advances the inner SDK generator via `__anext__()` (`asend(None)`) and
+        discards the HTTP responses httpx feeds back through `asend(response)`.
+        The SDK's `response = yield request` then saw `None` and raised
+        `AttributeError: 'NoneType' object has no attribute 'status_code'`,
+        surfacing as the `ExceptionGroup` users hit on MCP OAuth login. With a
+        valid stored token the pre-emptive discovery branch is skipped, so the
+        first response forwarded is the one whose `status_code` the SDK reads.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        # The valid token is attached and the request is yielded unchanged.
+        first_request = await anext(flow)
+        assert first_request.headers["Authorization"] == "Bearer at"
+
+        # Feeding a 401 back must reach the SDK's `response.status_code` check
+        # and trigger metadata discovery — not raise AttributeError.
+        discovery_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
+        await flow.aclose()
+
+    async def test_delegated_flow_forwards_responses_on_every_iteration(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """The pump loop forwards responses on every round-trip, not just one.
+
+        Guards against a regression that primes the inner generator correctly
+        but then reverts to discarding subsequent sends (e.g. back toward
+        `async for`): the SDK's protected-resource-metadata discovery walks
+        several URLs, sending a response into the delegated generator each
+        time. Each forwarded response must advance discovery to the next URL.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        first_request = await anext(flow)
+        # First forwarded response (401) advances to the path-scoped PRM URL.
+        prm_path_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert str(prm_path_request.url).endswith(
+            "/.well-known/oauth-protected-resource/mcp"
+        )
+        # Second forwarded response (404) must also reach the SDK and advance
+        # discovery to the root PRM URL — proving the loop didn't stop after
+        # the first send.
+        prm_root_request = await flow.asend(
+            httpx.Response(404, request=prm_path_request)
+        )
+        assert str(prm_root_request.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        await flow.aclose()
+
 
 class TestFindReauthRequired:
     """Tests for unwrapping nested re-auth errors."""
@@ -920,7 +1012,13 @@ class TestBuildOAuthProvider:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A non-loopback stored URI falls back to a fresh random port."""
+        """A non-loopback stored URI falls back to a fresh random port.
+
+        A token is seeded so the stale-registration self-heal is skipped
+        (`discard_client_info_if_loopback_unusable` only fires when no token is
+        persisted); that keeps this test focused on the random-port fallback,
+        distinct from `test_build_oauth_provider_clears_stale_portless_registration`.
+        """
         del fake_home
         from deepagents_code.mcp_auth import build_oauth_provider
 
@@ -930,6 +1028,7 @@ class TestBuildOAuthProvider:
         )
         storage = FileTokenStorage("notion")
         asyncio.run(storage.set_client_info(_make_client_info()))  # localhost, no port
+        asyncio.run(storage.set_tokens(_make_tokens()))  # blocks self-heal discard
         provider = build_oauth_provider(
             server_name="notion",
             server_url="https://mcp.notion.com/mcp",
@@ -1322,6 +1421,117 @@ class TestFileTokenStorageExtras:
         assert "client_info" in data
         assert data["tokens"]["access_token"] == "at"
         assert data["client_info"]["client_id"] == "client-id"
+
+    async def test_discard_removes_portless_registration_without_tokens(
+        self, fake_home: Path
+    ) -> None:
+        """A portless loopback registration with no tokens is removed."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())  # localhost, no port
+
+        assert storage.discard_client_info_if_loopback_unusable() is True
+        assert await storage.get_client_info() is None
+
+    async def test_discard_keeps_ported_loopback_registration(
+        self, fake_home: Path
+    ) -> None:
+        """A reusable ported loopback registration is left intact."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info_with_loopback(51208))
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert await storage.get_client_info() is not None
+
+    async def test_discard_keeps_registration_when_tokens_present(
+        self, fake_home: Path
+    ) -> None:
+        """A still-usable token blocks discard so refresh isn't downgraded."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+        # Portless registration, but a persisted token can still authenticate.
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert await storage.get_client_info() is not None
+
+    async def test_discard_noop_without_client_info(self, fake_home: Path) -> None:
+        """No persisted registration means nothing to discard."""
+        del fake_home
+        storage = FileTokenStorage("notion")
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+
+    def test_discard_returns_false_and_warns_on_unreadable_file(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A corrupt token file is surfaced (not silently swallowed)."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        storage.path.parent.mkdir(parents=True)
+        storage.path.write_bytes(b"{not json")
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        assert "unreadable while checking for a stale client registration" in (
+            caplog.text
+        )
+
+    async def test_discard_returns_false_and_keeps_file_when_write_fails(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed atomic write leaves the registration intact and warns."""
+        del fake_home
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())  # portless, no tokens
+        # Occupy the temp path with a directory so the real atomic write fails
+        # with an OSError instead of replacing the token file — no mocks needed.
+        tmp = storage.path.with_suffix(storage.path.suffix + ".tmp")
+        tmp.mkdir()
+
+        assert storage.discard_client_info_if_loopback_unusable() is False
+        # The original registration must still be on disk.
+        assert await storage.get_client_info() is not None
+        assert "Could not remove stale MCP client registration" in caplog.text
+
+    def test_build_oauth_provider_clears_stale_portless_registration(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Interactive loopback login drops a stale portless registration.
+
+        Regression: a portless `http://localhost/callback` registration (left
+        by an earlier non-loopback login) was reused with a fresh random port,
+        so the authorize request sent the stale `client_id` with a
+        redirect_uri it was never registered for and the server rejected it
+        with "invalid or missing redirect_uri". The build must instead discard
+        the registration so the handshake re-runs DCR with a matching URI.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        monkeypatch.setattr(
+            "deepagents_code.mcp_auth._choose_loopback_port", lambda: 60001
+        )
+        storage = FileTokenStorage("notion")
+        asyncio.run(storage.set_client_info(_make_client_info()))  # localhost, no port
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+
+        # Stale registration gone, so the SDK will re-register via DCR.
+        assert asyncio.run(storage.get_client_info()) is None
+        # The authorize request will carry the freshly bound loopback URI.
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert str(metadata.redirect_uris[0]) == "http://localhost:60001/callback"
 
 
 @pytest.fixture

@@ -960,6 +960,7 @@ def _make_loopback_handlers(
     """
     extras = dict(extra_auth_params or {})
     interaction = ui if ui is not None else _default_ui()
+    last_authorize_url: str | None = None
     _paste_redirect, paste_callback = _make_paste_back_handlers(
         extra_auth_params=extra_auth_params,
         ui=interaction,
@@ -969,7 +970,9 @@ def _make_loopback_handlers(
         import asyncio
         import webbrowser
 
+        nonlocal last_authorize_url
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
+        last_authorize_url = final_url
 
         # Resolve a browser explicitly before opening so headless / SSH
         # environments fall through to paste-back without burning the
@@ -1008,9 +1011,6 @@ def _make_loopback_handlers(
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
-        # Communicate the URL regardless of `webbrowser.open` returning
-        # success — headless setups can report success without actually
-        # rendering a browser, and users still need the paste-back URL.
         await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
     async def callback() -> tuple[str, str | None]:
@@ -1020,6 +1020,11 @@ def _make_loopback_handlers(
             _LoopbackCallbackTimeoutError,
             _LoopbackCallbackUnavailableError,
         ) as exc:
+            if last_authorize_url is not None:
+                await interaction.show_authorize_url(
+                    last_authorize_url,
+                    opened_in_browser=False,
+                )
             await interaction.show_notice(
                 f"{exc}\nPaste the full callback URL instead.",
             )

@@ -19,10 +19,13 @@
 uv tool install deepagents-cli
 ```
 
-Or with optional sandbox providers:
+You'll need a LangSmith API key with access to the Managed Deep Agents private
+preview ([waitlist](https://www.langchain.com/langsmith-managed-deep-agents-waitlist)).
+Export it before running any command, or put it in a repo `.env` or
+`~/.deepagents/.env`:
 
 ```bash
-uv tool install 'deepagents-cli[all-sandboxes]'
+export LANGSMITH_API_KEY="..."
 ```
 
 ## Usage
@@ -31,11 +34,55 @@ uv tool install 'deepagents-cli[all-sandboxes]'
 # Scaffold a new project folder
 deepagents init my-agent
 
-# Run a local langgraph dev server against the project
-cd my-agent && deepagents dev
+# Register any MCP servers you intend to use (one-time, per workspace)
+deepagents mcp-servers add --url https://tools.langchain.com \
+                            --header X-Api-Key=$LANGSMITH_API_KEY \
+                            --name Fleet
 
-# Bundle and ship to LangSmith Deployment
-deepagents deploy
+# Reference the server's tools in tools.json (otherwise the agent has no tools)
+cat > my-agent/tools.json <<'JSON'
+{
+  "tools": [
+    {
+      "name": "tavily_web_search",
+      "mcp_server_url": "https://tools.langchain.com",
+      "mcp_server_name": "Fleet"
+    }
+  ]
+}
+JSON
+
+# Upsert the project as a managed agent on /v1/deepagents/*
+cd my-agent && deepagents deploy
+```
+
+`deepagents init` configures new agents with the managed
+`thread_scoped_sandbox` backend by default. The CLI does not create or run
+sandboxes locally; sandbox lifecycle is handled by the Managed Deep Agents
+platform.
+
+### Project layout
+
+```text
+my-agent/
+  agent.json              # name, description, backend, runtime.model, permissions
+  AGENTS.md               # system prompt
+  tools.json              # tools the agent can call (optional)
+  skills/<name>/SKILL.md  # frontmatter-tagged skills (optional)
+  subagents/<name>/       # delegated subagent definitions (optional)
+```
+
+### Other commands
+
+```bash
+deepagents agents list                  # list workspace agents
+deepagents agents get <agent_id>        # show one agent
+deepagents agents delete <agent_id>     # delete an agent
+
+deepagents mcp-servers list             # list workspace MCP servers
+deepagents mcp-servers add --url URL    # register a server
+deepagents mcp-servers update <id>      # update server URL or headers
+deepagents mcp-servers delete <id>      # remove a server
 ```
 
 ## 📖 Resources

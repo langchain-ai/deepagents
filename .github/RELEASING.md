@@ -202,7 +202,7 @@ This label transition signals to release-please that the merged PR has been full
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.
 
-1. Go to **Actions** > `Package Release`
+1. Go to **Actions** > `🚀 Package Release`
 2. Click **Run workflow**
 3. Select the package to release
 4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
@@ -305,7 +305,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 
 4. **Trigger the release workflow:**
 
-   - Go to **Actions** > `Package Release` > **Run workflow**
+   - Go to **Actions** > `🚀 Package Release` > **Run workflow**
    - Branch: `alpha/<PACKAGE>-<VERSION>`
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
@@ -554,7 +554,7 @@ This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pypr
    ```
 
 2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/code/CHANGELOG.md`):
-   - Go to **Actions** > `Package Release`
+   - Go to **Actions** > `🚀 Package Release`
    - Click **Run workflow**
    - Select `main` branch and `deepagents-code` package
 

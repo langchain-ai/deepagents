@@ -1,3 +1,4 @@
+import mimetypes
 import time
 from unittest.mock import patch
 
@@ -1217,6 +1218,53 @@ class TestFilesystemMiddleware:
         assert result.content[0]["type"] == "image"
         assert result.content[0]["mime_type"] == "image/png"
         assert result.content[0]["base64"] == "<base64_data>"
+
+    def test_read_file_base64_unknown_extension_returns_file_block(self):
+        """Binary reads route on `encoding`, not the extension map (#3657).
+
+        A backend may return `encoding="base64"` for a file whose extension is
+        absent from `_EXTENSION_TO_FILE_TYPE` (e.g. `.docx`). The base64 payload
+        must be emitted as a generic `file` content block, never line-numbered
+        as text into the LLM context.
+        """
+
+        class DocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "<docx_base64_data>",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=DocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="docx-read-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        # Binary content_blocks, not a line-numbered text string.
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "file"
+        assert result.content[0]["base64"] == "<docx_base64_data>"
+        # The block carries the best media type `mimetypes` can resolve for the
+        # extension, falling back to `application/octet-stream`. The resolved
+        # value is platform-dependent (`.docx` maps to the full Office type on
+        # macOS/Linux but to `application/octet-stream` on Windows, where
+        # `mimetypes` reads the registry), so mirror the production logic rather
+        # than hardcoding a single value.
+        expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
+        assert result.content[0]["mime_type"] == expected_mime
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

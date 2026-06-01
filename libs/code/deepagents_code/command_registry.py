@@ -178,6 +178,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="dark light color appearance",
     ),
     SlashCommand(
+        name="/timestamps",
+        description="Toggle message timestamp footers",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="time footer footers date dates",
+    ),
+    SlashCommand(
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,

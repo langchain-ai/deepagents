@@ -319,9 +319,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
                 [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
                 — are available)
-            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 

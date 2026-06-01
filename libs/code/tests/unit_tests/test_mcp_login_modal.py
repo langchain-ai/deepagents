@@ -126,6 +126,74 @@ class TestMCPLoginScreen:
             link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
             assert "https://example.test/auth" in link_text
 
+    async def test_browser_opened_authorize_url_is_collapsed(self) -> None:
+        """The happy path hides the raw authorize URL behind manual fallback."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("slack")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen.show_authorize_url(
+                "https://example.test/auth", opened_in_browser=True
+            )
+            await pilot.pause()
+
+            assert screen._link_widget is not None
+            assert screen._link_widget.display
+            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            assert "Show manual authorization URL" in link_text
+            assert "https://example.test/auth" not in link_text
+
+    async def test_enter_toggles_browser_opened_authorize_url(self) -> None:
+        """Enter expands and collapses the manual authorization URL fallback."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("slack")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen.show_authorize_url(
+                "https://example.test/auth", opened_in_browser=True
+            )
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert screen._link_widget is not None
+            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            assert "Hide manual authorization URL" in link_text
+            assert "https://example.test/auth" in link_text
+
+            await pilot.press("enter")
+            await pilot.pause()
+            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            assert "Show manual authorization URL" in link_text
+            assert "https://example.test/auth" not in link_text
+
+    async def test_browser_wait_spinner_animates_status_not_title(self) -> None:
+        """The browser-wait spinner advances in the status line, not the title."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("slack")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen.show_authorize_url(
+                "https://example.test/auth", opened_in_browser=True
+            )
+            assert screen._status_widget is not None
+            assert screen._title_widget is not None
+            status_before = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
+            title_before = str(screen._title_widget._Static__content)  # type: ignore[attr-defined]
+
+            screen._tick_spinner()
+            status_after = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
+            title_after = str(screen._title_widget._Static__content)  # type: ignore[attr-defined]
+
+            assert status_before != status_after
+            assert "Status:" in status_after
+            assert title_after == title_before
+
     async def test_device_code_renders_user_code(self) -> None:
         """`show_device_code` displays the user code and verification URL."""
         app = _LoginTestApp()
@@ -146,7 +214,7 @@ class TestMCPLoginScreen:
             assert "ABCD-1234" in link_text
 
     async def test_show_success_does_not_leak_tokens(self) -> None:
-        """Tokens passed by mistake stay only in the status line history."""
+        """Tokens passed by mistake stay only in the status line."""
         app = _LoginTestApp()
         async with app.run_test() as pilot:
             screen = MCPLoginScreen("notion")
@@ -155,11 +223,46 @@ class TestMCPLoginScreen:
 
             # Caller is responsible for not leaking; we assert the modal
             # does not also paste the message into the authorize-URL slot.
+            await screen.show_authorize_url(
+                "https://example.test/auth", opened_in_browser=True
+            )
             await screen.show_success("Logged in to 'notion'.")
             await pilot.pause()
             assert screen._link_widget is not None
+            assert not screen._link_widget.display
             link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
             assert "Logged in" not in link_text
+            assert screen._history_widget is not None
+            assert not screen._history_widget.display
+
+    async def test_finish_success_hides_history_and_auth_fallback(self) -> None:
+        """Clean success leaves only the final status message visible."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("langsmith")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen.show_authorize_url(
+                "https://example.test/auth", opened_in_browser=True
+            )
+            await screen.show_success("Logged in to MCP server 'langsmith'.")
+            screen.finish(
+                success=True,
+                message=(
+                    "Logged in to 'langsmith'. "
+                    "Reconnect required to load new tools."
+                ),
+            )
+            await pilot.pause()
+
+            assert screen._link_widget is not None
+            assert not screen._link_widget.display
+            assert screen._history_widget is not None
+            assert not screen._history_widget.display
+            assert screen._status_widget is not None
+            status_text = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
+            assert "Reconnect required" in status_text
 
 
 class TestMCPLoginScreenWithLoginCoroutine:

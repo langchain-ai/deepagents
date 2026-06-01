@@ -84,6 +84,31 @@ model-provider-drift checks; new extras must be added to the corresponding
 category frozenset above.
 """
 
+
+def format_known_extras() -> str:
+    """Render the installable extras grouped by category as plain text.
+
+    Drives the no-argument `/install` slash-command help so users can
+    discover valid extras without consulting `pyproject.toml`. Sourced from
+    the category frozensets above, so it stays in sync with `KNOWN_EXTRAS`
+    automatically.
+
+    Returns:
+        Multi-line string with one labeled line per category, each listing
+            its extras alphabetically.
+    """
+    groups: tuple[tuple[str, frozenset[str]], ...] = (
+        ("Model providers", MODEL_PROVIDER_EXTRAS),
+        ("Sandboxes", SANDBOX_EXTRAS),
+        ("Other", STANDALONE_EXTRAS),
+    )
+    lines = ["Available extras:"]
+    lines.extend(
+        f"  {label}: {', '.join(sorted(extras))}" for label, extras in groups if extras
+    )
+    return "\n".join(lines)
+
+
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
 

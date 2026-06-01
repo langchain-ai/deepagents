@@ -308,7 +308,7 @@ class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
     pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
-    path: str = Field(default="/", description="Base directory to search from. Defaults to root '/'.")
+    path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
 
 class GrepSchema(BaseModel):
@@ -385,7 +385,7 @@ Returns a list of absolute file paths that match the pattern.
 
 Examples:
 - `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in root
+- `*.txt` - Find all text files in the backend's default root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
@@ -1197,12 +1197,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+            path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
         ) -> ToolMessage:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(path)
+                permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
                 return ToolMessage(
                     content=f"Error: {e}",
@@ -1210,16 +1210,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+            if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {validated_path}",
+                    content=f"Error: permission denied for read on {permission_path}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            backend_path = permission_path if path is not None else None
             ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
+                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=backend_path))
                 try:
                     glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
@@ -1248,12 +1249,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_glob(
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+            path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
             try:
-                validated_path = validate_path(path)
+                permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
                 return ToolMessage(
                     content=f"Error: {e}",
@@ -1261,16 +1262,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+            if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
                 return ToolMessage(
-                    content=f"Error: permission denied for read on {validated_path}",
+                    content=f"Error: permission denied for read on {permission_path}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            backend_path = permission_path if path is not None else None
             try:
                 glob_result = await asyncio.wait_for(
-                    resolved_backend.aglob(pattern, path=validated_path),
+                    resolved_backend.aglob(pattern, path=backend_path),
                     timeout=GLOB_TIMEOUT,
                 )
             except TimeoutError:

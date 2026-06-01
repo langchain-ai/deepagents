@@ -22,6 +22,7 @@ from typing import cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
@@ -530,6 +531,33 @@ class CompositeBackend(BackendProtocol):
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
+        if res.path is not None:
+            res.path = file_path
+        return res
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file, routing to the appropriate backend.
+
+        Args:
+            file_path: Absolute file path.
+
+        Returns:
+            `DeleteResult` with the original path on success, or an error.
+
+        Raises:
+            NotImplementedError: If the routed backend does not implement
+                `delete`.
+        """
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        res = backend.delete(stripped_key)
+        if res.path is not None:
+            res.path = file_path
+        return res
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of delete."""
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        res = await backend.adelete(stripped_key)
         if res.path is not None:
             res.path = file_path
         return res

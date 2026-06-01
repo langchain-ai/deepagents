@@ -1326,3 +1326,46 @@ def test_sandbox_edit_inline_permission_denied() -> None:
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/locked.txt" in result.error
+
+
+class TestSandboxDelete:
+    """BaseSandbox.delete maps the server-side classification onto DeleteResult."""
+
+    def test_delete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "__DELETED__"
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        # The shell command quotes the path and uses rm -f
+        assert sandbox.last_command is not None
+        assert "rm -f" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+
+    def test_delete_missing(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "__MISSING__"
+        result = sandbox.delete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None and "not found" in result.error
+
+    def test_delete_directory(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "__ISDIR__"
+        result = sandbox.delete("/some/dir")
+        assert result.path is None
+        assert result.error is not None and "directory" in result.error
+
+    def test_delete_failure(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "__FAILED__"
+        result = sandbox.delete("/file.txt")
+        assert result.path is None
+        assert result.error is not None and "Error deleting file" in result.error
+
+    async def test_adelete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = "__DELETED__"
+        result = await sandbox.adelete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"

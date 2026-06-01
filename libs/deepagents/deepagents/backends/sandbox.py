@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -755,6 +756,39 @@ except PermissionError:
             "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
         }
         return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the sandbox via a server-side ``rm``.
+
+        A single shell command classifies the path (missing / directory /
+        deletable) so the outcome maps cleanly onto `DeleteResult` without
+        extra round-trips.
+
+        Args:
+            file_path: Absolute path to the file to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                path is missing, is a directory, or removal fails.
+        """
+        quoted = shlex.quote(file_path)
+        # `-e` misses dangling symlinks, so also probe `-L`; guard directories
+        # since `rm -f` won't remove them and we only delete files.
+        cmd = (
+            f"if [ ! -e {quoted} ] && [ ! -L {quoted} ]; then echo __MISSING__; "
+            f"elif [ -d {quoted} ]; then echo __ISDIR__; "
+            f"else rm -f {quoted} && echo __DELETED__ || echo __FAILED__; fi"
+        )
+        result = self.execute(cmd)
+        output = result.output
+
+        if "__DELETED__" in output:
+            return DeleteResult(path=file_path)
+        if "__MISSING__" in output:
+            return DeleteResult(error=f"Error: File '{file_path}' not found")
+        if "__ISDIR__" in output:
+            return DeleteResult(error=f"Error: '{file_path}' is a directory, not a file")
+        return DeleteResult(error=f"Error deleting file '{file_path}': {output.strip() or 'unknown error'}")
 
     def grep(
         self,

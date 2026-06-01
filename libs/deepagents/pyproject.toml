@@ -61,6 +61,14 @@ test = [
 ]
 
 
+[tool.uv.sources]
+# Temporary dev pins to the unreleased subagent-streaming work: langchain#37739
+# (run.subagents projection) and langgraph#7928 (lc_agent_name lifecycle base).
+# Pinned by rev for deterministic resolution (uv's branch-ref resolution kept
+# returning stale commits). Drop these and add released floors before merge.
+langchain = { git = "https://github.com/langchain-ai/langchain", rev = "a89a9339ee042c2cb82b06b874ace5f28c99f348", subdirectory = "libs/langchain_v1" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph", rev = "577ee12cc90d4c1cdaed0eca1121b060153698f9", subdirectory = "libs/langgraph" }
+
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"

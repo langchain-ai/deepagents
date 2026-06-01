@@ -40,10 +40,6 @@ dependencies = [
     "python-dotenv>=1.2.2,<2.0.0",
 ]
 
-[project.optional-dependencies]
-# (Sandbox extras dropped — managed runtime handles sandboxing.)
-
-
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"

@@ -6,32 +6,6 @@ From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and
 `mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API.
 The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
 
-## 0.2.0 (2026-05-21) — Managed Deep Agents
-
-**Breaking changes** — `deepagents deploy` now targets the Managed Deep Agents
-API (`/v1/deepagents/*`) instead of `langgraph deploy`. The on-disk layout
-changes too:
-
-- `deepagents.toml` → `agent.json`
-- `mcp.json` → MCP servers registered via `deepagents mcp-servers add ...`,
-  with tool references living in `tools.json`
-- `[sandbox].scope` → `agent.json.backend.type`
-  (`thread_scoped_sandbox` is the recommended managed backend)
-- `[frontend]`, `[auth]`, `[memories]` — removed (the platform owns these now)
-
-Removed: `deepagents dev` (no local-iteration path post-migration).
-
-New: `deepagents agents {list,get,delete}`, `deepagents mcp-servers
-{list,add,get,update,delete}`. `deepagents init` no longer writes a `.env`
-file; set `LANGSMITH_API_KEY` in your shell, repo `.env`, or
-`~/.deepagents/.env`. New projects use `thread_scoped_sandbox` by default;
-the CLI only configures managed backend intent and does not provision
-sandboxes itself.
-
-Run `deepagents init --force` on an existing project, or migrate by hand —
-`deepagents deploy` prints a migration hint when it detects a legacy
-`deepagents.toml`.
-
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.1...deepagents-cli==0.1.2) (2026-05-21)
 
 ### Bug Fixes

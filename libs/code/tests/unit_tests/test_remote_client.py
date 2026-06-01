@@ -15,6 +15,7 @@ from deepagents_code.remote_client import (
     _convert_message_data,
     _convert_tool_message,
     _prepare_config,
+    format_agent_exception,
 )
 
 _TEST_THREAD_ID = "01966f3a-0000-7000-8000-000000000001"
@@ -821,3 +822,63 @@ class TestRemoteAgentWithConfig:
     def test_returns_self(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         assert agent.with_config({"configurable": {}}) is agent
+
+
+class TestFormatAgentException:
+    """Cover the rendering helper for agent-stream exceptions."""
+
+    def test_remote_exception_dict_payload(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException(
+            {"error": "ToolException", "message": "An internal error occurred"}
+        )
+        assert (
+            format_agent_exception(exc) == "ToolException: An internal error occurred"
+        )
+
+    def test_remote_exception_dict_payload_no_message(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "ToolException"})
+        assert format_agent_exception(exc) == "ToolException"
+
+    def test_remote_exception_dict_payload_empty_message(self) -> None:
+        """Falsy `message` still falls through to the error-type-only branch."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "ToolException", "message": ""})
+        assert format_agent_exception(exc) == "ToolException"
+
+    def test_remote_exception_dict_payload_non_string_error(self) -> None:
+        """Non-string `error` keys must not crash; fall back to `str(exc)`."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": 500, "message": "boom"})
+        # Both keys non-string-typed → no clean rendering possible; fall through.
+        assert "boom" in format_agent_exception(exc)
+
+    def test_remote_exception_dict_payload_empty_dict(self) -> None:
+        """Empty payload dict resolves `error` to the exception class name."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({})
+        # `payload.get("error") or type(exc).__name__` → "RemoteException",
+        # and `message` is None so the err-only branch returns the class.
+        assert format_agent_exception(exc) == "RemoteException"
+
+    def test_remote_exception_non_dict_payload(self) -> None:
+        """`RemoteException("string")` is not the dict shape; uses `str(exc)`."""
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException("just a string")
+        assert format_agent_exception(exc) == "just a string"
+
+    def test_plain_exception_uses_str(self) -> None:
+        assert format_agent_exception(ValueError("bad thing")) == "bad thing"
+
+    def test_exception_without_message_falls_back_to_type(self) -> None:
+        class _BoomError(Exception):
+            pass
+
+        assert format_agent_exception(_BoomError()) == "_BoomError"

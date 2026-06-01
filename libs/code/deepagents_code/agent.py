@@ -1243,12 +1243,13 @@ def create_cli_agent(
     agent_middleware = []
     agent_middleware.append(ConfigurableModelMiddleware())
 
-    # Token state: declares the `_context_tokens` channel and writes it from
-    # `after_model` based on the latest `AIMessage.usage_metadata`. The CLI
-    # reads it back from `state_values` on thread resume.
-    from deepagents_code.token_state import TokenStateMiddleware
+    # Resume state: declares the `_context_tokens` and `_model_spec` channels
+    # and writes them from `after_model` (token count from the latest
+    # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
+    # The CLI reads them back from `state_values` on thread resume.
+    from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.append(TokenStateMiddleware())
+    agent_middleware.append(ResumeStateMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

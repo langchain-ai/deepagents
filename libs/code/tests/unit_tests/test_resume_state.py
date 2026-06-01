@@ -1,4 +1,4 @@
-"""Tests for token state persistence and display callbacks."""
+"""Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -6,22 +6,31 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.token_state import (
-    TokenStateMiddleware,
-    TokenTrackingState,
+from deepagents_code.resume_state import (
+    ResumeState,
+    ResumeStateMiddleware,
     _extract_context_tokens,
+    _extract_model_spec,
 )
 
 
-class TestTokenTrackingState:
+def _runtime(context: dict[str, str | None] | None) -> SimpleNamespace:
+    """Build a stand-in `Runtime` exposing only `.context`."""
+    return SimpleNamespace(context=context)
+
+
+class TestResumeState:
     def test_state_has_context_tokens_field(self):
-        """TokenTrackingState declares the `_context_tokens` channel."""
-        annotations = TokenTrackingState.__annotations__
-        assert "_context_tokens" in annotations
+        """ResumeState declares the `_context_tokens` channel."""
+        assert "_context_tokens" in ResumeState.__annotations__
+
+    def test_state_has_model_spec_field(self):
+        """ResumeState declares the `_model_spec` channel."""
+        assert "_model_spec" in ResumeState.__annotations__
 
     def test_middleware_exposes_state_schema(self):
-        """TokenStateMiddleware registers the correct state schema."""
-        assert TokenStateMiddleware.state_schema is TokenTrackingState
+        """ResumeStateMiddleware registers the correct state schema."""
+        assert ResumeStateMiddleware.state_schema is ResumeState
 
 
 class TestExtractContextTokens:
@@ -65,11 +74,32 @@ class TestExtractContextTokens:
         assert _extract_context_tokens(msg) is None
 
 
+class TestExtractModelSpec:
+    """Tests for `_extract_model_spec`."""
+
+    def test_returns_effective_model_from_context(self) -> None:
+        runtime = _runtime({"effective_model": "anthropic:claude-sonnet-4-5"})
+        assert _extract_model_spec(runtime) == "anthropic:claude-sonnet-4-5"  # type: ignore[arg-type]
+
+    def test_returns_none_when_context_missing(self) -> None:
+        assert _extract_model_spec(_runtime(None)) is None  # type: ignore[arg-type]
+
+    def test_returns_none_when_field_absent(self) -> None:
+        assert _extract_model_spec(_runtime({"model": "x"})) is None  # type: ignore[arg-type]
+
+    def test_returns_none_for_blank_or_nonstring(self) -> None:
+        assert _extract_model_spec(_runtime({"effective_model": ""})) is None  # type: ignore[arg-type]
+        assert _extract_model_spec(_runtime({"effective_model": None})) is None  # type: ignore[arg-type]
+
+    def test_returns_none_when_runtime_is_none(self) -> None:
+        assert _extract_model_spec(None) is None  # type: ignore[arg-type]
+
+
 class TestAfterModelHook:
     """Tests for the `after_model` persistence hook."""
 
     async def test_writes_context_tokens_from_last_ai_message(self) -> None:
-        middleware = TokenStateMiddleware()
+        middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {
             "messages": [
                 HumanMessage(content="hi"),
@@ -83,36 +113,71 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
         assert result == {"_context_tokens": 1700}
 
-    async def test_returns_none_when_no_ai_message(self) -> None:
-        middleware = TokenStateMiddleware()
-        state: dict[str, Any] = {"messages": [HumanMessage(content="hi")]}
-        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
-        assert result is None
+    async def test_writes_model_spec_from_context(self) -> None:
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 1500,
+                        "output_tokens": 200,
+                        "total_tokens": 1700,
+                    },
+                ),
+            ],
+        }
+        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
+        result = middleware.after_model(state, runtime)  # type: ignore[arg-type]
+        assert result == {
+            "_context_tokens": 1700,
+            "_model_spec": "openai:gpt-5.1",
+        }
 
-    async def test_returns_none_when_last_ai_lacks_usage(self) -> None:
-        middleware = TokenStateMiddleware()
+    async def test_writes_model_spec_without_token_usage(self) -> None:
+        """Model spec is recorded even when the AI message reports no usage."""
+        middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {
             "messages": [
                 HumanMessage(content="hi"),
                 AIMessage(content="no usage info"),
             ],
         }
-        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
+        result = middleware.after_model(state, runtime)  # type: ignore[arg-type]
+        assert result == {"_model_spec": "openai:gpt-5.1"}
+
+    async def test_returns_none_when_no_ai_message(self) -> None:
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {"messages": [HumanMessage(content="hi")]}
+        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
+        assert result is None
+
+    async def test_returns_none_when_last_ai_lacks_usage(self) -> None:
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(content="no usage info"),
+            ],
+        }
+        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
         assert result is None
 
     async def test_handles_empty_messages(self) -> None:
-        middleware = TokenStateMiddleware()
-        result = middleware.after_model({"messages": []}, runtime=None)  # type: ignore[arg-type]
+        middleware = ResumeStateMiddleware()
+        result = middleware.after_model({"messages": []}, _runtime(None))  # type: ignore[arg-type]
         assert result is None
 
     async def test_skips_intervening_tool_messages(self) -> None:
         """Picks up the most recent AIMessage even when followed by tool turns."""
         from langchain_core.messages import ToolMessage
 
-        middleware = TokenStateMiddleware()
+        middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {
             "messages": [
                 HumanMessage(content="hi"),
@@ -135,7 +200,7 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
         assert result == {"_context_tokens": 550}
 
 

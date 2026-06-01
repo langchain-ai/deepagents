@@ -15,10 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-from deepagents_code._debug import configure_debug_logging
-
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
@@ -47,6 +44,35 @@ def _require_thread_id(config: dict[str, Any] | None) -> str:
         msg = "thread_id is required in config.configurable"
         raise ValueError(msg)
     return thread_id
+
+
+def format_agent_exception(exc: BaseException) -> str:
+    """Render an exception from `RemoteAgent.astream` for the UI.
+
+    The LangGraph server serializes non-allowlisted exceptions as
+    `{"error": <ExceptionType>, "message": <text or "An internal error occurred">}`
+    (see `langgraph_api.serde`). `RemoteGraph` wraps that dict in
+    `RemoteException(payload)`, so the default `str(exc)` renders as an ugly
+    Python dict repr in the UI.
+
+    Args:
+        exc: The exception caught from the agent stream.
+
+    Returns:
+        `"<ErrorType>: <message>"` for `RemoteException` dict payloads,
+        otherwise `str(exc)`, falling back to the exception's class name when
+        the string form is empty.
+    """
+    payload = exc.args[0] if exc.args else None
+    if isinstance(payload, dict):
+        err_type = payload.get("error") or type(exc).__name__
+        message = payload.get("message")
+        if isinstance(err_type, str) and isinstance(message, str) and message:
+            return f"{err_type}: {message}"
+        if isinstance(err_type, str):
+            return err_type
+    text = str(exc)
+    return text or type(exc).__name__
 
 
 class RemoteAgent:

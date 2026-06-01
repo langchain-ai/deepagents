@@ -15,7 +15,7 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Select, Static
 
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.widgets.thread_selector import (
     DeleteThreadConfirmScreen,
@@ -2465,6 +2465,48 @@ class TestResumeThread:
             preloaded_payload=mock_payload,
         )
 
+    @staticmethod
+    def _switch_app() -> DeepAgentsApp:
+        from textual.css.query import NoMatches as _NoMatches
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "old-thread"
+        app._pending_messages = MagicMock()
+        app._queued_widgets = MagicMock()
+        app._clear_messages = AsyncMock()  # type: ignore[assignment]
+        app._update_status = MagicMock()  # type: ignore[assignment]
+        mock_payload = MagicMock()
+        mock_payload.messages = []
+        mock_payload.context_tokens = 0
+        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
+        app._load_thread_history = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        return app
+
+    async def test_switch_arms_model_adoption(self) -> None:
+        """An in-session thread switch arms session-only model adoption.
+
+        Mirrors launch-time `-r`: `_load_thread_history` (real, here mocked)
+        consumes the flag and adopts the switched-to thread's model.
+        """
+        app = self._switch_app()
+
+        await app._resume_thread("new-thread")
+
+        assert app._should_adopt_resumed_model is True
+
+    async def test_explicit_model_suppresses_switch_adoption(self) -> None:
+        """`--model` keeps the session pinned across in-session switches."""
+        app = self._switch_app()
+        app._model_explicitly_set = True
+
+        await app._resume_thread("new-thread")
+
+        assert app._should_adopt_resumed_model is False
+
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
         from textual.css.query import NoMatches as _NoMatches
@@ -2477,7 +2519,9 @@ class TestResumeThread:
         app._queued_widgets = MagicMock()
         from deepagents_code.app import _ThreadHistoryPayload
 
-        mock_payload = _ThreadHistoryPayload(messages=[], context_tokens=0)
+        mock_payload = _ThreadHistoryPayload(
+            messages=[], context_tokens=0, model_spec=""
+        )
         app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
         app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
         app._update_status = MagicMock()  # type: ignore[assignment]
@@ -2687,6 +2731,51 @@ class TestFetchThreadHistoryData:
 
         assert payload.context_tokens == 12000
 
+    async def test_extracts_model_spec(self) -> None:
+        """Persisted `_model_spec` should propagate to the payload."""
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {
+            "messages": raw_messages,
+            "_model_spec": "anthropic:claude-sonnet-4-5",
+        }
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.model_spec == "anthropic:claude-sonnet-4-5"
+
+    async def test_missing_model_spec_is_empty(self) -> None:
+        """A legacy thread without `_model_spec` yields `model_spec=""`."""
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hello")]
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new_callable=AsyncMock,
+            return_value=converted,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.model_spec == ""
+
     async def test_none_context_tokens_coerced_to_zero(self) -> None:
         """`_context_tokens: None` in checkpoint should coerce to 0."""
         from deepagents_code.widgets.message_store import MessageData, MessageType
@@ -2736,6 +2825,7 @@ class TestLoadThreadHistory:
         preloaded = _ThreadHistoryPayload(
             messages=[MessageData(type=MessageType.USER, content="hello")],
             context_tokens=0,
+            model_spec="",
         )
         await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
@@ -2766,6 +2856,7 @@ class TestLoadThreadHistory:
         preloaded = _ThreadHistoryPayload(
             messages=[MessageData(type=MessageType.USER, content="hello")],
             context_tokens=8500,
+            model_spec="",
         )
         await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
@@ -2794,6 +2885,7 @@ class TestLoadThreadHistory:
         preloaded = _ThreadHistoryPayload(
             messages=[MessageData(type=MessageType.USER, content="hello")],
             context_tokens=0,
+            model_spec="",
         )
         await app._load_thread_history(thread_id="tid-1", preloaded_payload=preloaded)
 
@@ -2810,6 +2902,7 @@ class TestLoadThreadHistory:
         fetched = _ThreadHistoryPayload(
             messages=[MessageData(type=MessageType.USER, content="hello")],
             context_tokens=0,
+            model_spec="",
         )
         fetch_history_mock = AsyncMock(return_value=fetched)
         mount_message_mock = AsyncMock()
@@ -2857,6 +2950,7 @@ class TestLoadThreadHistory:
                 MessageData(type=MessageType.ASSISTANT, content="fail"),
             ],
             context_tokens=0,
+            model_spec="",
         )
 
         def _set_content_side_effect(content: str) -> None:
@@ -2903,6 +2997,202 @@ class TestLoadThreadHistory:
             "Skipping history load for %s: no active agent and no preloaded data",
             "tid-1",
         )
+
+
+class TestResumeModelAdoption:
+    """Tests for adopting a resumed thread's persisted model on load."""
+
+    @staticmethod
+    def _make_app() -> DeepAgentsApp:
+        app = DeepAgentsApp(thread_id="tid-1")
+        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._schedule_thread_message_link = MagicMock()  # type: ignore[assignment]
+        app.set_timer = MagicMock()  # type: ignore[assignment]
+        messages_container = MagicMock()
+        messages_container.mount = AsyncMock()
+        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        return app
+
+    @staticmethod
+    def _payload(
+        model_spec: str, *, with_messages: bool = True
+    ) -> _ThreadHistoryPayload:
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        messages = (
+            [MessageData(type=MessageType.USER, content="hello")]
+            if with_messages
+            else []
+        )
+        return _ThreadHistoryPayload(
+            messages=messages,
+            context_tokens=0,
+            model_spec=model_spec,
+        )
+
+    async def test_adopts_persisted_model_session_only(self) -> None:
+        """Armed flag + persisted spec switches the model without persisting it."""
+        app = self._make_app()
+        switch_mock = AsyncMock()
+        app._switch_model = switch_mock  # type: ignore[assignment]
+        app._should_adopt_resumed_model = True
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=self._payload("anthropic:claude-sonnet-4-5"),
+        )
+
+        switch_mock.assert_awaited_once()
+        call = switch_mock.await_args
+        assert call is not None
+        assert call.args[0] == "anthropic:claude-sonnet-4-5"
+        assert call.kwargs["persist"] is False
+        assert call.kwargs["announce_unchanged"] is False
+        assert call.kwargs["from_resume"] is True
+        # One-shot: the flag is consumed so later loads don't re-adopt.
+        assert app._should_adopt_resumed_model is False
+
+    async def test_no_adoption_when_flag_unset(self) -> None:
+        """Without the armed flag (e.g. in-session switch), model is untouched."""
+        app = self._make_app()
+        switch_mock = AsyncMock()
+        app._switch_model = switch_mock  # type: ignore[assignment]
+        app._should_adopt_resumed_model = False
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=self._payload("anthropic:claude-sonnet-4-5"),
+        )
+
+        switch_mock.assert_not_awaited()
+
+    async def test_no_adoption_for_legacy_thread_without_spec(self) -> None:
+        """Armed flag but no persisted spec (legacy thread) leaves the model alone."""
+        app = self._make_app()
+        switch_mock = AsyncMock()
+        app._switch_model = switch_mock  # type: ignore[assignment]
+        app._should_adopt_resumed_model = True
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=self._payload(""),
+        )
+
+        switch_mock.assert_not_awaited()
+        # The flag is consumed even without a spec, so a later in-session
+        # thread switch can't accidentally re-trigger adoption.
+        assert app._should_adopt_resumed_model is False
+
+    async def test_consumes_flag_even_when_history_empty(self) -> None:
+        """An empty-history resume still adopts and consumes the one-shot flag.
+
+        Adoption runs before the empty-`messages` early return, so the flag
+        can't leak into a later in-session `/threads` switch.
+        """
+        app = self._make_app()
+        switch_mock = AsyncMock()
+        app._switch_model = switch_mock  # type: ignore[assignment]
+        app._should_adopt_resumed_model = True
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=self._payload(
+                "anthropic:claude-sonnet-4-5", with_messages=False
+            ),
+        )
+
+        switch_mock.assert_awaited_once()
+        assert app._should_adopt_resumed_model is False
+
+
+class TestResumeAdoptionFailureMessage:
+    """Tests for DeepAgentsApp._mount_resume_adoption_failure."""
+
+    async def test_names_desired_reason_and_fallback(self) -> None:
+        """The notice states the desired model, the reason, and the fallback."""
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.1"  # the model we fall back to
+        mounted: list[Static] = []
+        app._mount_message = AsyncMock(  # type: ignore[assignment]
+            side_effect=lambda w: mounted.append(w)
+        )
+
+        await app._mount_resume_adoption_failure(
+            "anthropic:claude-opus-4-8",
+            "missing credentials for 'anthropic'",
+            hint="Run `/auth` to use it.",
+        )
+
+        assert len(mounted) == 1
+        text = _get_widget_text(mounted[0])
+        assert "anthropic:claude-opus-4-8" in text  # desired
+        assert "missing credentials" in text  # reason
+        assert "openai:gpt-5.1" in text  # fallback
+        assert "Run `/auth` to use it." in text  # hint
+
+    async def test_omits_fallback_when_no_current_model(self) -> None:
+        """With no resolvable current model, the fallback clause is dropped."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        app._model_override = None
+        mounted: list[Static] = []
+        app._mount_message = AsyncMock(  # type: ignore[assignment]
+            side_effect=lambda w: mounted.append(w)
+        )
+
+        with (
+            patch.object(settings, "model_provider", ""),
+            patch.object(settings, "model_name", ""),
+        ):
+            await app._mount_resume_adoption_failure(
+                "anthropic:claude-opus-4-8", "the model could not be initialized"
+            )
+
+        text = _get_widget_text(mounted[0])
+        assert "continuing on" not in text
+        assert "anthropic:claude-opus-4-8" in text
+
+
+class TestEffectiveModelSpec:
+    """Tests for DeepAgentsApp._effective_model_spec."""
+
+    async def test_prefers_session_override(self) -> None:
+        """A `/model` override wins over the startup default in `settings`."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.1"
+        with (
+            patch.object(settings, "model_provider", "anthropic"),
+            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+        ):
+            assert app._effective_model_spec() == "openai:gpt-5.1"
+
+    async def test_falls_back_to_settings_spec(self) -> None:
+        """With no override, the resolved `provider:model` from settings is used."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        app._model_override = None
+        with (
+            patch.object(settings, "model_provider", "anthropic"),
+            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+        ):
+            assert app._effective_model_spec() == "anthropic:claude-sonnet-4-5"
+
+    async def test_none_when_spec_incomplete(self) -> None:
+        """No override and a blank model yields `None` (no malformed spec)."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp()
+        app._model_override = None
+        with (
+            patch.object(settings, "model_provider", "anthropic"),
+            patch.object(settings, "model_name", ""),
+        ):
+            assert app._effective_model_spec() is None
 
 
 class TestUpgradeThreadMessageLink:

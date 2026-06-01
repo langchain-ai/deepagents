@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
 
 ## [0.0.5](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.4...langchain-runloop==0.0.5) (2026-05-12)

@@ -1483,6 +1483,89 @@ class TestHistoryRecallModeReset:
 class TestSlashCompletionCursorMapping:
     """Regression: virtual-to-real index translation for slash replacement."""
 
+    async def test_stale_enter_single_slash_match_submits_completion(self) -> None:
+        """Fast Enter on an unambiguous slash prefix should submit the match."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "mod"
+            chat._text_area.move_cursor((0, 3))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["/model"]
+            assert app.submitted[0].mode == "command"
+
+    async def test_stale_enter_multiple_slash_matches_shows_popup(self) -> None:
+        """Fast Enter on an ambiguous slash prefix should show choices."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "re"
+            chat._text_area.move_cursor((0, 2))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            labels = [label for label, _ in chat._current_suggestions]
+            assert not app.submitted
+            assert "/reload" in labels
+            assert "/remember" in labels
+            assert chat._text_area._completion_active is True
+
+    async def test_stale_enter_multiple_slash_matches_next_enter_selects(
+        self,
+    ) -> None:
+        """Popup shown by stale Enter should remain keyboard-operable."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "re"
+            chat._text_area.move_cursor((0, 2))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+            assert not app.submitted
+            assert chat._current_suggestions
+            selected_label = chat._current_suggestions[chat._current_selected_index][0]
+
+            await chat.on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == [selected_label]
+            assert app.submitted[0].mode == "command"
+
+    async def test_stale_enter_does_not_hide_exact_hidden_command(self) -> None:
+        """Exact hidden commands should still submit without autocomplete."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "restart"
+            chat._text_area.move_cursor((0, 7))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["/restart"]
+            assert app.submitted[0].mode == "command"
+
     async def test_tab_completion_mid_token_preserves_suffix(self) -> None:
         """Applying slash completion mid-token should keep text after cursor."""
         app = _ChatInputTestApp()

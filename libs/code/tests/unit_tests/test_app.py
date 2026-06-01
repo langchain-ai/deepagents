@@ -9424,6 +9424,24 @@ class TestMCPLoginCommand:
         assert app._mcp_server_info == [original]
         assert app._mcp_optimistic_original_server_info == {}
 
+    def test_optimistic_reenable_started_disabled_points_to_ctrl_r(self) -> None:
+        """F2 re-enable guidance should use the in-modal reconnect shortcut."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        original = MCPServerInfo(
+            name="notion",
+            transport="http",
+            status="disabled",
+            error="Disabled by user.",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+
+        app._apply_optimistic_disabled_state("notion", disabled=False)
+
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0].status == "disabled"
+        assert app._mcp_server_info[0].error == "Re-enabled — press Ctrl+R to load."
+
     def test_optimistic_mcp_login_pending_state_relabels_only_target(self) -> None:
         """Deferred OAuth login updates the target without touching siblings."""
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo

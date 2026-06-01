@@ -9198,7 +9198,7 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — run `/mcp reconnect` to load.",
+                            error="Re-enabled — press Ctrl+R to load.",
                         ),
                     )
         self._mcp_server_info = updated

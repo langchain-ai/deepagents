@@ -85,6 +85,50 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
+_EMPTY_FILE_LIST_SENTINEL = "No files found"
+_FILE_LIST_TOOLS: frozenset[str] = frozenset({"ls", "glob"})
+
+
+class _FilesystemEmptyResultMiddleware(AgentMiddleware):
+    """Normalize empty filesystem list tool results."""
+
+    @staticmethod
+    def _normalize_result(
+        result: ToolMessage | Command[Any],
+    ) -> ToolMessage | Command[Any]:
+        if (
+            getattr(result, "name", None) in _FILE_LIST_TOOLS
+            and getattr(result, "status", None) == "success"
+            and getattr(result, "content", None) == "[]"
+        ):
+            result.content = _EMPTY_FILE_LIST_SENTINEL
+        return result
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Normalize empty list outputs after sync filesystem tool calls.
+
+        Returns:
+            The normalized tool result.
+        """
+        return self._normalize_result(handler(request))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Normalize empty list outputs after async filesystem tool calls.
+
+        Returns:
+            The normalized tool result.
+        """
+        return self._normalize_result(await handler(request))
+
+
 class ShellAllowListMiddleware(AgentMiddleware):
     """Validate shell commands against an allow-list without HITL interrupts.
 
@@ -1240,8 +1284,10 @@ def create_cli_agent(
             custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
-    agent_middleware = []
-    agent_middleware.append(ConfigurableModelMiddleware())
+    agent_middleware = [
+        ConfigurableModelMiddleware(),
+        _FilesystemEmptyResultMiddleware(),
+    ]
 
     # Resume state: declares the `_context_tokens` and `_model_spec` channels
     # and writes them from `after_model` (token count from the latest

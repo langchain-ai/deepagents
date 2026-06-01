@@ -88,6 +88,22 @@ style(cli): strip trailing annotations from `ask_user` questions
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
 
+#### Branch naming
+
+Branches should be prefixed `<github-username>/<scope>/<short-description>`:
+
+- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<short-description>` — kebab-case, brief, no trailing slash.
+
+Examples:
+
+```txt
+mdrxy/sdk/concrete-toolruntime-middleware-tools
+mdrxy/code/help-screen-drift-test
+mdrxy/cli/startup-cmd-flag
+```
+
 #### PR descriptions
 
 The description *is* the summary — do not add a `# Summary` header.

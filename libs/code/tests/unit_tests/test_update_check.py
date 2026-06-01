@@ -20,6 +20,8 @@ from deepagents_code.update_check import (
     cleanup_update_logs,
     clear_update_notified,
     create_update_log_path,
+    detect_install_method,
+    editable_extra_hint,
     format_age_suffix,
     format_installed_age_suffix,
     format_release_age,
@@ -30,10 +32,14 @@ from deepagents_code.update_check import (
     get_release_time,
     get_sdk_release_time,
     get_seen_version,
+    install_extra_command,
+    install_package_command,
     is_auto_update_enabled,
     is_update_available,
+    is_valid_extra_name,
     mark_update_notified,
     mark_version_seen,
+    perform_install_extra,
     perform_upgrade,
     set_auto_update,
     should_notify_update,
@@ -788,6 +794,16 @@ class TestFormatInstalledAgeSuffix:
         assert format_installed_age_suffix("1.0.0") == ""
 
 
+class TestDetectInstallMethod:
+    def test_non_editable_non_uv_non_brew_returns_other(self) -> None:
+        """The fallback bucket is not a positive pip detection."""
+        with (
+            patch("deepagents_code.update_check.sys.prefix", "/tmp/dcode-venv"),
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+        ):
+            assert detect_install_method() == "other"
+
+
 class TestUpdateLogs:
     def test_create_update_log_path_uses_log_dir(self, update_log_dir) -> None:
         path = create_update_log_path()
@@ -823,11 +839,11 @@ class TestUpdateLogs:
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method",
-                return_value="pip",
+                return_value="uv",
             ),
             patch.dict(
                 "deepagents_code.update_check._UPGRADE_COMMANDS",
-                {"pip": "printf 'ok\\n'"},
+                {"uv": "printf 'ok\\n'"},
             ),
         ):
             success, output = await perform_upgrade(log_path=log_path)
@@ -844,11 +860,11 @@ class TestUpdateLogs:
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method",
-                return_value="pip",
+                return_value="uv",
             ),
             patch.dict(
                 "deepagents_code.update_check._UPGRADE_COMMANDS",
-                {"pip": "printf 'ok\\n'"},
+                {"uv": "printf 'ok\\n'"},
             ),
             patch("pathlib.Path.open", opener),
         ):
@@ -856,6 +872,238 @@ class TestUpdateLogs:
 
         assert success is True
         assert output == "ok"
+
+    async def test_perform_upgrade_refuses_other_install(self) -> None:
+        """Unknown non-editable installs must not upgrade a separate uv tool env."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="other",
+        ):
+            success, output = await perform_upgrade()
+
+        assert success is False
+        assert "Unsupported install method" in output
+
+
+class TestInstallExtraCommand:
+    """`install_extra_command` builds the uv tool install string."""
+
+    def test_basic(self) -> None:
+        """Single-quoted bracket form, with `-U` to reinstall."""
+        assert (
+            install_extra_command("quickjs")
+            == "uv tool install -U 'deepagents-code[quickjs]'"
+        )
+
+    def test_provider_extra(self) -> None:
+        assert (
+            install_extra_command("fireworks")
+            == "uv tool install -U 'deepagents-code[fireworks]'"
+        )
+
+    def test_rejects_shell_metacharacters(self) -> None:
+        assert not is_valid_extra_name("quickjs']; touch /tmp/pwned; '")
+        with pytest.raises(ValueError, match="Invalid extra name"):
+            install_extra_command("quickjs']; touch /tmp/pwned; '")
+
+
+class TestEditableExtraHint:
+    """`editable_extra_hint` is the shared editable-install action hint."""
+
+    def test_contains_uv_command_and_bracketed_extra(self) -> None:
+        hint = editable_extra_hint("quickjs")
+        assert "uv tool install --editable" in hint
+        assert "--with 'deepagents-code[quickjs]'" in hint
+
+    def test_extra_is_interpolated_into_brackets(self) -> None:
+        # The bracket fragment is load-bearing — Rich-markup call sites
+        # must `escape()` this output, so the bracketed extra must always
+        # be present in the hint (callers rely on this contract).
+        assert "[fireworks]" in editable_extra_hint("fireworks")
+
+
+class TestInstallPackageCommand:
+    """`install_package_command` builds a uv tool package install string."""
+
+    def test_basic(self) -> None:
+        assert (
+            install_package_command("langchain-custom")
+            == "uv tool install -U deepagents-code --with langchain-custom"
+        )
+
+    def test_allows_pep508_name_separators(self) -> None:
+        assert (
+            install_package_command("langchain.custom_provider")
+            == "uv tool install -U deepagents-code --with langchain.custom_provider"
+        )
+
+    def test_rejects_shell_metacharacters(self) -> None:
+        with pytest.raises(ValueError, match="Invalid package name"):
+            install_package_command("langchain-custom; touch /tmp/pwned")
+
+
+class TestPerformInstallExtra:
+    """`perform_install_extra` execution paths."""
+
+    async def test_editable_install_refuses(self) -> None:
+        """Editable installs cannot accept extras via uv tool install."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="unknown",
+        ):
+            success, output = await perform_install_extra("quickjs")
+        assert success is False
+        assert "Editable install" in output
+        assert "uv tool install --editable" in output
+        assert "--with 'deepagents-code[quickjs]'" in output
+
+    async def test_brew_install_refuses(self) -> None:
+        """Homebrew formula doesn't expose extras."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="brew",
+        ):
+            success, output = await perform_install_extra("quickjs")
+        assert success is False
+        assert "Homebrew" in output
+
+    async def test_other_install_refuses(self) -> None:
+        """Unknown non-editable installs cannot be updated through uv tool."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="other",
+        ):
+            success, output = await perform_install_extra("quickjs")
+        assert success is False
+        assert "Unsupported install method" in output
+
+    async def test_invalid_extra_refuses_before_detecting_install(self) -> None:
+        """Malformed forced extras must never reach command construction."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+        ) as detect:
+            success, output = await perform_install_extra("quickjs']; echo nope; '")
+        assert success is False
+        assert "Invalid extra name" in output
+        detect.assert_not_called()
+
+    async def test_uv_install_runs(self, tmp_path) -> None:
+        """`uv` method runs the subprocess and returns success."""
+        log_path = tmp_path / "install.log"
+        # Inject a no-op command in place of the real uv tool install so the
+        # subprocess actually exits 0 without touching the environment.
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value="printf 'ok\\n'",
+            ),
+        ):
+            success, output = await perform_install_extra("quickjs", log_path=log_path)
+        assert success is True
+        assert output == "ok"
+
+    async def test_uv_missing_returns_actionable_error(self) -> None:
+        """When `uv` is not on PATH, surface a clear error before exec."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value=None,
+            ),
+        ):
+            success, output = await perform_install_extra("quickjs")
+        assert success is False
+        assert "uv" in output
+        assert "not found" in output
+
+
+class TestRunInstallSubprocessFailureModes:
+    """Failure-mode coverage routed through `perform_install_extra`.
+
+    Exercises the shared `_run_install_subprocess` helper since it has no
+    public entry point of its own.
+    """
+
+    async def test_timeout_kills_process(self, tmp_path) -> None:
+        """A subprocess that exceeds `_UPGRADE_TIMEOUT` is killed and reported."""
+        log_path = tmp_path / "install.log"
+        with (
+            patch("deepagents_code.update_check._UPGRADE_TIMEOUT", 0.05),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value="sleep 5",
+            ),
+        ):
+            success, output = await perform_install_extra("quickjs", log_path=log_path)
+        assert success is False
+        assert "timed out" in output
+
+    async def test_oserror_includes_exception_detail(self, tmp_path) -> None:
+        """An OSError during exec must surface the exception class + message."""
+        log_path = tmp_path / "install.log"
+
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError(2, "No such file or directory", "uv")
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value="uv tool install -U 'deepagents-code[quickjs]'",
+            ),
+            patch("asyncio.create_subprocess_shell", side_effect=_raise),
+        ):
+            success, output = await perform_install_extra("quickjs", log_path=log_path)
+        assert success is False
+        assert "FileNotFoundError" in output
+        assert "No such file" in output
+
+    async def test_nonzero_exit_returns_combined_output(self, tmp_path) -> None:
+        """A failing subprocess returns False with stderr in the output."""
+        log_path = tmp_path / "install.log"
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value="sh -c 'printf boom 1>&2; exit 1'",
+            ),
+        ):
+            success, output = await perform_install_extra("quickjs", log_path=log_path)
+        assert success is False
+        assert "boom" in output
 
 
 def _mock_sdk_pypi_response(

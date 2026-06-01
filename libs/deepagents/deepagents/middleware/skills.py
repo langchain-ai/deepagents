@@ -288,18 +288,6 @@ class SkillMetadata(TypedDict):
     - Space-delimited list of tool names
     """
 
-    module: NotRequired[str | None]
-    """Path to a JS/TS entrypoint file for a QuickJS REPL module, relative to the skill directory.
-
-    Warning: this is experimental.
-
-    When present, consumers of this metadata (notably `langchain-quickjs`'s
-    `CodeInterpreterMiddleware`) may install the skill as a dynamic-importable ES
-    module. The string is a POSIX path like `./index.ts` pointing at a
-    file inside the skill dir. This middleware only parses and validates
-    the field — it does not load or execute any JavaScript.
-    """
-
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
@@ -362,7 +350,20 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(  # noqa: C901
+def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
+    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
+    if isinstance(raw_tools, str):
+        return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
+    if raw_tools is not None:
+        logger.warning(
+            "Ignoring non-string 'allowed-tools' in %s (got %s)",
+            skill_path,
+            type(raw_tools).__name__,
+        )
+    return []
+
+
+def _parse_skill_metadata(
     content: str,
     skill_path: str,
     directory_name: str,
@@ -431,21 +432,7 @@ def _parse_skill_metadata(  # noqa: C901
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
-    raw_tools = frontmatter_data.get("allowed-tools")
-    if isinstance(raw_tools, str):
-        allowed_tools = [
-            t.strip(",")  # Support commas for compatibility with skills created for Claude Code.
-            for t in raw_tools.split()
-            if t.strip(",")
-        ]
-    else:
-        if raw_tools is not None:
-            logger.warning(
-                "Ignoring non-string 'allowed-tools' in %s (got %s)",
-                skill_path,
-                type(raw_tools).__name__,
-            )
-        allowed_tools = []
+    allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"), skill_path)
 
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
@@ -456,9 +443,7 @@ def _parse_skill_metadata(  # noqa: C901
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
-    module_path = _validate_module_path(frontmatter_data.get("module"), skill_path)
-
-    result = SkillMetadata(
+    return SkillMetadata(
         name=str(name),
         description=description_str,
         path=skill_path,
@@ -467,69 +452,6 @@ def _parse_skill_metadata(  # noqa: C901
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
     )
-    if module_path is not None:
-        result["module"] = module_path
-    return result
-
-
-_MODULE_EXTENSIONS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx")
-
-
-def _validate_module_path(raw: object, skill_path: str) -> str | None:  # noqa: PLR0911
-    """Validate the `module` frontmatter key and return a normalized path.
-
-    The value is an optional POSIX path, relative to the skill directory,
-    pointing at a JS/TS entrypoint file. Returns the normalized path on
-    success, or None when the key is absent or invalid — invalid values
-    are logged but do not fail the parse, so a malformed `module` key
-    degrades the skill to prose-only rather than hiding it entirely.
-
-    Args:
-        raw: Raw value from `frontmatter_data.get("module")`.
-        skill_path: Path to the `SKILL.md` file (for warning messages).
-
-    Returns:
-        A POSIX path string like `"index.ts"` or `"lib/entry.js"`, or
-        `None` if the key is absent or fails validation.
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        logger.warning(
-            "Ignoring non-string 'module' in %s (got %s)",
-            skill_path,
-            type(raw).__name__,
-        )
-        return None
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    # Normalize `./x` → `x` for consistency with how the loader will key
-    # files in the installed ModuleScope. Leave `lib/util.js` untouched.
-    normalized = stripped.removeprefix("./")
-    # Reject absolute paths and any attempt to escape the skill dir.
-    # POSIX normalization happens later in the loader; here we just
-    # catch the obvious wrong shapes at parse time so invalid skills
-    # never make it into `skills_metadata`.
-    if normalized.startswith("/"):
-        logger.warning("Ignoring absolute 'module' path %r in %s", raw, skill_path)
-        return None
-    if normalized.startswith("../") or "/../" in normalized or normalized == "..":
-        logger.warning(
-            "Ignoring 'module' path %r in %s: escapes skill directory",
-            raw,
-            skill_path,
-        )
-        return None
-    if not normalized.endswith(_MODULE_EXTENSIONS):
-        logger.warning(
-            "Ignoring 'module' path %r in %s: extension must be one of %s",
-            raw,
-            skill_path,
-            ", ".join(_MODULE_EXTENSIONS),
-        )
-        return None
-    return normalized
 
 
 def _validate_metadata(
@@ -798,7 +720,7 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 
 1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
 2. **Read the skill's full instructions**: Use `read_file` on the path shown in the skill list above.
-   Pass `limit=1000` since the default of 100 lines is too small for most skill files.
+    Pass `limit=1000` since the default of 100 lines is too small for most skill files.
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
@@ -816,7 +738,7 @@ Skills may contain Python scripts or other executable files. Always use absolute
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills -> See "web-research" skill with its path
-2. Read the full skill file: `read_file(path, limit=1000)`
+2. Read the full skill file: `read_file(file_path="...", limit=1000)`
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 

@@ -16,6 +16,7 @@ import json
 import logging
 import operator
 import os
+import re
 import shutil
 import sys
 import time
@@ -67,28 +68,33 @@ INSTALLED_AGE_NOTICE_DAYS = 7
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
 
-InstallMethod = Literal["uv", "pip", "brew", "unknown"]
+InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
-FALLBACK_UPGRADE_COMMAND = "pip install --upgrade deepagents-code"
+FALLBACK_UPGRADE_COMMAND = "uv tool upgrade deepagents-code"
 """Generic upgrade hint used when install-method detection fails.
 
 Callers that surface an upgrade command in user-facing text should prefer
 `upgrade_command()`; this constant exists so those callers have something
-to render when detection raises unexpectedly.
+to render when detection raises unexpectedly. The documented install path
+is `uv tool install` (see `scripts/install.sh`), so the uv command is the
+right display fallback. Execution paths still refuse unrecognized installs
+instead of updating a separate environment.
 """
 
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     "uv": "uv tool upgrade deepagents-code",
     "brew": "brew upgrade deepagents-code",
-    "pip": FALLBACK_UPGRADE_COMMAND,
 }
 """Upgrade commands keyed by install method.
 
 `perform_upgrade` runs only the command matching the detected install method;
-no fallback chain.
+no fallback chain. Unknown non-editable installs are refused rather than
+upgraded with a different package manager, because that can update a separate
+environment from the one currently providing `dcode`.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
+"""Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
 UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
 """Directory for persisted update command logs."""
@@ -194,7 +200,7 @@ def get_latest_version(
     except ImportError:
         logger.warning(
             "requests package not installed — update checks disabled. "
-            "Install with: pip install requests"
+            "Install with: uv tool install -U deepagents-code --with requests"
         )
         return cached_version
 
@@ -646,7 +652,7 @@ def detect_install_method() -> InstallMethod:
     Checks `sys.prefix` against known paths for uv and Homebrew.
 
     Returns:
-        The detected install method: `'uv'`, `'brew'`, `'pip'`, or `'unknown'`
+        The detected install method: `'uv'`, `'brew'`, `'other'`, or `'unknown'`
             (editable/dev installs).
     """
     from deepagents_code.config import _is_editable_install
@@ -664,13 +670,13 @@ def detect_install_method() -> InstallMethod:
     # Editable / dev installs — don't auto-upgrade
     if _is_editable_install():
         return "unknown"
-    return "pip"
+    return "other"
 
 
 def upgrade_command(method: InstallMethod | None = None) -> str:
     """Return the shell command to upgrade `deepagents-code`.
 
-    Falls back to the pip command for unrecognized install methods.
+    Falls back to the documented uv command for display-only guidance.
 
     Args:
         method: Install method override.
@@ -679,7 +685,7 @@ def upgrade_command(method: InstallMethod | None = None) -> str:
     """
     if method is None:
         method = detect_install_method()
-    return _UPGRADE_COMMANDS.get(method, _UPGRADE_COMMANDS["pip"])
+    return _UPGRADE_COMMANDS.get(method, FALLBACK_UPGRADE_COMMAND)
 
 
 def cleanup_update_logs(
@@ -750,35 +756,32 @@ async def _read_stream(
         await _emit_progress(progress, line)
 
 
-async def perform_upgrade(
+async def _run_install_subprocess(
+    cmd: str,
     *,
-    progress: UpgradeProgressCallback | None = None,
-    log_path: Path | None = None,
+    progress: UpgradeProgressCallback | None,
+    log_path: Path | None,
 ) -> tuple[bool, str]:
-    """Attempt to upgrade `deepagents-code` using the detected install method.
+    """Run a shell command, streaming stdout/stderr to *progress* and a log file.
 
-    Only tries the detected method — does not fall back to other package
-    managers to avoid cross-environment contamination.
+    Shared subprocess plumbing for `perform_upgrade` and
+    `perform_install_extra`. Returns `(success, combined_output)` where
+    *combined_output* is the concatenated stdout+stderr, stripped.
+
+    On timeout or `OSError`, the process is killed and a synthetic error
+    line is emitted both to the log and via *progress*. The wall-clock cap
+    is `_UPGRADE_TIMEOUT`.
 
     Args:
+        cmd: Shell command to execute.
         progress: Optional callback invoked for each output line.
-        log_path: Optional path to persist command output.
+        log_path: Optional path to persist command output. Falls back to a
+            fresh `create_update_log_path()` when `None`.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr.
+        `(success, output)` — *success* is `True` iff the subprocess exited 0.
     """
-    method = detect_install_method()
-    if method == "unknown":
-        return False, "Editable install detected — skipping auto-update."
-
-    cmd = _UPGRADE_COMMANDS.get(method)
-    if cmd is None:
-        return False, f"No upgrade command for install method: {method}"
-
-    # Skip brew if binary not on PATH
-    if method == "brew" and not shutil.which("brew"):
-        return False, "brew not found on PATH."
-
+    timeout = _UPGRADE_TIMEOUT
     if log_path is None:
         log_path = create_update_log_path()
 
@@ -791,7 +794,12 @@ async def perform_upgrade(
         log_file.write(f"$ {cmd}\n")
         log_file.flush()
     except OSError:
-        logger.debug("Could not create update log at %s", log_path, exc_info=True)
+        logger.warning(
+            "Could not create install log at %s; subprocess output will not be "
+            "persisted to disk",
+            log_path,
+            exc_info=True,
+        )
         log_file = None
 
     try:
@@ -817,13 +825,13 @@ async def perform_upgrade(
                 ),
                 proc.wait(),
             ),
-            timeout=_UPGRADE_TIMEOUT,
+            timeout=timeout,
         )
     except TimeoutError:
         if proc is not None:
             proc.kill()
             await proc.wait()
-        msg = f"Upgrade command timed out after {_UPGRADE_TIMEOUT}s: {cmd}"
+        msg = f"Command timed out after {timeout}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
                 log_file.write(f"{msg}\n")
@@ -831,12 +839,12 @@ async def perform_upgrade(
         await _emit_progress(progress, msg)
         logger.warning(msg)
         return False, msg
-    except OSError:
+    except OSError as exc:
         if log_file is not None:
             with suppress(OSError):
                 log_file.close()
-        logger.warning("Failed to execute upgrade command: %s", cmd, exc_info=True)
-        return False, f"Failed to execute: {cmd}"
+        logger.warning("Failed to execute command: %s", cmd, exc_info=True)
+        return False, f"Failed to execute: {cmd}\n{type(exc).__name__}: {exc}"
 
     if log_file is not None:
         with suppress(OSError):
@@ -845,12 +853,199 @@ async def perform_upgrade(
     if proc.returncode == 0:
         return True, output
     logger.warning(
-        "Upgrade via %s exited with code %d: %s",
-        method,
+        "Command exited with code %d: %s\n%s",
         proc.returncode,
+        cmd,
         output,
     )
     return False, output
+
+
+async def perform_upgrade(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Attempt to upgrade `deepagents-code` using the detected install method.
+
+    Only tries the detected method — does not fall back to other package
+    managers to avoid cross-environment contamination.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr.
+    """
+    method = detect_install_method()
+    if method == "unknown":
+        return False, "Editable install detected — skipping auto-update."
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot auto-update without "
+            "knowing which environment provides `dcode`. Reinstall with "
+            "`uv tool install -U deepagents-code` or upgrade with the package "
+            "manager originally used for this install."
+        )
+
+    cmd = _UPGRADE_COMMANDS.get(method)
+    if cmd is None:
+        return False, f"No upgrade command for install method: {method}"
+
+    # Skip brew if binary not on PATH
+    if method == "brew" and not shutil.which("brew"):
+        return False, "brew not found on PATH."
+
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+_EXTRA_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$")
+"""Conservative package-extra name pattern used before shell command display."""
+
+
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$")
+"""Conservative package name pattern used before shell command display."""
+
+
+def is_valid_extra_name(extra: str) -> bool:
+    """Return whether `extra` is safe to embed in package-extra syntax.
+
+    Args:
+        extra: Candidate extra name from CLI or slash-command input.
+
+    Returns:
+        `True` when the value is a conservative PEP 508-style extra name.
+    """
+    return bool(_EXTRA_NAME_RE.fullmatch(extra))
+
+
+def install_package_command(package: str) -> str:
+    """Return the shell command that adds a package to the dcode tool env.
+
+    Args:
+        package: Package name to install into the existing tool environment.
+
+    Returns:
+        Shell command string suitable for display in error messages.
+
+    Raises:
+        ValueError: If `package` is not a conservative PEP 508-style package
+            name.
+    """
+    if not _PACKAGE_NAME_RE.fullmatch(package):
+        msg = (
+            f"Invalid package name {package!r}: must match PEP 508 "
+            f"({_PACKAGE_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    return f"uv tool install -U deepagents-code --with {package}"
+
+
+def install_extra_command(extra: str) -> str:
+    """Return the shell command that adds `extra` to the installed dcode tool.
+
+    The documented install path is `uv tool install` (see
+    `scripts/install.sh`), so the only correct way to add an extra to an
+    existing dcode install is to reinstall the tool with the extra
+    specified. Single-quoting the bracket form keeps zsh from globbing it.
+
+    Args:
+        extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'fireworks'`).
+            Validated internally against PEP 508 grammar before interpolation
+            into the shell command.
+
+    Returns:
+        Shell command string suitable for display in error messages and
+            for execution via `perform_install_extra`.
+
+    Raises:
+        ValueError: If `extra` fails PEP 508 validation. Prevents shell
+            injection via crafted bracket-escape sequences.
+    """
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    return f"uv tool install -U 'deepagents-code[{extra}]'"
+
+
+def editable_extra_hint(extra: str) -> str:
+    """Return the canonical action hint for editable installs missing an extra.
+
+    Shared by every site that detects an editable install and points the user
+    at the correct `uv tool install --editable` invocation, so wording stays
+    consistent and the literal `[<extra>]` bracket fragment is centrally
+    defined (callers that print through Rich markup must still escape it).
+    """
+    return (
+        "Rerun your `uv tool install --editable` command with "
+        f"`--with 'deepagents-code[{extra}]'` added so the extra is "
+        "resolved against the editable source."
+    )
+
+
+async def perform_install_extra(
+    extra: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Add `extra` to the installed dcode tool environment.
+
+    Runs `uv tool install -U 'deepagents-code[<extra>]'`. Editable installs
+    are refused — the caller should rerun their `uv tool install --editable`
+    command with `--with 'deepagents-code[<extra>]'` added so the extra is
+    resolved against the editable source.
+
+    Args:
+        extra: The extra name to install. Must satisfy `is_valid_extra_name`;
+            invalid names are rejected without invoking uv (defense in depth
+            against shell injection via the `--force`/`--yes` bypass paths).
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr, or an
+            explanatory error message when the install method is unsupported
+            or `extra` is malformed.
+    """
+    if not is_valid_extra_name(extra):
+        return False, (
+            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}"
+        )
+    method = detect_install_method()
+    if method == "unknown":
+        return False, (
+            "Editable install detected — cannot add extras automatically.\n"
+            + editable_extra_hint(extra)
+        )
+    if method == "brew":
+        # Homebrew formula doesn't expose extras; uv tool install is the
+        # right escape hatch but would conflict with the brew-managed binary.
+        return False, (
+            "Homebrew install detected — extras are not supported via brew. "
+            "Reinstall with `uv tool install -U 'deepagents-code["
+            f"{extra}]'` to switch to a uv-managed tool install with extras."
+        )
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot add extras without "
+            "knowing which environment provides `dcode`. Reinstall with "
+            f"`uv tool install -U 'deepagents-code[{extra}]'` to switch to a "
+            "uv-managed tool install with extras."
+        )
+
+    if not shutil.which("uv"):
+        return False, (
+            "`uv` not found on PATH. Reinstall dcode following the docs, or "
+            "install uv (https://docs.astral.sh/uv/) so extras can be added."
+        )
+
+    cmd = install_extra_command(extra)
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
 # ---------------------------------------------------------------------------

@@ -194,6 +194,75 @@ class TestModelSwitchNoOp:
         assert "Switched to" not in captured_messages[0]
         assert app._model_switching is False
 
+    async def test_duplicate_same_model_message_is_suppressed(self) -> None:
+        """Repeated same-model switches should only emit one unchanged notice."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert captured_messages == ["Already using anthropic:claude-opus-4-5"]
+        assert app._model_switching is False
+
+    async def test_same_model_changed_params_emit_new_message(self) -> None:
+        """A changed same-model notice should still be shown to the user."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={"temperature": 0.2},
+            )
+
+        assert app._mount_message.call_count == 2  # type: ignore[union-attr]
+        assert captured_messages == [
+            "Already using anthropic:claude-opus-4-5",
+            (
+                "Already using anthropic:claude-opus-4-5 "
+                'with model params {"temperature": 0.2}'
+            ),
+        ]
+        assert app._model_switching is False
+
     async def test_same_model_can_skip_unchanged_message(self) -> None:
         """Onboarding can re-select the active model without adding chat noise."""
         app = DeepAgentsApp()

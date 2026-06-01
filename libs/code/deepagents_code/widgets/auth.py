@@ -509,7 +509,7 @@ class AuthManagerScreen(ModalScreen[None]):
         return Content.assemble(
             "Lists installed providers and any you've configured in "
             "~/.deepagents/config.toml. Install more via "
-            "`pip install deepagents-code[<provider>]`. ",
+            "`/install <provider>`. ",
             ("Docs", link_style),
         )
 

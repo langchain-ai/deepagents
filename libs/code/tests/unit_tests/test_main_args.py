@@ -1229,6 +1229,17 @@ class TestInstallExtraSubcommand:
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_cli_dependencies"),
+            # `cli_main` resolves `console` via a lazy `__getattr__` on
+            # `deepagents_code.config` that caches a single real `Console` in
+            # the module globals for the whole worker process. Left unpatched,
+            # the `--install` handler's `console.print(...)` calls run against
+            # that shared instance, so console/stdout state leaked by an earlier
+            # test in the same xdist worker can make `print` raise. The handler
+            # wraps the flow in a broad `except Exception` that turns any such
+            # error into `sys.exit(1)`, which would mask the intended refusal
+            # exit code. Patch with `create=True` so the mock is installed
+            # before the lazy import line runs.
+            patch("deepagents_code.config.console", MagicMock(), create=True),
             patch("deepagents_code.config._is_editable_install", return_value=editable),
             patch(
                 "deepagents_code.update_check.create_update_log_path",

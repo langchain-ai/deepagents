@@ -3029,7 +3029,7 @@ test = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },

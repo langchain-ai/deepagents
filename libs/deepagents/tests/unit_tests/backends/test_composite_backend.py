@@ -1400,3 +1400,50 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_delete_routes_to_correct_backend():
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/file.txt", "alpha")
+    be.write("/memories/note.txt", "beta")
+
+    # delete default-routed file; path is remapped back to the original
+    res_default = be.delete("/file.txt")
+    assert res_default.error is None
+    assert res_default.path == "/file.txt"
+    assert be.read("/file.txt").error is not None
+
+    # delete route-routed file
+    res_route = be.delete("/memories/note.txt")
+    assert res_route.error is None
+    assert res_route.path == "/memories/note.txt"
+    assert be.read("/memories/note.txt").error is not None
+
+
+def test_composite_delete_missing_returns_error():
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = be.delete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+async def test_composite_adelete_routes_to_correct_backend():
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    await be.awrite("/memories/note.txt", "beta")
+    res = await be.adelete("/memories/note.txt")
+    assert res.error is None
+    assert res.path == "/memories/note.txt"
+    assert (await be.aread("/memories/note.txt")).error is not None

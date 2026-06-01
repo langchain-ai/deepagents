@@ -15,6 +15,7 @@ from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -123,6 +124,29 @@ class ContextHubBackend(BackendProtocol):
             for path, content in files.items():
                 self._cache[path] = content
 
+    def _commit_deletions(self, paths: list[str]) -> None:
+        """Push a commit removing `paths`; update the cache on success.
+
+        A `None` entry in the push payload is the deletion marker: relative to
+        `parent_commit`, the server drops that path from the tree.
+        """
+        if not paths:
+            return
+
+        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = dict.fromkeys(paths)
+        url = self._client.push_agent(
+            self._identifier,
+            files=payload,
+            parent_commit=self._commit_hash,
+        )
+        match = _URL_COMMIT_SUFFIX_RE.search(url)
+        if match:
+            self._commit_hash = match.group(1)
+
+        if self._cache is not None:
+            for path in paths:
+                self._cache.pop(path, None)
+
     @staticmethod
     def _strip_prefix(path: str) -> str:
         return path.lstrip("/")
@@ -199,6 +223,20 @@ class ContextHubBackend(BackendProtocol):
             self._cache = None
             return EditResult(error=f"Hub unavailable: {exc}")
         return EditResult(path=file_path, occurrences=occurrences)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file by committing its removal from the hub repo."""
+        hub_path = self._strip_prefix(file_path)
+        try:
+            cache = self._ensure_cache()
+            if hub_path not in cache:
+                return DeleteResult(error=f"Error: File '{file_path}' not found")
+            self._commit_deletions([hub_path])
+        except LangSmithError as exc:
+            logger.exception("Hub delete failed for %r", self._identifier)
+            self._cache = None
+            return DeleteResult(error=f"Hub unavailable: {exc}")
+        return DeleteResult(path=file_path)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""

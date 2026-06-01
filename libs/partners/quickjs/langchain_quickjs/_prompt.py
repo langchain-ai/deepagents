@@ -6,7 +6,7 @@ import contextlib
 import inspect
 import json
 import re
-from typing import TYPE_CHECKING, Any, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -19,8 +19,7 @@ _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
-    "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
-    "REPL.\n\n"
+    "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
@@ -38,21 +37,85 @@ def render_repl_system_prompt(
     tool_name: str,
     timeout: float,
     memory_limit_mb: int,
-    snapshot_between_turns: bool,
+    mode: Literal["thread", "turn", "call"],
 ) -> str:
     """Render the base REPL system prompt text for ``CodeInterpreterMiddleware``."""
-    state_persistence_line = (
-        "- State (variables, functions) persists across tool calls and across "
-        "multiple turns for this conversation thread."
-        if snapshot_between_turns
-        else "- State (variables, functions) persists across tool calls within "
-        "a single turn of conversation. They DO NOT persist across multiple turns."
-    )
+    if mode == "call":
+        repl_intro_line = (
+            f"An `{tool_name}` tool is available. It runs JavaScript in a fresh "
+            "sandboxed REPL for each invocation."
+        )
+        state_persistence_line = (
+            "- State (variables, functions) does not persist across tool calls. "
+            "Each invocation starts from a blank environment."
+        )
+    elif mode == "thread":
+        repl_intro_line = (
+            f"An `{tool_name}` tool is available. It runs JavaScript in a persistent "
+            "REPL."
+        )
+        state_persistence_line = (
+            "- State (variables, functions) persists across tool calls and across "
+            "multiple turns for this conversation thread."
+        )
+    else:
+        repl_intro_line = (
+            f"An `{tool_name}` tool is available. It runs JavaScript in a persistent "
+            "REPL."
+        )
+        state_persistence_line = (
+            "- State (variables, functions) persists across tool calls within "
+            "a single turn of conversation. They DO NOT persist across multiple turns."
+        )
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
-        tool_name=tool_name,
+        repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
         timeout=timeout,
         memory_limit_mb=memory_limit_mb,
+    )
+
+
+def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str:
+    """Render the eval tool's `code` argument description."""
+    if mode == "call":
+        persistence = (
+            "Each call runs in a fresh REPL environment (no cross-call state)."
+        )
+    elif mode == "thread":
+        persistence = (
+            "State persists across calls and across turns in this conversation."
+        )
+    else:
+        persistence = (
+            "State persists across calls within a turn, but resets between turns."
+        )
+    return (
+        "JavaScript expression or statement(s) to evaluate in the sandboxed REPL. "
+        f"{persistence}"
+    )
+
+
+def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> str:
+    """Render the public eval tool description."""
+    if mode == "call":
+        state_line = (
+            "Each call runs in a fresh sandboxed REPL with no state carried over."
+        )
+    elif mode == "thread":
+        state_line = (
+            "Persistent state is enabled: variables and functions defined in one "
+            "call are visible to subsequent calls in this conversation."
+        )
+    else:
+        state_line = (
+            "Persistent state is enabled within a single turn: variables and "
+            "functions defined in one call are visible to later calls within "
+            "the same turn, but reset between turns."
+        )
+    return (
+        "Execute JavaScript in a sandboxed REPL. "
+        f"{state_line} No filesystem, network, or real clock. "
+        "Synchronous only — top-level `await` will not resolve."
     )
 
 

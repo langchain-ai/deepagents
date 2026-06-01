@@ -23,13 +23,23 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth.utils import (
+    build_oauth_authorization_server_metadata_discovery_urls,
+    build_protected_resource_metadata_discovery_urls,
+    create_oauth_metadata_request,
+    handle_auth_metadata_response,
+    handle_protected_resource_response,
+)
+from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
 from mcp.shared.auth import (
     OAuthClientInformationFull,
+    OAuthMetadata,
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -274,6 +284,23 @@ class FileTokenStorage(TokenStorage):
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
+        self._write(data)
+
+    async def get_oauth_metadata(self) -> OAuthMetadata | None:
+        """Return stored public OAuth authorization metadata, if available."""
+        data = self._read()
+        if data is None:
+            return None
+        raw = data.get("oauth_metadata")
+        if raw is None:
+            return None
+        return OAuthMetadata.model_validate(raw)
+
+    async def set_oauth_metadata(self, metadata: OAuthMetadata) -> None:
+        """Persist public OAuth authorization metadata beside the token state."""
+        data = self._read() or {}
+        data["version"] = _STORAGE_VERSION
+        data["oauth_metadata"] = json.loads(metadata.model_dump_json(exclude_none=True))
         self._write(data)
 
     async def set_tokens_and_client_info(
@@ -960,6 +987,14 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         # fail loudly rather than silently regress to the 401-on-restart
         # bug this class exists to prevent.
         await super()._initialize()
+        if self.context.oauth_metadata is None:
+            get_oauth_metadata = getattr(
+                self.context.storage,
+                "get_oauth_metadata",
+                None,
+            )
+            if get_oauth_metadata is not None:
+                self.context.oauth_metadata = await get_oauth_metadata()
         get_expires_at = getattr(self.context.storage, "get_expires_at", None)
         if get_expires_at is None:
             return
@@ -994,6 +1029,87 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                 _REFRESH_SAFETY_MARGIN_SECONDS,
             )
         self.context.token_expiry_time = expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+
+    async def _persist_oauth_metadata(self) -> None:
+        """Persist discovered public OAuth metadata when storage supports it."""
+        if self.context.oauth_metadata is None:
+            return
+        set_oauth_metadata = getattr(self.context.storage, "set_oauth_metadata", None)
+        if set_oauth_metadata is not None:
+            await set_oauth_metadata(self.context.oauth_metadata)
+
+    async def _handle_token_response(self, response: httpx.Response) -> None:
+        """Persist tokens and any metadata discovered during full OAuth login."""
+        await super()._handle_token_response(response)
+        await self._persist_oauth_metadata()
+
+    async def async_auth_flow(
+        self,
+        request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        """Discover and cache OAuth metadata before the SDK refresh branch.
+
+        Yields:
+            HTTP requests for OAuth metadata discovery and the delegated SDK auth flow.
+        """
+        async with self.context.lock:
+            if not self._initialized:
+                await self._initialize()
+            self.context.protocol_version = request.headers.get(MCP_PROTOCOL_VERSION)
+            if (
+                not self.context.is_token_valid()
+                and self.context.can_refresh_token()
+                and self.context.oauth_metadata is None
+            ):
+                # Pre-empt the SDK's 401-path discovery so its refresh branch
+                # finds populated `oauth_metadata` and uses the advertised token
+                # endpoint instead of guessing `/token`. The resource-metadata
+                # URL is `None`: no 401 yet, so no `WWW-Authenticate` to read.
+                try:
+                    prm_urls = build_protected_resource_metadata_discovery_urls(
+                        None,
+                        self.context.server_url,
+                    )
+                    for url in prm_urls:
+                        response = yield create_oauth_metadata_request(url)
+                        prm = await handle_protected_resource_response(response)
+                        if prm is None:
+                            logger.debug(
+                                "Protected resource metadata discovery failed: %s",
+                                url,
+                            )
+                            continue
+                        self.context.protected_resource_metadata = prm
+                        self.context.auth_server_url = str(prm.authorization_servers[0])
+                        break
+
+                    asm_urls = build_oauth_authorization_server_metadata_discovery_urls(
+                        self.context.auth_server_url,
+                        self.context.server_url,
+                    )
+                    for url in asm_urls:
+                        response = yield create_oauth_metadata_request(url)
+                        ok, metadata = await handle_auth_metadata_response(response)
+                        if not ok:
+                            break
+                        if metadata is None:
+                            logger.debug("OAuth metadata discovery failed: %s", url)
+                            continue
+                        self.context.oauth_metadata = metadata
+                        await self._persist_oauth_metadata()
+                        break
+                except httpx.HTTPError as exc:
+                    # Log only the exception type, never its payload — discovery
+                    # responses travel the same channel as bearer tokens.
+                    logger.debug(
+                        "Pre-emptive OAuth metadata discovery for %s raised %s; "
+                        "deferring to the SDK auth flow.",
+                        self.context.server_url,
+                        type(exc).__name__,
+                    )
+
+        async for flow_request in super().async_auth_flow(request):
+            yield flow_request
 
 
 def build_oauth_provider(

@@ -93,6 +93,18 @@ def _make_client_info():
     )
 
 
+def _make_oauth_metadata(token_endpoint: str = "https://auth.example/token"):
+    from mcp.shared.auth import AnyHttpUrl, OAuthMetadata
+
+    return OAuthMetadata(
+        issuer=AnyHttpUrl("https://auth.example"),
+        authorization_endpoint=AnyHttpUrl("https://auth.example/authorize"),
+        token_endpoint=AnyHttpUrl(token_endpoint),
+        response_types_supported=["code"],
+        grant_types_supported=["authorization_code", "refresh_token"],
+    )
+
+
 def _make_client_info_with_loopback(port: int):
     from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
 
@@ -265,6 +277,18 @@ class TestFileTokenStorage:
             OAuthToken(access_token="x2", token_type="Bearer", refresh_token="rt2")
         )
         assert await storage.get_expires_at() is None
+
+    async def test_round_trip_oauth_metadata(self) -> None:
+        """Public OAuth metadata round-trips beside token state."""
+        storage = FileTokenStorage("notion")
+        metadata = _make_oauth_metadata()
+
+        assert await storage.get_oauth_metadata() is None
+        await storage.set_oauth_metadata(metadata)
+
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == "https://auth.example/token"
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -658,6 +682,176 @@ class TestBuildOAuthProvider:
         assert metadata.token_endpoint_auth_method == "none"
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
+
+    async def test_refresh_uses_cached_oauth_metadata_endpoint(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Expired tokens refresh against cached metadata, not guessed `/token`."""
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        token_endpoint = "https://slack.com/api/oauth.v2.user.access"
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_oauth_metadata(_make_oauth_metadata(token_endpoint))
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        await provider._initialize()
+        refresh_request = await provider._refresh_token()
+
+        assert provider.context.oauth_metadata is not None
+        assert str(refresh_request.url) == token_endpoint
+
+    async def test_refresh_discovers_and_caches_oauth_metadata_endpoint(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Legacy token files discover metadata before refreshing."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        token_endpoint = "https://slack.com/api/oauth.v2.user.access"
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.slack.com/mcp")
+        )
+
+        prm_path_request = await anext(flow)
+        assert str(prm_path_request.url).endswith(
+            "/.well-known/oauth-protected-resource/mcp"
+        )
+        prm_root_request = await flow.asend(
+            httpx.Response(404, request=prm_path_request)
+        )
+        assert str(prm_root_request.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        auth_metadata_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=prm_root_request,
+                json={
+                    "resource": "https://mcp.slack.com",
+                    "authorization_servers": ["https://mcp.slack.com"],
+                },
+            )
+        )
+        assert str(auth_metadata_request.url).endswith(
+            "/.well-known/oauth-authorization-server"
+        )
+        refresh_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=auth_metadata_request,
+                json={
+                    "issuer": "https://slack.com",
+                    "authorization_endpoint": "https://slack.com/oauth/v2_user/authorize",
+                    "token_endpoint": token_endpoint,
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                },
+            )
+        )
+
+        assert str(refresh_request.url) == token_endpoint
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == token_endpoint
+        await flow.aclose()
+
+    async def test_refresh_falls_back_when_preemptive_metadata_discovery_raises(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Transient metadata discovery errors still defer to SDK refresh."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        await storage.set_tokens(_make_tokens())
+        data = json.loads(storage.path.read_text())
+        data["expires_at"] = time.time() - 60
+        storage.path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.slack.com/mcp")
+        )
+
+        metadata_request = await anext(flow)
+        refresh_request = await flow.athrow(
+            httpx.TransportError("metadata unavailable", request=metadata_request)
+        )
+
+        assert str(refresh_request.url).endswith("/token")
+        await flow.aclose()
+
+    async def test_full_login_persists_discovered_oauth_metadata(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Metadata discovered during full login is cached for later refreshes."""
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _preseed_slack_client_info
+
+        storage = FileTokenStorage("slack", server_url="https://mcp.slack.com/mcp")
+        await _preseed_slack_client_info(storage)
+        provider = build_oauth_provider(
+            server_name="slack",
+            server_url="https://mcp.slack.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        await provider._initialize()
+        # Simulate the SDK's 401-path discovery populating the context during a
+        # full browser login, just before the token exchange completes.
+        provider.context.oauth_metadata = _make_oauth_metadata()
+
+        assert await storage.get_oauth_metadata() is None
+        token_json = json.loads(_make_tokens().model_dump_json(exclude_none=True))
+        await provider._handle_token_response(httpx.Response(200, json=token_json))
+
+        stored = await storage.get_oauth_metadata()
+        assert stored is not None
+        assert str(stored.token_endpoint) == "https://auth.example/token"
 
     def test_generic_branch_uses_loopback_callback(self) -> None:
         """Non-Slack URLs (including Notion) use a local callback server redirect."""

@@ -6,6 +6,22 @@ From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and
 `mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API.
 The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
 
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.2...deepagents-cli==0.2.0) (2026-06-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `deepagents deploy` now targets the Managed Deep Agents API; `deepagents dev`, `deepagents.toml`, and the `--config`/`--dry-run` flags are removed. Run `deepagents init` to re-scaffold (`agent.json` + `tools.json`). See [PR](https://github.com/langchain-ai/deepagents/pull/3609) for the full migration guide.
+
+### Features
+
+* **cli:** migrate deepagents deploy to use managed deep agents api [AB-2470] ([#3609](https://github.com/langchain-ai/deepagents/issues/3609)) ([72aef52](https://github.com/langchain-ai/deepagents/commit/72aef52542a3fd4a7eebcb3dba40e28adf1aa044))
+
+
+### Bug Fixes
+
+* **sdk:** stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
+
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.1...deepagents-cli==0.1.2) (2026-05-21)
 
 ### Bug Fixes

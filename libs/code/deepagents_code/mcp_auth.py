@@ -1108,8 +1108,30 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         type(exc).__name__,
                     )
 
-        async for flow_request in super().async_auth_flow(request):
-            yield flow_request
+        # Delegate to the SDK flow by manually pumping the inner generator so
+        # the HTTP responses httpx feeds back via `auth_flow.asend(response)`
+        # are forwarded into it. A plain `async for` would advance the inner
+        # generator with `__anext__()` (i.e. `asend(None)`), discarding every
+        # response — the SDK's `response = yield request` and refresh-path
+        # `yield refresh_request` would then see `None` and raise
+        # `AttributeError: 'NoneType' object has no attribute 'status_code'`,
+        # surfacing as the `ExceptionGroup` users hit on MCP OAuth login.
+        # httpx primes the flow with `__anext__()`, then drives it with
+        # `asend`/`aclose` (never `athrow`), so forwarding sent values and
+        # closing the inner generator on `GeneratorExit` is sufficient — no
+        # `athrow` forwarding needed.
+        inner = super().async_auth_flow(request)
+        try:
+            # Prime with `anext()` (no response to send yet); thereafter every
+            # resume carries httpx's response back in via `asend`.
+            flow_request = await anext(inner)
+            while True:
+                response = yield flow_request
+                flow_request = await inner.asend(response)
+        except StopAsyncIteration:
+            return
+        finally:
+            await inner.aclose()
 
 
 def build_oauth_provider(

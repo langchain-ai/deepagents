@@ -451,6 +451,98 @@ class TestExpiryAwareOAuthClientProvider:
         assert provider.context.token_expiry_time is None
         assert provider.context.current_tokens is not None
 
+    async def test_delegated_flow_forwards_responses_into_sdk(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Responses sent into the outer flow reach the delegated SDK flow.
+
+        Regression test: the override used to delegate with `async for`, which
+        advances the inner SDK generator via `__anext__()` (`asend(None)`) and
+        discards the HTTP responses httpx feeds back through `asend(response)`.
+        The SDK's `response = yield request` then saw `None` and raised
+        `AttributeError: 'NoneType' object has no attribute 'status_code'`,
+        surfacing as the `ExceptionGroup` users hit on MCP OAuth login. With a
+        valid stored token the pre-emptive discovery branch is skipped, so the
+        first response forwarded is the one whose `status_code` the SDK reads.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        # The valid token is attached and the request is yielded unchanged.
+        first_request = await anext(flow)
+        assert first_request.headers["Authorization"] == "Bearer at"
+
+        # Feeding a 401 back must reach the SDK's `response.status_code` check
+        # and trigger metadata discovery — not raise AttributeError.
+        discovery_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
+        await flow.aclose()
+
+    async def test_delegated_flow_forwards_responses_on_every_iteration(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """The pump loop forwards responses on every round-trip, not just one.
+
+        Guards against a regression that primes the inner generator correctly
+        but then reverts to discarding subsequent sends (e.g. back toward
+        `async for`): the SDK's protected-resource-metadata discovery walks
+        several URLs, sending a response into the delegated generator each
+        time. Each forwarded response must advance discovery to the next URL.
+        """
+        del fake_home
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        first_request = await anext(flow)
+        # First forwarded response (401) advances to the path-scoped PRM URL.
+        prm_path_request = await flow.asend(httpx.Response(401, request=first_request))
+        assert str(prm_path_request.url).endswith(
+            "/.well-known/oauth-protected-resource/mcp"
+        )
+        # Second forwarded response (404) must also reach the SDK and advance
+        # discovery to the root PRM URL — proving the loop didn't stop after
+        # the first send.
+        prm_root_request = await flow.asend(
+            httpx.Response(404, request=prm_path_request)
+        )
+        assert str(prm_root_request.url).endswith(
+            "/.well-known/oauth-protected-resource"
+        )
+        await flow.aclose()
+
 
 class TestFindReauthRequired:
     """Tests for unwrapping nested re-auth errors."""

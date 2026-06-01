@@ -10,32 +10,37 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
 ```
 
-**118 evals** across **8 categories**
+**123 evals** across **8 categories**
 
-## File Ops (`file_operations`) (13 evals)
+## File Ops (`file_operations`) (18 evals)
 
-- [`test_read_file_seeded_state_backend_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L34) — `tests/evals/test_file_operations.py:34`
-- [`test_write_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L54) — `tests/evals/test_file_operations.py:54`
-- [`test_write_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L76) — `tests/evals/test_file_operations.py:76`
-- [`test_write_files_in_parallel_confirm_with_verification`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L108) — `tests/evals/test_file_operations.py:108`
-- [`test_write_files_in_parallel_ambiguous_confirmation`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L143) — `tests/evals/test_file_operations.py:143`
-- [`test_ls_directory_contains_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L178) — `tests/evals/test_file_operations.py:178`
-- [`test_ls_directory_missing_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L202) — `tests/evals/test_file_operations.py:202`
-- [`test_edit_file_replace_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L225) — `tests/evals/test_file_operations.py:225`
-- [`test_read_then_write_derived_output`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L248) — `tests/evals/test_file_operations.py:248`
-- [`test_avoid_unnecessary_tool_calls`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L273) — `tests/evals/test_file_operations.py:273`
-- [`test_read_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L291) — `tests/evals/test_file_operations.py:291`
-- [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L561) — `tests/evals/test_file_operations.py:561`
-- [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L599) — `tests/evals/test_file_operations.py:599`
+- [`test_read_file_seeded_state_backend_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L35) — `tests/evals/test_file_operations.py:35`
+- [`test_write_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L55) — `tests/evals/test_file_operations.py:55`
+- [`test_write_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L77) — `tests/evals/test_file_operations.py:77`
+- [`test_write_files_in_parallel_confirm_with_verification`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L109) — `tests/evals/test_file_operations.py:109`
+- [`test_write_files_in_parallel_ambiguous_confirmation`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L144) — `tests/evals/test_file_operations.py:144`
+- [`test_ls_directory_contains_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L179) — `tests/evals/test_file_operations.py:179`
+- [`test_ls_directory_missing_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L203) — `tests/evals/test_file_operations.py:203`
+- [`test_edit_file_replace_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L226) — `tests/evals/test_file_operations.py:226`
+- [`test_read_then_write_derived_output`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L249) — `tests/evals/test_file_operations.py:249`
+- [`test_avoid_unnecessary_tool_calls`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L274) — `tests/evals/test_file_operations.py:274`
+- [`test_read_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L292) — `tests/evals/test_file_operations.py:292`
+- [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L562) — `tests/evals/test_file_operations.py:562`
+- [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L600) — `tests/evals/test_file_operations.py:600`
+- [`test_delete_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L617) — `tests/evals/test_file_operations.py:617`
+- [`test_delete_one_of_several_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L646) — `tests/evals/test_file_operations.py:646`
+- [`test_delete_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L681) — `tests/evals/test_file_operations.py:681`
+- [`test_write_then_delete_same_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L714) — `tests/evals/test_file_operations.py:714`
+- [`test_delete_missing_file_reports_absence`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L744) — `tests/evals/test_file_operations.py:744`
 
 ## Retrieval (`retrieval`) (6 evals)
 
 - [`test_frames`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L67) — `tests/evals/test_external_benchmarks.py:67`
-- [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L321) — `tests/evals/test_file_operations.py:321`
-- [`test_glob_lists_markdown_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L349) — `tests/evals/test_file_operations.py:349`
-- [`test_find_magic_phrase_deep_nesting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L377) — `tests/evals/test_file_operations.py:377`
-- [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L413) — `tests/evals/test_file_operations.py:413`
-- [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L488) — `tests/evals/test_file_operations.py:488`
+- [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L322) — `tests/evals/test_file_operations.py:322`
+- [`test_glob_lists_markdown_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L350) — `tests/evals/test_file_operations.py:350`
+- [`test_find_magic_phrase_deep_nesting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L378) — `tests/evals/test_file_operations.py:378`
+- [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L414) — `tests/evals/test_file_operations.py:414`
+- [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L489) — `tests/evals/test_file_operations.py:489`
 
 ## Tool Use (`tool_use`) (53 evals)
 

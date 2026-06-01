@@ -250,8 +250,7 @@ class TestMCPLoginScreen:
             screen.finish(
                 success=True,
                 message=(
-                    "Logged in to 'langsmith'. "
-                    "Reconnect required to load new tools."
+                    "Logged in to 'langsmith'. Reconnect required to load new tools."
                 ),
             )
             await pilot.pause()

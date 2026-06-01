@@ -1213,10 +1213,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Create the delete_file tool."""
         tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
 
-        unsupported_msg = (
-            "Error: Deletion not available. This agent's backend does not "
-            "implement the delete operation."
-        )
+        unsupported_msg = "Error: Deletion not available. This agent's backend does not implement the delete operation."
 
         def sync_delete_file(
             file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],

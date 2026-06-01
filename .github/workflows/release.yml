@@ -13,7 +13,7 @@
 #
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
-name: "Package Release"
+name: "🚀 Package Release"
 run-name: "release(${{ inputs.package-override || inputs.package }}):${{
   inputs.version && format(' {0}', inputs.version) || '' }}"
 on:

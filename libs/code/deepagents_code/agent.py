@@ -62,6 +62,7 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
+from deepagents_code.filesystem_empty_result import _FilesystemEmptyResultMiddleware
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -83,50 +84,6 @@ logger = logging.getLogger(__name__)
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
-
-
-_EMPTY_FILE_LIST_SENTINEL = "No files found"
-_FILE_LIST_TOOLS: frozenset[str] = frozenset({"ls", "glob"})
-
-
-class _FilesystemEmptyResultMiddleware(AgentMiddleware):
-    """Normalize empty filesystem list tool results."""
-
-    @staticmethod
-    def _normalize_result(
-        result: ToolMessage | Command[Any],
-    ) -> ToolMessage | Command[Any]:
-        if (
-            getattr(result, "name", None) in _FILE_LIST_TOOLS
-            and getattr(result, "status", None) == "success"
-            and getattr(result, "content", None) == "[]"
-        ):
-            result.content = _EMPTY_FILE_LIST_SENTINEL
-        return result
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """Normalize empty list outputs after sync filesystem tool calls.
-
-        Returns:
-            The normalized tool result.
-        """
-        return self._normalize_result(handler(request))
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        """Normalize empty list outputs after async filesystem tool calls.
-
-        Returns:
-            The normalized tool result.
-        """
-        return self._normalize_result(await handler(request))
 
 
 class ShellAllowListMiddleware(AgentMiddleware):

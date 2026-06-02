@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
-    _FilesystemEmptyResultMiddleware,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -47,61 +46,6 @@ def test_add_interrupt_on_gates_async_task_tools() -> None:
 
     for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
         assert tool_name in interrupt_on
-
-
-def test_filesystem_empty_result_middleware_rewrites_empty_ls_and_glob() -> None:
-    """Empty `ls` and `glob` outputs should be readable to the agent."""
-    middleware = _FilesystemEmptyResultMiddleware()
-
-    for tool_name in ("ls", "glob"):
-        result = middleware.wrap_tool_call(
-            cast("Any", None),
-            lambda _request, name=tool_name: ToolMessage(
-                content="[]",
-                name=name,
-                tool_call_id=f"call-{name}",
-                status="success",
-            ),
-        )
-
-        assert isinstance(result, ToolMessage)
-        assert result.content == "No files found"
-
-
-@pytest.mark.parametrize(
-    ("message", "expected"),
-    [
-        (
-            ToolMessage(
-                content="[]", name="grep", tool_call_id="call-1", status="success"
-            ),
-            "[]",
-        ),
-        (
-            ToolMessage(content="[]", name="ls", tool_call_id="call-2", status="error"),
-            "[]",
-        ),
-        (
-            ToolMessage(
-                content="['/tmp/a.py']",
-                name="glob",
-                tool_call_id="call-3",
-                status="success",
-            ),
-            "['/tmp/a.py']",
-        ),
-    ],
-)
-def test_filesystem_empty_result_middleware_preserves_other_results(
-    message: ToolMessage, expected: str
-) -> None:
-    """Only successful empty `ls` and `glob` list outputs are rewritten."""
-    middleware = _FilesystemEmptyResultMiddleware()
-
-    result = middleware.wrap_tool_call(cast("Any", None), lambda _request: message)
-
-    assert isinstance(result, ToolMessage)
-    assert result.content == expected
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:

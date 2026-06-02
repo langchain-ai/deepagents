@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
+from textual.app import App, ComposeResult
 from textual.content import Content
 
 from deepagents_code import theme
@@ -501,6 +502,309 @@ class TestToolCallMessageTodos:
         assert lines[todo_start + 1].startswith("             ")
 
 
+class _ToolMsgApp(App[None]):
+    """Single-`ToolCallMessage` Textual app for pilot-driven tests."""
+
+    def __init__(self, tool_name: str, args: dict | None = None) -> None:
+        super().__init__()
+        self.msg = ToolCallMessage(tool_name, args)
+
+    def compose(self) -> ComposeResult:
+        yield self.msg
+
+
+def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
+    """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
+
+    Args:
+        tool_name: Tool name the message represents.
+        args: Optional tool-call arguments.
+
+    Returns:
+        An unmounted `App` exposing the message as `app.msg`.
+    """
+    return _ToolMsgApp(tool_name, args)
+
+
+class TestToolCallMessageOutputGutter:
+    """The output glyph lives in a fixed gutter so wrapped lines stay aligned."""
+
+    async def test_glyph_in_gutter_not_baked_into_content(self) -> None:
+        """The output marker renders in its own gutter column, not in content.
+
+        Regression: when a single long output line soft-wraps, the wrapped
+        remainder must not fall under the glyph. Keeping the glyph in a fixed
+        gutter (instead of baked into the first content line) lets the content
+        widget own a single hanging indent for every wrapped line.
+        """
+        from deepagents_code.config import get_glyphs
+
+        # Two logical lines; the first is long enough to soft-wrap in a terminal.
+        output = (
+            "[stderr] fatal: ambiguous argument 'main..branch': unknown revision "
+            "or path not in the working tree.\n[stderr] Use '--' to separate paths."
+        )
+
+        app = _tool_msg_app("execute", {"command": "git diff main..branch"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            glyph = get_glyphs().output_prefix
+            assert app.msg._preview_widget is not None
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+
+            # Content is bare: no glyph, and no hand-rolled hanging indent on
+            # any logical line (alignment is owned by the gutter layout).
+            assert glyph not in content.plain
+            assert all(not line.startswith(" ") for line in content.plain.split("\n"))
+
+            # The glyph renders exactly once, in the gutter beside the content.
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is True
+            gutters = app.msg._preview_row.query(".tool-output-gutter")
+            assert len(gutters) == 1
+            gutter_content = gutters.first()._Static__content  # type: ignore[attr-defined]
+            assert gutter_content == glyph
+
+    async def test_collapsed_preview_preserves_uniform_leading_indent(self) -> None:
+        """Collapsed preview keeps line 0's indent so indented rows align.
+
+        Regression: the preview branch pre-stripped the output, lstripping the
+        first line only while continuation lines kept their indent. Uniformly
+        indented output (e.g. `git branch -r`, which prefixes every branch with
+        two spaces) then rendered with line 0 flush and the rest indented. The
+        formatter must preserve the shared leading indent across all rows.
+        """
+        # Mirror `git branch -r`: every row indented by two spaces, > preview
+        # line budget so the collapsed preview is shown.
+        output = "\n".join(f"  origin/branch-{i}" for i in range(8))
+
+        app = _tool_msg_app("execute", {"command": "git branch -r"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._expanded is False
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+
+            preview_lines = content.plain.split("\n")
+            # Every visible row — including the first — keeps git's two-space
+            # indent, so they share a left edge beside the glyph gutter.
+            assert preview_lines
+            assert all(line.startswith("  origin/") for line in preview_lines)
+
+
+class TestToolCallMessageSearchOutput:
+    """Tests for grep/glob result formatting in `_format_search_output`."""
+
+    def test_glob_list_output_has_no_hardcoded_indent(self) -> None:
+        """Glob (list) results must not carry a hardcoded leading indent.
+
+        Alignment is owned by the output gutter layout; the formatter emits
+        bare paths so results aren't double-indented under the output marker.
+        """
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        result = msg._format_search_output(
+            "['/tmp/zzz_a.py', '/tmp/zzz_b.py']", is_preview=False
+        )
+        lines = result.content.plain.split("\n")
+        assert lines
+        assert all(not line.startswith(" ") for line in lines)
+
+    def test_grep_line_output_has_no_hardcoded_indent(self) -> None:
+        """Grep (line-based) results must not carry a hardcoded leading indent.
+
+        This is a distinct branch from the glob list path: `ast.literal_eval`
+        fails for grep output, so it falls through to line-based formatting.
+        """
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        result = msg._format_search_output(
+            "file.py:1:match one\nfile.py:2:match two", is_preview=False
+        )
+        assert result.content.plain.split("\n") == [
+            "file.py:1:match one",
+            "file.py:2:match two",
+        ]
+
+
+class TestToolCallMessageExpandHint:
+    """Tests for the preview/expand hint on collapsed tool output."""
+
+    async def test_long_single_line_search_output_has_no_expand_hint(self) -> None:
+        """Long-but-single-line grep/glob output should not offer expansion.
+
+        The outer collapse threshold counts characters, but `_format_search_output`
+        only truncates by line count. A long single-line result (e.g. a glob
+        error string returned as normal output) trips the char threshold while
+        leaving nothing hidden, so the preview must not promise an expansion
+        that would reveal identical content.
+        """
+        from textual.app import App, ComposeResult
+
+        # Single line, no newlines, comfortably over the character threshold.
+        output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
+        assert "\n" not in output
+        assert len(output) > ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            # Nothing is hidden, so no expand affordance and no toggle.
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is False
+
+    async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
+        """A short force-expanded error must not show a collapse affordance.
+
+        `set_error` force-expands so the full error is always visible. When the
+        error is short enough that the collapsed form would be identical, there
+        is nothing to collapse — so no hint, and toggling is a no-op.
+        """
+        from textual.app import App, ComposeResult
+
+        error = "Error: glob timed out after 20.0s. Try a narrower path."
+        assert "\n" not in error
+        assert len(error) < ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            # Nothing to collapse — stays expanded with the hint hidden.
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is False
+
+    async def test_multiline_error_force_expanded_offers_collapse(self) -> None:
+        """A long force-expanded error should still offer a collapse affordance.
+
+        The positive counterpart to the short-error case: a multi-line error
+        exceeds the line threshold and the formatter truncates it, so a smaller
+        collapsed form exists and the collapse hint must appear.
+        """
+        error = "\n".join(f"line {index} of the traceback" for index in range(10))
+        assert error.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("glob", {"pattern": "**/*.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "collapse" in hint.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is True
+            collapsed = app.msg._hint_widget._Static__content
+            assert "expand" in collapsed.plain
+
+    async def test_long_grep_output_truncates_and_expands(self) -> None:
+        """A multi-line grep result should preview-truncate then expand on toggle."""
+        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
+        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("grep", {"pattern": "hit"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._preview_widget is not None
+            assert app.msg._full_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            assert "expand" in hint.plain
+            # The preview hides the trailing lines.
+            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert "hit 7" not in preview.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            full = app.msg._full_widget._Static__content
+            assert "hit 7" in full.plain
+            collapsed = app.msg._hint_widget._Static__content
+            assert "collapse" in collapsed.plain
+
+    async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
+        """Short non-todo output uses non-preview formatting and shows no hint.
+
+        Guards the merged collapsed branch: `is_preview` must stay `False` for
+        a non-`write_todos` tool below the size threshold, so the full content
+        is shown rather than a truncated preview.
+        """
+        # Five lines: under `_PREVIEW_LINES` (6) but over the file formatter's
+        # own four-line preview cap, so a stray `is_preview=True` would truncate.
+        output = "\n".join(f"line {index}" for index in range(5))
+        assert output.count("\n") + 1 < ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is False
+            assert app.msg._preview_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert "line 0" in preview.plain
+            assert "line 4" in preview.plain
+
+
 class TestToolCallMessageExpandableArgs:
     """Tests for the `ask_user` expandable-arguments toggle."""
 
@@ -760,6 +1064,36 @@ class TestToolCallMessageShellCommand:
         assert result.truncation is None
         assert result.content.plain == output
 
+    def test_format_output_preserves_first_line_leading_indent(self) -> None:
+        """`_format_output` must keep the first line's own leading indentation.
+
+        A bare `strip()` lstrips only the first line while continuation lines
+        keep their indent, so uniformly indented command output (e.g.
+        `git branch -r`, which prefixes every branch with two spaces) renders
+        misaligned. All rows should retain their leading spaces.
+        """
+        msg = ToolCallMessage("execute", {"command": "git branch -r"})
+        # Mirror `git branch -r`: every row indented by two spaces, trailing \n.
+        output = "  origin/HEAD -> origin/main\n  origin/main\n  origin/dev\n"
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        assert lines == [
+            "  origin/HEAD -> origin/main",
+            "  origin/main",
+            "  origin/dev",
+        ]
+        # Every line shares the same leading indent, so they align beside the
+        # fixed glyph gutter.
+        assert all(line.startswith("  ") for line in lines)
+
+    def test_format_output_still_trims_leading_blank_lines(self) -> None:
+        """Leading blank lines are trimmed while first-line indent survives."""
+        msg = ToolCallMessage("execute", {"command": "noop"})
+        result = msg._format_output("\n\n  indented\n", is_preview=False)
+
+        assert result.content.plain == "  indented"
+
 
 class TestToolCallMessageFileOutput:
     """Tests for `_format_file_output` char-budget handling.
@@ -886,6 +1220,91 @@ class TestToolCallMessageFileOutput:
 
         assert result.truncation == "2 more lines"
 
+    def test_format_output_compacts_line_number_gutter(self) -> None:
+        r"""Line-number gutters are tightened, all rows aligned to one column.
+
+        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — which renders far from the line numbers and (when
+        the first row's padding was stripped) misaligned. The TUI recomputes a
+        compact gutter: numbers right-justified to the widest number present,
+        two spaces, then the original source indentation.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # cat -n style: 6-wide right-justified number + tab + source line.
+        output = '     1\t"""doc"""\n     2\t\n     3\t    indented'
+        result = msg._format_output(output, is_preview=False)
+
+        # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
+        # indentation (the 4 spaces on line 3) preserved verbatim.
+        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+
+    def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
+        r"""Multi-digit line numbers set a uniform, right-justified gutter."""
+        # Lines 9 and 10: single- vs double-digit numbers must align right.
+        output = "     9\tnine\n    10\tten"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  nine\n10  ten"
+
+    def test_compact_line_gutter_handles_continuation_markers(self) -> None:
+        r"""`N.M` wrapped-line markers are gutters and drive the column width.
+
+        Long lines are chunked by the SDK with decimal continuation markers
+        (`f"{line_num}.{chunk_idx}"`). The marker's width (e.g. `1.1` = 3)
+        must set the right-justified column like any other line number.
+        """
+        output = "     1\tfirst\n   1.1\twrapped"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "  1  first\n1.1  wrapped"
+
+    def test_compact_line_gutter_preserves_source_tabs(self) -> None:
+        r"""Only the first (gutter) tab is consumed; source tabs stay put.
+
+        Tab-indented source means a tab immediately after the gutter tab.
+        `partition` splits on the first tab only, so the source tab survives.
+        """
+        output = "     1\t\tdef foo():"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  \tdef foo():"
+
+    def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
+        """Output without a cat -n gutter is returned unchanged."""
+        output = "plain text\nno line numbers here"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_rejects_malformed_number_heads(self) -> None:
+        r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
+
+        Guards against corrupting tab-separated data whose first column merely
+        resembles a number (leading/trailing dot, multiple dots).
+        """
+        # Leading dot, trailing dot, and multi-dot heads must all pass through.
+        output = "   .5\tweird\n   5.\talso\n 1.2.3\tnope"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_preview_truncates_with_compacted_gutters(
+        self,
+    ) -> None:
+        """Compaction runs before truncation: previews show compact gutters.
+
+        The char budget and `more lines` hint operate on the already-compacted
+        string, so a long cat -n file previews with tight gutters and a
+        line-count hint.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"{i:6d}\tline {i}" for i in range(1, 21))
+        result = msg._format_file_output(output, is_preview=True)
+
+        rendered = result.content.plain.split("\n")
+        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
+        assert result.truncation == "16 more lines"
+
+    def test_compact_line_gutter_empty_output(self) -> None:
+        """Empty output has no gutter lines and is returned unchanged."""
+        assert ToolCallMessage._compact_line_gutter("") == ""
+
 
 class TestToolCallMessageAwaitingApproval:
     """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
@@ -935,6 +1354,116 @@ class TestToolCallMessageAwaitingApproval:
             msg.clear_awaiting_approval()
             await pilot.pause()
             assert msg.display is True
+
+
+class TestToolCallMessageRunningSpinner:
+    """Tests for `set_running` / `pause_running` spinner state."""
+
+    async def test_set_running_shows_status_widget(self) -> None:
+        """`set_running` should reveal the status row and start the timer."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status_widget is not None
+            # Pending tools hide the status row until they run.
+            assert msg._status_widget.display is False
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._status_widget.display is True
+            assert msg._animation_timer is not None
+
+    async def test_pause_running_hides_status_and_stops_timer(self) -> None:
+        """`pause_running` should revert a running tool to its pending look."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._start_time is None
+            assert msg._animation_timer is None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_pause_running_no_op_when_not_running(self) -> None:
+        """Pausing a pending tool should leave its status untouched."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status == "pending"
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_set_running_resumes_after_pause(self) -> None:
+        """A paused tool should be resumable via `set_running` (HITL approve)."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_file", {"file_path": "a.txt"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._start_time is not None
+            assert msg._animation_timer is not None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is True
 
 
 class TestToolCallMessageRejectReason:

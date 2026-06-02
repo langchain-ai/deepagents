@@ -8,13 +8,12 @@ import logging
 import re
 import textwrap
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
 from textual.message_pump import NoActiveAppError
@@ -42,37 +41,6 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
-
-
-def _apply_timestamp_tooltip(widget: Static | Vertical) -> None:
-    """Set the message creation timestamp as the widget tooltip.
-
-    Safe to call from a widget's `on_mount`: `_mount_message` appends the
-    message to the store before mounting, and hydrated widgets are rebuilt
-    from an already-populated store, so the lookup below succeeds in both
-    paths. No-ops silently for the expected cases (widget not yet mounted,
-    no id, message not registered).
-    """
-    try:
-        app = widget.app
-    except NoActiveAppError:
-        return
-    if not widget.id:
-        return
-    # `_message_store` is set in `DeepAgentsApp.__init__`; the guard only
-    # matters for non-`DeepAgentsApp` hosts (e.g. test harnesses).
-    store = getattr(app, "_message_store", None)
-    if store is None:
-        return
-    data = store.get_message(widget.id)
-    if data is None:
-        return
-    try:
-        dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
-    except (ValueError, OSError, OverflowError, TypeError):
-        logger.warning("Invalid timestamp for message %s", widget.id)
-        return
-    widget.tooltip = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
 
 
 def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
@@ -183,7 +151,6 @@ class UserMessage(Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        _apply_timestamp_tooltip(self)
         mode_match = detect_mode_prefix(self._content)
         if mode_match:
             _prefix, mode = mode_match
@@ -276,7 +243,6 @@ class QueuedUserMessage(Static):
 
     def on_mount(self) -> None:
         """Add ASCII border class when in ASCII mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -460,7 +426,6 @@ class SkillMessage(Vertical):
         or `_deferred_expanded` assignment, because either may set
         `_expanded` which fires `watch__expanded` synchronously.
         """
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.skill)
@@ -600,6 +565,12 @@ class AssistantMessage(Vertical):
         margin: 0;
         pointer: text;
     }
+
+    /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
+       on the final block so the message has no trailing blank row. */
+    AssistantMessage Markdown > *:last-child {
+        margin-bottom: 0;
+    }
     """
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:
@@ -626,7 +597,6 @@ class AssistantMessage(Vertical):
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
-        _apply_timestamp_tooltip(self)
         from textual.widgets import Markdown
 
         self._markdown = self.query_one("#assistant-content", Markdown)
@@ -761,16 +731,32 @@ class ToolCallMessage(Vertical):
         color: $text-muted;
     }
 
+    ToolCallMessage .tool-output-row {
+        layout: horizontal;
+        height: auto;
+        width: 1fr;
+    }
+
+    /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
+       aligned to a single hanging indent instead of falling under the glyph. */
+    ToolCallMessage .tool-output-gutter {
+        width: 2;
+        height: 1;
+        color: $text-muted;
+    }
+
     ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-preview {
         margin-left: 0;
         margin-top: 0;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-hint {
@@ -815,8 +801,10 @@ class ToolCallMessage(Vertical):
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
+        self._preview_row: Horizontal | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
+        self._full_row: Horizontal | None = None
         self._reject_reason_widget: Static | None = None
         # Animation state
         self._spinner_position = 0
@@ -871,14 +859,26 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-status", id="status")
         # Optional HITL reject reason (only shown when user rejected with a message)
         yield Static("", classes="tool-reject-reason", id="reject-reason")
-        # Output area - hidden initially, shown when output is set
-        yield Static("", classes="tool-output-preview", id="output-preview")
-        yield Static("", classes="tool-output", id="output-full")
+        # Output area - hidden initially, shown when output is set. The glyph
+        # lives in a fixed-width gutter so wrapped content aligns to a single
+        # hanging indent rather than wrapping back under the glyph.
+        output_prefix = get_glyphs().output_prefix
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output-preview", id="output-preview"),
+            classes="tool-output-row",
+            id="output-preview-row",
+        )
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output", id="output-full"),
+            classes="tool-output-row",
+            id="output-full-row",
+        )
         yield Static("", classes="tool-output-hint", id="output-hint")
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -886,16 +886,18 @@ class ToolCallMessage(Vertical):
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
+        self._preview_row = self.query_one("#output-preview-row", Horizontal)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
+        self._full_row = self.query_one("#output-full-row", Horizontal)
         self._reject_reason_widget = self.query_one("#reject-reason", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
         self._args_widget.display = False
         self._args_hint_widget.display = False
-        self._preview_widget.display = False
+        self._preview_row.display = False
         self._hint_widget.display = False
-        self._full_widget.display = False
+        self._full_row.display = False
         self._reject_reason_widget.display = False
         self._update_args_display()
 
@@ -1002,6 +1004,23 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(text, theme.get_theme_colors(self).warning)
         )
+
+    def pause_running(self) -> None:
+        """Pause the running spinner while the tool awaits a user decision.
+
+        Reverts the row to its pending appearance (status hidden) and stops the
+        animation so a tool blocked on HITL approval or `ask_user` input does
+        not misleadingly display "Running...". Resume with `set_running`, which
+        restarts the elapsed timer from the moment execution actually begins.
+        """
+        if self._status != "running":
+            return
+        self._stop_animation()
+        self._status = "pending"
+        self._start_time = None
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.display = False
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""
@@ -1123,7 +1142,10 @@ class ToolCallMessage(Vertical):
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
             return
-        if not self._expanded and not self._has_expandable_output():
+        # No-op in both directions when nothing is hidden: the collapsed and
+        # expanded forms are identical, so toggling only flickers the hint.
+        # This also covers force-expanded errors (see `set_error`).
+        if not self._has_expandable_output():
             return
         self._expanded = not self._expanded
         self._update_output_display()
@@ -1136,7 +1158,7 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion; no-op when nothing is expandable."""
+        """Toggle output/argument expansion."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
@@ -1155,7 +1177,13 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with content and optional truncation info.
         """
-        output = output.strip()
+        # Trim surrounding blank lines and trailing whitespace, but preserve the
+        # command's own leading indentation on the first content line. A bare
+        # `strip()` would lstrip the first line only — continuation lines keep
+        # their indent — so output that indents every row (e.g. `git branch -r`,
+        # which prefixes each branch with two spaces) renders with line 0 flush
+        # and the rest indented beside the fixed glyph gutter.
+        output = output.rstrip().lstrip("\n")
         if not output:
             return FormattedOutput(content=Content(""))
 
@@ -1199,32 +1227,19 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
-        lines = output.split("\n")
-        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
-            return True
-
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None
 
+        lines = output.split("\n")
+        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
+            # The outer size threshold is necessary but not sufficient: only
+            # treat output as expandable if the formatter actually hides
+            # content. Formatters that truncate by line count (e.g. grep/glob)
+            # leave long single-line output fully visible, so expanding it
+            # would reveal nothing.
+            return self._format_output(output, is_preview=True).truncation is not None
+
         return False
-
-    def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
-        """Prefix output with output marker and indent continuation lines.
-
-        Args:
-            content: The styled output content to prefix and indent.
-
-        Returns:
-            `Content` with output prefix on first line and indented
-                continuation.
-        """
-        if not content.plain:
-            return Content("")
-        output_prefix = get_glyphs().output_prefix
-        lines = content.split("\n")
-        prefixed = [Content.assemble(f"{output_prefix} ", lines[0])]
-        prefixed.extend(Content.assemble("  ", line) for line in lines[1:])
-        return Content("\n").join(prefixed)
 
     def _format_todos_output(
         self, output: str, *, is_preview: bool = False
@@ -1345,13 +1360,10 @@ class ToolCallMessage(Vertical):
             except NoActiveAppError:
                 display_width = _DEFAULT_TODO_WRAP_WIDTH
 
-        output_prefix_width = len(get_glyphs().output_prefix) + 1
-        available = (
-            display_width
-            - output_prefix_width
-            - indent_width
-            - _TODO_WRAP_GUARD_COLUMNS
-        )
+        # The content widgets measured above live inside the gutter row, so
+        # their width already excludes the output glyph column; the guard
+        # columns absorb the gutter offset for the self/app fallback width.
+        available = display_width - indent_width - _TODO_WRAP_GUARD_COLUMNS
         return max(20, available)
 
     def _format_todo_line(
@@ -1472,6 +1484,51 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return FormattedOutput(content=Content(output))
 
+    @staticmethod
+    def _compact_line_gutter(output: str) -> str:
+        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+
+        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — so even single-digit line numbers carry five
+        leading spaces and the tab pushes content to a distant tab stop. The
+        model needs that raw format for edits, but the TUI renders a compact
+        gutter instead: numbers right-justified to the widest number actually
+        present, then two spaces, mirroring how grep/glob results sit flush
+        left. Source indentation after the gutter is preserved untouched.
+
+        Lines that don't match the cat -n shape (e.g. test fixtures or
+        non-numbered output) are passed through unchanged.
+
+        Returns:
+            The output with compacted gutters, or the original string if no
+                line-numbered content was found.
+        """
+        lines = output.split("\n")
+        # Split each line on its gutter tab into (number, source). The gutter
+        # tab is always the first one; any tabs in `text` are real source
+        # indentation and stay put. The head must be a bare `N` or `N.M` (the
+        # latter is a wrapped-line continuation marker) — both sides of the dot
+        # are required, so a stray `.5` head marks a non-gutter line.
+        parsed: list[tuple[str, str] | None] = []
+        width = 0
+        for line in lines:
+            head, tab, text = line.partition("\t")
+            num = head.strip()
+            whole, dot, frac = num.partition(".")
+            if tab and whole.isdigit() and (not dot or frac.isdigit()):
+                parsed.append((num, text))
+                width = max(width, len(num))
+            else:
+                parsed.append(None)
+
+        if width == 0:
+            return output
+
+        return "\n".join(
+            f"{row[0]:>{width}}  {row[1]}" if row else line
+            for line, row in zip(lines, parsed, strict=True)
+        )
+
     def _format_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -1484,6 +1541,7 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with file content and optional truncation info.
         """
+        output = self._compact_line_gutter(output)
         lines = output.split("\n")
         # Files conventionally end in "\n"; the trailing empty element isn't a
         # real line and would inflate truncation counts.
@@ -1579,7 +1637,7 @@ class ToolCallMessage(Vertical):
                         display = str(rel)
                     except ValueError:
                         display = path.name
-                    parts.append(Content(f"    {display}"))
+                    parts.append(Content(display))
 
                 truncation = None
                 if is_preview and len(items) > max_items:
@@ -1596,7 +1654,7 @@ class ToolCallMessage(Vertical):
         max_lines = 5 if is_preview else len(lines)
 
         parts = [
-            Content(f"    {raw_line.strip()}")
+            Content(raw_line.strip())
             for raw_line in lines[:max_lines]
             if raw_line.strip()
         ]
@@ -1790,7 +1848,9 @@ class ToolCallMessage(Vertical):
         if (
             not self._output
             or not self._preview_widget
+            or not self._preview_row
             or not self._full_widget
+            or not self._full_row
             or not self._hint_widget
         ):
             return
@@ -1807,58 +1867,57 @@ class ToolCallMessage(Vertical):
 
         if self._expanded:
             # Show full output with formatting
-            self._preview_widget.display = False
+            self._preview_row.display = False
             result = self._format_output(self._output, is_preview=False)
-            prefixed = self._prefix_output(result.content)
-            self._full_widget.update(prefixed)
-            self._full_widget.display = True
-            # Show collapse hint underneath
-            self._hint_widget.update(
-                Content.styled("click or Ctrl+O to collapse", "dim italic")
-            )
-            self._hint_widget.display = True
-        else:
-            # Show preview
-            self._full_widget.display = False
-            if needs_truncation:
-                result = self._format_output(self._output, is_preview=True)
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-
-                # Build hint with truncation info if available
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
-                        "dim",
-                    )
-                else:
-                    hint = Content.styled("click or Ctrl+O to expand", "dim italic")
-                self._hint_widget.update(hint)
-                self._hint_widget.display = True
-            elif output_stripped:
-                # Output fits in preview, show formatted
-                is_tool_preview = self._tool_name == "write_todos"
-                result = self._format_output(
-                    output_stripped,
-                    is_preview=is_tool_preview,
+            self._full_widget.update(result.content)
+            self._full_row.display = True
+            # Only offer a collapse affordance when collapsing would actually
+            # hide something. Errors are force-expanded (see `set_error`), so a
+            # short single-line error has no smaller collapsed form — showing
+            # "click to collapse" there is misleading.
+            if self._has_expandable_output():
+                self._hint_widget.update(
+                    Content.styled("click or Ctrl+O to collapse", "dim italic")
                 )
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
+                self._hint_widget.display = True
+            else:
+                self._hint_widget.display = False
+        else:
+            # Show collapsed preview
+            self._full_row.display = False
+            if not output_stripped:
+                self._preview_row.display = False
+                self._hint_widget.display = False
+                return
+
+            # Truncate the preview only when the output is large enough to
+            # warrant it; `write_todos` always uses its compact per-item preview
+            # regardless of size.
+            is_preview = needs_truncation or self._tool_name == "write_todos"
+            # Pass the raw output, not `output_stripped`: `_format_output`
+            # normalizes whitespace while preserving the first line's leading
+            # indentation. Pre-stripping here flattens that indent on line 0 only,
+            # misaligning uniformly indented output (e.g. `git branch -r`). The
+            # expanded branch above already passes raw `self._output`.
+            result = self._format_output(self._output, is_preview=is_preview)
+            self._preview_widget.update(result.content)
+            self._preview_row.display = True
+
+            # Offer expansion only when the formatter actually hid content.
+            # The raw size threshold can trip without anything being hidden
+            # (e.g. a long single-line grep/glob result, which only truncates
+            # by line count), and promising an expansion that reveals nothing
+            # is misleading.
+            if result.truncation:
+                ellipsis = get_glyphs().ellipsis
+                self._hint_widget.update(
+                    Content.styled(
                         f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
                         "dim",
                     )
-                    self._hint_widget.update(hint)
-                    self._hint_widget.display = True
-                else:
-                    self._hint_widget.display = False
+                )
+                self._hint_widget.display = True
             else:
-                self._preview_widget.display = False
                 self._hint_widget.display = False
 
     @property
@@ -2015,7 +2074,6 @@ class DiffMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border = ("ascii", colors.primary)
@@ -2062,7 +2120,6 @@ class ErrorMessage(Static):
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
-        _apply_timestamp_tooltip(self)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
@@ -2180,10 +2237,6 @@ class AppMessage(Static):
         else:
             rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
-
-    def on_mount(self) -> None:
-        """Apply timestamp tooltip on mount."""
-        _apply_timestamp_tooltip(self)
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""

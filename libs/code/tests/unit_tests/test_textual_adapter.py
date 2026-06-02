@@ -1101,6 +1101,82 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert statuses[:2] == ["Thinking", "Thinking"]
         assert None not in statuses
 
+    async def test_auto_executed_tool_shows_running_at_mount(self) -> None:
+        """Auto-executed tools (no approval) spin immediately when mounted.
+
+        Regression guard: read-only tools such as `grep`/`glob` previously sat
+        visually idle from mount until their result arrived. The stream here
+        ends right after the tool call (no result), so the row is observed in
+        its mount-time state.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("grep", {"pattern": "foo"}, "tool-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="search",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status == "running"
+
+    async def test_edit_file_does_not_get_per_tool_spinner_at_mount(self) -> None:
+        """`edit_file` relies on the global Thinking spinner, not a per-tool one.
+
+        Negative counterpart to the auto-executed case: tools in
+        `_TOOL_CALLS_KEEP_THINKING_SPINNER` must NOT be flipped to "running" at
+        mount, or they would show a duplicate spinner alongside "Thinking".
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": "example.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="edit",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status != "running"
+
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Three parallel tools completed out of order; Thinking after all."""
         statuses: list[str | None] = []
@@ -1411,16 +1487,18 @@ class TestExecuteTaskTextualHITLShellSuppression:
     ) -> tuple[
         TextualUIAdapter,
         list[object],
-        dict[str, tuple[bool, bool]],
+        dict[str, tuple[bool, bool, str]],
     ]:
         """Drive a HITL flow and snapshot widget visibility during the await.
 
         Returns the adapter, the mounted widgets, and a mapping of
-        `tool_call_id -> (display, _awaiting_approval)` captured while the
-        approval future is pending.
+        `tool_call_id -> (display, _awaiting_approval, _status)` captured while
+        the approval future is pending. The status entry locks in the pause
+        behavior: tools start their spinner at mount but are reverted to
+        `pending` while blocked on the approval decision.
         """
         mounted: list[object] = []
-        snapshots: dict[str, tuple[bool, bool]] = {}
+        snapshots: dict[str, tuple[bool, bool, str]] = {}
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -1437,6 +1515,7 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 snapshots[tid] = (
                     bool(tool_msg.display),
                     tool_msg._awaiting_approval,
+                    tool_msg._status,
                 )
             future.set_result(approval_decision)
             return future
@@ -1506,11 +1585,14 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # While the future was pending, the widget was hidden.
-        assert snapshots["tool-shell"] == (False, True)
-        # After the finally block, it was restored.
+        # While the future was pending, the widget was hidden and its spinner
+        # paused (reverted from the mount-time "running" to "pending").
+        assert snapshots["tool-shell"] == (False, True, "pending")
+        # After the finally block, it was restored and the spinner resumed
+        # (the resumed stream is empty, so the row never reaches a result).
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        assert tool_rows[0]._status == "running"
 
     async def test_non_shell_tool_widget_not_suppressed(self) -> None:
         """`read_file` widget should stay visible — only shell tools are hidden."""
@@ -1521,10 +1603,13 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # Visible the whole time, never marked as awaiting approval.
-        assert snapshots["tool-read"] == (True, False)
+        # Visible the whole time, never marked as awaiting approval, but the
+        # spinner is paused to "pending" while the decision is outstanding.
+        assert snapshots["tool-read"] == (True, False, "pending")
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        # Resumed to "running" after approval (resumed stream yields no result).
+        assert tool_rows[0]._status == "running"
 
     async def test_batch_approval_keeps_all_widgets_visible(self) -> None:
         """Batched approvals (>1 request) must not hide any tool widget.
@@ -1540,8 +1625,8 @@ class TestExecuteTaskTextualHITLShellSuppression:
             approval_decision={"type": "approve"},
             extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
         )
-        assert snapshots["tool-shell"] == (True, False)
-        assert snapshots["tool-read"] == (True, False)
+        assert snapshots["tool-shell"] == (True, False, "pending")
+        assert snapshots["tool-read"] == (True, False, "pending")
 
     async def test_batch_of_shell_tools_keeps_all_widgets_visible(self) -> None:
         """Multiple parallel `execute` calls: all rows stay visible.
@@ -1558,8 +1643,8 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 ("execute", {"command": "echo bye"}, "tool-shell-2"),
             ],
         )
-        assert snapshots["tool-shell-1"] == (True, False)
-        assert snapshots["tool-shell-2"] == (True, False)
+        assert snapshots["tool-shell-1"] == (True, False, "pending")
+        assert snapshots["tool-shell-2"] == (True, False, "pending")
 
     async def test_shell_widget_restored_when_approval_raises(self) -> None:
         """`finally` must restore the widget even if approval raises."""

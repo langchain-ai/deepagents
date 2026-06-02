@@ -21,11 +21,12 @@ Screen {
 
 /* Main content goes on base layer by default */
 
-
-Tooltip {
-    background: $surface;
-    color: $foreground;
-    padding: 0 1;
+.message-timestamp-footer {
+    height: auto;
+    color: $text-muted;
+    text-style: dim;
+    margin: -1 0 1 0;
+    padding: 0;
 }
 
 /* Chat area - main scrollable messages area */

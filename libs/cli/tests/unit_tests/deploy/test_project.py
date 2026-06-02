@@ -375,6 +375,39 @@ def test_load_with_subagents() -> None:
     assert sa.extra_files == {}
 
 
+def _write_subagent(root: Path, agent_json: str) -> None:
+    _write_minimal_project(root)
+    sa = root / "subagents" / "researcher"
+    sa.mkdir(parents=True)
+    (sa / "agent.json").write_text(agent_json)
+    (sa / "AGENTS.md").write_text("Research.")
+
+
+def test_subagent_model_round_trip(tmp_path: Path) -> None:
+    _write_subagent(tmp_path, '{"model": "  anthropic:claude-sonnet-4-6  "}')
+    proj = Project.load(tmp_path)
+    assert proj.subagents[0].model_id == "anthropic:claude-sonnet-4-6"
+
+
+def test_subagent_legacy_model_id_still_supported(tmp_path: Path) -> None:
+    _write_subagent(tmp_path, '{"model_id": "anthropic:claude-sonnet-4-6"}')
+    proj = Project.load(tmp_path)
+    assert proj.subagents[0].model_id == "anthropic:claude-sonnet-4-6"
+
+
+def test_subagent_model_and_model_id_conflict_raises(tmp_path: Path) -> None:
+    _write_subagent(tmp_path, '{"model": "a:b", "model_id": "a:b"}')
+    with pytest.raises(ProjectError, match="either `model` or `model_id`"):
+        Project.load(tmp_path)
+
+
+@pytest.mark.parametrize("model", ["", 123])
+def test_subagent_model_must_be_non_empty_string(tmp_path: Path, model: object) -> None:
+    _write_subagent(tmp_path, '{"model": ' + json.dumps(model) + "}")
+    with pytest.raises(ProjectError, match="model"):
+        Project.load(tmp_path)
+
+
 def test_subagent_local_skills_go_into_extra_files() -> None:
     proj = Project.load(_FIXTURES / "subagent_with_local_skills")
     sa = proj.subagents[0]

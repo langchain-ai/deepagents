@@ -239,7 +239,7 @@ Because nothing was published, you still get to decide what eventually goes out 
 1. **Figure out why the release failed.** Look at the workflow run logs.
 2. **Open a PR with the fix.** Use a `hotfix(<scope>): <description>` title so it doesn't trigger another release PR update. Merge it to `main`.
    - Important: leave `pyproject.toml`'s version exactly as the release-please PR set it. The hotfix should only fix the problem that broke the release.
-3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = `main`'s HEAD (the hotfix commit). The workflow will build, publish, and tag that commit.
+3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = the SHA of your hotfix commit — the one that fixed the release *and* still declares the target version. Right after you merge it, that's the tip of `main`, but pin the explicit SHA rather than relying on "HEAD" (e.g. `gh pr view <hotfix-pr-number> --json mergeCommit --jq .mergeCommit.oid`), since `main` can advance if another PR lands first. The workflow checks out, builds, publishes, and tags that exact commit.
 4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `autorelease: pending` label to `autorelease: tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 > [!NOTE]

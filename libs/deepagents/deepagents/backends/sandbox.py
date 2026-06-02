@@ -771,9 +771,20 @@ except PermissionError:
             `DeleteResult` with the deleted path on success, or an error if the
                 path is missing, is a directory, or removal fails.
         """
+        # `shlex.quote` only neutralizes shell metacharacters so the path is
+        # passed to `rm` as a single literal argument. It is NOT a security
+        # boundary: it does not confine the deletion to any sandbox root or
+        # block traversal (e.g. `..`, absolute paths, symlinks pointing
+        # elsewhere). Whatever the sandbox shell can reach, this can delete.
         quoted = shlex.quote(file_path)
-        # `-e` misses dangling symlinks, so also probe `-L`; guard directories
-        # since `rm -f` won't remove them and we only delete files.
+        # Classify the path in one round-trip, emitting a marker per outcome:
+        #   - `[ ! -e ] && [ ! -L ]`: neither a real file nor a symlink ->
+        #     __MISSING__. `-e` alone misses dangling symlinks (target gone),
+        #     so `-L` is also probed to treat a broken symlink as present.
+        #   - `[ -d ]`: a directory -> __ISDIR__. We only delete files, and
+        #     `rm -f` won't remove a directory anyway, so guard it explicitly.
+        #   - otherwise: `rm -f` the file, emitting __DELETED__ on success or
+        #     __FAILED__ if `rm` returns non-zero (e.g. permission denied).
         cmd = (
             f"if [ ! -e {quoted} ] && [ ! -L {quoted} ]; then echo __MISSING__; "
             f"elif [ -d {quoted} ]; then echo __ISDIR__; "

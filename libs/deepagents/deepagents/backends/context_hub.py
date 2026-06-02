@@ -126,11 +126,11 @@ class ContextHubBackend(BackendProtocol):
             self._commit_hash = match.group(1)
 
         if self._cache is not None:
-            for path, content in changes.items():
-                if content is None:
-                    self._cache.pop(path, None)
-                else:
-                    self._cache[path] = content
+            # Rebuild the cache rather than mutating in place: drop paths whose
+            # new content is None (deletions) and overlay the rest as updates.
+            deletions = {path for path, content in changes.items() if content is None}
+            updates = {path: content for path, content in changes.items() if content is not None}
+            self._cache = {path: content for path, content in self._cache.items() if path not in deletions} | updates
 
     @staticmethod
     def _strip_prefix(path: str) -> str:

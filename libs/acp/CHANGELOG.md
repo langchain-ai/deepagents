@@ -12,8 +12,6 @@
 
 * Restore passing tests after acp v0.9 schema bump ([#2813](https://github.com/langchain-ai/deepagents/issues/2813)) ([29a351a](https://github.com/langchain-ai/deepagents/commit/29a351a8f5de8c460a3eeaadd76a3c2ace0072e0))
 
-## Changelog
-
 ---
 
 ## Prior Releases

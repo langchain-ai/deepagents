@@ -16,7 +16,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AnyMessage, ContentBlock, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
@@ -51,6 +51,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.volatile_system_suffix import VolatileSystemSuffixMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     _apply_profile_prompt,
@@ -223,6 +224,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
+    volatile_system_suffix: str | list[ContentBlock] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
@@ -332,6 +334,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
                 non-Anthropic models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
+            - [`VolatileSystemSuffixMiddleware`][deepagents.middleware.volatile_system_suffix.VolatileSystemSuffixMiddleware]
+                (if `volatile_system_suffix` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 
             After assembly, any entries in the profile's
@@ -396,6 +400,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
+        volatile_system_suffix: Volatile content to append as the final system
+            content block, *after* the Anthropic prompt-cache breakpoint.
+
+            Use this for per-turn context that belongs in the system prompt but
+            must stay out of the cached prefix — the current date, the
+            signed-in user's identity, and similar values that change every
+            turn. Placing such content last *without* a breakpoint keeps the
+            stable prefix (base prompt, and `AGENTS.md` when `memory` is set)
+            cacheable while the volatile block trails it uncached.
+
+            Pass a `str` to append a single trailing text block, or a list of
+            content blocks to append verbatim. The block is never tagged with
+            `cache_control`; on non-Anthropic models it is simply serialized as
+            the last part of the system instruction. Applies to the main agent
+            and its subagents.
+
+            The content is inserted as system-role text verbatim. Callers
+            folding in user-controlled data should wrap it in explicit boundary
+            markers (e.g. `<user_context>...</user_context>`).
         permissions: List of `FilesystemPermission` rules for the main agent
             and its subagents.
 
@@ -607,6 +630,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            if volatile_system_suffix is not None:
+                # Innermost: trails the caching breakpoint with an uncached block.
+                subagent_middleware.append(VolatileSystemSuffixMiddleware(volatile_system_suffix))
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -678,6 +704,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
         gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        if volatile_system_suffix is not None:
+            # Innermost: trails the caching breakpoint with an uncached block.
+            gp_middleware.append(VolatileSystemSuffixMiddleware(volatile_system_suffix))
 
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -767,6 +796,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 add_cache_control=True,
             )
         )
+    if volatile_system_suffix is not None:
+        # Innermost system-prompt middleware: runs after the caching and memory
+        # breakpoints so the volatile block trails the cached prefix uncached.
+        deepagent_middleware.append(VolatileSystemSuffixMiddleware(volatile_system_suffix))
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
     deepagent_middleware = _apply_excluded_middleware(

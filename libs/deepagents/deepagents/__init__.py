@@ -12,6 +12,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPer
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.volatile_system_suffix import VolatileSystemSuffixMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -41,6 +42,7 @@ __all__ = [
     "SubAgentMiddleware",
     "SubagentRunStream",
     "SubagentTransformer",
+    "VolatileSystemSuffixMiddleware",
     "__version__",
     "create_deep_agent",
     "register_harness_profile",

@@ -70,6 +70,7 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.volatile_system_suffix import VolatileSystemSuffixMiddleware
 
 __all__ = [
     "GRADER_SYSTEM_PROMPT",
@@ -94,5 +95,6 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "VolatileSystemSuffixMiddleware",
     "create_summarization_tool_middleware",
 ]

@@ -103,6 +103,14 @@ _DEFERRED_START_NOTICE = (
 # read the same pre-mutation state and then clobber the other's keys.
 _CONFIG_WRITE_LOCK = threading.Lock()
 
+_DEEPAGENTS_IMPORT_LOCK = threading.RLock()
+"""Serializes process-local cold imports into the Deep Agents SDK graph.
+
+The SDK currently has a package-to-backend circular import that is safe when a
+single thread imports it re-entrantly, but can trip CPython's per-module import
+deadlock detector when two threads cold-import overlapping modules.
+"""
+
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
@@ -125,6 +133,32 @@ def _message_timestamp_footer_id(message_id: str) -> str:
 def _is_message_timestamp_footer(widget: Widget) -> bool:
     """Return whether `widget` is a timestamp footer."""
     return widget.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS)
+
+
+def _create_model_with_deepagents_import_lock(
+    model_spec: str | None = None,
+    *,
+    extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
+) -> ModelResult:
+    """Create a model while serializing Deep Agents SDK import entry.
+
+    Args:
+        model_spec: Model specification in `provider:model` format.
+        extra_kwargs: Extra model constructor kwargs.
+        profile_overrides: Model profile metadata overrides.
+
+    Returns:
+        Created model and resolved metadata.
+    """
+    with _DEEPAGENTS_IMPORT_LOCK:
+        from deepagents_code.config import create_model
+
+        return create_model(
+            model_spec,
+            extra_kwargs=extra_kwargs,
+            profile_overrides=profile_overrides,
+        )
 
 
 @dataclass(frozen=True)
@@ -156,6 +190,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.config import ModelResult
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -1612,14 +1647,6 @@ class DeepAgentsApp(App):
         loop re-enters the same module graph (see that method for why).
         """
 
-        self._deepagents_import_lock = asyncio.Lock()
-        """Serializes cold imports into the Deep Agents graph after prewarm.
-
-        Startup model creation and skill discovery can both be triggered during
-        first paint. If prewarm failed or did not cover a transitive module,
-        both paths may cold-import overlapping modules at the same time.
-        """
-
         # Lifecycle flags & re-entry guards
         self._connecting = (
             server_kwargs is not None and not self._server_startup_deferred
@@ -2406,8 +2433,9 @@ class DeepAgentsApp(App):
             # graph in separate workers. Let prewarm finish first so CPython's
             # per-module import locks cannot form a cycle.
             await self._await_prewarm_imports()
-            async with self._deepagents_import_lock:
-                skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
+            skills, roots = await asyncio.to_thread(
+                self._discover_skills_and_roots_with_import_lock,
+            )
         except OSError:
             logger.warning(
                 "Filesystem error during skill discovery",
@@ -2464,6 +2492,17 @@ class DeepAgentsApp(App):
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         return discover_skills_and_roots(assistant_id)
+
+    def _discover_skills_and_roots_with_import_lock(
+        self,
+    ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+        """Discover skills while serializing Deep Agents SDK import entry.
+
+        Returns:
+            Tuple of `(skill metadata list, pre-resolved containment roots)`.
+        """
+        with _DEEPAGENTS_IMPORT_LOCK:
+            return self._discover_skills_and_roots()
 
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
@@ -2595,7 +2634,6 @@ class DeepAgentsApp(App):
             # `_await_prewarm_imports` for the deadlock rationale.
             await self._await_prewarm_imports()
 
-            from deepagents_code.config import create_model
             from deepagents_code.model_config import (
                 ModelConfigError,
                 save_recent_model,
@@ -2603,8 +2641,10 @@ class DeepAgentsApp(App):
             )
 
             try:
-                async with self._deepagents_import_lock:
-                    result = create_model(**self._model_kwargs)
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
+                    **self._model_kwargs,
+                )
             except ModelConfigError as exc:
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
@@ -2958,12 +2998,13 @@ class DeepAgentsApp(App):
             # tool_display — hit on first message send and first tool
             # approval. Best-effort: missing optional deps should not block the
             # TUI from rendering.
-            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
-            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
-                ApproveDecision,
-            )
-            from langchain_core.messages import AIMessage  # noqa: F401
-            from langgraph.types import Command  # noqa: F401
+            with _DEEPAGENTS_IMPORT_LOCK:
+                from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+                from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                    ApproveDecision,
+                )
+                from langchain_core.messages import AIMessage  # noqa: F401
+                from langgraph.types import Command  # noqa: F401
         except Exception:
             logger.warning("Could not prewarm third-party imports", exc_info=True)
 
@@ -5875,7 +5916,7 @@ class DeepAgentsApp(App):
         if cached is None:
             try:
                 skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots,
+                    self._discover_skills_and_roots_with_import_lock,
                 )
                 # Backfill cache so subsequent invocations are fast
                 self._discovered_skills = skills
@@ -6044,31 +6085,33 @@ class DeepAgentsApp(App):
         """Resolve the offload retention budget as a human-readable string.
 
         Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor.
+        not a trivial accessor. Call only from a worker thread; cold imports
+        and model construction run under the process-wide import lock.
 
         Returns:
             A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
-        from deepagents_code.config import create_model, settings
+        from deepagents_code.config import settings
 
         try:
-            from deepagents.middleware.summarization import (
-                compute_summarization_defaults,
-            )
+            with _DEEPAGENTS_IMPORT_LOCK:
+                from deepagents.middleware.summarization import (
+                    compute_summarization_defaults,
+                )
 
-            model_spec = f"{settings.model_provider}:{settings.model_name}"
-            result = create_model(
-                model_spec,
-                profile_overrides=self._profile_override,
-            )
-            defaults = compute_summarization_defaults(result.model)
-            from deepagents_code.offload import format_offload_limit
+                model_spec = f"{settings.model_provider}:{settings.model_name}"
+                result = _create_model_with_deepagents_import_lock(
+                    model_spec,
+                    profile_overrides=self._profile_override,
+                )
+                defaults = compute_summarization_defaults(result.model)
+                from deepagents_code.offload import format_offload_limit
 
-            return format_offload_limit(
-                defaults["keep"],
-                settings.model_context_limit,
-            )
+                return format_offload_limit(
+                    defaults["keep"],
+                    settings.model_context_limit,
+                )
         except Exception:  # best-effort for /tokens display
             logger.debug("Failed to compute offload budget string", exc_info=True)
             return None
@@ -10035,7 +10078,7 @@ class DeepAgentsApp(App):
                 messaging (which model couldn't be restored and what the session
                 is falling back to) rather than the interactive `/model` errors.
         """
-        from deepagents_code.config import create_model, detect_provider, settings
+        from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import (
             ModelSpec,
             ProviderAuthState,
@@ -10161,7 +10204,8 @@ class DeepAgentsApp(App):
                 display = f"{provider}:{model_name}"
 
             try:
-                result = create_model(
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
                     display,
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,

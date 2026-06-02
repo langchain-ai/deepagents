@@ -17,6 +17,10 @@ from deepagents_cli.deploy.commands import execute_mcp_servers_command
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
+# A UUID-shaped id keeps get/update/delete/connect on the resolver fast path
+# (no list lookup), matching how real server ids look.
+_SID = "11111111-1111-4111-8111-111111111111"
+
 
 def _patch_client(
     monkeypatch: pytest.MonkeyPatch,
@@ -258,7 +262,7 @@ def test_mcp_servers_connect_opens_url_and_polls(
     execute_mcp_servers_command(
         argparse.Namespace(
             mcp_cmd="connect",
-            mcp_server_id="s1",
+            mcp_server_id=_SID,
             scope=["repo", "read:user"],
             force_new=True,
             timeout=30,
@@ -267,7 +271,7 @@ def test_mcp_servers_connect_opens_url_and_polls(
     )
     assert opened == ["https://auth.example/authorize"]
     assert requests == [
-        ("POST", "/v1/deepagents/mcp-servers/s1/oauth-provider", {}, ""),
+        ("POST", f"/v1/deepagents/mcp-servers/{_SID}/oauth-provider", {}, ""),
         (
             "POST",
             "/v1/deepagents/auth-sessions",
@@ -322,17 +326,17 @@ def test_mcp_servers_get_redacts_header_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/deepagents/mcp-servers/s1"
+        assert request.url.path == f"/v1/deepagents/mcp-servers/{_SID}"
         return httpx.Response(
             200,
             json={
-                "id": "s1",
+                "id": _SID,
                 "headers": [{"key": "X-Api-Key", "value": "secret-value"}],
             },
         )
 
     _patch_client(monkeypatch, handler)
-    execute_mcp_servers_command(argparse.Namespace(mcp_cmd="get", mcp_server_id="s1"))
+    execute_mcp_servers_command(argparse.Namespace(mcp_cmd="get", mcp_server_id=_SID))
     out = capsys.readouterr().out
     parsed = json.loads(out)
     assert parsed["headers"] == [{"key": "X-Api-Key", "value": "***"}]
@@ -358,7 +362,7 @@ def test_mcp_servers_update_sends_patch_body(
     execute_mcp_servers_command(
         argparse.Namespace(
             mcp_cmd="update",
-            mcp_server_id="s1",
+            mcp_server_id=_SID,
             url="https://new.example/mcp",
             header=["X-Api-Key=new-value"],
             clear_headers=False,
@@ -367,14 +371,14 @@ def test_mcp_servers_update_sends_patch_body(
     )
     assert captured == {
         "method": "PATCH",
-        "path": "/v1/deepagents/mcp-servers/s1",
+        "path": f"/v1/deepagents/mcp-servers/{_SID}",
         "body": {
             "url": "https://new.example/mcp",
             "headers": [{"key": "X-Api-Key", "value": "new-value"}],
             "auth_type": "headers",
         },
     }
-    assert "Updated mcp_server s1" in capsys.readouterr().out
+    assert "Updated mcp_server" in capsys.readouterr().out
 
 
 def test_mcp_servers_update_clear_headers(
@@ -390,7 +394,7 @@ def test_mcp_servers_update_clear_headers(
     execute_mcp_servers_command(
         argparse.Namespace(
             mcp_cmd="update",
-            mcp_server_id="s1",
+            mcp_server_id=_SID,
             url=None,
             header=None,
             clear_headers=True,
@@ -454,7 +458,100 @@ def test_mcp_servers_delete(
 
     _patch_client(monkeypatch, handler)
     execute_mcp_servers_command(
-        argparse.Namespace(mcp_cmd="delete", mcp_server_id="s1", yes=True)
+        argparse.Namespace(mcp_cmd="delete", mcp_server_id=_SID, yes=True)
     )
     assert methods == ["DELETE"]
     assert "Deleted" in capsys.readouterr().out
+
+
+def test_mcp_servers_delete_resolves_name(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": _SID, "name": "vic-notion", "url": "https://notion/mcp"},
+                    {"id": "other", "name": "deep-wiki", "url": "https://wiki/mcp"},
+                ],
+            )
+        return httpx.Response(204)
+
+    _patch_client(monkeypatch, handler)
+    execute_mcp_servers_command(
+        argparse.Namespace(mcp_cmd="delete", mcp_server_id="vic-notion", yes=True)
+    )
+    assert requests == [
+        ("GET", "/v1/deepagents/mcp-servers"),
+        ("DELETE", f"/v1/deepagents/mcp-servers/{_SID}"),
+    ]
+    assert _SID in capsys.readouterr().out
+
+
+def test_mcp_servers_delete_resolves_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[{"id": _SID, "name": "notion", "url": "https://mcp.notion.com/mcp"}],
+            )
+        return httpx.Response(204)
+
+    _patch_client(monkeypatch, handler)
+    # Trailing slash differs from the registered URL; normalization should match.
+    execute_mcp_servers_command(
+        argparse.Namespace(
+            mcp_cmd="delete",
+            mcp_server_id="https://mcp.notion.com/mcp/",
+            yes=True,
+        )
+    )
+    assert ("DELETE", f"/v1/deepagents/mcp-servers/{_SID}") in requests
+
+
+def test_mcp_servers_resolve_not_found_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        return httpx.Response(200, json=[{"id": _SID, "name": "other"}])
+
+    _patch_client(monkeypatch, handler)
+    with pytest.raises(SystemExit):
+        execute_mcp_servers_command(
+            argparse.Namespace(mcp_cmd="delete", mcp_server_id="missing", yes=True)
+        )
+    assert "no MCP server matches" in capsys.readouterr().out
+
+
+def test_mcp_servers_resolve_ambiguous_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "id-a", "name": "dupe", "url": "https://a"},
+                {"id": "id-b", "name": "dupe", "url": "https://b"},
+            ],
+        )
+
+    _patch_client(monkeypatch, handler)
+    with pytest.raises(SystemExit):
+        execute_mcp_servers_command(
+            argparse.Namespace(mcp_cmd="delete", mcp_server_id="dupe", yes=True)
+        )
+    assert "matches multiple MCP servers" in capsys.readouterr().out

@@ -430,6 +430,38 @@ def _read_skills(root: Path) -> list[Skill]:
     return result
 
 
+def _read_subagent_model(data: dict[str, Any], *, source: Path) -> str | None:
+    """Read a subagent's model from `model`, falling back to legacy `model_id`.
+
+    The top-level `agent.json` and the SDK's `SubAgent` spec both spell this key
+    `model`, so subagents accept the same. `model_id` is still honored for
+    backward compatibility but should be migrated to `model`.
+
+    Args:
+        data: The parsed subagent `agent.json` object.
+        source: Path to the subagent `agent.json`, used in error messages.
+
+    Returns:
+        The stripped model identifier, or `None` when unspecified.
+
+    Raises:
+        ProjectError: If both keys are set, or the value is not a non-empty
+            string.
+    """
+    model = data.get("model")
+    legacy = data.get("model_id")
+    if model is not None and legacy is not None:
+        msg = f"{source}: use either `model` or `model_id`, not both."
+        raise ProjectError(msg)
+    value = model if model is not None else legacy
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        msg = f"{source}: `model` must be a non-empty string when provided."
+        raise ProjectError(msg)
+    return value.strip()
+
+
 def _read_subagents(root: Path) -> list[Subagent]:
     sa_dir = root / _SUBAGENTS_DIR
     if not _is_project_dir(root, sa_dir):
@@ -490,7 +522,7 @@ def _read_subagents(root: Path) -> list[Subagent]:
             Subagent(
                 name=name,
                 description=data.get("description"),
-                model_id=data.get("model_id"),
+                model_id=_read_subagent_model(data, source=agent_json),
                 instructions=_read_project_text(
                     root,
                     agents_md,
@@ -521,7 +553,7 @@ Then run `deepagents init --force` to refresh scaffolding or migrate by hand.
 _LEGACY_MCP_HINT = """\
 Found legacy `mcp.json` in {root}. MCP servers are now workspace-level resources:
 
-  deepagents mcp-servers add --url <url> --header KEY=VALUE [--name <name>]
+  deepagents mcp-servers add --url <url> --header <api-key-name>=<value> --name <name>
 
 Then reference the server in tools.json by mcp_server_url.
 """

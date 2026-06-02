@@ -39,27 +39,27 @@ deepagents mcp-servers add --url https://tools.langchain.com \
                             --header X-Api-Key=$LANGSMITH_API_KEY \
                             --name Fleet
 
-# Reference the server's tools in tools.json (otherwise the agent has no tools)
-cat > my-agent/tools.json <<'JSON'
-{
-  "tools": [
-    {
-      "name": "tavily_web_search",
-      "mcp_server_url": "https://tools.langchain.com",
-      "mcp_server_name": "Fleet"
-    }
-  ]
-}
-JSON
+# init scaffolds an empty tools.json. Add tools that reference a registered
+# MCP server's URL (otherwise the agent has no tools), e.g. the Fleet server
+# registered above:
+#   { "name": "read_url_content", "mcp_server_url": "https://tools.langchain.com",
+#     "mcp_server_name": "Fleet", "display_name": "read_url_content" }
 
 # Upsert the project as a managed agent on /v1/deepagents/*
 cd my-agent && deepagents deploy
 ```
 
-`deepagents init` configures new agents with the managed
-`thread_scoped_sandbox` backend by default. The CLI does not create or run
-sandboxes locally; sandbox lifecycle is handled by the Managed Deep Agents
-platform.
+`deepagents init` scaffolds an empty `tools.json`, an example skill under
+`skills/`, and an example subagent under `subagents/`; edit or remove them to
+suit your agent. `tools.json` starts empty because every tool must reference an
+MCP server that is already registered in the workspace
+(`deepagents mcp-servers add`) — so a freshly scaffolded project deploys
+without first registering a server.
+
+New agents default to the `default` backend — switch `agent.json`'s
+`backend.type` to `thread_scoped_sandbox` (or `agent_scoped_sandbox`) to opt
+into a managed sandbox. The CLI does not create or run sandboxes locally;
+sandbox lifecycle is handled by the Managed Deep Agents platform.
 
 ### Project layout
 
@@ -79,11 +79,17 @@ deepagents agents list                  # list workspace agents
 deepagents agents get <agent_id>        # show one agent
 deepagents agents delete <agent_id>     # delete an agent
 
-deepagents mcp-servers list             # list workspace MCP servers
-deepagents mcp-servers add --url URL    # register a server
-deepagents mcp-servers update <id>      # update server URL or headers
-deepagents mcp-servers delete <id>      # remove a server
+deepagents mcp-servers list                  # list workspace MCP servers
+deepagents mcp-servers add --url URL          # register a server
+deepagents mcp-servers get <id|name|url>      # show one server
+deepagents mcp-servers update <id|name|url>   # update server URL or headers
+deepagents mcp-servers delete <id|name|url>   # remove a server
+deepagents mcp-servers connect <id|name|url>  # start OAuth for a server
 ```
+
+`get`, `update`, `delete`, and `connect` accept an MCP server's id, exact name,
+or URL — a non-id value is resolved against `mcp-servers list` (URLs are matched
+ignoring case and trailing slash).
 
 ## 📖 Resources
 

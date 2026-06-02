@@ -27,8 +27,8 @@ def test_init_scaffolds_new_layout(
     assert (project / "agent.json").is_file()
     agent = json.loads((project / "agent.json").read_text())
     assert agent["name"] == "my-agent"
-    assert agent["model"] == "anthropic:claude-sonnet-4-6"
-    assert agent["backend"] == {"type": "thread_scoped_sandbox"}
+    assert agent["model"] == "openai:gpt-5.5"
+    assert agent["backend"] == {"type": "default"}
     assert "runtime" not in agent
     assert (project / "AGENTS.md").is_file()
     assert (project / ".gitignore").is_file()
@@ -37,6 +37,31 @@ def test_init_scaffolds_new_layout(
     assert ".env" in gitignore
     assert ".deepagents/" not in gitignore
     assert (project / "skills").is_dir()
+    assert (project / "skills" / "example-skill" / "SKILL.md").is_file()
+    tools = json.loads((project / "tools.json").read_text())
+    assert tools["tools"] == []
+    subagent = project / "subagents" / "researcher"
+    assert (subagent / "agent.json").is_file()
+    assert (subagent / "AGENTS.md").is_file()
+    subagent_cfg = json.loads((subagent / "agent.json").read_text())
+    assert subagent_cfg["model"] == "openai:gpt-5.5"
+
+
+def test_init_scaffold_loads_as_valid_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_cli.deploy.project import Project
+
+    monkeypatch.chdir(tmp_path)
+    execute_init_command(_ns("my-agent"))
+    project = Project.load(tmp_path / "my-agent")
+    assert project.backend == {"type": "default"}
+    assert project.tools is not None
+    assert len(project.skills) == 1
+    assert project.skills[0].name == "example-skill"
+    assert len(project.subagents) == 1
+    assert project.subagents[0].name == "researcher"
+    assert project.subagents[0].model_id == "openai:gpt-5.5"
 
 
 def test_init_refuses_existing_dir(

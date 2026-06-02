@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,13 +86,28 @@ def _scaffold(*, name: str, force: bool) -> None:
     (project_dir / "agent.json").write_text(_STARTER_AGENT_JSON.format(name=name))
     (project_dir / "AGENTS.md").write_text(_STARTER_AGENTS_MD)
     (project_dir / ".gitignore").write_text(_STARTER_GITIGNORE)
-    (project_dir / "skills").mkdir(exist_ok=True)
+    (project_dir / "tools.json").write_text(_STARTER_TOOLS_JSON)
 
-    print(f"Created {name}/ with: agent.json, AGENTS.md, .gitignore, skills/")
+    skill_dir = project_dir / "skills" / _STARTER_SKILL_NAME
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(_STARTER_SKILL_MD)
+
+    subagent_dir = project_dir / "subagents" / _STARTER_SUBAGENT_NAME
+    subagent_dir.mkdir(parents=True, exist_ok=True)
+    (subagent_dir / "agent.json").write_text(_STARTER_SUBAGENT_AGENT_JSON)
+    (subagent_dir / "AGENTS.md").write_text(_STARTER_SUBAGENT_AGENTS_MD)
+
+    print(
+        f"Created {name}/ with: agent.json, AGENTS.md, .gitignore, tools.json, "
+        f"skills/{_STARTER_SKILL_NAME}/, subagents/{_STARTER_SUBAGENT_NAME}/"
+    )
     print("\nNext steps:")
     print(f"  cd {name}")
     print("  # set LANGSMITH_API_KEY in your shell, repo .env, or ~/.deepagents/.env")
-    print("  # edit AGENTS.md, optionally add tools.json / skills/ / subagents/")
+    print("  # edit AGENTS.md; tweak or remove subagents/ and skills/")
+    print("  # to give your agent tools, first register an MCP server:")
+    print("  #   deepagents mcp-servers add --url <url> --header KEY=VALUE")
+    print("  #   then reference it in tools.json by its mcp_server_url")
     print("  deepagents deploy")
 
 
@@ -99,9 +115,9 @@ _STARTER_AGENT_JSON = """\
 {{
   "name": "{name}",
   "description": "A managed deep agent.",
-  "model": "anthropic:claude-sonnet-4-6",
+  "model": "openai:gpt-5.5",
   "backend": {{
-    "type": "thread_scoped_sandbox"
+    "type": "default"
   }}
 }}
 """
@@ -119,6 +135,62 @@ You are a helpful AI agent.
 
 _STARTER_GITIGNORE = """\
 .env
+"""
+
+# Empty by default so the first `deepagents deploy` succeeds out of the box.
+# Tools reference an MCP server that must already be registered in the
+# workspace (see `deepagents mcp-servers add`); add entries to `tools` once a
+# server exists, e.g.:
+#   {"name": "read_url_content", "mcp_server_url": "https://tools.langchain.com",
+#    "mcp_server_name": "Fleet", "display_name": "read_url_content"}
+_STARTER_TOOLS_JSON = """\
+{
+  "tools": [],
+  "interrupt_config": {}
+}
+"""
+
+# Example subagent. The main agent can delegate to it via the Task tool.
+_STARTER_SUBAGENT_NAME = "researcher"
+
+_STARTER_SUBAGENT_AGENT_JSON = """\
+{
+  "description": "Researches a topic and returns a concise summary.",
+  "model": "openai:gpt-5.5"
+}
+"""
+
+_STARTER_SUBAGENT_AGENTS_MD = """\
+# Researcher
+
+You are a focused research subagent.
+
+## Guidelines
+
+- Gather the requested information and return a concise, well-sourced summary.
+- State assumptions and call out anything you could not verify.
+"""
+
+# Example skill. Skills are progressive-disclosure instructions the agent loads
+# on demand; the SKILL.md frontmatter `name` and `description` are required.
+_STARTER_SKILL_NAME = "example-skill"
+
+_STARTER_SKILL_MD = """\
+---
+name: example-skill
+description: Worked example of the skill format; replace with your own trigger.
+---
+
+# Example skill
+
+Skills hold detailed, reusable instructions the agent pulls in only when the
+description above matches the task.
+
+## Steps
+
+1. Describe the first step the agent should take.
+2. Add any constraints, formats, or examples it should follow.
+3. Delete or replace this skill once you have your own.
 """
 
 # --- deploy / agents / mcp-servers (stubs filled by later tasks) ------------
@@ -505,19 +577,20 @@ def _add_mcp_servers_parser(
         help="Start OAuth connection after creating an OAuth MCP server",
     )
     _add_oauth_connect_options(a)
+    id_help = "MCP server id, exact name, or URL"
     g = sub.add_parser("get")
-    g.add_argument("mcp_server_id")
+    g.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
     u = sub.add_parser("update")
-    u.add_argument("mcp_server_id")
+    u.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
     u.add_argument("--url", default=None)
     u.add_argument("--header", action="append", default=None, metavar="KEY=VALUE")
     u.add_argument("--clear-headers", action="store_true")
     u.add_argument("--auth-type", default=None, choices=["headers"])
     d = sub.add_parser("delete")
-    d.add_argument("mcp_server_id")
+    d.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
     d.add_argument("--yes", action="store_true")
     c = sub.add_parser("connect")
-    c.add_argument("mcp_server_id")
+    c.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
     _add_oauth_connect_options(c)
 
 
@@ -545,6 +618,63 @@ def _add_oauth_connect_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Print the verification URL without opening a browser",
     )
+
+
+_MCP_UUID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
+)
+
+
+def _resolve_mcp_server_id(client: ApiClient, identifier: str) -> str:
+    """Resolve an MCP server *identifier* to its id.
+
+    The platform addresses MCP servers by id, so a non-UUID *identifier* is
+    matched against the workspace server list by exact name first, then by
+    normalized URL (lowercased, trailing slash stripped — same rules deploy
+    uses). A UUID is returned as-is without a lookup.
+
+    Args:
+        client: Authenticated deploy API client.
+        identifier: An MCP server id (UUID), exact name, or URL.
+
+    Returns:
+        The resolved MCP server id.
+
+    Raises:
+        SystemExit: If nothing matches or the identifier is ambiguous.
+    """
+    from deepagents_cli.deploy.mcp_resolver import _normalize_url
+
+    candidate = identifier.strip()
+    if _MCP_UUID_RE.match(candidate):
+        return candidate
+
+    servers = client.list_mcp_servers()
+    matches = [s for s in servers if s.get("name") == identifier]
+    if not matches:
+        target = _normalize_url(identifier)
+        matches = [
+            s
+            for s in servers
+            if isinstance(s.get("url"), str) and _normalize_url(s["url"]) == target
+        ]
+
+    ids = sorted({s["id"] for s in matches if isinstance(s.get("id"), str)})
+    if not ids:
+        print(
+            f"Error: no MCP server matches {identifier!r}. "
+            "Run `deepagents mcp-servers list` to see ids, names, and URLs."
+        )
+        raise SystemExit(1)
+    if len(ids) > 1:
+        listed = ", ".join(ids)
+        print(
+            f"Error: {identifier!r} matches multiple MCP servers ({listed}). "
+            "Re-run with the id."
+        )
+        raise SystemExit(1)
+    return ids[0]
 
 
 def execute_mcp_servers_command(args: argparse.Namespace) -> None:
@@ -595,7 +725,8 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                     no_browser=args.no_browser,
                 )
         elif args.mcp_cmd == "get":
-            server = client.get_mcp_server(args.mcp_server_id)
+            server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
+            server = client.get_mcp_server(server_id)
             print(json.dumps(_redact_mcp_server(server), indent=2))
         elif args.mcp_cmd == "update":
             headers = _parse_update_headers(args.header, args.clear_headers)
@@ -606,7 +737,7 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                 )
                 raise SystemExit(1)
             srv = client.update_mcp_server(
-                args.mcp_server_id,
+                _resolve_mcp_server_id(client, args.mcp_server_id),
                 url=args.url,
                 headers=headers,
                 auth_type=args.auth_type,
@@ -616,9 +747,15 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
             srv_url = srv.get("url")
             print(f"Updated mcp_server {srv_id}: {srv_name} → {srv_url}")
         elif args.mcp_cmd == "delete":
+            server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
+            label = (
+                server_id
+                if args.mcp_server_id == server_id
+                else f"{args.mcp_server_id} ({server_id})"
+            )
             if not args.yes:
                 try:
-                    prompt = f"Delete MCP server {args.mcp_server_id}? [y/N]: "
+                    prompt = f"Delete MCP server {label}? [y/N]: "
                     answer = input(prompt).strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print()
@@ -627,12 +764,12 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                 if answer not in {"y", "yes"}:
                     print("Aborted.")
                     return
-            client.delete_mcp_server(args.mcp_server_id)
-            print(f"Deleted {args.mcp_server_id}")
+            client.delete_mcp_server(server_id)
+            print(f"Deleted {server_id}")
         elif args.mcp_cmd == "connect":
             _connect_mcp_server_oauth(
                 client,
-                args.mcp_server_id,
+                _resolve_mcp_server_id(client, args.mcp_server_id),
                 scopes=args.scope,
                 force_new=args.force_new,
                 timeout_seconds=args.timeout,

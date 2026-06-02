@@ -116,7 +116,7 @@ def resolve_referenced_servers(
             f"are not registered in this workspace:\n{listed}\n\n"
             f"Register each with:\n"
             f"  deepagents mcp-servers add --url <url> "
-            f"--header KEY=VALUE [--name <name>]"
+            f"--name <name> --header <api-key-name>=<value>"
         )
         raise UnresolvedServersError(msg, urls=urls)
     return out

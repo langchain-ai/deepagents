@@ -777,19 +777,7 @@ except PermissionError:
         # block traversal (e.g. `..`, absolute paths, symlinks pointing
         # elsewhere). Whatever the sandbox shell can reach, this can delete.
         quoted = shlex.quote(file_path)
-        # Classify the path in one round-trip, emitting a marker per outcome:
-        #   - `[ ! -e ] && [ ! -L ]`: neither a real file nor a symlink ->
-        #     __MISSING__. `-e` alone misses dangling symlinks (target gone),
-        #     so `-L` is also probed to treat a broken symlink as present.
-        #   - `[ -d ]`: a directory -> __ISDIR__. We only delete files, and
-        #     `rm -f` won't remove a directory anyway, so guard it explicitly.
-        #   - otherwise: `rm -f` the file, emitting __DELETED__ on success or
-        #     __FAILED__ if `rm` returns non-zero (e.g. permission denied).
-        cmd = (
-            f"if [ ! -e {quoted} ] && [ ! -L {quoted} ]; then echo __MISSING__; "
-            f"elif [ -d {quoted} ]; then echo __ISDIR__; "
-            f"else rm -f {quoted} && echo __DELETED__ || echo __FAILED__; fi"
-        )
+        cmd = f"rm -f {quoted}"
         result = self.execute(cmd)
         output = result.output
 

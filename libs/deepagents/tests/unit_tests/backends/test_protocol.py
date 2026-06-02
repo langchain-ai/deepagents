@@ -17,7 +17,7 @@ from deepagents.backends.protocol import (
     GrepResult,
     LsResult,
     SandboxBackendProtocol,
-    supports_delete,
+    _supports_delete,
 )
 
 
@@ -120,17 +120,17 @@ class TestAsyncMethodsPropagateNotImplemented:
 
 
 class TestSupportsDelete:
-    """`supports_delete` detects whether a backend overrides `delete`."""
+    """`_supports_delete` detects whether a backend overrides `delete`."""
 
     def test_false_when_not_overridden(self, backend: BareBackend) -> None:
-        assert supports_delete(backend) is False
+        assert _supports_delete(backend) is False
 
     def test_true_when_overridden(self) -> None:
         class MyBackend(BackendProtocol):
             def delete(self, file_path: str) -> DeleteResult:
                 return DeleteResult(path=file_path)
 
-        assert supports_delete(MyBackend()) is True
+        assert _supports_delete(MyBackend()) is True
 
 
 class TestDeprecatedMethodsRouteToNewNames:

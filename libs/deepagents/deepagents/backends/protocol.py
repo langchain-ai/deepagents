@@ -889,7 +889,7 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return "timeout" in sig.parameters
 
 
-def supports_delete(backend: BackendProtocol) -> bool:
+def _supports_delete(backend: BackendProtocol) -> bool:
     """Check whether a backend implements `delete`.
 
     `delete` is optional: backends that don't override it inherit the

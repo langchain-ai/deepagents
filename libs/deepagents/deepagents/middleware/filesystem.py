@@ -48,7 +48,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
     execute_accepts_timeout,
-    supports_delete,
+    _supports_delete,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -1755,7 +1755,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and not supports_execution(backend):
                 unsupported.add("execute")
                 has_execute_tool = False
-            if has_delete_tool and not supports_delete(backend):
+            if has_delete_tool and not _supports_delete(backend):
                 unsupported.add("delete_file")
             if unsupported:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]

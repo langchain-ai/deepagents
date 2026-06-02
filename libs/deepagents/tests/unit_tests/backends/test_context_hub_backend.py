@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +39,52 @@ def _make_backend(
     mock_client.push_agent.return_value = _COMMIT_URL
     backend = ContextHubBackend("-/test-agent", client=mock_client)
     return backend, mock_client
+
+
+class _BlockingPushClient:
+    """Fake client that blocks the first push to expose same-instance races."""
+
+    def __init__(self) -> None:
+        self.first_push_started = threading.Event()
+        self.release_first_push = threading.Event()
+        self.second_push_started = threading.Event()
+        self.parent_commits: list[str | None] = []
+        self.files: dict[str, FileEntry] = {
+            "a.md": FileEntry(type="file", content="left\nright\n"),
+        }
+        self._lock = threading.Lock()
+
+    def pull_agent(self, _identifier: str) -> SimpleNamespace:
+        """Return the current fake Hub context."""
+        return SimpleNamespace(
+            commit_id="00000000-0000-0000-0000-000000000000",
+            commit_hash=_COMMIT_HASH,
+            files=dict(self.files),
+        )
+
+    def push_agent(
+        self,
+        _identifier: str,
+        *,
+        files: dict[str, FileEntry],
+        parent_commit: str | None,
+    ) -> str:
+        """Record parent commits and block the first push until released."""
+        with self._lock:
+            self.parent_commits.append(parent_commit)
+            call_number = len(self.parent_commits)
+
+        if call_number == 1:
+            self.first_push_started.set()
+            if not self.release_first_push.wait(timeout=2):
+                msg = "timed out waiting to release first push"
+                raise RuntimeError(msg)
+        elif call_number == 2:
+            self.second_push_started.set()
+
+        with self._lock:
+            self.files.update(files)
+        return f"https://host/hub/-/test-agent:{call_number:08x}"
 
 
 def test_read_returns_content() -> None:
@@ -219,6 +267,33 @@ def test_edit_replace_all() -> None:
     result = backend.edit("/a.md", "x", "y", replace_all=True)
     assert result.error is None
     assert result.occurrences == 3
+
+
+def test_concurrent_same_instance_edits_are_serialized() -> None:
+    """Concurrent edits on one backend instance must not use stale cache state."""
+    client = _BlockingPushClient()
+    backend = ContextHubBackend("-/test-agent", client=cast("Any", client))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(backend.edit, "/a.md", "left", "LEFT")
+        assert client.first_push_started.wait(timeout=2)
+
+        second = executor.submit(backend.edit, "/a.md", "right", "RIGHT")
+        try:
+            assert not client.second_push_started.wait(timeout=0.1)
+        finally:
+            client.release_first_push.set()
+
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert first_result.error is None
+    assert second_result.error is None
+    assert client.parent_commits == [_COMMIT_HASH, "00000001"]
+
+    read = backend.read("/a.md")
+    assert read.file_data is not None
+    assert read.file_data["content"] == "LEFT\nRIGHT\n"
 
 
 def test_ls_flat_repo() -> None:

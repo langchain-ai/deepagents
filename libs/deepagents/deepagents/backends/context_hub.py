@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING
 
 from langsmith import Client
@@ -43,7 +44,12 @@ _URL_COMMIT_SUFFIX_RE = re.compile(r":([0-9a-f]{8,64})$")
 
 
 class ContextHubBackend(BackendProtocol):
-    """Backend that stores files in a LangSmith Hub agent repo (persistent)."""
+    """Backend that stores files in a LangSmith Hub agent repo (persistent).
+
+    A backend instance represents one shared Hub repo. LangGraph `thread_id`
+    does not namespace files within that repo, so use distinct identifiers when
+    sessions or tenants need isolated file state.
+    """
 
     def __init__(
         self,
@@ -62,6 +68,11 @@ class ContextHubBackend(BackendProtocol):
         self._cache: dict[str, str] | None = None
         self._linked_entries: dict[str, str] = {}
         self._commit_hash: str | None = None
+        # Compiled graphs commonly share one backend instance across
+        # concurrent thread_id invocations. Guard the mutable cache and commit
+        # hash so same-process writes are serialized before relying on
+        # parent_commit for cross-process optimistic concurrency.
+        self._lock = threading.RLock()
 
     def _load_tree(self) -> None:
         """Fetch the file tree; missing repos are treated as empty."""
@@ -94,34 +105,37 @@ class ContextHubBackend(BackendProtocol):
 
     def get_linked_entries(self) -> dict[str, str]:
         """Return linked-entry paths mapped to their repo handles."""
-        self._ensure_cache()
-        return dict(self._linked_entries)
+        with self._lock:
+            self._ensure_cache()
+            return dict(self._linked_entries)
 
     def has_prior_commits(self) -> bool:
         """Return True if the hub repo already exists with at least one commit."""
-        self._ensure_cache()
-        return self._commit_hash is not None
+        with self._lock:
+            self._ensure_cache()
+            return self._commit_hash is not None
 
     def _commit(self, files: dict[str, str]) -> None:
         """Push `files` as one commit; update the cache on success."""
-        if not files:
-            return
+        with self._lock:
+            if not files:
+                return
 
-        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) for path, content in files.items()
-        }
-        url = self._client.push_agent(
-            self._identifier,
-            files=payload,
-            parent_commit=self._commit_hash,
-        )
-        match = _URL_COMMIT_SUFFIX_RE.search(url)
-        if match:
-            self._commit_hash = match.group(1)
+            payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
+                path: FileEntry(type="file", content=content) for path, content in files.items()
+            }
+            url = self._client.push_agent(
+                self._identifier,
+                files=payload,
+                parent_commit=self._commit_hash,
+            )
+            match = _URL_COMMIT_SUFFIX_RE.search(url)
+            if match:
+                self._commit_hash = match.group(1)
 
-        if self._cache is not None:
-            for path, content in files.items():
-                self._cache[path] = content
+            if self._cache is not None:
+                for path, content in files.items():
+                    self._cache[path] = content
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -139,12 +153,13 @@ class ContextHubBackend(BackendProtocol):
             ReadResult with raw (unformatted) content.
         """
         hub_path = self._strip_prefix(file_path)
-        try:
-            cache = self._ensure_cache()
-        except LangSmithError as exc:
-            logger.exception("Hub pull failed for %r", self._identifier)
-            return ReadResult(error=f"Hub unavailable: {exc}")
-        content = cache.get(hub_path)
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+            except LangSmithError as exc:
+                logger.exception("Hub pull failed for %r", self._identifier)
+                return ReadResult(error=f"Hub unavailable: {exc}")
+            content = cache.get(hub_path)
         if content is None:
             return ReadResult(error=f"File '{file_path}' not found")
 
@@ -164,13 +179,14 @@ class ContextHubBackend(BackendProtocol):
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit `content` to `file_path`."""
         hub_path = self._strip_prefix(file_path)
-        try:
-            self._ensure_cache()  # populates _commit_hash for parent_commit on push
-            self._commit({hub_path: content})
-        except LangSmithError as exc:
-            logger.exception("Hub write failed for %r", self._identifier)
-            self._cache = None
-            return WriteResult(error=f"Hub unavailable: {exc}")
+        with self._lock:
+            try:
+                self._ensure_cache()  # populates _commit_hash for parent_commit on push
+                self._commit({hub_path: content})
+            except LangSmithError as exc:
+                logger.exception("Hub write failed for %r", self._identifier)
+                self._cache = None
+                return WriteResult(error=f"Hub unavailable: {exc}")
         return WriteResult(path=file_path)
 
     def edit(
@@ -182,37 +198,40 @@ class ContextHubBackend(BackendProtocol):
     ) -> EditResult:
         """Replace `old_string` with `new_string` in a file."""
         hub_path = self._strip_prefix(file_path)
-        try:
-            cache = self._ensure_cache()
-            current = cache.get(hub_path)
-            if current is None:
-                return EditResult(error=f"Error: File '{file_path}' not found")
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+                current = cache.get(hub_path)
+                if current is None:
+                    return EditResult(error=f"Error: File '{file_path}' not found")
 
-            result = perform_string_replacement(current, old_string, new_string, replace_all)
-            if isinstance(result, str):
-                return EditResult(error=result)
+                result = perform_string_replacement(current, old_string, new_string, replace_all)
+                if isinstance(result, str):
+                    return EditResult(error=result)
 
-            new_content, occurrences = result
-            self._commit({hub_path: new_content})
-        except LangSmithError as exc:
-            logger.exception("Hub edit failed for %r", self._identifier)
-            self._cache = None
-            return EditResult(error=f"Hub unavailable: {exc}")
+                new_content, occurrences = result
+                self._commit({hub_path: new_content})
+            except LangSmithError as exc:
+                logger.exception("Hub edit failed for %r", self._identifier)
+                self._cache = None
+                return EditResult(error=f"Hub unavailable: {exc}")
         return EditResult(path=file_path, occurrences=occurrences)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""
         hub_prefix = self._strip_prefix(path).rstrip("/")
-        try:
-            cache = self._ensure_cache()
-        except LangSmithError as exc:
-            logger.exception("Hub pull failed for %r", self._identifier)
-            return LsResult(error=f"Hub unavailable: {exc}")
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+            except LangSmithError as exc:
+                logger.exception("Hub pull failed for %r", self._identifier)
+                return LsResult(error=f"Hub unavailable: {exc}")
+            file_paths = list(cache)
 
         dirs: set[str] = set()
         entries: list[FileInfo] = []
 
-        for file_path in cache:
+        for file_path in file_paths:
             if hub_prefix and not file_path.startswith(hub_prefix + "/"):
                 continue
 
@@ -239,11 +258,13 @@ class ContextHubBackend(BackendProtocol):
         glob: str | None = None,
     ) -> GrepResult:
         """Search contents for `pattern` (optional `path` / `glob` filters)."""
-        try:
-            cache = self._ensure_cache()
-        except LangSmithError as exc:
-            logger.exception("Hub pull failed for %r", self._identifier)
-            return GrepResult(error=f"Hub unavailable: {exc}")
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+            except LangSmithError as exc:
+                logger.exception("Hub pull failed for %r", self._identifier)
+                return GrepResult(error=f"Hub unavailable: {exc}")
+            items = list(cache.items())
         matches: list[GrepMatch] = []
 
         try:
@@ -253,7 +274,7 @@ class ContextHubBackend(BackendProtocol):
 
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
-        for file_path, content in cache.items():
+        for file_path, content in items:
             if prefix and not file_path.startswith(prefix):
                 continue
             if glob and not fnmatch.fnmatch(file_path, glob):
@@ -266,14 +287,16 @@ class ContextHubBackend(BackendProtocol):
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
         """Return files matching `pattern` (`path` unused — flat namespace)."""
-        try:
-            cache = self._ensure_cache()
-        except LangSmithError as exc:
-            logger.exception("Hub pull failed for %r", self._identifier)
-            return GlobResult(error=f"Hub unavailable: {exc}")
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+            except LangSmithError as exc:
+                logger.exception("Hub pull failed for %r", self._identifier)
+                return GlobResult(error=f"Hub unavailable: {exc}")
+            file_paths = list(cache)
         results: list[FileInfo] = [
             FileInfo(path=f"/{file_path}", is_dir=False)
-            for file_path in cache
+            for file_path in file_paths
             if fnmatch.fnmatch(f"/{file_path}", pattern) or fnmatch.fnmatch(file_path, pattern)
         ]
         return GlobResult(matches=results)
@@ -294,13 +317,14 @@ class ContextHubBackend(BackendProtocol):
 
         commit_error: str | None = None
         if valid_files:
-            try:
-                self._ensure_cache()
-                self._commit(valid_files)
-            except LangSmithError as exc:
-                logger.exception("Hub batch upload failed for %r", self._identifier)
-                self._cache = None
-                commit_error = f"Hub unavailable: {exc}"
+            with self._lock:
+                try:
+                    self._ensure_cache()
+                    self._commit(valid_files)
+                except LangSmithError as exc:
+                    logger.exception("Hub batch upload failed for %r", self._identifier)
+                    self._cache = None
+                    commit_error = f"Hub unavailable: {exc}"
 
         results: list[FileUploadResponse] = []
         for path, text in decoded:
@@ -316,20 +340,20 @@ class ContextHubBackend(BackendProtocol):
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files as raw bytes. Missing paths return `file_not_found`."""
-        try:
-            cache = self._ensure_cache()
-        except LangSmithError as exc:
-            logger.exception("Hub pull failed for %r", self._identifier)
-            # Backend-specific error string per protocol docs (FileOperationError
-            # literal union doesn't cover hub failures).
-            return [
-                FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")  # type: ignore[arg-type]
-                for p in paths
-            ]
+        with self._lock:
+            try:
+                cache = self._ensure_cache()
+            except LangSmithError as exc:
+                logger.exception("Hub pull failed for %r", self._identifier)
+                # Backend-specific error string per protocol docs (FileOperationError
+                # literal union doesn't cover hub failures).
+                return [
+                    FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")  # type: ignore[arg-type]
+                    for p in paths
+                ]
+            contents = {path: cache.get(self._strip_prefix(path)) for path in paths}
         results: list[FileDownloadResponse] = []
-        for path in paths:
-            hub_path = self._strip_prefix(path)
-            content = cache.get(hub_path)
+        for path, content in contents.items():
             if content is not None:
                 results.append(FileDownloadResponse(path=path, content=content.encode("utf-8")))
             else:

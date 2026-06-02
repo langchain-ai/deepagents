@@ -14,7 +14,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-7`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
-- `baseten:MiniMaxAI/MiniMax-M2.5`
+- `baseten:MiniMaxAI/MiniMax-M3`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 - `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
@@ -24,7 +24,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
 - `fireworks:accounts/fireworks/models/glm-5`
 - `fireworks:accounts/fireworks/models/kimi-k2p5`
-- `fireworks:accounts/fireworks/models/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-flash`
 - `google_genai:gemini-2.5-pro`
@@ -44,7 +44,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-6`
 - `anthropic:claude-opus-4-7`
 - `anthropic:claude-sonnet-4-6`
-- `baseten:MiniMaxAI/MiniMax-M2.5`
+- `baseten:MiniMaxAI/MiniMax-M3`
 - `baseten:zai-org/GLM-5`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-pro`
@@ -63,7 +63,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `groq:qwen/qwen3-32b`
 - `ollama:glm-5.1:cloud`
 - `ollama:glm-5:cloud`
-- `ollama:minimax-m2.5:cloud`
+- `ollama:minimax-m3:cloud`
 - `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 - `xai:grok-3-mini-fast`
@@ -92,7 +92,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:zai-org/GLM-5`
 - `openrouter:deepseek/deepseek-v4-pro`
-- `openrouter:minimax/minimax-m2.7`
+- `openrouter:minimax/minimax-m3`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 - `openrouter:z-ai/glm-5.1`
 
@@ -111,7 +111,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3.1-pro-preview`
 - `openai:gpt-5.5`
 - `openrouter:deepseek/deepseek-v4-pro`
-- `openrouter:minimax/minimax-m2.7`
+- `openrouter:minimax/minimax-m3`
 - `openrouter:z-ai/glm-5.1`
 
 ## Provider groups
@@ -127,7 +127,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ### `baseten` (6 models)
 
-- `baseten:MiniMaxAI/MiniMax-M2.5`
+- `baseten:MiniMaxAI/MiniMax-M3`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 - `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
@@ -143,8 +143,8 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/kimi-k2p5`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
-- `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 
@@ -169,8 +169,8 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 - `ollama:glm-5.1:cloud`
 - `ollama:glm-5:cloud`
-- `ollama:minimax-m2.5:cloud`
 - `ollama:minimax-m2.7:cloud`
+- `ollama:minimax-m3:cloud`
 - `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 
@@ -184,10 +184,11 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4-mini`
 - `openai:gpt-5.5`
 
-### `openrouter` (6 models)
+### `openrouter` (7 models)
 
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:minimax/minimax-m3`
 - `openrouter:moonshotai/kimi-k2.5`
 - `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
@@ -198,7 +199,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-3-mini-fast`
 - `xai:grok-4`
 
-## `all` (53 models)
+## `all` (54 models)
 
 - `anthropic:claude-haiku-4-5`
 - `anthropic:claude-opus-4-5-20251101`
@@ -206,7 +207,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-7`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
-- `baseten:MiniMaxAI/MiniMax-M2.5`
+- `baseten:MiniMaxAI/MiniMax-M3`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 - `baseten:moonshotai/Kimi-K2.5`
 - `baseten:moonshotai/Kimi-K2.6`
@@ -219,8 +220,8 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/kimi-k2p5`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
-- `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-flash`
@@ -233,8 +234,8 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `nvidia:nvidia/nemotron-3-super-120b-a12b`
 - `ollama:glm-5.1:cloud`
 - `ollama:glm-5:cloud`
-- `ollama:minimax-m2.5:cloud`
 - `ollama:minimax-m2.7:cloud`
+- `ollama:minimax-m3:cloud`
 - `ollama:nemotron-3-super:cloud`
 - `ollama:qwen3.5:cloud`
 - `openai:gpt-4.1`
@@ -247,6 +248,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.5-pro`
 - `openrouter:deepseek/deepseek-v4-pro`
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:minimax/minimax-m3`
 - `openrouter:moonshotai/kimi-k2.5`
 - `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`

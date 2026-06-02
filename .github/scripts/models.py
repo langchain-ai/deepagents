@@ -164,7 +164,7 @@ REGISTRY: tuple[Model, ...] = (
         "Baseten",
     ),
     Model(
-        "baseten:MiniMaxAI/MiniMax-M2.5",
+        "baseten:MiniMaxAI/MiniMax-M3",
         frozenset(
             {
                 "eval:set0",
@@ -175,7 +175,7 @@ REGISTRY: tuple[Model, ...] = (
                 "harbor:baseten",
             }
         ),
-        "MiniMax M2.5",
+        "MiniMax M3",
         "Baseten",
     ),
     Model(
@@ -285,9 +285,9 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
-        "fireworks:accounts/fireworks/models/minimax-m2p5",
+        "fireworks:accounts/fireworks/models/minimax-m3",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
-        "MiniMax M2.5",
+        "MiniMax M3",
         "Fireworks",
     ),
     Model(
@@ -443,7 +443,7 @@ REGISTRY: tuple[Model, ...] = (
         "Ollama",
     ),
     Model(
-        "ollama:minimax-m2.5:cloud",
+        "ollama:minimax-m3:cloud",
         frozenset(
             {
                 "eval:set2",
@@ -452,7 +452,7 @@ REGISTRY: tuple[Model, ...] = (
                 "harbor:ollama",
             }
         ),
-        "MiniMax M2.5 (cloud)",
+        "MiniMax M3 (cloud)",
         "Ollama",
     ),
     Model(
@@ -612,7 +612,7 @@ REGISTRY: tuple[Model, ...] = (
     ),
     # -- OpenRouter --
     Model(
-        "openrouter:minimax/minimax-m2.7",
+        "openrouter:minimax/minimax-m3",
         frozenset(
             {
                 "eval:open",
@@ -620,6 +620,17 @@ REGISTRY: tuple[Model, ...] = (
                 "eval:openrouter",
                 "harbor:open",
                 "harbor:docs",
+                "harbor:openrouter",
+            }
+        ),
+        "MiniMax M3",
+        "OpenRouter",
+    ),
+    Model(
+        "openrouter:minimax/minimax-m2.7",
+        frozenset(
+            {
+                "eval:openrouter",
                 "harbor:openrouter",
             }
         ),

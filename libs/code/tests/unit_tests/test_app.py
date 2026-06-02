@@ -8601,7 +8601,7 @@ class TestPrewarmAwait:
             call_order.append("prewarm")
             await asyncio.sleep(0)  # yield so any out-of-order calls would land first
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             result = MagicMock()
             result.apply_to_settings = MagicMock()
@@ -8647,7 +8647,7 @@ class TestPrewarmAwait:
         app._assistant_id = "coder"
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8698,7 +8698,7 @@ class TestPrewarmAwait:
             call_order.append(f"save_recent_agent:{name}")
             return True
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             msg = "no credentials"
             raise ModelConfigError(msg)
@@ -8743,7 +8743,7 @@ class TestPrewarmAwait:
         app._assistant_id = None
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8873,7 +8873,7 @@ class TestPrewarmAwait:
         app._resume_thread_intent = None
         app._assistant_id = None
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"

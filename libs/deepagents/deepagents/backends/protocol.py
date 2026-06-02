@@ -465,7 +465,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of `grep`."""
         return await asyncio.to_thread(self.grep, pattern, path, glob)
 
-    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -478,9 +478,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches a single character
                 - `[abc]` matches one character from set
 
-            path: Base directory to search from.
+            path: Optional base directory to search from.
 
-                Default: `'/'` (root).
+                If omitted, the backend chooses its default search root.
 
                 The pattern is applied relative to this path.
 
@@ -498,11 +498,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 message=("`glob_info` is deprecated and will be removed in deepagents==0.7.0; rename to `glob` instead."),
                 package="deepagents",
             )
-            return GlobResult(matches=self.glob_info(pattern, path))
+            return GlobResult(matches=self.glob_info(pattern, path or "/"))
 
         raise NotImplementedError
 
-    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Async version of `glob`."""
         return await asyncio.to_thread(self.glob, pattern, path)
 

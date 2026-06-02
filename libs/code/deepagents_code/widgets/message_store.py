@@ -292,6 +292,7 @@ class MessageData:
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
+            QueuedUserMessage,
             SkillMessage,
             SummarizationMessage,
             ToolCallMessage,
@@ -314,6 +315,13 @@ class MessageData:
             )
 
         if isinstance(widget, UserMessage):
+            return cls(
+                type=MessageType.USER,
+                content=widget._content,
+                id=widget_id,
+            )
+
+        if isinstance(widget, QueuedUserMessage):
             return cls(
                 type=MessageType.USER,
                 content=widget._content,

@@ -1,5 +1,7 @@
 """Tests for message store and serialization."""
 
+import logging
+
 import pytest
 from textual.widgets import Static
 
@@ -14,6 +16,7 @@ from deepagents_code.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    QueuedUserMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -39,6 +42,22 @@ class TestMessageData:
         assert isinstance(restored, UserMessage)
         assert restored._content == "Hello, world!"
         assert restored.id == "test-user-1"
+
+    def test_queued_user_message_serializes_as_user(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Test QueuedUserMessage serialization preserves user content."""
+        original = QueuedUserMessage("queued text", id="test-queued-user-1")
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.widgets.message_store"
+        ):
+            data = MessageData.from_widget(original)
+
+        assert data.type == MessageType.USER
+        assert data.content == "queued text"
+        assert data.id == "test-queued-user-1"
+        assert "Unknown widget type" not in caplog.text
 
     def test_assistant_message_roundtrip(self):
         """Test AssistantMessage serialization and deserialization."""

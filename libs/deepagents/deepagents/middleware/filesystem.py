@@ -46,8 +46,8 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
-    execute_accepts_timeout,
     _supports_delete,
+    execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
     _get_file_type,

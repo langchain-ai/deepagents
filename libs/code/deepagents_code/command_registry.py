@@ -111,10 +111,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/mcp",
         description=(
             "Show MCP servers; `/mcp login <server>` to authenticate, "
-            "`/mcp reconnect` to load deferred logins"
+            "`/mcp reconnect` to load deferred logins, F2 in the viewer "
+            "to disable/enable a server"
         ),
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-        hidden_keywords="servers oauth authenticate reconnect",
+        hidden_keywords="servers oauth authenticate reconnect disable enable",
         argument_hint="[login <server> | reconnect]",
     ),
     SlashCommand(
@@ -177,10 +178,23 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="dark light color appearance",
     ),
     SlashCommand(
+        name="/timestamps",
+        description="Toggle message timestamp footers",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="time footer footers date dates",
+    ),
+    SlashCommand(
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="upgrade",
+    ),
+    SlashCommand(
+        name="/install",
+        description="Install an optional extra (e.g. quickjs, daytona, fireworks)",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras add provider sandbox dependency",
+        argument_hint="<extra> [--force]",
     ),
     SlashCommand(
         name="/auto-update",
@@ -261,8 +275,29 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_DEBUG: frozenset[str] = frozenset({"/debug-error"})
-"""Hidden debug commands not exposed in autocomplete or help."""
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error", "/restart"})
+"""Power-user commands kept out of autocomplete and help.
+
+Includes both debug helpers (`/debug-error`) and recovery escape hatches
+(`/restart` — hot-respawn the app-owned LangGraph server).
+"""
+
+STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(
+    {"/install", "/reload", "/update"}
+)
+"""`QUEUED`-tier commands that must still run when startup has failed.
+
+When the configured model can't be built (e.g. its provider package is
+missing) the server never starts and the app holds a `_server_startup_error`
+state that parks queued messages. These are the recovery escape hatches for
+that state — install the missing package, reload config/env, or upgrade the
+tool — so they must bypass the queue rather than sit behind the very failure
+they repair. `/model` and `/auth` already escape via `IMMEDIATE_UI` (which
+opens a modal and defers the real work); the commands here instead perform
+their repair work directly, so they stay `QUEUED` and rely on this exemption.
+The bypass itself is gated in `_can_bypass_queue`. Every entry is also
+`QUEUE_BOUND` — the recovery exemption is orthogonal to the normal queue.
+"""
 
 ALL_CLASSIFIED: frozenset[str] = (
     ALWAYS_IMMEDIATE
@@ -270,9 +305,9 @@ ALL_CLASSIFIED: frozenset[str] = (
     | IMMEDIATE_UI
     | SIDE_EFFECT_FREE
     | QUEUE_BOUND
-    | HIDDEN_DEBUG
+    | HIDDEN_COMMANDS
 )
-"""Union of all tiers plus hidden debug commands — used by drift tests."""
+"""Union of all tiers plus hidden commands — used by drift tests."""
 
 
 # ---------------------------------------------------------------------------

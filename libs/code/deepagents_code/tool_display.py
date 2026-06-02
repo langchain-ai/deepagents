@@ -7,6 +7,7 @@ path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies
 """
 
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,38 @@ def _sanitize_display_value(value: object, *, max_length: int = MAX_ARG_LENGTH) 
     return display
 
 
+def _format_scope_path(
+    path_value: object,
+    abbreviate: Callable[[str], str],
+) -> str:
+    """Format a glob/grep `path` argument as a display suffix.
+
+    The glob tool defaults `path` to the backend root (`"/"`); the grep tool
+    defaults it to `None` (the backend's working directory). In either case the
+    default scope adds no information and is omitted. Only an explicit, non-root
+    path is rendered, so that two otherwise-identical calls scoped to different
+    directories are distinguishable in the UI. The rendered path is shortened
+    via the supplied `abbreviate` helper.
+
+    Args:
+        path_value: The raw `path` argument, or `None` when not supplied.
+        abbreviate: Path-shortening helper from the calling scope.
+
+    Returns:
+        A suffix like ` in langchain`, or an empty string for the default scope.
+    """
+    if path_value is None:
+        return ""
+    raw = str(path_value)
+    if raw in {"", "/"}:
+        return ""
+    sanitized = strip_dangerous_unicode(raw)
+    display = abbreviate(sanitized)
+    if sanitized != raw:
+        display += _HIDDEN_CHAR_MARKER
+    return f" in {display}"
+
+
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """Format tool calls for display with tool-specific smart formatting.
 
@@ -108,7 +141,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         Formatted string for display (e.g., "(*) read_file(config.py)" in ASCII mode)
 
     Examples:
-        read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
+        read_file(file_path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
         execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """
@@ -167,10 +200,11 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{query}")'
 
     elif tool_name == "grep":
-        # Grep: show the search pattern
+        # Grep: show the search pattern, and the scoped path when non-default
         if "pattern" in tool_args:
             pattern = _sanitize_display_value(tool_args["pattern"], max_length=70)
-            return f'{prefix} {tool_name}("{pattern}")'
+            scope = _format_scope_path(tool_args.get("path"), abbreviate_path)
+            return f'{prefix} {tool_name}("{pattern}"{scope})'
 
     elif tool_name == "execute":
         # Execute: show the command, and timeout only if non-default
@@ -184,6 +218,14 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
             return f'{prefix} {tool_name}("{command}")'
 
+    elif tool_name == "js_eval":
+        # JS interpreter: show the first line of the snippet, truncated.
+        code = tool_args.get("code")
+        if isinstance(code, str) and code.strip():
+            snippet = _sanitize_display_value(code, max_length=120)
+            return f'{prefix} {tool_name}("{snippet}")'
+        return f"{prefix} {tool_name}()"
+
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory
         if tool_args.get("path"):
@@ -195,10 +237,11 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         return f"{prefix} {tool_name}()"
 
     elif tool_name == "glob":
-        # Glob: show the pattern
+        # Glob: show the pattern, and the scoped path when non-default
         if "pattern" in tool_args:
             pattern = _sanitize_display_value(tool_args["pattern"], max_length=80)
-            return f'{prefix} {tool_name}("{pattern}")'
+            scope = _format_scope_path(tool_args.get("path"), abbreviate_path)
+            return f'{prefix} {tool_name}("{pattern}"{scope})'
 
     elif tool_name == "fetch_url":
         # Fetch URL: show the URL being fetched

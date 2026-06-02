@@ -25,7 +25,6 @@ from deepagents_code.textual_adapter import (
     _build_interrupted_ai_message,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
-    _persist_context_tokens,
     execute_task_textual,
     format_token_count,
     print_usage_table,
@@ -310,43 +309,177 @@ class TestInterruptCleanup:
         )
 
 
-class TestPersistContextTokens:
-    """Tests for `_persist_context_tokens`."""
+class TestInterruptCleanupTokenPersist:
+    """`_context_tokens` rides on the cancellation `aupdate_state` write."""
 
-    async def test_skips_aupdate_state_for_remote_agent(self) -> None:
-        """Remote agents must not call aupdate_state for _context_tokens.
+    async def test_includes_context_tokens_in_cancellation_update(self) -> None:
+        """The cancellation HumanMessage write carries the latest token count."""
+        captured: list[dict[str, Any]] = []
 
-        When the agent is a RemoteAgent, aupdate_state goes over HTTP to the
-        dev server, which creates its own LangSmith trace that the client
-        cannot suppress with tracing_context(enabled=False). Skipping the call
-        is safe because persistence is best-effort.
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=4321,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        # Only the cancellation write happens (no partial AI message in this test);
+        # it carries both `messages` and `_context_tokens`.
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 4321
+        assert "messages" in captured[0]
+
+    async def test_omits_context_tokens_when_no_usage_captured(self) -> None:
+        """Zero tokens means we never saw `usage_metadata`; preserve the prior value."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert "_context_tokens" not in captured[0]
+
+    async def test_includes_context_tokens_for_output_only_turn(self) -> None:
+        """Output-only AI turns (no input usage) still persist a count."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=500,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 500
+
+    async def test_remote_agent_interrupt_write_carries_context_tokens(self) -> None:
+        """Remote agents are not skipped on the interrupt-cleanup write.
+
+        Locks in the deletion of the old `_persist_context_tokens` `RemoteAgent`
+        short-circuit so a future refactor cannot silently re-introduce it.
         """
         from deepagents_code.remote_client import RemoteAgent
 
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aupdate_state = AsyncMock()
+        captured: list[dict[str, Any]] = []
 
-        await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-1"}}, 1234
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aupdate_state = AsyncMock(side_effect=_capture)
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
         )
 
-        agent.aupdate_state.assert_not_called()
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=1234,
+            captured_output_tokens=88,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
 
-    async def test_calls_aupdate_state_for_local_agent(self) -> None:
-        """Local agents should still call aupdate_state for _context_tokens."""
-        called_with: list[object] = []
+        assert isinstance(agent, RemoteAgent)
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 1322
 
-        def _capture(*args: object, **_kwargs: object) -> None:
-            called_with.append(args[1])  # the values dict
+    async def test_partial_ai_message_write_does_not_carry_tokens(self) -> None:
+        """Only the cancellation write carries `_context_tokens`."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
 
-        await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-2"}}, 9999
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=7777,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
         )
 
-        assert len(called_with) == 1
-        assert called_with[0] == {"_context_tokens": 9999}
+        assert len(captured) == 2
+        # First write is the interrupted AI message; should not be polluted.
+        assert "_context_tokens" not in captured[0]
+        # Second write is the cancellation HumanMessage; carries the token count.
+        assert captured[1]["_context_tokens"] == 7777
 
 
 class TestBuildStreamConfig:
@@ -968,6 +1101,82 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert statuses[:2] == ["Thinking", "Thinking"]
         assert None not in statuses
 
+    async def test_auto_executed_tool_shows_running_at_mount(self) -> None:
+        """Auto-executed tools (no approval) spin immediately when mounted.
+
+        Regression guard: read-only tools such as `grep`/`glob` previously sat
+        visually idle from mount until their result arrived. The stream here
+        ends right after the tool call (no result), so the row is observed in
+        its mount-time state.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("grep", {"pattern": "foo"}, "tool-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="search",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status == "running"
+
+    async def test_edit_file_does_not_get_per_tool_spinner_at_mount(self) -> None:
+        """`edit_file` relies on the global Thinking spinner, not a per-tool one.
+
+        Negative counterpart to the auto-executed case: tools in
+        `_TOOL_CALLS_KEEP_THINKING_SPINNER` must NOT be flipped to "running" at
+        mount, or they would show a duplicate spinner alongside "Thinking".
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": "example.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="edit",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status != "running"
+
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Three parallel tools completed out of order; Thinking after all."""
         statuses: list[str | None] = []
@@ -1278,16 +1487,18 @@ class TestExecuteTaskTextualHITLShellSuppression:
     ) -> tuple[
         TextualUIAdapter,
         list[object],
-        dict[str, tuple[bool, bool]],
+        dict[str, tuple[bool, bool, str]],
     ]:
         """Drive a HITL flow and snapshot widget visibility during the await.
 
         Returns the adapter, the mounted widgets, and a mapping of
-        `tool_call_id -> (display, _awaiting_approval)` captured while the
-        approval future is pending.
+        `tool_call_id -> (display, _awaiting_approval, _status)` captured while
+        the approval future is pending. The status entry locks in the pause
+        behavior: tools start their spinner at mount but are reverted to
+        `pending` while blocked on the approval decision.
         """
         mounted: list[object] = []
-        snapshots: dict[str, tuple[bool, bool]] = {}
+        snapshots: dict[str, tuple[bool, bool, str]] = {}
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -1304,6 +1515,7 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 snapshots[tid] = (
                     bool(tool_msg.display),
                     tool_msg._awaiting_approval,
+                    tool_msg._status,
                 )
             future.set_result(approval_decision)
             return future
@@ -1373,11 +1585,14 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # While the future was pending, the widget was hidden.
-        assert snapshots["tool-shell"] == (False, True)
-        # After the finally block, it was restored.
+        # While the future was pending, the widget was hidden and its spinner
+        # paused (reverted from the mount-time "running" to "pending").
+        assert snapshots["tool-shell"] == (False, True, "pending")
+        # After the finally block, it was restored and the spinner resumed
+        # (the resumed stream is empty, so the row never reaches a result).
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        assert tool_rows[0]._status == "running"
 
     async def test_non_shell_tool_widget_not_suppressed(self) -> None:
         """`read_file` widget should stay visible — only shell tools are hidden."""
@@ -1388,21 +1603,48 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # Visible the whole time, never marked as awaiting approval.
-        assert snapshots["tool-read"] == (True, False)
+        # Visible the whole time, never marked as awaiting approval, but the
+        # spinner is paused to "pending" while the decision is outstanding.
+        assert snapshots["tool-read"] == (True, False, "pending")
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        # Resumed to "running" after approval (resumed stream yields no result).
+        assert tool_rows[0]._status == "running"
 
-    async def test_mixed_batch_only_shell_suppressed(self) -> None:
-        """Parallel shell + non-shell tools: only the shell row is hidden."""
+    async def test_batch_approval_keeps_all_widgets_visible(self) -> None:
+        """Batched approvals (>1 request) must not hide any tool widget.
+
+        The approval dialog only renders a per-tool command preview for
+        single-tool approvals. For batches it shows just a count header,
+        so suppressing the streamed rows would leave the user with no
+        preview of what's being approved.
+        """
         _adapter, _mounted, snapshots = await self._run_with_decision(
             tool_call_name="execute",
             tool_call_id="tool-shell",
             approval_decision={"type": "approve"},
             extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
         )
-        assert snapshots["tool-shell"] == (False, True)
-        assert snapshots["tool-read"] == (True, False)
+        assert snapshots["tool-shell"] == (True, False, "pending")
+        assert snapshots["tool-read"] == (True, False, "pending")
+
+    async def test_batch_of_shell_tools_keeps_all_widgets_visible(self) -> None:
+        """Multiple parallel `execute` calls: all rows stay visible.
+
+        Regression guard: the batch approval dialog does not render
+        per-tool commands, so hiding every `execute` row left users with
+        only a generic "N Tool Calls Require Approval" header.
+        """
+        _adapter, _mounted, snapshots = await self._run_with_decision(
+            tool_call_name="execute",
+            tool_call_id="tool-shell-1",
+            approval_decision={"type": "approve"},
+            extra_tool_calls=[
+                ("execute", {"command": "echo bye"}, "tool-shell-2"),
+            ],
+        )
+        assert snapshots["tool-shell-1"] == (True, False, "pending")
+        assert snapshots["tool-shell-2"] == (True, False, "pending")
 
     async def test_shell_widget_restored_when_approval_raises(self) -> None:
         """`finally` must restore the widget even if approval raises."""

@@ -16,6 +16,8 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -87,10 +89,12 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
+        glyphs = get_glyphs()
         with Vertical():
             yield Static(
                 Content.from_markup(
-                    "Connected to [bold]$name[/bold]",
+                    "$check Connected to [bold]$name[/bold]",
+                    check=glyphs.checkmark,
                     name=self._server_name,
                 ),
                 classes="mcp-reconnect-title",
@@ -114,6 +118,19 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
     def action_later(self) -> None:
         """Dismiss with `"later"`."""
         self.dismiss("later")
+
+    def action_cancel(self) -> None:
+        """Alias for `action_later` so the app-level Esc handler defers.
+
+        The app's `action_interrupt` (`escape` binding, `priority=True`)
+        fires before this screen's own `escape` binding. When the active
+        screen is a `ModalScreen`, it dispatches to `action_cancel` if
+        present, else falls through to `dismiss(None)`. Without this
+        alias, Esc would dismiss with `None`, which the caller treats as
+        a programmatic dismiss (no toast, no reopen) instead of an
+        explicit defer.
+        """
+        self.action_later()
 
 
 class MCPReconnectForceConfirmScreen(ModalScreen[bool]):

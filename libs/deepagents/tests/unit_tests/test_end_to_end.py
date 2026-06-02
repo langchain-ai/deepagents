@@ -16,11 +16,14 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 from pydantic import Field
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
@@ -30,6 +33,7 @@ from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemPermission
+from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
@@ -78,11 +82,11 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
 
 
 def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
-    """Write a file to the backend, returning starter ``files`` for StateBackend.
+    """Write a file to the backend, returning starter `files` for StateBackend.
 
     For external backends (filesystem, store) the write happens immediately.
     For StateBackend, the file data is returned as a dict that should be
-    passed via ``agent.invoke({"files": ...})`` since StateBackend requires
+    passed via `agent.invoke({"files": ...})` since StateBackend requires
     a LangGraph execution context.
     """
     if isinstance(backend, StateBackend):
@@ -417,28 +421,23 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test line count limiting in read_file tool with very long lines."""
-        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
-        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
-        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
-
-        # Add some normal lines before and after
+        """`limit` bounds source lines; wrapped continuations don't displace later lines."""
+        # 18k chars wraps into 4 rows (2, 2.1, 2.2, 2.3) but still counts as one
+        # source line against `limit`.
+        very_long_line = "x" * 18000
         lines = [
             "short line 0",
-            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            very_long_line,
             "short line 2",
             "short line 3",
             "short line 4",
         ]
         content = "\n".join(lines)
 
-        # Create backend and write file
-
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # Create a fake model that calls read_file with limit=3
-        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        # `limit=3` source lines → lines 1, 2 (all 4 wrapped chunks), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -460,41 +459,28 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Should have the first short line
         assert "short line 0" in file_content
-
-        # Should have the beginning of the very long line (line 2 with continuation)
-        assert "xxx" in file_content  # The very long line should be present
-
-        # Should NOT have the later short lines because the limit cuts off after 3 output lines
-        # (line 1, line 2, line 2.1)
-        assert "short line 2" not in file_content
+        assert "xxx" in file_content
+        # All four wrapped chunks of source line 2 render in order.
+        for marker in ("2\t", "2.1\t", "2.2\t", "2.3\t"):
+            assert marker in file_content, f"missing continuation marker {marker!r}"
+        # Source line 3 is the third source line and must be included.
+        assert "short line 2" in file_content
+        # Source lines 4 and 5 fall outside `limit=3`.
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
-
-        # Count actual lines in the output (excluding empty lines from formatting)
-        output_lines = [line for line in file_content.split("\n") if line.strip()]
-        # Should be at most 3 lines (the limit we specified)
-        # This includes continuation lines as separate lines
-        assert len(output_lines) <= 3
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -1115,32 +1101,19 @@ class TestDeepAgentEndToEnd:
         assert len(file_content) < 85000
 
     def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test the behavior with a single very long line.
+        """`limit` bounds source lines, not formatted rows.
 
-        When a file has a single very long line (e.g., 85,000 chars), it gets split
-        into continuation markers (1, 1.1, 1.2, etc.) by format_content_with_line_numbers.
-
-        The current behavior:
-        - offset works on logical lines (before formatting)
-        - limit applies to formatted output lines (after continuation markers)
-        - This allows pagination through long lines by increasing limit
-        - Limitation: cannot use offset to skip within a long line
-
-        This test verifies:
-        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
-        2. Size-based truncation applies if the formatted output exceeds threshold
+        When a source line is wider than `MAX_LINE_LENGTH`, every continuation
+        chunk for that line is rendered — `limit=1` returns the full set of
+        chunks rather than just the first one. The byte-budget guard still
+        clamps the result when the formatted output exceeds the size cap.
         """
-        # Create a file with a SINGLE very long line (no newlines)
-        # This will be split into ~17 continuation chunks (85000 / 5000)
+        # 85k characters in one line → 17 continuation chunks at 5k each.
         single_long_line = "x" * 85000
-
-        # Create backend and write file
 
         file_path = "/single_long_line.txt"
         starter_files = prepopulate_file(backend, file_path, single_long_line)
 
-        # Create a fake model that calls read_file with limit=1
-        # This should return just 1 formatted line (the first chunk of the long line)
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1162,32 +1135,88 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Verify behavior: with limit=1, we get only the first formatted line
-        # (not all continuation markers)
-        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
-        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
-        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+        # `limit=1` (one source line) renders the wrapped chunks; size cap
+        # still trims when the formatted result exceeds the byte budget.
+        assert "1.1" in file_content
+        assert "Output was truncated due to size limits" in file_content
+        assert len(file_content) <= 80000
 
-        # To get more of the line, the model would need to increase limit, not offset
-        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+    def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
+        """Wrapped long lines must not displace later source lines across pagination.
+
+        Regression for #2453: previously `limit` re-truncated formatted output
+        after wrapping, so a 15k-char line on page 1 pushed `important
+        instruction` off the page, and page 2 resumed past it.
+        """
+        long_line = "x" * 15000
+        content = f"line1\n{long_line}\nimportant instruction\nline4"
+        file_path = "/wrapped.txt"
+        starter_files = prepopulate_file(backend, file_path, content)
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 3},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 3, "limit": 3},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend)
+
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        combined = tool_messages[0].content + tool_messages[1].content
+        assert "important instruction" in combined
+        assert "line4" in combined
+        # All three continuation chunks of the wrapped line 2 must render in
+        # order, before `important instruction`, with nothing dropped at the
+        # page boundary.
+        for marker in ("2\t", "2.1\t", "2.2\t"):
+            assert marker in combined, f"missing continuation marker {marker!r}"
+        idx_first = combined.index("2\t")
+        idx_cont1 = combined.index("2.1\t")
+        idx_cont2 = combined.index("2.2\t")
+        idx_next = combined.index("important instruction")
+        assert idx_first < idx_cont1 < idx_cont2 < idx_next
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.
@@ -2053,12 +2082,12 @@ class TestLargeHumanMessageEviction:
     """Test that oversized HumanMessages are evicted to the filesystem."""
 
     def test_large_human_message_evicted_before_model_call(self) -> None:
-        """An oversized HumanMessage is evicted and tagged with ``lc_evicted_to``.
+        """An oversized HumanMessage is evicted and tagged with `lc_evicted_to`.
 
         The agent receives a HumanMessage (no id) whose text content exceeds
-        the eviction threshold. The filesystem middleware's ``wrap_model_call``
+        the eviction threshold. The filesystem middleware's `wrap_model_call`
         should write the full content to the backend and tag the message in
-        state via ``lc_evicted_to``, while preserving the original content.
+        state via `lc_evicted_to`, while preserving the original content.
         The model should see a truncated preview, not the full content.
         """
         threshold = 50_000
@@ -2157,10 +2186,10 @@ class TestSummarizationOffloadToState:
     def test_offloaded_file_persisted_in_state(self) -> None:
         """Summarization should write the offloaded history to state via files_update.
 
-        Uses ``create_deep_agent`` with default ``StateBackend`` so that
-        ``backend.write`` returns a ``files_update`` dict. The ``Command``
-        produced by ``wrap_model_call`` must propagate that dict so the file
-        is persisted in graph state under the ``files`` channel.
+        Uses `create_deep_agent` with default `StateBackend` so that
+        `backend.write` returns a `files_update` dict. The `Command`
+        produced by `wrap_model_call` must propagate that dict so the file
+        is persisted in graph state under the `files` channel.
         """
         fake_model = FakeChatModelWithHistory(
             messages=iter(
@@ -2221,9 +2250,9 @@ class TestCompactConversationTool:
     def test_compact_conversation_tool_invocation(self) -> None:
         """Agent invokes compact_conversation and conversation is compacted.
 
-        Uses ``create_summarization_tool_middleware`` with a fake model that
+        Uses `create_summarization_tool_middleware` with a fake model that
         has a profile so fraction-based defaults are used. Input messages
-        carry ``usage_metadata`` and ``response_metadata`` so the eligibility
+        carry `usage_metadata` and `response_metadata` so the eligibility
         gate passes. The summarization model (same fake instance) returns a
         summary, and the agent model emits the tool call then a final response.
         """
@@ -2431,7 +2460,7 @@ class TestStateBackendConfigKeys:
         assert "/data/notes.md" in ls_msg.content
 
     def test_backward_compat_lambda_factory(self) -> None:
-        """The old ``lambda rt: StateBackend(rt)`` factory pattern still works."""
+        """The old `lambda rt: StateBackend(rt)` factory pattern still works."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -2923,10 +2952,10 @@ class TestArtifactsRoot:
 class TestAsyncSubagentEndToEnd:
     """End-to-end tests for async (non-blocking) subagent tools.
 
-    These tests wire up ``create_deep_agent`` with ``AsyncSubAgent`` specs and
+    These tests wire up `create_deep_agent` with `AsyncSubAgent` specs and
     mock the LangGraph SDK client to verify the full agent loop: model emits a
     tool call → tool executes against the (mocked) remote server → state is
-    updated with ``async_tasks`` → model sees the result and responds.
+    updated with `async_tasks` → model sees the result and responds.
     """
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -3581,9 +3610,56 @@ class TestDeltaChannels:
         assert any("hello.txt" in k for k in files)
 
 
+def test_tool_command_parent_handoff_preserved() -> None:
+    # A tool returning Command(goto=..., graph=Command.PARENT) must propagate routing
+    # through FilesystemMiddleware so multi-agent handoffs reach the sibling node.
+    @tool
+    def transfer_to_b(runtime: ToolRuntime) -> Command:
+        """Transfer to agent_b."""
+        return Command(
+            goto="agent_b",
+            graph=Command.PARENT,
+            update={
+                "messages": [
+                    ToolMessage(content="transferred", tool_call_id=runtime.tool_call_id),
+                ],
+            },
+        )
+
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_xfer", "name": "transfer_to_b", "args": {}}],
+                ),
+            ]
+        )
+    )
+    agent_a = create_deep_agent(model=fake_model, tools=[transfer_to_b])
+
+    visited: list[str] = []
+
+    def agent_b_node(_state: dict) -> dict:
+        visited.append("agent_b")
+        return {}
+
+    parent = StateGraph(dict)
+    parent.add_node("agent_a", agent_a)
+    parent.add_node("agent_b", agent_b_node)
+    parent.add_edge(START, "agent_a")
+    parent.add_edge("agent_a", END)
+    parent.add_edge("agent_b", END)
+    compiled = parent.compile()
+
+    compiled.invoke({"messages": [HumanMessage(content="hi")]})
+
+    assert visited == ["agent_b"]
+
+
 def test_invalid_tool_call_patched_on_next_turn() -> None:
     # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
-    # will be produced because agents only route on ``tool_calls``).
+    # will be produced because agents only route on `tool_calls`).
     # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
     fake_model = FakeChatModelWithHistory(
         messages=iter(
@@ -3798,3 +3874,286 @@ def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
     files = state.values.get("files", {})
     for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
+
+
+class TestRubricMiddlewareEndToEnd:
+    """End-to-end tests for `RubricMiddleware` wired into `create_deep_agent`.
+
+    Both the main agent and the grader sub-agent are driven by
+    `FixedGenericFakeChatModel` instances. The grader's `response_format` is
+    `GraderResponse`, which `create_agent` resolves via
+    `AutoStrategy -> ToolStrategy(GraderResponse)`, so a fake grader emits a
+    `GraderResponse` tool call to deliver its verdict.
+
+    `RubricMiddleware`'s bookkeeping fields (`_rubric_status`,
+    `_rubric_iterations`, `_rubric_evaluations`) are
+    `PrivateStateAttr`-annotated and not part of the I/O schema, so these
+    tests use an `InMemorySaver` and read final values via
+    `agent.get_state(config).values`.
+    """
+
+    @staticmethod
+    def _grader_call(
+        *,
+        result: str,
+        explanation: str,
+        criteria: list[dict[str, Any]] | None = None,
+        call_id: str = "grader_call",
+    ) -> AIMessage:
+        """Build an `AIMessage` carrying a `GraderResponse` structured-output tool call."""
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "GraderResponse",
+                    "args": {
+                        "result": result,
+                        "explanation": explanation,
+                        "criteria": criteria or [],
+                    },
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    def test_satisfied_first_try_terminates(self) -> None:
+        """Grader returns `satisfied` on the first pass: agent stops, no revision injected."""
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="here is my draft")]))
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="looks good",
+                        criteria=[{"name": "built", "passed": True}],
+                        call_id="grader_1",
+                    )
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-satisfied"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- The thing is built"},
+            config=config,
+        )
+
+        # Only the original user message and the model's draft survive — no
+        # synthetic revision turn was injected.
+        assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 1
+        evals = state["_rubric_evaluations"]
+        assert len(evals) == 1
+        assert evals[0]["result"] == "satisfied"
+        assert evals[0]["criteria"] == [{"name": "built", "passed": True}]
+
+    def test_needs_revision_loops_back_then_satisfied(self) -> None:
+        """Grader's `needs_revision` triggers a model re-run with the feedback HumanMessage injected."""
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="first attempt"),
+                    AIMessage(content="second attempt with fix"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="add tests",
+                        criteria=[{"name": "tests", "passed": False, "gap": "no tests"}],
+                        call_id="grader_1",
+                    ),
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok now",
+                        call_id="grader_2",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=5)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-revise"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- tests pass"},
+            config=config,
+        )
+
+        # The grader-injected revision message must appear between the two
+        # AIMessage attempts and carry the `rubric_grader` source tag.
+        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
+        assert len(injected) == 1
+        assert injected[0].name == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert "add tests" in injected[0].content
+        assert "no tests" in injected[0].content
+
+        # Both main-model attempts ended up in the transcript.
+        ai_contents = [m.content for m in result["messages"] if isinstance(m, AIMessage)]
+        assert "first attempt" in ai_contents
+        assert "second attempt with fix" in ai_contents
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 2
+        results = [e["result"] for e in state["_rubric_evaluations"]]
+        assert results == ["needs_revision", "satisfied"]
+
+    def test_max_iterations_reached(self) -> None:
+        """Grader keeps returning `needs_revision`: agent terminates at the iteration cap."""
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="attempt 1"),
+                    AIMessage(content="attempt 2"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="still missing",
+                        criteria=[{"name": "x", "passed": False, "gap": "y"}],
+                        call_id="grader_1",
+                    ),
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="still missing",
+                        criteria=[{"name": "x", "passed": False, "gap": "y"}],
+                        call_id="grader_2",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=2)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-max"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
+            config=config,
+        )
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "max_iterations_reached"
+        assert state["_rubric_iterations"] == 2
+        assert len(state["_rubric_evaluations"]) == 2
+        assert all(e["result"] == "needs_revision" for e in state["_rubric_evaluations"])
+
+    def test_no_rubric_is_noop(self) -> None:
+        """Without a rubric on invocation state the middleware does not call the grader."""
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hello")]))
+        # An empty grader iterator would raise StopIteration if the middleware
+        # ever invoked it — this is the assertion that the no-op path is taken.
+        grader_model = FixedGenericFakeChatModel(messages=iter([]))
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-noop"}}
+        result = agent.invoke({"messages": [HumanMessage(content="say hi")]}, config=config)
+
+        # Plain conversation: user prompt + single AI reply, no grader turns.
+        assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
+
+        state = agent.get_state(config).values
+        assert state.get("_rubric_status") is None
+        assert state.get("_rubric_iterations", 0) == 0
+        assert state.get("_rubric_evaluations", []) == []
+
+    def test_keyboard_interrupt_in_grader_propagates(self) -> None:
+        """A `KeyboardInterrupt` raised during grading bubbles out of `agent.invoke()`.
+
+        The middleware narrows `except Exception:` around the grader call so
+        `KeyboardInterrupt` (a `BaseException`) cannot be swallowed into a
+        "failed" evaluation — Ctrl+C must actually interrupt.
+        """
+
+        def _raising_messages() -> Iterator[AIMessage]:
+            msg = "simulated Ctrl+C during grading"
+            raise KeyboardInterrupt(msg)
+            yield  # pragma: no cover -- unreachable, makes this a generator
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
+        grader_model = FixedGenericFakeChatModel(messages=_raising_messages())
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-interrupt"}}
+
+        with pytest.raises(KeyboardInterrupt, match="simulated Ctrl"):
+            agent.invoke(
+                {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
+                config=config,
+            )
+
+    def test_custom_grader_system_prompt_is_honored(self) -> None:
+        """A `system_prompt` kwarg replaces the default grader prompt at the wire."""
+        captured_grader_prompts: list[str] = []
+
+        class _CapturingGraderModel(FixedGenericFakeChatModel):
+            def _generate(self, messages: list[Any], *args: Any, **kwargs: Any) -> ChatResult:
+                captured_grader_prompts.extend(str(m.content) for m in messages if isinstance(m, SystemMessage))
+                return super()._generate(messages, *args, **kwargs)
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
+        grader_model = _CapturingGraderModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok",
+                        call_id="grader_1",
+                    )
+                ]
+            )
+        )
+
+        custom_prompt = "CUSTOM_GRADER_MARKER: be extremely strict about every criterion."
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[
+                RubricMiddleware(
+                    model=grader_model,
+                    system_prompt=custom_prompt,
+                    max_iterations=3,
+                )
+            ],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-custom-prompt"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- whatever"},
+            config=config,
+        )
+
+        # The custom prompt must reach the grader model as the system message.
+        assert captured_grader_prompts, "expected the grader model to receive at least one system prompt"
+        assert "CUSTOM_GRADER_MARKER" in captured_grader_prompts[0]

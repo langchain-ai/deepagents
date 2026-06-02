@@ -113,6 +113,44 @@ def _normalize_cwd_filter(cwd: str | None) -> str | None:
     return os.path.normpath(str(Path(cwd).expanduser().absolute()))
 
 
+def _parse_interpreter_tools_flag(
+    raw: str | None,
+) -> str | list[str] | None:
+    """Parse the `--interpreter-tools` argument into the PTC option shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"safe"`, `"all"`, or a
+            comma-separated list of tool names.
+
+    Returns:
+        `None` when the flag is absent, the literal string `"safe"`/`"all"`,
+        or a list of trimmed tool names.
+
+        Calls `sys.exit(2)` when the value is empty or contains only blank
+        tokens — the CLI treats that as a usage error.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --interpreter-tools requires a value: 'safe', 'all', or a "
+            "comma-separated list of tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized in {"safe", "all"}:
+        return normalized
+    names = [token.strip() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --interpreter-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    return names
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -163,10 +201,10 @@ def check_cli_dependencies() -> None:
         print("\nThe following packages are required to use Deep Agents Code:")  # noqa: T201  # App output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
-        print("\nPlease install them with:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install deepagents[cli]")  # noqa: T201  # CLI output for missing dependencies
-        print("\nOr install all dependencies:")  # noqa: T201  # CLI output for missing dependencies
-        print("  pip install 'deepagents[cli]'")  # noqa: T201  # CLI output for missing dependencies
+        print("\nReinstall dcode with the recommended installer:")  # noqa: T201  # CLI output for missing dependencies
+        print("  curl -LsSf https://langch.in/dcode | bash")  # noqa: T201  # CLI output for missing dependencies
+        print("\nOr install the tool directly via uv:")  # noqa: T201  # CLI output for missing dependencies
+        print("  uv tool install -U deepagents-code")  # noqa: T201  # CLI output for missing dependencies
         sys.exit(1)
 
 
@@ -879,6 +917,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--sandbox-snapshot-name",
+        metavar="NAME",
+        help="Sandbox snapshot name to use or create (langsmith only)",
+    )
+
+    parser.add_argument(
         "--sandbox-setup",
         metavar="PATH",
         help="Path to setup script to run in sandbox after creation",
@@ -894,7 +938,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mcp-config",
         help="Path to MCP servers JSON configuration file (Claude Desktop format). "
-        "Merged on top of auto-discovered configs (highest precedence).",
+        "Merged on top of auto-discovered configs (highest precedence). "
+        "Run `dcode mcp config` to see discovery paths.",
     )
     parser.add_argument(
         "--no-mcp",
@@ -906,6 +951,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Trust project-level MCP configs with stdio servers "
         "(skip interactive approval prompt)",
+    )
+    parser.add_argument(
+        "--interpreter",
+        action="store_true",
+        help="Enable the JS interpreter (`js_eval`) middleware on the main agent. "
+        "Local mode only; requires the `quickjs` optional extra.",
+    )
+    parser.add_argument(
+        "--interpreter-tools",
+        dest="interpreter_tools",
+        metavar="VALUE",
+        help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
+        "list of tool names. Default is no PTC (pure REPL).",
     )
 
     try:
@@ -930,6 +988,16 @@ def parse_args() -> argparse.Namespace:
         "--auto-update",
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
+    )
+    parser.add_argument(
+        "--install",
+        metavar="EXTRA",
+        help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip interactive confirmation prompts (e.g., for --install)",
     )
     parser.add_argument(
         "--acp",
@@ -965,7 +1033,10 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    return args
 
 
 async def run_textual_cli_async(
@@ -974,6 +1045,7 @@ async def run_textual_cli_async(
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
@@ -986,6 +1058,9 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    enable_interpreter: bool = False,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -998,6 +1073,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
+            (langsmith only).
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -1030,6 +1107,12 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level stdio server trust.
 
             `True` to allow, `False` to deny, `None` to check trust store.
+        enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
+            the main agent. Local-mode only.
+        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
+            for `js_eval`).
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -1098,8 +1181,12 @@ async def run_textual_cli_async(
         "model_params": model_params,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
+        "sandbox_snapshot_name": sandbox_snapshot_name,
         "sandbox_setup": sandbox_setup,
         "enable_ask_user": True,
+        "enable_interpreter": enable_interpreter,
+        "interpreter_ptc": interpreter_ptc,
+        "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -1130,6 +1217,7 @@ async def run_textual_cli_async(
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
+            model_explicitly_set=model_name is not None,
             defer_server_start=defer_server_start,
         )
     except Exception as e:
@@ -1567,6 +1655,26 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     return False
 
 
+def _verify_interpreter_or_exit() -> None:
+    """Run the `--interpreter` pre-flight check; print and exit on failure.
+
+    Called before spawning the langgraph dev server subprocess so a missing
+    `langchain-quickjs` extra surfaces a one-line install hint instead of an
+    opaque "Server process exited with code N" downstream.
+    """
+    from deepagents_code.extras_info import verify_interpreter_deps
+
+    try:
+        verify_interpreter_deps()
+    except ImportError as exc:
+        from rich.markup import escape
+
+        from deepagents_code.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+        sys.exit(1)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -1683,7 +1791,8 @@ def cli_main() -> None:
             except ImportError as exc:
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: pip install deepagents-acp\n"
+                    "Install with: uv tool install -U deepagents-code "
+                    "--with deepagents-acp\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -1872,6 +1981,111 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        # Handle --install <extra> flag (headless, no session)
+        if args.install:
+            from rich.markup import escape
+
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import KNOWN_EXTRAS
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_extra_hint,
+                install_extra_command,
+                is_valid_extra_name,
+                perform_install_extra,
+            )
+
+            extra: str = args.install
+            log_path: Path | None = None
+            manual_cmd: str | None = None
+            try:
+                if not is_valid_extra_name(extra):
+                    # Defense in depth — the extra is interpolated into a
+                    # shell command. Reject malformed names before any
+                    # confirmation prompt, even with --yes.
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"Invalid extra name '{escape(extra)}'. "
+                        "Extra names must be alphanumeric with `-`, `_`, "
+                        "or `.` (PEP 508).",
+                        highlight=False,
+                    )
+                    sys.exit(2)
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "--install is not supported on editable installs.\n"
+                        + escape(editable_extra_hint(extra)),
+                        highlight=False,
+                    )
+                    sys.exit(1)
+
+                manual_cmd = install_extra_command(extra)
+                if extra not in KNOWN_EXTRAS:
+                    known = ", ".join(sorted(KNOWN_EXTRAS))
+                    console.print(
+                        f"[bold yellow]Warning:[/bold yellow] "
+                        f"'{extra}' is not a known extra.\n"
+                        f"Known extras: {known}",
+                        highlight=False,
+                    )
+                    if not args.yes:
+                        if not sys.stdin.isatty():
+                            console.print(
+                                "[bold red]Error:[/bold red] "
+                                "Refusing unknown extra in non-interactive "
+                                "mode. Pass --yes to override."
+                            )
+                            sys.exit(2)
+                        reply = input("Continue anyway? [y/N] ").strip().lower()
+                        if reply not in {"y", "yes"}:
+                            console.print("Aborted.", style="dim")
+                            sys.exit(1)
+
+                console.print(f"Installing extra '{extra}'...")
+                log_path = create_update_log_path()
+                console.print(
+                    f"Install log: {log_path}\nTail progress: tail -f {log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(
+                    perform_install_extra(extra, log_path=log_path)
+                )
+                if success:
+                    console.print(f"[green]Installed extra '{extra}'.[/green]")
+                    sys.exit(0)
+                # Tail the last 200 chars — uv resolver prints the resolved
+                # error at the end, not the beginning.
+                detail = f": {output[-200:]}" if output else ""
+                console.print(
+                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\nAborted.", style="dim")
+                sys.exit(130)
+            except Exception as exc:
+                logger.warning("--install failed", exc_info=True)
+                log_line = f"\nLog: {log_path}" if log_path else ""
+                fallback_cmd = (
+                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
+                )
+                console.print(
+                    f"[bold red]Error:[/bold red] "
+                    f"{type(exc).__name__}: {escape(str(exc))}"
+                    f"{escape(log_line)}\n"
+                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+
         # Handle --auto-update flag (headless toggle: reads current state
         # and inverts it, no session)
         if args.auto_update:
@@ -1985,25 +2199,26 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command == "mcp":
-            from deepagents_code.mcp_commands import run_mcp_login
+            from deepagents_code.mcp_commands import run_mcp_config, run_mcp_login
             from deepagents_code.ui import show_mcp_help
 
             if args.mcp_command == "login":
-                if getattr(args, "mcp_config", None) and not args.config_path:
+                config_path = args.config_path or args.mcp_config
+                if config_path and not args.config_path:
                     print(  # noqa: T201
-                        "--mcp-config is not supported for 'mcp login'. "
-                        "Use: dcode mcp login <server> --config <path>",
+                        f"Using --mcp-config from top-level: {config_path}",
                         file=sys.stderr,
                     )
-                    sys.exit(2)
                 sys.exit(
                     asyncio.run(
                         run_mcp_login(
                             server=args.server,
-                            config_path=args.config_path,
+                            config_path=config_path,
                         )
                     )
                 )
+            if args.mcp_command == "config":
+                sys.exit(run_mcp_config())
             show_mcp_help()
         elif args.command == "threads":
             from deepagents_code.sessions import (
@@ -2091,8 +2306,15 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
+
             # Non-interactive mode - execute single task and exit
             from deepagents_code.non_interactive import run_non_interactive
+
+            interpreter_ptc = _parse_interpreter_tools_flag(
+                getattr(args, "interpreter_tools", None)
+            )
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2106,6 +2328,7 @@ def cli_main() -> None:
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
                             sandbox_id=args.sandbox_id,
+                            sandbox_snapshot_name=args.sandbox_snapshot_name,
                             sandbox_setup=getattr(args, "sandbox_setup", None),
                             initial_skill=getattr(args, "initial_skill", None),
                             startup_cmd=getattr(args, "startup_cmd", None),
@@ -2114,6 +2337,8 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                            enable_interpreter=getattr(args, "interpreter", False),
+                            interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
                         ),
                         timeout=timeout,
@@ -2173,6 +2398,9 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
+            if getattr(args, "interpreter", False):
+                _verify_interpreter_or_exit()
+
             # Check project MCP trust before launching TUI
             mcp_trust_decision = _check_mcp_project_trust(
                 trust_flag=getattr(args, "trust_project_mcp", False),
@@ -2183,12 +2411,17 @@ def cli_main() -> None:
             # Run Textual TUI
             return_code = 0
             try:
+                interpreter_ptc = _parse_interpreter_tools_flag(
+                    getattr(args, "interpreter_tools", None)
+                )
+
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_snapshot_name=args.sandbox_snapshot_name,
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
@@ -2201,6 +2434,8 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        enable_interpreter=getattr(args, "interpreter", False),
+                        interpreter_ptc=interpreter_ptc,
                     )
                 )
                 return_code = result.return_code

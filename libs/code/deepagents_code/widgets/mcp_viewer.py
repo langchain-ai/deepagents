@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
@@ -13,13 +14,20 @@ from textual.events import (
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code.clipboard import copy_text_to_clipboard
+
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from textual.app import ComposeResult
 
     from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus, MCPToolInfo
 
 from deepagents_code import theme
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
+from deepagents_code.unicode_security import sanitize_control_chars
+
+logger = logging.getLogger(__name__)
 
 MCP_VIEWER_RECONNECT_REQUEST = "\x00__mcp_reconnect__"
 """Sentinel returned by `MCPViewerScreen.dismiss` to request a reconnect.
@@ -27,6 +35,20 @@ MCP_VIEWER_RECONNECT_REQUEST = "\x00__mcp_reconnect__"
 The null-byte prefix makes the value un-collidable with any valid MCP
 server name returned by `MCPServerInfo.name`, so callers can branch on
 this exact string without weakening the existing server-name dispatch.
+"""
+
+MCP_RECONNECT_KEY = "ctrl+r"
+"""Textual `Binding` key for the in-viewer reconnect action.
+
+Kept as a module constant so the footer hint and the help-text rendered
+in server headers stay in sync with the bound chord.
+"""
+
+MCP_RECONNECT_KEY_LABEL = "Ctrl+R"
+"""Display label for `MCP_RECONNECT_KEY`.
+
+Shown in the footer hint chip and inline header prompts so the user
+sees the same chord text the binding will fire on.
 """
 
 
@@ -37,7 +59,8 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error`.
+        status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
+            `error` / `disabled`.
         glyphs: Active `Glyphs` table (Unicode or ASCII).
 
     Returns:
@@ -47,19 +70,27 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
         return glyphs.checkmark
     if status == "unauthenticated":
         return glyphs.warning
-    return glyphs.error
+    if status == "awaiting_reconnect":
+        return glyphs.circle_empty
+    if status == "disabled":
+        return glyphs.pause
+    if status == "error":
+        return glyphs.error
+    assert_never(status)
 
 
 def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     """Map a server `status` onto a semantic theme color.
 
     `ok` -> success (green); `unauthenticated` -> warning (yellow);
-    `error` -> error (red). Returning the theme's hex string lets callers
-    pass the value to `Content.styled()` or `Content.assemble()` so a
-    theme switch recolors the indicator without code changes.
+    `error` -> error (red); `disabled` -> muted. Returning the theme's
+    hex string lets callers pass the value to `Content.styled()` or
+    `Content.assemble()` so a theme switch recolors the indicator
+    without code changes.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error`.
+        status: One of `ok` / `unauthenticated` / `awaiting_reconnect` /
+            `error` / `disabled`.
         colors: Active theme palette (typically from `theme.get_theme_colors`).
 
     Returns:
@@ -69,7 +100,13 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
         return colors.success
     if status == "unauthenticated":
         return colors.warning
-    return colors.error
+    if status == "awaiting_reconnect":
+        return colors.warning
+    if status == "disabled":
+        return colors.muted
+    if status == "error":
+        return colors.error
+    assert_never(status)
 
 
 def _styled(inner: str, style: str) -> str:
@@ -111,40 +148,26 @@ def _format_prop_type(prop_type: Any) -> str:  # noqa: ANN401 - JSON Schema fiel
     return str(prop_type) or "any"
 
 
-def _sanitize_inline(text: str, *, max_length: int = 200) -> str:
-    """Strip control characters and truncate text rendered inline in a header.
+_INLINE_TEXT_LIMIT = 200
+"""Max characters for untrusted text rendered inline in a server header.
 
-    External-origin strings (e.g. `MCPServerInfo.error` returned by an MCP
-    server) might contain newlines, ANSI escape sequences, or other control
-    characters that would corrupt the modal layout. Replace control chars
-    with spaces and truncate to `max_length` so a hostile or buggy server
-    cannot break the screen.
-
-    Args:
-        text: Untrusted inline text.
-        max_length: Maximum characters to retain (truncated with `…`).
-
-    Returns:
-        Sanitized single-line text safe to embed inside a `Content.assemble`
-        tuple or `from_markup` substitution.
-    """
-    cleaned = "".join(ch if ch == " " or ch.isprintable() else " " for ch in text)
-    cleaned = " ".join(cleaned.split())
-    if len(cleaned) > max_length:
-        cleaned = cleaned[: max_length - 1] + "…"
-    return cleaned
+Bounds a hostile or buggy server's error/name so it cannot overflow the
+single-line header; full text is available in the error-detail modal.
+"""
 
 
 def _sort_servers_for_display(
     server_info: list[MCPServerInfo],
 ) -> list[MCPServerInfo]:
-    """Return `server_info` with `unauthenticated` servers floated to the top.
+    """Return `server_info` with attention-needed servers floated to the top.
 
     Stable sort so the user's config order is preserved within each group.
-    Surfacing unauthenticated servers first makes the auth prompt visible
-    without scrolling on configs with many `ok` servers.
+    Surfacing unauthenticated and awaiting-reconnect servers first makes
+    the next action visible without scrolling on configs with many `ok`
+    servers.
     """
-    return sorted(server_info, key=lambda s: 0 if s.status == "unauthenticated" else 1)
+    priority = {"unauthenticated": 0, "awaiting_reconnect": 1}
+    return sorted(server_info, key=lambda s: priority.get(s.status, 2))
 
 
 def _visible_tools_for(
@@ -363,8 +386,17 @@ class MCPToolItem(Static):
         self._rerender()
 
     def on_mount(self) -> None:
-        """Re-render with correct truncation once width is known."""
-        self._rerender()
+        """Re-render with correct truncation once width is known.
+
+        Defers via `call_after_refresh` so the first paint happens AFTER
+        the layout pass. At `on_mount` time `self.size.width` is still
+        0, which short-circuits `_format_collapsed`'s `avail > 0` guard
+        and emits the full description un-truncated for one frame. The
+        subsequent resize re-render then snaps an ellipsis in,
+        producing a visible overflow flicker on every mount (initial
+        open, filter rebuild, F2 toggle rebuild).
+        """
+        self.call_after_refresh(self._rerender)
 
     def on_resize(self) -> None:
         """Re-truncate when widget width changes."""
@@ -402,7 +434,7 @@ def _render_server_header(
     injection-safe: each span's `text` is rendered verbatim, never
     markup-parsed, so a server name like `[bold]foo[/]` shows literally
     rather than getting styled. `server.error` additionally goes through
-    `_sanitize_inline` because MCP servers can return arbitrary error
+    `sanitize_control_chars` because MCP servers can return arbitrary error
     text including newlines or terminal escapes.
 
     Args:
@@ -428,7 +460,6 @@ def _render_server_header(
             (server.name, "bold"),
             (summary, dim_style),
         )
-    error_text = _sanitize_inline(server.error or "")
     if server.status == "unauthenticated":
         login_hint = " — Enter to log in"
         return Content.assemble(
@@ -438,13 +469,151 @@ def _render_server_header(
             (f" {glyphs.bullet} {server.status}", indicator_color),
             (login_hint, dim_style),
         )
-    return Content.assemble(
-        (f"{indicator_glyph} ", indicator_color),
-        (server.name, "bold"),
-        (f" {server.transport}", dim_style),
-        (f" {glyphs.bullet} {server.status}", indicator_color),
-        (f" — {error_text}", dim_style) if error_text else "",
-    )
+    if server.status == "awaiting_reconnect":
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} ready to load", indicator_color),
+            (f" — {MCP_RECONNECT_KEY_LABEL} to load tools", dim_style),
+        )
+    if server.status == "error":
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (" — Enter for details", dim_style),
+        )
+    if server.status == "disabled":
+        error_text = sanitize_control_chars(
+            server.error or "", max_length=_INLINE_TEXT_LIMIT
+        )
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (f" — {error_text}", dim_style) if error_text else "",
+        )
+    assert_never(server.status)
+
+
+class MCPServerErrorScreen(ModalScreen[None]):
+    """Read-only modal for a failed MCP server's error details."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("c", "copy_error", "Copy", show=False, priority=True),
+        Binding("escape", "cancel", "Close", show=False, priority=True),
+    ]
+
+    CSS = """
+    MCPServerErrorScreen {
+        align: center middle;
+    }
+
+    MCPServerErrorScreen > Vertical {
+        width: 100;
+        max-width: 90%;
+        height: 80%;
+        background: $surface;
+        border: solid $error;
+        padding: 1 2;
+    }
+
+    MCPServerErrorScreen .mcp-error-title {
+        text-style: bold;
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MCPServerErrorScreen .mcp-error-body {
+        height: 1fr;
+        background: $background;
+        scrollbar-gutter: stable;
+        padding: 0 1;
+    }
+
+    MCPServerErrorScreen .mcp-error-text {
+        color: $text;
+    }
+
+    MCPServerErrorScreen .mcp-error-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        margin-top: 1;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, server: MCPServerInfo) -> None:
+        """Initialize the error-detail modal.
+
+        Args:
+            server: Failed MCP server whose error text should be displayed.
+        """
+        super().__init__()
+        self._server = server
+        self._error = sanitize_control_chars(
+            server.error or "No error details were reported.",
+            keep_newlines=True,
+            collapse_whitespace=False,
+        )
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal layout.
+
+        Yields:
+            Modal shell with title, scrollable error text, and help footer.
+        """
+        glyphs = get_glyphs()
+        yield Vertical(
+            Static(
+                Content.from_markup(
+                    "MCP Server Error: $server",
+                    server=sanitize_control_chars(
+                        self._server.name, max_length=_INLINE_TEXT_LIMIT
+                    ),
+                ),
+                classes="mcp-error-title",
+            ),
+            VerticalScroll(
+                Static(
+                    Content.from_markup("$error", error=self._error),
+                    classes="mcp-error-text",
+                ),
+                classes="mcp-error-body",
+            ),
+            Static(
+                f"c copy error {glyphs.bullet} Esc close",
+                classes="mcp-error-help",
+            ),
+        )
+
+    def action_copy_error(self) -> None:
+        """Copy the server error details to the clipboard."""
+        success, error = copy_text_to_clipboard(self.app, self._error)
+        if success:
+            self.app.notify(
+                "MCP error copied",
+                severity="information",
+                timeout=2,
+                markup=False,
+            )
+            return
+        suffix = f": {error}" if error else ""
+        self.app.notify(
+            f"Failed to copy MCP error{suffix}",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def action_cancel(self) -> None:
+        """Close the error details modal."""
+        self.dismiss(None)
 
 
 class MCPServerHeaderItem(Static):
@@ -527,13 +696,50 @@ class MCPServerHeaderItem(Static):
             )
         )
 
+    def refresh_from_server(
+        self,
+        server: MCPServerInfo,
+        indicator_glyph: str,
+        indicator_color: str,
+        visible_tools: tuple[MCPToolInfo, ...],
+        glyphs: Glyphs,
+    ) -> None:
+        """Replace the underlying server data and re-render in place.
+
+        Used by `apply_server_disable_toggle` so an F2 toggle updates this
+        header without tearing down and re-mounting the widget. Preserves
+        the row's selected state so the cursor stays put visually.
+
+        Args:
+            server: Updated server metadata.
+            indicator_glyph: New status glyph character.
+            indicator_color: New status hex color.
+            visible_tools: New filtered tool tuple (drives the count label).
+            glyphs: Active glyph table.
+        """
+        self._server = server
+        self._indicator_glyph = indicator_glyph
+        self._indicator_color = indicator_color
+        self._visible_tools = visible_tools
+        self._glyphs = glyphs
+        self.update(
+            _render_server_header(
+                server,
+                indicator_glyph,
+                indicator_color,
+                visible_tools,
+                glyphs,
+                selected=self._selected,
+            )
+        )
+
     def on_click(self, event: Click) -> None:
         """Handle click — select the header, or start login on unauth re-click.
 
         Headers are not expandable. Clicking once moves the cursor;
-        clicking the already-selected header for a server in
-        `unauthenticated` state dismisses the viewer with the server name
-        so the parent app can start in-TUI OAuth login.
+        clicking the already-selected header either starts login for
+        an `unauthenticated` server or opens details for an `error`
+        server.
 
         Args:
             event: The click event.
@@ -542,8 +748,11 @@ class MCPServerHeaderItem(Static):
         screen = self.screen
         if not isinstance(screen, MCPViewerScreen):
             return
-        if self._selected and self._server.status == "unauthenticated":
+        if self._selected and self._server.needs_attention():
             screen.dismiss(self._server.name)
+            return
+        if self._selected and self._server.status == "error":
+            screen.show_server_error(self._server)
             return
         screen._move_to(self.index)
 
@@ -552,13 +761,17 @@ class MCPViewerScreen(ModalScreen[str | None]):
     """Modal viewer for active MCP servers and their tools.
 
     Displays servers grouped by name with transport type and tool count.
-    Navigate with arrow keys, Enter to expand/collapse tool descriptions
-    or start in-app OAuth login for an unauthenticated server, Escape
-    to close.
+    Navigate with arrow keys, Enter to expand/collapse tool descriptions,
+    start in-app OAuth login for an unauthenticated server, or inspect a
+    failed server. Ctrl+R requests a reconnect, F2 on a server header
+    toggles its disabled state, and Escape closes the modal.
 
-    Dismisses with `None` when closed without action, or with the server
-    name to drive an in-TUI OAuth login when the user activates an
-    `unauthenticated` server header.
+    Dismisses with `None` when closed without action, the server name to
+    drive an in-TUI OAuth login when the user activates an
+    `unauthenticated` server header, or `MCP_VIEWER_RECONNECT_REQUEST`
+    for a reconnect. The disable/enable toggle (`F2`) is handled in-place
+    via the `on_toggle_disable` callback so the screen never tears down
+    — see the constructor.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -573,7 +786,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Binding("ctrl+e", "toggle_all", "Toggle all", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
-        Binding("ctrl+r", "reconnect", "Reconnect", show=False, priority=True),
+        Binding(MCP_RECONNECT_KEY, "reconnect", "Reconnect", show=False, priority=True),
+        Binding("f2", "toggle_disable", "Toggle disable", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
     """Key bindings for navigation, expansion, and cancel.
@@ -687,6 +901,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         *,
         connecting: bool = False,
         pending_reconnect: bool = False,
+        on_toggle_disable: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the MCP viewer screen.
 
@@ -700,11 +915,18 @@ class MCPViewerScreen(ModalScreen[str | None]):
                 and a restart will pick it up. Surfaces the `Ctrl+R`
                 reconnect hint in the footer; the keybind itself is a
                 no-op when this is `False`.
+            on_toggle_disable: Async callback invoked with the selected
+                server's name when the user presses `F2` on a header row.
+                The callback persists the new disabled state and is
+                expected to call `refresh_server_info` on this screen so
+                the user sees the updated status without a screen swap.
+                When `None`, `F2` is a no-op.
         """
         super().__init__()
         self._server_info = server_info
         self._connecting = connecting
         self._pending_reconnect = pending_reconnect
+        self._on_toggle_disable = on_toggle_disable
         # All cursor-navigable rows in render order: server headers + tool
         # items intermixed. `_selected_index` indexes into this list.
         self._row_widgets: list[MCPToolItem | MCPServerHeaderItem] = []
@@ -721,26 +943,191 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """
         return [w for w in self._row_widgets if isinstance(w, MCPToolItem)]
 
-    def refresh_server_info(self, server_info: list[MCPServerInfo]) -> None:
+    async def refresh_server_info(
+        self,
+        server_info: list[MCPServerInfo],
+        *,
+        pending_reconnect: bool | None = None,
+        select_server: str | None = None,
+    ) -> None:
         """Replace the displayed server list; typically after server startup.
 
         Rebuilds the modal body in place so a user who opened `/mcp` before
         tools finished loading sees them appear without closing/reopening.
+        Also used by the in-place disable toggle so the cursor lands back
+        on the same server header after F2.
 
         The active filter is cleared on refresh: the connecting placeholder
         suppresses the filter input, so `_query` cannot be non-empty when
         this is called. Resetting it also prevents the programmatic
         `Input(value=...)` mount in `_mount_body` from triggering a
         redundant `Input.Changed` repopulation.
+
+        This is async because `body.remove_children()` must complete before
+        `_mount_body` re-inserts an `Input(id="mcp-filter")` — Textual
+        defers child removal, so a non-awaited remove leaves the old
+        widget attached and the mount raises `DuplicateIds`.
+
+        Args:
+            server_info: Refreshed server metadata.
+            pending_reconnect: When provided, updates the footer's
+                reconnect hint. `None` preserves the existing value.
+            select_server: When provided, after the rebuild, move the
+                cursor to the header row whose `server.name` matches.
+                Unmatched names are silently ignored (the rebuild keeps
+                the default index-0 selection).
         """
         self._server_info = server_info
         self._connecting = False
         self._query = ""
+        if pending_reconnect is not None:
+            self._pending_reconnect = pending_reconnect
         body = self.query_one(Vertical)
-        body.remove_children()
+        await body.remove_children()
         self._row_widgets = []
         self._selected_index = 0
         self._mount_body(body)
+        if select_server is not None:
+            for idx, widget in enumerate(self._row_widgets):
+                if (
+                    isinstance(widget, MCPServerHeaderItem)
+                    and widget.server.name == select_server
+                ):
+                    self._move_to(idx)
+                    self._reveal_selection(widget, direction=1)
+                    break
+
+    async def apply_server_disable_toggle(
+        self,
+        server_info: list[MCPServerInfo],
+        *,
+        toggled_server: str,
+        pending_reconnect: bool | None = None,
+    ) -> None:
+        """Patch a single server's row in place after an F2 toggle.
+
+        Surgically updates only the affected server's header and tool
+        rows so unchanged widgets keep their identity — no full
+        `body.remove_children()` + remount, which would re-create every
+        `MCPToolItem` and reintroduce the `on_mount` truncation flicker
+        across the entire list.
+
+        Falls back to `refresh_server_info` when the toggled server
+        cannot be patched in place: server missing from the new info
+        list, no existing header widget (e.g., the active filter
+        currently hides it), or the new state would filter the server
+        out entirely.
+
+        Args:
+            server_info: Refreshed server metadata (full list).
+            toggled_server: Name of the server whose disabled state just
+                changed; identifies which row to patch.
+            pending_reconnect: When provided, updates the footer's
+                reconnect hint. `None` preserves the existing value.
+        """
+        self._server_info = server_info
+        if pending_reconnect is not None:
+            self._pending_reconnect = pending_reconnect
+
+        new_server = next((s for s in server_info if s.name == toggled_server), None)
+        header_idx = next(
+            (
+                i
+                for i, w in enumerate(self._row_widgets)
+                if isinstance(w, MCPServerHeaderItem)
+                and w.server.name == toggled_server
+            ),
+            None,
+        )
+        tokens = [tok for tok in self._query.lower().split() if tok]
+        visible_tools = (
+            _visible_tools_for(new_server, tokens) if new_server is not None else None
+        )
+
+        if new_server is None or header_idx is None or visible_tools is None:
+            logger.debug(
+                "apply_server_disable_toggle fallback for %r: "
+                "new_server=%s header_idx=%s visible_tools=%s",
+                toggled_server,
+                new_server is not None,
+                header_idx,
+                visible_tools is not None,
+            )
+            await self.refresh_server_info(
+                server_info,
+                pending_reconnect=pending_reconnect,
+                select_server=toggled_server,
+            )
+            return
+
+        header = self._row_widgets[header_idx]
+        if not isinstance(header, MCPServerHeaderItem):
+            # The lookup above filters by isinstance, so this branch
+            # should be unreachable. Log loudly rather than silently
+            # returning so a future invariant break is visible.
+            logger.warning(
+                "apply_server_disable_toggle: expected header at index %d, got %r",
+                header_idx,
+                type(header).__name__,
+            )
+            return
+        next_header_idx = next(
+            (
+                i
+                for i in range(header_idx + 1, len(self._row_widgets))
+                if isinstance(self._row_widgets[i], MCPServerHeaderItem)
+            ),
+            len(self._row_widgets),
+        )
+
+        # `remove_children(to_remove)` removes the listed widgets
+        # atomically in one refresh; awaiting `widget.remove()` per
+        # row would yield to Textual between each, animating the
+        # tool list shrinking one entry at a time.
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        to_remove = self._row_widgets[header_idx + 1 : next_header_idx]
+        if to_remove:
+            await scroll.remove_children(to_remove)
+        del self._row_widgets[header_idx + 1 : next_header_idx]
+
+        colors = theme.get_theme_colors(self)
+        glyphs = get_glyphs()
+        header.refresh_from_server(
+            new_server,
+            _status_glyph(new_server.status, glyphs),
+            _status_color(new_server.status, colors),
+            visible_tools,
+            glyphs,
+        )
+
+        if visible_tools:
+            new_widgets: list[MCPToolItem] = [
+                MCPToolItem(
+                    name=tool.name,
+                    description=tool.description,
+                    index=0,  # renumbered below
+                    classes="mcp-tool-item",
+                    input_schema=tool.input_schema,
+                )
+                for tool in visible_tools
+            ]
+            await scroll.mount(*new_widgets, after=header)
+            self._row_widgets[header_idx + 1 : header_idx + 1] = new_widgets
+
+        # `MCPToolItem.on_click` calls `screen._move_to(self.index)`,
+        # so every row's stored index must match its position after
+        # the splice — otherwise clicks land on the wrong row.
+        for idx, widget in enumerate(self._row_widgets):
+            widget.index = idx
+        if self._selected_index >= len(self._row_widgets):
+            self._selected_index = max(0, len(self._row_widgets) - 1)
+
+        # `_build_help_text` is cheap and reads `_pending_reconnect`,
+        # so re-render the footer whenever the caller supplied a new
+        # value — saves comparing against the prior state.
+        if pending_reconnect is not None:
+            help_static = self.query_one(".mcp-viewer-help", Static)
+            help_static.update(self._build_help_text(glyphs))
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Rebuild the visible tool list whenever the filter input changes.
@@ -814,16 +1201,31 @@ class MCPViewerScreen(ModalScreen[str | None]):
         container.mount(scroll)
         self._populate_scroll(scroll, self._query)
 
+        container.mount(
+            Static(self._build_help_text(glyphs), classes="mcp-viewer-help")
+        )
+
+    def _build_help_text(self, glyphs: Glyphs) -> str:
+        """Compose the help-footer string from the current `_pending_reconnect`.
+
+        Single source of truth so `_mount_body` (initial) and
+        `apply_server_disable_toggle` (incremental) stay in sync — F2
+        flips the reconnect-pending state, and the footer must update
+        without a full re-mount.
+
+        Returns:
+            The rendered help line for the modal footer.
+        """
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Enter expand/login",
+            "Enter expand/login/details",
+            "F2 disable/enable",
             "Ctrl+E expand all",
         ]
         if self._pending_reconnect:
-            help_parts.append("Ctrl+R reconnect")
+            help_parts.append(f"{MCP_RECONNECT_KEY_LABEL} reconnect")
         help_parts.extend(["type to filter", "Esc close"])
-        help_text = f" {glyphs.bullet} ".join(help_parts)
-        container.mount(Static(help_text, classes="mcp-viewer-help"))
+        return f" {glyphs.bullet} ".join(help_parts)
 
     def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
         """Mount filtered server headers + tool items into `scroll`.
@@ -837,7 +1239,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
         if not self._server_info:
             placeholder = (
-                "Loading MCP tools — server is starting up..."
+                "Loading MCP tools..."
                 if self._connecting
                 else ("No MCP servers configured.\nUse `--mcp-config` to load servers.")
             )
@@ -951,8 +1353,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
     ) -> None:
         """Scroll so `widget.region.bottom` aligns with the viewport bottom.
 
-        Used when jumping upward to the previous row: lands the user at
-        the bottom of that row so the next `Up` press immediately
+        Used when jumping upward into a row taller than the viewport: lands
+        the user at the bottom of that row so the next `Up` press immediately
         line-scrolls upward through its content rather than jumping again.
         """
         scroll = self.query_one(".mcp-list", VerticalScroll)
@@ -962,14 +1364,44 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if delta:
             scroll.scroll_relative(y=delta, animate=False)
 
+    def _reveal_selection(
+        self,
+        widget: MCPToolItem | MCPServerHeaderItem,
+        *,
+        direction: int,
+    ) -> None:
+        """Bring `widget` into view after a selection change.
+
+        Only force-anchors rows taller than the viewport — these need a
+        deliberate edge alignment so subsequent arrow presses can line-scroll
+        through the row's body. For normal rows, defers to `scroll_visible`,
+        which is a no-op when the row is already fully visible. Matches
+        `/model` switcher behavior where short, in-view rows don't tug the
+        viewport on every keypress.
+
+        Args:
+            widget: The newly selected row.
+            direction: `+1` when moving down (anchor top for tall rows),
+                `-1` when moving up (anchor bottom for tall rows).
+        """
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        if widget.region.height > scroll.region.height:
+            if direction > 0:
+                widget.scroll_visible(top=True)
+            else:
+                self._scroll_widget_bottom_to_view(widget)
+        else:
+            widget.scroll_visible()
+
     def action_move_up(self) -> None:
         """Smart up: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's top edge is already inside the viewport, jump
-        to the previous row (header or tool) and pin its **bottom** to the
-        viewport so the next `Up` resumes line-stepping through that row.
-        Otherwise scroll the viewport up by one row. `Tab` / `Shift+Tab`
-        skip the smart check AND skip header rows (see `action_jump_up`).
+        to the previous row (header or tool). For rows taller than the
+        viewport, pin the new selection's **bottom** to the viewport so the
+        next `Up` resumes line-stepping through that row; otherwise just
+        ensure the row is visible. `Tab` / `Shift+Tab` skip the smart check
+        AND skip header rows (see `action_jump_up`).
         """
         if not self._row_widgets:
             return
@@ -979,8 +1411,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
             old = self._selected_index
             self._move_selection(-1)
             if self._selected_index != old:
-                self._scroll_widget_bottom_to_view(
-                    self._row_widgets[self._selected_index]
+                self._reveal_selection(
+                    self._row_widgets[self._selected_index], direction=-1
                 )
         else:
             scroll.scroll_relative(y=-1, animate=False)
@@ -989,10 +1421,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart down: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's bottom edge is already inside the viewport,
-        jump to the next row (header or tool) and pin its top to the
-        viewport. Otherwise scroll the viewport down by one row. `Tab` /
-        `Shift+Tab` skip the smart check AND skip header rows (see
-        `action_jump_down`).
+        jump to the next row (header or tool). For rows taller than the
+        viewport, pin the new selection's top to the viewport; otherwise
+        just ensure the row is visible. `Tab` / `Shift+Tab` skip the smart
+        check AND skip header rows (see `action_jump_down`).
         """
         if not self._row_widgets:
             return
@@ -1004,43 +1436,61 @@ class MCPViewerScreen(ModalScreen[str | None]):
             old = self._selected_index
             self._move_selection(1)
             if self._selected_index != old:
-                self._row_widgets[self._selected_index].scroll_visible(top=True)
+                self._reveal_selection(
+                    self._row_widgets[self._selected_index], direction=1
+                )
         else:
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Jump to the previous tool (Shift+Tab); skips headers; pin bottom."""
+        """Jump to the previous tool (Shift+Tab); skips headers."""
         target = self._next_tool_row(self._selected_index, -1)
         if target is None:
             return
         self._move_to(target)
-        self._scroll_widget_bottom_to_view(self._row_widgets[target])
+        self._reveal_selection(self._row_widgets[target], direction=-1)
 
     def action_jump_down(self) -> None:
-        """Jump to the next tool (Tab); skips headers; pin top."""
+        """Jump to the next tool (Tab); skips headers."""
         target = self._next_tool_row(self._selected_index, +1)
         if target is None:
             return
         self._move_to(target)
-        self._row_widgets[target].scroll_visible(top=True)
+        self._reveal_selection(self._row_widgets[target], direction=1)
+
+    def show_server_error(self, server: MCPServerInfo) -> None:
+        """Open the read-only error detail modal for `server`.
+
+        Args:
+            server: Failed MCP server to inspect.
+        """
+        self.app.push_screen(MCPServerErrorScreen(server))
 
     def action_toggle_expand(self) -> None:
-        """Toggle expand on a tool row, or start login on an unauth header.
+        """Toggle expand on a tool row, log in, or show error details.
 
         Tool rows expand/collapse as before; activating a header row for
         a server in `unauthenticated` state dismisses the viewer with the
-        server name so the app can drive in-TUI OAuth login. Headers for
-        other states (ok, error) remain no-ops.
+        server name so the app can drive in-TUI OAuth login. Activating an
+        `error` header opens a read-only detail modal. Headers for other
+        states (ok, awaiting reconnect, disabled) remain no-ops.
         """
         if not self._row_widgets:
             return
         row = self._row_widgets[self._selected_index]
         if isinstance(row, MCPToolItem):
             row.toggle_expand()
+            # The new height isn't reflected until after the next layout
+            # pass, so defer the visibility scroll. Without this, expanding
+            # a row near the viewport bottom leaves its new body off-screen.
+            self.call_after_refresh(row.scroll_visible)
             return
         server = row.server
-        if server.status == "unauthenticated":
+        if server.needs_attention():
             self.dismiss(server.name)
+            return
+        if server.status == "error":
+            self.show_server_error(server)
 
     def action_toggle_all(self) -> None:
         """Expand or collapse every visible tool at once.
@@ -1057,14 +1507,54 @@ class MCPViewerScreen(ModalScreen[str | None]):
             widget.set_expanded(any_collapsed)
 
     def action_page_up(self) -> None:
-        """Scroll up by one page."""
+        """Scroll up by one page and snap selection to the topmost visible row.
+
+        Without the selection snap, `_selected_index` would still point at
+        the now-offscreen row, and a subsequent `Up`/`Down` press would
+        yank the viewport back to it (see `action_move_up` / `_move_down`,
+        which scroll the offscreen selection back into view).
+        """
+        if not self._row_widgets:
+            return
         scroll = self.query_one(".mcp-list", VerticalScroll)
         scroll.scroll_page_up()
+        self.call_after_refresh(self._snap_selection_to_topmost_visible)
 
     def action_page_down(self) -> None:
-        """Scroll down by one page."""
+        """Scroll down by one page and snap selection to the bottommost visible row.
+
+        Mirror of `action_page_up`: prevents a subsequent arrow key from
+        scrolling the viewport back to a now-offscreen selection.
+        """
+        if not self._row_widgets:
+            return
         scroll = self.query_one(".mcp-list", VerticalScroll)
         scroll.scroll_page_down()
+        self.call_after_refresh(self._snap_selection_to_bottommost_visible)
+
+    def _snap_selection_to_topmost_visible(self) -> None:
+        """Move selection to the first row whose top is at or below the viewport top."""
+        if not self._row_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        top = scroll.region.y
+        for idx, widget in enumerate(self._row_widgets):
+            if widget.region.y >= top:
+                self._move_to(idx)
+                return
+
+    def _snap_selection_to_bottommost_visible(self) -> None:
+        """Move selection to the last row whose bottom fits inside the viewport."""
+        if not self._row_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        bottom = scroll.region.y + scroll.region.height
+        target: int | None = None
+        for idx, widget in enumerate(self._row_widgets):
+            if widget.region.y + widget.region.height <= bottom:
+                target = idx
+        if target is not None:
+            self._move_to(target)
 
     def action_cancel(self) -> None:
         """Close the viewer without selecting a server to log into."""
@@ -1079,3 +1569,21 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if not self._pending_reconnect:
             return
         self.dismiss(MCP_VIEWER_RECONNECT_REQUEST)
+
+    def action_toggle_disable(self) -> None:
+        """Hand off a toggle-disable request to the app without dismissing.
+
+        Only fires when a server header is selected — pressing F2 on a
+        tool row is a no-op. The app's callback persists the new state
+        and is expected to call `refresh_server_info(..., select_server=)`
+        on this screen, so the user sees the new status without the
+        screen tearing down (which would flicker and reset selection).
+        """
+        if not self._row_widgets:
+            return
+        row = self._row_widgets[self._selected_index]
+        if isinstance(row, MCPToolItem):
+            return
+        if self._on_toggle_disable is None:
+            return
+        self.app.call_later(self._on_toggle_disable, row.server.name)

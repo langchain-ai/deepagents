@@ -5,14 +5,21 @@ from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
+    KNOWN_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
+    STANDALONE_EXTRAS,
+    extra_for_package,
     format_extras_status,
     format_extras_status_plain,
+    format_known_extras,
     get_extras_status,
     get_optional_dependency_status,
+    verify_interpreter_deps,
 )
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -131,6 +138,28 @@ def test_skips_entries_without_extra_marker() -> None:
     assert extras == {"foo": [("gated-pkg", "1.2.3")]}
 
 
+def test_extra_for_package_returns_declaring_known_extra() -> None:
+    """Package lookup should use declared extras instead of provider-name guesses."""
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
+        "deepagents-code[anthropic,baseten] ; extra == 'all-providers'",
+    ]
+
+    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
+        assert extra_for_package("langchain-google-vertexai") == "vertex"
+
+
+def test_extra_for_package_returns_none_for_unknown_package() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
+    ]
+
+    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
+        assert extra_for_package("not-declared") is None
+
+
 def test_skips_composite_self_referencing_extras() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
@@ -196,15 +225,16 @@ def test_format_extras_status_plain_columns_are_aligned() -> None:
 
 
 def test_extras_taxonomy_covers_pyproject() -> None:
-    """Every declared extra must be classified as provider or sandbox.
+    """Every declared extra must be classified in one of the taxonomy sets.
 
     A new extra added to `pyproject.toml` without an entry in
-    `MODEL_PROVIDER_EXTRAS` or `SANDBOX_EXTRAS` would silently fall out of
-    the onboarding dependency screen. This drift test forces the contributor
-    to update one of those constants alongside the dependency.
+    `MODEL_PROVIDER_EXTRAS`, `SANDBOX_EXTRAS`, or `STANDALONE_EXTRAS` would
+    silently fall out of the onboarding dependency screen. This drift test
+    forces the contributor to update one of those constants alongside the
+    dependency.
     """
     declared = _declared_extras()
-    classified = MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS
+    classified = MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
 
     uncategorized = declared - classified
     assert not uncategorized, (
@@ -218,10 +248,96 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     )
 
 
+def test_known_extras_is_union_of_categories() -> None:
+    """`KNOWN_EXTRAS` must be the union of the three category frozensets.
+
+    `dcode --install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
+    to decide whether to prompt for confirmation on unknown values, so this
+    set has to stay aligned with the taxonomy or callers will see spurious
+    prompts for real extras.
+    """
+    assert KNOWN_EXTRAS == (MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS)
+
+
 def test_extras_categories_are_disjoint() -> None:
-    """An extra cannot be both a model provider and a sandbox."""
-    overlap = MODEL_PROVIDER_EXTRAS & SANDBOX_EXTRAS
-    assert not overlap, f"Extras classified twice: {sorted(overlap)}"
+    """An extra can only be classified in one taxonomy set."""
+    pairs = (
+        ("providers/sandboxes", MODEL_PROVIDER_EXTRAS & SANDBOX_EXTRAS),
+        ("providers/standalone", MODEL_PROVIDER_EXTRAS & STANDALONE_EXTRAS),
+        ("sandboxes/standalone", SANDBOX_EXTRAS & STANDALONE_EXTRAS),
+    )
+    for label, overlap in pairs:
+        assert not overlap, f"Extras classified twice in {label}: {sorted(overlap)}"
+
+
+def _parse_known_extras(rendered: str) -> dict[str, list[str]]:
+    """Parse `format_known_extras` output into `{label: [extras]}`.
+
+    Lets tests assert per-line grouping and ordering rather than matching
+    substrings against the whole blob, which would pass even if extras were
+    rendered under the wrong category or all collapsed onto one line.
+    """
+    groups: dict[str, list[str]] = {}
+    for line in rendered.splitlines()[1:]:  # skip the "Available extras:" header
+        label, _, extras = line.strip().partition(": ")
+        groups[label] = extras.split(", ")
+    return groups
+
+
+def test_format_known_extras_lists_exactly_known_extras() -> None:
+    """The listing must contain every `KNOWN_EXTRAS` member and nothing else."""
+    rendered = format_known_extras()
+    assert rendered.startswith("Available extras:")
+    groups = _parse_known_extras(rendered)
+    rendered_extras = {extra for extras in groups.values() for extra in extras}
+    # Bidirectional: catches both a new category left out of the listing and a
+    # listing that drifts ahead of `KNOWN_EXTRAS`.
+    assert rendered_extras == set(KNOWN_EXTRAS)
+
+
+def test_format_known_extras_groups_extras_under_correct_label() -> None:
+    """Each category renders under its own label with alphabetical ordering."""
+    groups = _parse_known_extras(format_known_extras())
+    assert groups["Model providers"] == sorted(MODEL_PROVIDER_EXTRAS)
+    assert groups["Sandboxes"] == sorted(SANDBOX_EXTRAS)
+    assert groups["Other"] == sorted(STANDALONE_EXTRAS)
+
+
+# `verify_interpreter_deps` does a lazy `from deepagents_code.config import
+# _is_editable_install` each call, so the symbol is resolved against
+# `deepagents_code.config` at call time. Patch the source module — patching
+# `deepagents_code.extras_info._is_editable_install` would not work (it isn't
+# bound there as a module-level attribute).
+def test_verify_interpreter_deps_raises_with_dcode_hint_for_tool_install() -> None:
+    with (
+        patch(
+            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
+        ),
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        pytest.raises(ImportError, match="dcode --install quickjs"),
+    ):
+        verify_interpreter_deps()
+
+
+def test_verify_interpreter_deps_raises_with_uv_hint_for_editable_install() -> None:
+    with (
+        patch(
+            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
+        ),
+        patch("deepagents_code.config._is_editable_install", return_value=True),
+        pytest.raises(
+            ImportError, match=r"uv tool install --editable.*deepagents-code\[quickjs\]"
+        ),
+    ):
+        verify_interpreter_deps()
+
+
+def test_verify_interpreter_deps_passes_when_module_present() -> None:
+    fake_spec = MagicMock()
+    with patch(
+        "deepagents_code.extras_info.importlib.util.find_spec", return_value=fake_spec
+    ):
+        verify_interpreter_deps()
 
 
 def test_format_extras_status_renders_markdown_table() -> None:

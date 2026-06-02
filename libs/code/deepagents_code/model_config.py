@@ -24,13 +24,11 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
-from deepagents_code._debug import configure_debug_logging
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
 
@@ -184,6 +182,30 @@ class MissingCredentialsError(ModelConfigError):
         super().__init__(message)
         self.provider = provider
         self.env_var = env_var
+
+
+class MissingProviderPackageError(ModelConfigError):
+    """Raised when a provider is selected but its LangChain package is not installed.
+
+    Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
+    keep working. Carries the `provider` name and the `package` to install so
+    callers can render targeted recovery hints (e.g., suggest `/install fireworks`
+    or the `/model` slash command) without string-matching on the formatted
+    exception message.
+    """
+
+    def __init__(self, message: str, *, provider: str, package: str) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable message describing the missing package.
+            provider: The provider whose package is missing (e.g., `'fireworks'`).
+            package: The pip-installable package name (e.g.,
+                `'langchain-fireworks'`).
+        """
+        super().__init__(message)
+        self.provider = provider
+        self.package = package
 
 
 class ProviderAuthState(StrEnum):

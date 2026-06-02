@@ -51,8 +51,30 @@ class MCPToolInfo:
     """
 
 
-MCPServerStatus = Literal["ok", "unauthenticated", "error"]
-"""Load states a configured MCP server can end up in."""
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
+"""Load states a configured MCP server can end up in.
+
+`ok` means the server loaded successfully and has an authoritative tool list.
+
+`unauthenticated` means the server requires OAuth login before tools can load.
+
+`error` means the server failed to load after a connection or configuration
+failure.
+
+`disabled` is set when the user has turned the server off via the TUI
+(`/mcp` -> F2). No connection is attempted and no tools are loaded, but
+the entry is still surfaced in the viewer so the user can re-enable it.
+
+`awaiting_reconnect` is a transient UI-only state used after OAuth login
+has succeeded but before the LangGraph server has restarted and loaded
+the newly available MCP tools.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,14 +85,20 @@ class MCPServerInfo:
     """Server name from the MCP configuration."""
 
     transport: str
-    """Transport identifier — `stdio`, `sse`, `http`, or the synthetic
-    `config` value used for entries surfacing a bad config file."""
+    """Transport identifier — `stdio`, `sse`, `http`, the synthetic
+    `config` value used for entries surfacing a bad config file, or
+    `unknown` for a disabled server whose original config could not be
+    classified."""
 
     tools: tuple[MCPToolInfo, ...] = ()
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
-    """Load status — `ok`, `unauthenticated`, or `error`."""
+    """Load status.
+
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
+    `disabled`.
+    """
 
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
@@ -103,6 +131,14 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+
+    def is_loaded(self) -> bool:
+        """Return whether this server has successfully loaded tools."""
+        return self.status == "ok"
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -924,6 +960,69 @@ async def _discover_tools(session: ClientSession) -> list[Any]:
     raise RuntimeError(msg)
 
 
+def _normalize_mcp_arguments(
+    arguments: dict[str, Any],
+    input_schema: Any,  # noqa: ANN401  # raw JSON Schema dict from the MCP tool
+) -> dict[str, Any]:
+    """Drop empty-string values for optional MCP tool params.
+
+    Some MCP servers (e.g. Slack's `slack_search_public_and_private`) validate
+    optional ID-typed params with `value is not a channel ID` when the model
+    fills them in with `""` instead of omitting them. JSON-Schema-derived
+    Pydantic models happily accept `""` for `Optional[str]`, so the request
+    reaches the server and gets rejected with a generic `ToolException`.
+
+    Treat `""` for non-required string fields as "omitted" so the MCP server
+    sees the same payload it would have for a field the model genuinely
+    skipped. Required fields are passed through unchanged so the server's
+    own missing-field error path still runs when applicable.
+
+    Only `""` is normalized; `None` is left to the caller / server. Schemas
+    that declare `["string", "null"]` will see `""` dropped but `None`
+    forwarded — callers that want symmetric "no value" handling should
+    omit the kwarg explicitly.
+
+    Dropped keys are logged at debug so unexpected MCP behavior is
+    diagnosable when a tool semantically distinguishes `""` from omitted.
+
+    Args:
+        arguments: Keyword arguments collected by LangChain's tool runner.
+        input_schema: The MCP tool's `inputSchema` (raw JSON Schema dict).
+
+    Returns:
+        A new dict suitable for `session.call_tool`.
+    """
+    if not isinstance(input_schema, dict):
+        return arguments
+    required = set(input_schema.get("required") or ())
+    properties = input_schema.get("properties") or {}
+    cleaned: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if value != "" or key in required:  # noqa: PLC1901  # distinguishing "" from other falsy types (0, False, []) is the point
+            cleaned[key] = value
+            continue
+        prop = properties.get(key)
+        prop_type = prop.get("type") if isinstance(prop, dict) else None
+        is_string_typed = prop_type == "string" or (
+            isinstance(prop_type, list) and "string" in prop_type
+        )
+        # Three drop conditions converge here:
+        #   - explicit string type (the original Slack-style failure mode);
+        #   - missing `type` (oneOf/anyOf/$ref or untyped — treat as ambiguous
+        #     and conservatively drop, since the server will reject `""` for
+        #     any ID-shaped slot anyway);
+        #   - key absent from `properties` entirely (model invented a field).
+        # Anything with an explicit non-string `type` is kept — `""` can't be
+        # a valid integer/bool/array so it was the model's mistake to send,
+        # and the server's own validation gives a clearer error than ours.
+        if isinstance(prop, dict) and not is_string_typed and prop_type is not None:
+            cleaned[key] = value
+    if cleaned.keys() != arguments.keys():
+        dropped = sorted(set(arguments) - set(cleaned))
+        logger.debug("MCP arg normalize: dropped empty-string keys %s", dropped)
+    return cleaned
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -969,6 +1068,8 @@ def _build_cached_mcp_tool(
         **arguments: Any,
     ) -> Any:  # noqa: ANN401
         from deepagents_code.mcp_auth import find_reauth_required
+
+        arguments = _normalize_mcp_arguments(arguments, mcp_tool.inputSchema)
 
         session = await session_manager.get_session(server_name)
         try:
@@ -1572,6 +1673,31 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, _bad_config_infos()
 
+    from deepagents_code.mcp_disabled import get_disabled_servers
+
+    disabled_names = get_disabled_servers()
+    disabled_infos: list[MCPServerInfo] = []
+    if disabled_names:
+        active: dict[str, Any] = {}
+        for server_name, server_config in merged["mcpServers"].items():
+            if server_name in disabled_names:
+                disabled_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=_resolve_server_type(server_config)
+                        if isinstance(server_config, dict)
+                        else "unknown",
+                        status="disabled",
+                        error="Disabled by user (`/mcp` F2 to re-enable).",
+                    ),
+                )
+            else:
+                active[server_name] = server_config
+        merged = {"mcpServers": active}
+
+    if not merged.get("mcpServers"):
+        return [], None, disabled_infos + _bad_config_infos()
+
     try:
         for server_name, server_config in merged["mcpServers"].items():
             _validate_server_config(server_name, server_config)
@@ -1584,5 +1710,6 @@ async def resolve_and_load_mcp_tools(
         stateless=stateless,
         session_manager=session_manager,
     )
+    server_infos.extend(disabled_infos)
     server_infos.extend(_bad_config_infos())
     return tools, manager, server_infos

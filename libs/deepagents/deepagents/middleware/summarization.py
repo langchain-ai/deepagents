@@ -70,7 +70,7 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -768,7 +768,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -776,7 +776,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
         path = self._get_history_path()
 
@@ -842,7 +842,7 @@ A condensed summary follows:
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
@@ -850,7 +850,7 @@ A condensed summary follows:
             messages: Messages being summarized.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
         path = self._get_history_path()
 
@@ -1016,15 +1016,9 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1143,15 +1137,9 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1448,8 +1436,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or ``None``.
-            event: The prior `_summarization_event`, or ``None``.
+            file_path: Backend path where history was offloaded, or `None`.
+            event: The prior `_summarization_event`, or `None`.
             cutoff: The cutoff index within the effective message list.
 
         Returns:

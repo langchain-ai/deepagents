@@ -33,7 +33,7 @@ class ConfigErrorKind(StrEnum):
     """
 
     EXPLICIT_LOAD_FAILED = "explicit_load_failed"
-    """The `--config` path could not be parsed."""
+    """The `--mcp-config` path could not be parsed."""
 
     NO_CONFIG_FOUND = "no_config_found"
     """Auto-discovery returned zero candidate paths."""
@@ -127,7 +127,7 @@ def resolve_mcp_config(
     """Resolve an MCP config dict for login without printing anything.
 
     Args:
-        config_path: Explicit `--config` path, or `None` for auto-discovery.
+        config_path: Explicit `--mcp-config` path, or `None` for auto-discovery.
 
     Returns:
         A `ConfigResolution` on success, or a `ConfigResolutionError`
@@ -160,7 +160,7 @@ def resolve_mcp_config(
             kind=ConfigErrorKind.NO_CONFIG_FOUND,
             message=(
                 "No MCP config file found in any auto-discovered location. "
-                "Pass --config <path>, or run `dcode mcp login --help` "
+                "Pass --mcp-config <path>, or run `dcode mcp login --help` "
                 "to see the search paths and config format."
             ),
         )
@@ -266,7 +266,7 @@ def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
         "Skipping untrusted project MCP config "
         f"(not yet approved or config changed): {skipped}. "
         "Approve it by running `dcode` in this project, or "
-        "pass --config <path> to use it explicitly."
+        "pass --mcp-config <path> to use it explicitly."
     )
 
 

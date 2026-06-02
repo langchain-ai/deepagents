@@ -174,7 +174,7 @@ class CompositeBackend(BackendProtocol):
 
     @staticmethod
     def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:
-        """Normalize legacy ``list[FileInfo]`` returns to `LsResult`."""
+        """Normalize legacy `list[FileInfo]` returns to `LsResult`."""
         if isinstance(raw, LsResult):
             return raw
         return LsResult(entries=raw)
@@ -296,7 +296,7 @@ class CompositeBackend(BackendProtocol):
 
     @staticmethod
     def _coerce_grep_result(raw: GrepResult | list[GrepMatch] | str) -> GrepResult:
-        """Normalize legacy ``list[GrepMatch] | str`` returns to `GrepResult`."""
+        """Normalize legacy `list[GrepMatch] | str` returns to `GrepResult`."""
         if isinstance(raw, GrepResult):
             return raw
         if isinstance(raw, str):

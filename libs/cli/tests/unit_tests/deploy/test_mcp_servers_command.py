@@ -626,9 +626,7 @@ def test_mcp_servers_tools_lists_and_prints_snippet(
         raise AssertionError(msg)
 
     _patch_client(monkeypatch, handler)
-    execute_mcp_servers_command(
-        argparse.Namespace(mcp_cmd="tools", mcp_server_id=_SID)
-    )
+    execute_mcp_servers_command(argparse.Namespace(mcp_cmd="tools", mcp_server_id=_SID))
     out = capsys.readouterr().out
     assert "read_wiki" in out
     assert "Read a page." in out  # only the first description line
@@ -677,7 +675,9 @@ def test_mcp_servers_delete_resolves_url(
         if request.method == "GET":
             return httpx.Response(
                 200,
-                json=[{"id": _SID, "name": "notion", "url": "https://mcp.notion.com/mcp"}],
+                json=[
+                    {"id": _SID, "name": "notion", "url": "https://mcp.notion.com/mcp"}
+                ],
             )
         return httpx.Response(204)
 

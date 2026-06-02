@@ -402,9 +402,7 @@ def test_subagent_model_and_model_id_conflict_raises(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("model", ["", 123])
-def test_subagent_model_must_be_non_empty_string(
-    tmp_path: Path, model: object
-) -> None:
+def test_subagent_model_must_be_non_empty_string(tmp_path: Path, model: object) -> None:
     _write_subagent(tmp_path, '{"model": ' + json.dumps(model) + "}")
     with pytest.raises(ProjectError, match="model"):
         Project.load(tmp_path)

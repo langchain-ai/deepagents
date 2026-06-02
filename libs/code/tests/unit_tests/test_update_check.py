@@ -938,9 +938,7 @@ class TestInstallExtraCommand:
         _write_dist_info(
             tmp_path,
             "deepagents-code",
-            requires=(
-                'definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',
-            ),
+            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
         )
         monkeypatch.syspath_prepend(str(tmp_path))
 

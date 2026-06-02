@@ -539,29 +539,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
-    def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
-        """Derive the subagent's `RunnableConfig` from the parent's runtime config.
-
-        Only `callbacks`, `tags`, and `configurable` are forwarded.
-
-        Callbacks let Pregel's streaming handlers propagate into the subagent
-        so its events land on the parent's stream.  Tags are forwarded
-        for tracing continuity. `configurable` is needed for Pregel to recognize
-        the subagent as a nested subgraph.
-
-        `recursion_limit` and `metadata` are intentionally
-        *not* forwarded — the subagent's own bound config must take precedence.
-
-        Passing `metadata` in the invoke config replaces the
-        subagent's bound metadata (e.g. `lc_agent_name`).
-        """
-        parent_config = runtime.config or {}
-        config: RunnableConfig = {}
-        for key in ("callbacks", "tags", "configurable"):
-            if key in parent_config:
-                config[key] = parent_config[key]  # type: ignore[literal-required]
-        return config
-
     def task(
         description: str,
         subagent_type: str,
@@ -574,14 +551,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        subagent_config = _build_subagent_config(runtime)
-        # Tag the subagent's configurable so downstream readers (e.g. middleware
-        # that key off `runtime.config["configurable"]["ls_agent_type"]`) see the
-        # subagent context, in addition to the langsmith tracing-context tag.
-        subagent_config["configurable"] = {
-            **subagent_config.get("configurable", {}),
-            "ls_agent_type": "subagent",
-        }
+        # The parent's callbacks, tags and configurable reach the subagent
+        # automatically: langgraph's `ensure_config` seeds each run from the
+        # ambient parent config and (as of langgraph#7926) merges it per-key, so
+        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+        # Forwarding those keys explicitly would double-count under the merge
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -598,13 +575,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        subagent_config = _build_subagent_config(runtime)
-        # Mirror `task()` — tag the subagent's configurable as well as the
-        # langsmith tracing context so both code paths see `ls_agent_type`.
-        subagent_config["configurable"] = {
-            **subagent_config.get("configurable", {}),
-            "ls_agent_type": "subagent",
-        }
+        # The parent's callbacks, tags and configurable reach the subagent
+        # automatically: langgraph's `ensure_config` seeds each run from the
+        # ambient parent config and (as of langgraph#7926) merges it per-key, so
+        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+        # Forwarding those keys explicitly would double-count under the merge
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)

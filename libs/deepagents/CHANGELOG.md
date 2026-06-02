@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD024 -->
 
-# Changelog
+# Deep Agents Changelog
 
 ## [0.6.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.6...deepagents==0.6.7) (2026-05-30)
 
@@ -171,6 +171,6 @@ See the [profiles documentation](https://docs.langchain.com/oss/python/deepagent
 
 ---
 
-# Prior Releases
+## Prior Releases
 
 Versions prior to 0.5.1 were released without release-please and do not have changelog entries. Refer to the [releases page](https://github.com/langchain-ai/deepagents/releases?q=deepagents) for details on previous versions.

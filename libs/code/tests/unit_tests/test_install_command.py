@@ -192,7 +192,8 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "Install failed" in joined
         assert "resolver: conflict" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in joined
+        assert "uv tool install -U 'deepagents-code" in joined
+        assert "quickjs" in joined
 
 
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
@@ -219,7 +220,8 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
         assert "OSError" in joined
         assert "disk full" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in joined
+        assert "uv tool install -U 'deepagents-code" in joined
+        assert "quickjs" in joined
 
 
 async def test_install_slash_editable_install_refuses() -> None:

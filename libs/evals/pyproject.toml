@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.5.7",
-    "langchain>=1.2.17",
+    "langchain>=1.3.4,<2.0.0",
     "deepagents-code",
     # Harbor runtime
     "harbor>=0.6.4,<0.7.0",

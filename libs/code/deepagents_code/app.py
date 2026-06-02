@@ -6934,6 +6934,15 @@ class DeepAgentsApp(App):
         if not messages.is_attached:
             return
 
+        if isinstance(widget, QueuedUserMessage):
+            await messages.mount(widget)
+            try:
+                input_container = self.query_one("#bottom-app-container", Container)
+                input_container.scroll_visible()
+            except NoMatches:
+                pass
+            return
+
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         if not widget.id:
@@ -6943,14 +6952,9 @@ class DeepAgentsApp(App):
         self._message_store.append(message_data)
         footer = self._build_message_timestamp_footer(message_data)
 
-        # Queued-message widgets must always stay at the bottom so they
-        # remain visually anchored below the current agent response.
-        if isinstance(widget, QueuedUserMessage):
-            await messages.mount(widget)
-        else:
-            await self._mount_before_queued(messages, widget)
-            if footer is not None:
-                await self._mount_before_queued(messages, footer)
+        await self._mount_before_queued(messages, widget)
+        if footer is not None:
+            await self._mount_before_queued(messages, footer)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()

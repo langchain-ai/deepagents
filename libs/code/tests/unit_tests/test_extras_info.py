@@ -16,6 +16,7 @@ from deepagents_code.extras_info import (
     extra_for_package,
     format_extras_status,
     format_extras_status_plain,
+    format_known_extras,
     get_extras_status,
     get_optional_dependency_status,
     verify_interpreter_deps,
@@ -267,6 +268,39 @@ def test_extras_categories_are_disjoint() -> None:
     )
     for label, overlap in pairs:
         assert not overlap, f"Extras classified twice in {label}: {sorted(overlap)}"
+
+
+def _parse_known_extras(rendered: str) -> dict[str, list[str]]:
+    """Parse `format_known_extras` output into `{label: [extras]}`.
+
+    Lets tests assert per-line grouping and ordering rather than matching
+    substrings against the whole blob, which would pass even if extras were
+    rendered under the wrong category or all collapsed onto one line.
+    """
+    groups: dict[str, list[str]] = {}
+    for line in rendered.splitlines()[1:]:  # skip the "Available extras:" header
+        label, _, extras = line.strip().partition(": ")
+        groups[label] = extras.split(", ")
+    return groups
+
+
+def test_format_known_extras_lists_exactly_known_extras() -> None:
+    """The listing must contain every `KNOWN_EXTRAS` member and nothing else."""
+    rendered = format_known_extras()
+    assert rendered.startswith("Available extras:")
+    groups = _parse_known_extras(rendered)
+    rendered_extras = {extra for extras in groups.values() for extra in extras}
+    # Bidirectional: catches both a new category left out of the listing and a
+    # listing that drifts ahead of `KNOWN_EXTRAS`.
+    assert rendered_extras == set(KNOWN_EXTRAS)
+
+
+def test_format_known_extras_groups_extras_under_correct_label() -> None:
+    """Each category renders under its own label with alphabetical ordering."""
+    groups = _parse_known_extras(format_known_extras())
+    assert groups["Model providers"] == sorted(MODEL_PROVIDER_EXTRAS)
+    assert groups["Sandboxes"] == sorted(SANDBOX_EXTRAS)
+    assert groups["Other"] == sorted(STANDALONE_EXTRAS)
 
 
 # `verify_interpreter_deps` does a lazy `from deepagents_code.config import

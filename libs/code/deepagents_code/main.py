@@ -2029,7 +2029,6 @@ def cli_main() -> None:
                         f"Known extras: {known}",
                         highlight=False,
                     )
-                    console.print(f"This will run: [cyan]{manual_cmd}[/cyan]")
                     if not args.yes:
                         if not sys.stdin.isatty():
                             console.print(

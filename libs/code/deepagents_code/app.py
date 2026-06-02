@@ -3376,6 +3376,7 @@ class DeepAgentsApp(App):
                 KNOWN_EXTRAS,
                 MODEL_PROVIDER_EXTRAS,
                 SANDBOX_EXTRAS,
+                ExtrasIntrospectionError,
             )
             from deepagents_code.update_check import (
                 create_update_log_path,
@@ -3410,12 +3411,20 @@ class DeepAgentsApp(App):
             return
 
         if extra not in KNOWN_EXTRAS and not force:
+            try:
+                manual_cmd = await asyncio.to_thread(install_extra_command, extra)
+            except (ExtrasIntrospectionError, ValueError) as exc:
+                logger.warning("/install command failed", exc_info=True)
+                await self._mount_message(
+                    ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+                )
+                return
             known = ", ".join(sorted(KNOWN_EXTRAS))
             await self._mount_message(
                 AppMessage(
                     f"'{extra}' is not a known extra.\n"
                     f"Known extras: {known}\n\n"
-                    f"This would run: `{install_extra_command(extra)}`\n"
+                    f"This would run: `{manual_cmd}`\n"
                     f"Re-run with `--force` to install anyway: "
                     f"`/install {extra} --force`",
                 ),
@@ -3426,7 +3435,17 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Installing extra '{extra}'..."),
         )
-        manual_cmd = install_extra_command(extra)
+        try:
+            manual_cmd = await asyncio.to_thread(install_extra_command, extra)
+        except (ExtrasIntrospectionError, ValueError) as exc:
+            logger.warning("/install command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}",
+                ),
+            )
+            return
         try:
             success, output = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
@@ -6935,6 +6954,8 @@ class DeepAgentsApp(App):
             return
 
         if isinstance(widget, QueuedUserMessage):
+            # Queued placeholders mount at the bottom and stay out of the
+            # message store; drain remounts them as real UserMessage widgets.
             await messages.mount(widget)
             try:
                 input_container = self.query_one("#bottom-app-container", Container)

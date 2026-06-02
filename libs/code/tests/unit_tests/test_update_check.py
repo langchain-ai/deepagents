@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from deepagents_code._version import __version__
-from deepagents_code.extras_info import installed_extra_names
+from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
     _extract_release_times,
@@ -912,25 +912,67 @@ class TestInstallExtraCommand:
     def test_basic(self) -> None:
         """Single-quoted bracket form, with `-U` to reinstall."""
         assert (
-            install_extra_command("quickjs", distribution_name="missing-dcode-test")
+            install_extras_command(["quickjs"])
             == "uv tool install -U 'deepagents-code[quickjs]'"
         )
 
     def test_provider_extra(self) -> None:
         assert (
-            install_extra_command("fireworks", distribution_name="missing-dcode-test")
+            install_extras_command(["fireworks"])
             == "uv tool install -U 'deepagents-code[fireworks]'"
         )
 
-    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
-        """Installing a new extra keeps already-installed extras selected."""
-        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
+    def test_installed_extra_names_missing_distribution_returns_empty(self) -> None:
+        """Display-only introspection stays forgiving when metadata is absent."""
+        assert installed_extra_names("does-not-exist-pkg-xyz-abc") == set()
+
+    def test_install_extra_command_refuses_missing_distribution(self) -> None:
+        """Reinstall commands must not drop extras when metadata is unavailable."""
+        with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):
+            install_extra_command("quickjs", distribution_name="missing-dcode-test")
+
+    def test_no_installed_extras_from_clean_metadata(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Clean metadata with no installed optional deps is distinct from failure."""
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=(
-                'langchain-nvidia-ai-endpoints; extra == "nvidia"',
-                'langchain-baseten; extra == "baseten"',
+                'definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == set()
+        assert (
+            install_extra_command("quickjs", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[quickjs]'"
+        )
+
+    def test_install_extra_command_refuses_invalid_metadata(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Malformed optional-dependency metadata must not drop existing extras."""
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=("not a valid requirement ; ;",),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
+            install_extra_command("quickjs", distribution_name="deepagents-code")
+
+    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
+        """Installing a new extra keeps already-installed extras selected."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
             ),
         )
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -943,11 +985,11 @@ class TestInstallExtraCommand:
 
     def test_dedupes_existing_extra(self, tmp_path, monkeypatch) -> None:
         """Installing an already-present extra does not duplicate it."""
-        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
         _write_dist_info(
             tmp_path,
             "deepagents-code",
-            requires=('langchain-nvidia-ai-endpoints; extra == "nvidia"',),
+            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
         )
         monkeypatch.syspath_prepend(str(tmp_path))
 
@@ -958,14 +1000,14 @@ class TestInstallExtraCommand:
 
     def test_drops_composite_extras(self, tmp_path, monkeypatch) -> None:
         """Composite extras are not echoed back into uv reinstall commands."""
-        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
-        _write_dist_info(tmp_path, "langchain-openai")
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-openai")
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=(
-                'langchain-nvidia-ai-endpoints; extra == "nvidia"',
-                'langchain-openai; extra == "all-providers"',
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-present-dcode-test-openai; extra == "all-providers"',
             ),
         )
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -985,7 +1027,10 @@ class TestInstallExtraCommand:
     def test_rejects_shell_metacharacters(self) -> None:
         assert not is_valid_extra_name("quickjs']; touch /tmp/pwned; '")
         with pytest.raises(ValueError, match="Invalid extra name"):
-            install_extra_command("quickjs']; touch /tmp/pwned; '")
+            install_extra_command(
+                "quickjs']; touch /tmp/pwned; '",
+                distribution_name="missing-dcode-test",
+            )
         with pytest.raises(ValueError, match="Invalid extra name"):
             install_extras_command(["quickjs", "bad;name"])
 

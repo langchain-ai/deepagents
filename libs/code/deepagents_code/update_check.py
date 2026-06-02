@@ -989,11 +989,28 @@ def install_extra_command(
         Shell command string suitable for display in error messages and
             for execution via `perform_install_extra`.
 
-    Validation prevents shell injection via crafted bracket-escape sequences.
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata.
+        ValueError: If `extra` or any already-installed extra fails PEP 508
+            validation.
     """
-    from deepagents_code.extras_info import installed_extra_names
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
 
-    extras = installed_extra_names(distribution_name)
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    try:
+        extras = installed_extra_names(distribution_name, strict=True)
+    except ExtrasIntrospectionError as exc:
+        msg = str(exc)
+        raise ExtrasIntrospectionError(msg) from exc
     extras.add(extra)
     return install_extras_command(extras)
 
@@ -1071,7 +1088,12 @@ async def perform_install_extra(
             "install uv (https://docs.astral.sh/uv/) so extras can be added."
         )
 
-    cmd = install_extra_command(extra)
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = install_extra_command(extra)
+    except (ExtrasIntrospectionError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 

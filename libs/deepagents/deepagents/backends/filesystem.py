@@ -44,9 +44,6 @@ from deepagents.backends.utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GREP_TIMEOUT = DEFAULT_GREP_TIMEOUT
-"""Default timeout in seconds for grep operations (ripgrep and Python fallback)."""
-
 
 @functools.cache
 def _resolve_ripgrep_path() -> str | None:
@@ -634,12 +631,12 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=_DEFAULT_GREP_TIMEOUT,
+                timeout=DEFAULT_GREP_TIMEOUT,
                 check=False,
                 cwd=rg_cwd,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("ripgrep timed out after %ds; using Python grep fallback", _DEFAULT_GREP_TIMEOUT)
+            logger.warning("ripgrep timed out after %ds; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
             return None
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             # `rg` resolved at cache time but failed at exec — treat as a
@@ -724,7 +721,7 @@ class FilesystemBackend(BackendProtocol):
         base_full: Path,
         include_glob: str | None,
         *,
-        timeout: int = _DEFAULT_GREP_TIMEOUT,
+        timeout: int = DEFAULT_GREP_TIMEOUT,
     ) -> tuple[dict[str, list[tuple[int, str]]], str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 

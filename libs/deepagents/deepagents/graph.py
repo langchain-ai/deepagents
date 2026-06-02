@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import Annotated, Any, Required, cast, overload
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
+from typing_extensions import TypeVar
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents._excluded_middleware import (
@@ -63,6 +64,9 @@ class DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
+
+StateSchemaT = TypeVar("StateSchemaT", bound=DeepAgentState, default=DeepAgentState)
 
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -211,6 +215,54 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in 
 
 Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
+
+
+@overload
+def create_deep_agent(
+    model: str | BaseChatModel | None = ...,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = ...,
+    *,
+    system_prompt: str | SystemMessage | None = ...,
+    middleware: Sequence[AgentMiddleware] = ...,
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = ...,
+    skills: list[str] | None = ...,
+    memory: list[str] | None = ...,
+    permissions: list[FilesystemPermission] | None = ...,
+    backend: BackendProtocol | BackendFactory | None = ...,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None = ...,
+    response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = ...,
+    state_schema: type[StateSchemaT],
+    context_schema: type[ContextT] | None = ...,
+    checkpointer: Checkpointer | None = ...,
+    store: BaseStore | None = ...,
+    debug: bool = ...,
+    name: str | None = ...,
+    cache: BaseCache | None = ...,
+) -> CompiledStateGraph[StateSchemaT, ContextT, _InputAgentState, _OutputAgentState[ResponseT]]: ...  # ty: ignore[invalid-type-arguments]
+
+
+@overload
+def create_deep_agent(
+    model: str | BaseChatModel | None = ...,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = ...,
+    *,
+    system_prompt: str | SystemMessage | None = ...,
+    middleware: Sequence[AgentMiddleware] = ...,
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = ...,
+    skills: list[str] | None = ...,
+    memory: list[str] | None = ...,
+    permissions: list[FilesystemPermission] | None = ...,
+    backend: BackendProtocol | BackendFactory | None = ...,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None = ...,
+    response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = ...,
+    state_schema: None = ...,
+    context_schema: type[ContextT] | None = ...,
+    checkpointer: Checkpointer | None = ...,
+    store: BaseStore | None = ...,
+    debug: bool = ...,
+    name: str | None = ...,
+    cache: BaseCache | None = ...,
+) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]: ...  # ty: ignore[invalid-type-arguments]
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches

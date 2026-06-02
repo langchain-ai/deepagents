@@ -10869,3 +10869,122 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class TestStatusBarConnectionMirroring:
+    """The bottom status bar must mirror the connection + queue state.
+
+    The welcome banner's connecting footer scrolls out of view mid-thread, so
+    these tests pin that the always-visible status bar carries the same signal.
+    """
+
+    async def test_mount_syncs_existing_connecting_state(self) -> None:
+        """A pre-mount startup connection should appear once the bar is mounted."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+
+        async with app.run_test():
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_sync_reflects_reconnecting(self) -> None:
+        """`_sync_status_connection` should surface a reconnect on the bar."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+
+    async def test_sync_reflects_connecting(self) -> None:
+        """An initial connect (not a reconnect) reads as connecting."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = False
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_sync_clears_when_connected(self) -> None:
+        """Clearing `_connecting` should empty the connection indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            app._connecting = False
+            app._reconnecting = False
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_queue_depth_mirrored_on_submit_and_drain(self) -> None:
+        """Queuing during a reconnect shows the count; draining clears it."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            processed: list[tuple[str, str]] = []
+
+            async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                processed.append((value, mode))
+
+            app._process_message = _process  # type: ignore[assignment]
+
+            await app._submit_input("queued while reconnecting", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+
+            app._connecting = False
+            await app._process_next_from_queue()
+            assert processed == [("queued while reconnecting", "normal")]
+            assert app._status_bar.queued_count == 0
+
+    async def test_discard_queue_clears_count(self) -> None:
+        """Discarding the queue (ESC-interrupt, force-clear, `/restart`) zeroes it."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            async def _process(_value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                return
+
+            app._process_message = _process  # type: ignore[assignment]
+
+            await app._submit_input("first", "normal")
+            await app._submit_input("second", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 2
+
+            app._discard_queue()
+            assert not app._pending_messages
+            assert app._status_bar.queued_count == 0
+
+    async def test_pop_last_queued_message_updates_count(self) -> None:
+        """Retracting the most recent queued message decrements the badge."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            async def _process(_value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                return
+
+            app._process_message = _process  # type: ignore[assignment]
+
+            await app._submit_input("first", "normal")
+            await app._submit_input("second", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 2
+
+            app._pop_last_queued_message()
+            assert len(app._pending_messages) == 1
+            assert app._status_bar.queued_count == 1

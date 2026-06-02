@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from textual.containers import Horizontal
 from textual.content import Content
@@ -16,6 +16,7 @@ from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code.config import get_glyphs
+from deepagents_code.widgets.loading import Spinner
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
+    from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
     "fireworks": ("accounts/fireworks/models/",),
@@ -30,6 +32,14 @@ PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
 """Some providers (e.g. Fireworks) require fully-qualified IDs like
 `accounts/fireworks/models/...` that crowd out the rest of the status bar;
 strip the registered prefixes before display."""
+
+ConnectionState = Literal["", "connecting", "reconnecting"]
+"""Connection states the status bar can display (`''` means cleared)."""
+
+CONNECTION_STATES = frozenset(get_args(ConnectionState))
+"""Runtime view of `ConnectionState` for `set_connection`'s defensive guard.
+
+Derived from the `Literal` so the two can never drift."""
 
 
 class ModelLabel(Widget):
@@ -145,6 +155,13 @@ class StatusBar(Horizontal):
         color: $background;
     }
 
+    StatusBar .status-connection {
+        width: auto;
+        padding: 0 1;
+        color: $warning;
+        text-style: bold;
+    }
+
     StatusBar .status-message {
         width: auto;
         padding: 0 1;
@@ -191,6 +208,8 @@ class StatusBar(Horizontal):
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)
+    connection_state: reactive[ConnectionState] = reactive("", init=False)
+    queued_count: reactive[int] = reactive(0, init=False)
     auto_approve: reactive[bool] = reactive(default=False, init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
@@ -208,6 +227,8 @@ class StatusBar(Horizontal):
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_git_branch = is_env_truthy(HIDE_GIT_BRANCH)
+        self._spinner = Spinner()
+        self._spinner_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -223,6 +244,7 @@ class StatusBar(Horizontal):
             id="auto-approve-indicator",
         )
         with Horizontal(classes="status-left-collapsible"):
+            yield Static("", classes="status-connection", id="connection-indicator")
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
             yield Static("", classes="status-branch", id="branch-display")
@@ -253,6 +275,10 @@ class StatusBar(Horizontal):
             self.query_one("#cwd-display", Static).display = (
                 not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD
             )
+
+    def on_unmount(self) -> None:
+        """Stop the spinner timer so it can't tick on a detached widget."""
+        self._stop_spinner()
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -337,6 +363,82 @@ class StatusBar(Horizontal):
                 msg_widget.add_class("thinking")
         else:
             msg_widget.update("")
+
+    def watch_connection_state(self, new_value: str) -> None:
+        """Start or stop the spinner and re-render when connection state changes."""
+        if new_value in {"connecting", "reconnecting"}:
+            self._start_spinner()
+        else:
+            self._stop_spinner()
+        self._render_connection()
+
+    def watch_queued_count(self, _new_value: int) -> None:
+        """Re-render the connection indicator when the queued count changes."""
+        self._render_connection()
+
+    def _start_spinner(self) -> None:
+        """Begin cycling the connection-indicator spinner frames.
+
+        No-op when not yet running (e.g. before mount) since `set_interval`
+        requires a live event loop, or when an animation is already active.
+        """
+        if self._spinner_timer is not None or not self._running:
+            return
+        # 0.1s mirrors LoadingWidget so this spinner ticks in step with the
+        # in-thread "Thinking" spinner.
+        self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+
+    def _stop_spinner(self) -> None:
+        """Stop the spinner animation and reset to the first frame."""
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        self._spinner = Spinner()
+
+    def _tick_spinner(self) -> None:
+        """Advance the spinner frame and re-render the connection indicator."""
+        self._spinner.next_frame()
+        self._render_connection()
+
+    def _render_connection(self) -> None:
+        """Render the combined connection + queued-count indicator text."""
+        try:
+            widget = self.query_one("#connection-indicator", Static)
+        except NoMatches:
+            return
+
+        parts: list[str] = []
+        if self.connection_state == "reconnecting":
+            parts.append(f"{self._spinner.current_frame()} Reconnecting")
+        elif self.connection_state == "connecting":
+            parts.append(f"{self._spinner.current_frame()} Connecting")
+        if self.queued_count > 0:
+            label = "message" if self.queued_count == 1 else "messages"
+            parts.append(f"{self.queued_count} {label} queued")
+        separator = f" {get_glyphs().bullet} "
+        widget.update(separator.join(parts))
+
+    def set_connection(self, state: ConnectionState) -> None:
+        """Set the connection indicator state.
+
+        Args:
+            state: One of `''` (clear), `'connecting'`, or `'reconnecting'`.
+
+        Raises:
+            ValueError: If `state` is not a recognized connection state.
+        """
+        if state not in CONNECTION_STATES:
+            msg = f"Unknown connection state: {state!r}"
+            raise ValueError(msg)
+        self.connection_state = state
+
+    def set_queued(self, count: int) -> None:
+        """Set the number of messages waiting in the queue.
+
+        Args:
+            count: Count of queued messages (negative values clamp to `0`).
+        """
+        self.queued_count = max(count, 0)
 
     def _format_cwd(self, cwd_path: str = "") -> str:
         """Format the current working directory for display.

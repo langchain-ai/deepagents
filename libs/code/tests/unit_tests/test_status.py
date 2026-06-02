@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size
+from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_code.widgets.status import ModelLabel, StatusBar
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class StatusBarApp(App):
@@ -428,3 +425,150 @@ class TestModelLabelPrefixStripping:
             await pilot.pause()
             rendered = str(label.render())
             assert "accounts/fireworks/models/kimi-k2p6" in rendered
+
+
+class TestConnectionIndicator:
+    """Tests for the connection-state indicator in the status bar."""
+
+    async def test_indicator_empty_by_default(self) -> None:
+        """The connection indicator should render nothing before any state is set."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert bar.connection_state == ""
+            assert str(indicator.render()) == ""
+
+    async def test_set_connecting_shows_message(self) -> None:
+        """`set_connection('connecting')` should surface a Connecting message."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert "Connecting" in str(indicator.render())
+
+    async def test_set_reconnecting_shows_message(self) -> None:
+        """`set_connection('reconnecting')` should surface a Reconnecting message."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("reconnecting")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert "Reconnecting" in str(indicator.render())
+
+    async def test_clearing_connection_clears_indicator(self) -> None:
+        """Returning to the empty state should clear the indicator text."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("reconnecting")
+            await pilot.pause()
+            bar.set_connection("")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert str(indicator.render()) == ""
+
+    async def test_invalid_state_raises(self) -> None:
+        """An unrecognized connection state should raise `ValueError`."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            with pytest.raises(ValueError, match="Unknown connection state"):
+                # Deliberately invalid to exercise the runtime guard; the
+                # Literal-typed signature rejects it statically, hence the ignore.
+                bar.set_connection("bogus")  # ty: ignore[invalid-argument-type]
+
+    async def test_animation_starts_and_stops(self) -> None:
+        """The spinner timer should run while connecting and stop after."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+            bar.set_connection("")
+            await pilot.pause()
+            assert bar._spinner_timer is None
+
+    async def test_spinner_glyph_rendered(self) -> None:
+        """A real spinner frame should prefix the connection text."""
+        from deepagents_code.config import get_glyphs
+
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("reconnecting")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            rendered = str(indicator.render())
+            assert get_glyphs().spinner_frames[0] in rendered
+            assert "Reconnecting" in rendered
+
+
+class TestQueuedCount:
+    """Tests for the queued-message count in the connection indicator."""
+
+    async def test_queued_count_hidden_at_zero(self) -> None:
+        """A zero queue depth should leave the indicator empty."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_queued(0)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert str(indicator.render()) == ""
+
+    async def test_queued_count_singular(self) -> None:
+        """A single queued message should read in the singular."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_queued(1)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert "1 message queued" in str(indicator.render())
+
+    async def test_queued_count_plural(self) -> None:
+        """Multiple queued messages should read in the plural."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_queued(3)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert "3 messages queued" in str(indicator.render())
+
+    async def test_negative_count_clamped(self) -> None:
+        """Negative counts should clamp to zero and render nothing."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_queued(-5)
+            await pilot.pause()
+            assert bar.queued_count == 0
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert str(indicator.render()) == ""
+
+    async def test_reconnecting_and_queued_combined(self) -> None:
+        """Reconnecting plus queued messages should render both, joined."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("reconnecting")
+            bar.set_queued(2)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            rendered = str(indicator.render())
+            assert "Reconnecting" in rendered
+            assert "2 messages queued" in rendered
+
+    async def test_combined_indicator_uses_ascii_separator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ASCII glyph mode should not leak Unicode in the combined indicator."""
+        from deepagents_code.config import ASCII_GLYPHS
+
+        monkeypatch.setattr(
+            "deepagents_code.widgets.status.get_glyphs",
+            lambda: ASCII_GLYPHS,
+        )
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("reconnecting")
+            bar.set_queued(2)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            rendered = str(indicator.render())
+            assert " - " in rendered
+            assert " · " not in rendered

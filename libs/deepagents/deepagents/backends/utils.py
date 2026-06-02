@@ -546,14 +546,14 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
-    path: str = "/",
+    path: str | None = None,
 ) -> str:
     r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
         pattern: Glob pattern (e.g., "*.py", "**/*.ts").
-        path: Base path to search from.
+        path: Base path to search from. `None` defaults to root.
 
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).

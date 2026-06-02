@@ -170,9 +170,16 @@
       "parameters": {
         "properties": {
           "path": {
-            "default": "/",
-            "description": "Base directory to search from. Defaults to root '/'.",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Base directory to search from. Defaults to the backend's default root."
           },
           "pattern": {
             "description": "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').",

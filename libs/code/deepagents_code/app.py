@@ -586,9 +586,21 @@ def _load_cursor_blink_preference() -> bool:
 
     ui = data.get("ui", {})
     if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading cursor blink preference",
+            type(ui).__name__,
+        )
         return True
-    value = ui.get("cursor_blink", True)
-    return value if isinstance(value, bool) else True
+
+    value = ui.get("cursor_blink")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].cursor_blink should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return True
 
 
 def _save_terminal_theme_mapping_result(

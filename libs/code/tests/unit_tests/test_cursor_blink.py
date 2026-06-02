@@ -49,3 +49,11 @@ class TestLoadCursorBlinkPreference:
         config.write_text('[ui]\ncursor_blink = "nope"\n', encoding="utf-8")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         assert _load_cursor_blink_preference() is True
+
+    def test_defaults_true_when_ui_not_a_table(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text('ui = "not a table"\n', encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_cursor_blink_preference() is True

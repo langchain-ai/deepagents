@@ -51,12 +51,14 @@ on:
         type: string
         default: ""
         description:
-          "SHA on main whose pyproject.toml declares the input version.
-          Typically the release-please PR's squash-merge commit. May also be a
-          pre-publish hotfix commit on top of it. Look up the release-please
-          merge with: gh pr view <release-pr-number> --json mergeCommit --jq
-          .mergeCommit.oid. Required unless dangerous-nonmain-release=true. See
-          .github/RELEASING.md > Manual Release."
+          "Exact commit (40-char SHA, not a branch ref) to build, publish, and
+          tag, so PyPI bytes and the git tag agree. Its pyproject.toml must
+          declare the `version` input. Usually the release-please squash-merge
+          commit, or the most recent pre-publish hotfix commit on top of it
+          (hotfixes keep the version string). Find it: gh pr view <pr-number>
+          --json mergeCommit
+          --jq .mergeCommit.oid. Required unless dangerous-nonmain-release=true.
+          See .github/RELEASING.md > Manual Release, > Hotfix Protocol."
       dangerous-nonmain-release:
         required: false
         type: boolean

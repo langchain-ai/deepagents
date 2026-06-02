@@ -13,7 +13,7 @@
 #
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
-name: "Package Release"
+name: "🚀 Package Release"
 run-name: "release(${{ inputs.package-override || inputs.package }}):${{
   inputs.version && format(' {0}', inputs.version) || '' }}"
 on:
@@ -763,9 +763,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Install sandbox provider extras
-        if: |
-          needs.setup.outputs.package == 'deepagents-cli'
-          || needs.setup.outputs.package == 'deepagents-code'
+        if: needs.setup.outputs.package == 'deepagents-code'
         run: uv sync --group test --extra all-sandboxes
         working-directory: ${{ env.WORKING_DIR }}
 

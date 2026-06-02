@@ -3349,9 +3349,13 @@ class DeepAgentsApp(App):
         force = "--force" in parts[1:]
         extras = [p for p in parts[1:] if not p.startswith("-")]
         if not extras:
+            from deepagents_code.extras_info import format_known_extras
+
             await self._mount_message(
                 AppMessage(
-                    "Usage: /install <extra> [--force]\nExample: /install quickjs",
+                    "Usage: /install <extra> [--force]\n"
+                    "Example: /install quickjs\n\n"
+                    f"{format_known_extras()}",
                 ),
             )
             return
@@ -9198,7 +9202,7 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — run `/mcp reconnect` to load.",
+                            error="Re-enabled — press Ctrl+R to load.",
                         ),
                     )
         self._mcp_server_info = updated

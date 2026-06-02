@@ -2069,6 +2069,25 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
+    async def test_queued_widget_not_stored_as_user_message(self) -> None:
+        """Queued placeholders should stay out of persistent message data."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("test msg", "normal"))
+            await pilot.pause()
+
+            assert len(app.query(QueuedUserMessage)) == 1
+            assert app._message_store.get_all_messages() == []
+
+            await app._mount_message(UserMessage("test msg"))
+
+            messages = app._message_store.get_all_messages()
+            assert len(messages) == 1
+            assert messages[0].content == "test msg"
+
     async def test_queued_incognito_shell_preserves_mode_on_drain(self) -> None:
         """Queued incognito shell commands should drain as incognito shell."""
         app = DeepAgentsApp()

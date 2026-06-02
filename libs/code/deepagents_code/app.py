@@ -155,7 +155,7 @@ def _create_model_with_deepagents_import_lock(
         from deepagents_code.config import create_model
 
         return create_model(
-            model_spec=model_spec,
+            model_spec,
             extra_kwargs=extra_kwargs,
             profile_overrides=profile_overrides,
         )

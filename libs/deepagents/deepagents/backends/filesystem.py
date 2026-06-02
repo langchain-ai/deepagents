@@ -17,6 +17,7 @@ import wcmatch.glob as wcglob
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
@@ -43,7 +44,7 @@ from deepagents.backends.utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GREP_TIMEOUT = 30
+_DEFAULT_GREP_TIMEOUT = DEFAULT_GREP_TIMEOUT
 """Default timeout in seconds for grep operations (ripgrep and Python fallback)."""
 
 

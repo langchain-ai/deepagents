@@ -31,6 +31,16 @@ r"""File storage format version.
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GREP_TIMEOUT: Final = 30
+"""Default timeout in seconds for one sync grep phase."""
+
+ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
+"""Timeout in seconds for the async grep wrapper.
+
+This gives `FilesystemBackend` enough headroom to finish the worst-case sync
+path: ripgrep timeout, then Python fallback timeout.
+"""
+
 FileOperationError = Literal[
     "file_not_found",
     "permission_denied",
@@ -464,29 +474,25 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> "GrepResult":
         """Async version of `grep`.
 
-        Wraps the sync call with an async timeout as a safety net. Some sync
-        `grep` implementations (e.g., `FilesystemBackend`) have their own
-        internal timeouts, but this ensures the async caller is never blocked
-        indefinitely regardless of backend.
+        Wraps the sync call with an async timeout as a safety net. The timeout
+        bounds how long the caller waits; it does not stop the worker thread
+        created by `asyncio.to_thread`.
         """
-        # Must exceed the sync grep timeout to let internal timeouts fire first
-        _async_timeout = 60
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self.grep, pattern, path, glob),
-                timeout=_async_timeout,
+                timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:
             logger.warning(
                 "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
-                _async_timeout,
+                ASYNC_GREP_TIMEOUT,
                 pattern,
                 path,
                 glob,
-                exc_info=True,
             )
             return GrepResult(
-                error=f"Error: grep timed out after {_async_timeout}s. Try a more specific pattern or a narrower path.",
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
             )
 
     def glob(self, pattern: str, path: str | None = None) -> "GlobResult":

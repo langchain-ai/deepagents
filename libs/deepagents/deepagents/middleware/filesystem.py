@@ -43,6 +43,7 @@ from deepagents.backends.protocol import (
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GrepMatch,
+    GrepResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -162,6 +163,21 @@ def _filter_grep_matches_by_permission(
 ) -> list[GrepMatch]:
     """Filter grep matches according to filesystem permissions."""
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
+
+
+def _format_grep_tool_result(
+    result: GrepResult,
+    output_mode: Literal["files_with_matches", "content", "count"],
+) -> tuple[str, Literal["success", "error"]]:
+    """Format a backend grep result for the tool boundary."""
+    matches = result.matches or []
+    if result.error and not matches:
+        return result.error, "error"
+
+    formatted = format_grep_matches(matches, output_mode)
+    if result.error:
+        return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+    return formatted, "success"
 
 
 def _apply_permissions_to_ls_results(
@@ -1307,7 +1323,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GlobSchema,
         )
 
-    def _create_grep_tool(self) -> BaseTool:  # noqa: C901
+    def _create_grep_tool(self) -> BaseTool:
         """Create the grep tool."""
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
@@ -1341,21 +1357,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
             resolved_backend = self._get_backend(runtime)
             grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
-            if grep_result.error:
-                return ToolMessage(
-                    content=grep_result.error,
-                    name="grep",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
-            formatted = format_grep_matches(filtered_matches, output_mode)
+            formatted, status = _format_grep_tool_result(
+                GrepResult(error=grep_result.error, matches=filtered_matches),
+                output_mode,
+            )
             return ToolMessage(
                 content=truncate_if_too_long(formatted),
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
-                status="success",
+                status=status,
             )
 
         async def async_grep(
@@ -1388,21 +1400,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
             resolved_backend = self._get_backend(runtime)
             grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
-            if grep_result.error:
-                return ToolMessage(
-                    content=grep_result.error,
-                    name="grep",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
-            formatted = format_grep_matches(filtered_matches, output_mode)
+            formatted, status = _format_grep_tool_result(
+                GrepResult(error=grep_result.error, matches=filtered_matches),
+                output_mode,
+            )
             return ToolMessage(
                 content=truncate_if_too_long(formatted),
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
-                status="success",
+                status=status,
             )
 
         return StructuredTool.from_function(

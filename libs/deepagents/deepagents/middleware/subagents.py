@@ -440,6 +440,48 @@ class _SubagentSpec(TypedDict):
     runnable: Runnable
 
 
+# Metadata keys (and prefixes) set by LangChain / LangGraph / deepagents
+# framework code on `runtime.config["metadata"]` that must NOT be forwarded
+# from parent to subagent — they are framework-owned, not user-set:
+# - `lc_agent_name`, `ls_integration`, `versions`: bound by `create_agent` /
+#   `create_deep_agent`; forwarding would overwrite the subagent's own bound
+#   identity under LangChain's `merge_configs` semantics.
+# - `langgraph_*`, `thread_id`, `checkpoint_ns`: added per-step by LangGraph;
+#   forwarding seeds the subagent's invoke with the parent's step context and
+#   interferes with the subagent's own Pregel machinery (observed to drop the
+#   subagent's bound `lc_agent_name` from tool-runtime metadata).
+_RESERVED_SUBAGENT_METADATA_KEYS = frozenset({"thread_id", "checkpoint_ns", "versions"})
+_RESERVED_SUBAGENT_METADATA_PREFIXES = ("lc_", "ls_", "langgraph_")
+
+
+def _is_reserved_subagent_metadata_key(key: str) -> bool:
+    return key in _RESERVED_SUBAGENT_METADATA_KEYS or key.startswith(_RESERVED_SUBAGENT_METADATA_PREFIXES)
+
+
+def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
+    """Derive the subagent's `RunnableConfig` from the parent's runtime config.
+
+    Forwards `callbacks`, `tags`, `configurable`, and `metadata` — with
+    framework-reserved metadata keys stripped (see
+    `_is_reserved_subagent_metadata_key`) so the subagent's bound identity
+    and its own Pregel step context aren't clobbered when LangChain merges
+    configs at invoke time.
+
+    `recursion_limit` is intentionally not forwarded — the subagent's own
+    bound limit must take precedence.
+    """
+    parent_config = runtime.config or {}
+    config: RunnableConfig = {}
+    for key in ("callbacks", "tags", "configurable"):
+        if key in parent_config:
+            config[key] = parent_config[key]  # type: ignore[literal-required]
+    parent_metadata = parent_config.get("metadata") or {}
+    forwarded_metadata = {k: v for k, v in parent_metadata.items() if not _is_reserved_subagent_metadata_key(k)}
+    if forwarded_metadata:
+        config["metadata"] = forwarded_metadata
+    return config
+
+
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -538,29 +580,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
-
-    def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
-        """Derive the subagent's `RunnableConfig` from the parent's runtime config.
-
-        Only `callbacks`, `tags`, and `configurable` are forwarded.
-
-        Callbacks let Pregel's streaming handlers propagate into the subagent
-        so its events land on the parent's stream.  Tags are forwarded
-        for tracing continuity. `configurable` is needed for Pregel to recognize
-        the subagent as a nested subgraph.
-
-        `recursion_limit` and `metadata` are intentionally
-        *not* forwarded — the subagent's own bound config must take precedence.
-
-        Passing `metadata` in the invoke config replaces the
-        subagent's bound metadata (e.g. `lc_agent_name`).
-        """
-        parent_config = runtime.config or {}
-        config: RunnableConfig = {}
-        for key in ("callbacks", "tags", "configurable"):
-            if key in parent_config:
-                config[key] = parent_config[key]  # type: ignore[literal-required]
-        return config
 
     def task(
         description: str,

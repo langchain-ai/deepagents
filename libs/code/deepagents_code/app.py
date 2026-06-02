@@ -560,6 +560,49 @@ def save_theme_preference(name: str) -> bool:
     return _save_theme_preference_result(name).ok
 
 
+def _load_cursor_blink_preference() -> bool:
+    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+
+    The chat input cursor blink can be turned off by setting
+    `[ui].cursor_blink = false` in the config file. There is no in-app command
+    for this; the file is edited manually.
+
+    Returns:
+        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
+            unreadable, or malformed.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return True
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for cursor blink preference: %s", exc)
+        return True
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading cursor blink preference",
+            type(ui).__name__,
+        )
+        return True
+
+    value = ui.get("cursor_blink")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].cursor_blink should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return True
+
+
 def _save_terminal_theme_mapping_result(
     term_program: str,
     name: str,
@@ -1363,6 +1406,10 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+
+        self._cursor_blink_enabled = _load_cursor_blink_preference()
+        """Whether the chat input cursor should blink (user preference)."""
+
         self.sync_terminal_background()
 
         # Injected session config
@@ -1990,6 +2037,7 @@ class DeepAgentsApp(App):
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
         if self._discovered_skills:
@@ -7705,7 +7753,7 @@ class DeepAgentsApp(App):
         """
         if self._chat_input is None:
             return
-        self._chat_input.set_cursor_blink(blink=True)
+        self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
         if isinstance(self.screen, ModalScreen):
             return
         if self._pending_approval_widget or self._pending_ask_user_widget:

@@ -1406,8 +1406,10 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
         self.sync_terminal_background()
 
         # Injected session config

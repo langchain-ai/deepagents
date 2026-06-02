@@ -4,6 +4,17 @@
 # Usage:
 #   curl -LsSf https://langch.in/dcode | bash
 #
+# Uninstall:
+#   This script installs deepagents-code as a uv tool. To remove it:
+#     uv tool uninstall deepagents-code
+#   That removes the dcode/deepagents-code binary and its isolated venv.
+#   User config and data live separately in ~/.deepagents (config.toml,
+#   hooks.json, a global .env, and a .state/ dir holding sessions and saved
+#   credentials) and are NOT removed by the uninstall above. To also wipe them:
+#     rm -rf ~/.deepagents
+#   Optionally clear uv's shared tool cache (~/.cache/uv on Linux,
+#   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
+#
 # Environment variables:
 #   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
 #                             "ollama,groq", or "daytona"
@@ -371,7 +382,11 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if ((p in removed) && (p in added)) {
           printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
         } else if (p in added) {
-          printf "  %s%s  %s (new)\n", p, pad, added[p]
+          # "(new)" only disambiguates within an Updated list (mixed with
+          # upgraded/removed rows). Under "Installed packages:" every row is
+          # new, so the header already says it — drop the suffix.
+          if (any_removed) printf "  %s%s  %s (new)\n", p, pad, added[p]
+          else             printf "  %s%s  %s\n", p, pad, added[p]
         } else {
           printf "  %s%s  %s (removed)\n", p, pad, removed[p]
         }
@@ -446,15 +461,15 @@ if [ "$VERBOSE" = "1" ] && [ -n "$DCODE_BIN_DISPLAY" ]; then
 fi
 
 if [ "$VERIFY_OK" = true ]; then
-  # Skip the redundant "Verified" line on the already-up-to-date path —
-  # the prior log_success above already named the version. Only emit it on
-  # fresh install, upgrade, or editable→PyPI swap.
+  # The prior log_success already named the installed/updated version, so the
+  # "Verified" line is redundant for the common case — gate it behind VERBOSE.
+  # The empty-output warning stays unconditional: it signals a broken install.
   if [ -z "$NEW_VERSION" ] || [ "$PRE_VERSION" != "$NEW_VERSION" ] || [ "$IS_EDITABLE" = true ]; then
     VERIFY_FIRST=$(printf '%s\n' "$VERIFY_OUTPUT" | head -1)
-    if [ -n "$VERIFY_FIRST" ]; then
-      log_success "Verified: ${DCODE_NAME} ${VERIFY_FIRST}"
-    else
+    if [ -z "$VERIFY_FIRST" ]; then
       log_warn "${DCODE_NAME} -v exited 0 but produced no output; installation may be incomplete."
+    elif [ "$VERBOSE" = "1" ]; then
+      log_success "Verified: ${DCODE_NAME} ${VERIFY_FIRST}"
     fi
   fi
 elif [ -n "$DCODE_BIN" ]; then

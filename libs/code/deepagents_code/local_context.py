@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import unicodedata
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -29,7 +28,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 
-from deepagents_code.unicode_security import strip_dangerous_unicode
+from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -70,16 +69,8 @@ def _sanitize_error_detail(error: str | None) -> str:
     """
     if not error:
         return "unknown error"
-    stripped = strip_dangerous_unicode(error)
-    flattened = "".join(
-        " " if unicodedata.category(ch).startswith("C") else ch for ch in stripped
-    )
-    collapsed = " ".join(flattened.split())
-    if not collapsed:
-        return "unknown error"
-    if len(collapsed) > _MCP_ERROR_DETAIL_LIMIT:
-        return collapsed[: _MCP_ERROR_DETAIL_LIMIT - 1].rstrip() + "…"
-    return collapsed
+    sanitized = sanitize_control_chars(error, max_length=_MCP_ERROR_DETAIL_LIMIT)
+    return sanitized or "unknown error"
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:

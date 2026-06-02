@@ -13,7 +13,7 @@ from deepagents_code.widgets.messages import AppMessage, ErrorMessage
 
 
 async def test_install_slash_usage_when_no_extra() -> None:
-    """`/install` with no argument prints a usage hint, no install attempt."""
+    """`/install` with no argument prints a usage hint plus the valid extras."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -25,7 +25,13 @@ async def test_install_slash_usage_when_no_extra() -> None:
             await pilot.pause()
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any("Usage: /install" in str(m._content) for m in app_msgs)
+        usage = next(m for m in app_msgs if "Usage: /install" in str(m._content))
+        rendered = str(usage._content)
+        # The no-arg path must list valid extras so they're discoverable.
+        assert "Available extras:" in rendered
+        assert "quickjs" in rendered
+        assert "daytona" in rendered
+        assert "openai" in rendered
 
 
 async def test_install_slash_known_extra_runs() -> None:
@@ -186,7 +192,8 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "Install failed" in joined
         assert "resolver: conflict" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in joined
+        assert "uv tool install -U 'deepagents-code" in joined
+        assert "quickjs" in joined
 
 
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
@@ -213,7 +220,8 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
         assert "OSError" in joined
         assert "disk full" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in joined
+        assert "uv tool install -U 'deepagents-code" in joined
+        assert "quickjs" in joined
 
 
 async def test_install_slash_editable_install_refuses() -> None:

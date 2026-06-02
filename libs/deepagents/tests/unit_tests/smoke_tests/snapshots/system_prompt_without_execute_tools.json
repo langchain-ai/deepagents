@@ -165,7 +165,7 @@
   },
   {
     "function": {
-      "description": "Find files matching a glob pattern.\n\nSupports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).\nReturns a list of absolute file paths that match the pattern.\n\nExamples:\n- `**/*.py` - Find all Python files\n- `*.txt` - Find all text files in root\n- `/subdir/**/*.md` - Find all markdown files under /subdir",
+      "description": "Find files matching a glob pattern.\n\nSupports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).\nReturns a list of absolute file paths that match the pattern.\n\nExamples:\n- `**/*.py` - Find all Python files\n- `*.txt` - Find all text files in the backend's default root\n- `/subdir/**/*.md` - Find all markdown files under /subdir",
       "name": "glob",
       "parameters": {
         "properties": {

@@ -988,7 +988,11 @@ jobs:
               #      PR (no autorelease label). Try 2 will find the real one.
               #   2. dangerous-nonmain-release: alpha/hotfix branches have no
               #      release-please PR at all.
-              echo "::notice::PR #$PR_NUMBER lacks 'autorelease: pending'. Falling through to label search."
+              # Plain echo (not ::notice::): this is an expected, healthy path,
+              # so it stays in the step log for debugging without raising a
+              # run-level annotation. The annotation-worthy outcomes below
+              # (no release PR found, edit failure) use ::warning::/::error::.
+              echo "PR #$PR_NUMBER lacks 'autorelease: pending'. Falling through to label search."
             fi
           else
             echo "No PR found via commit ${RELEASE_SHA}."

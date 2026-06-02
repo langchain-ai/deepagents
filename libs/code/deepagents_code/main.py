@@ -1997,6 +1997,7 @@ def cli_main() -> None:
 
             extra: str = args.install
             log_path: Path | None = None
+            manual_cmd: str | None = None
             try:
                 if not is_valid_extra_name(extra):
                     # Defense in depth — the extra is interpolated into a
@@ -2019,6 +2020,7 @@ def cli_main() -> None:
                     )
                     sys.exit(1)
 
+                manual_cmd = install_extra_command(extra)
                 if extra not in KNOWN_EXTRAS:
                     known = ", ".join(sorted(KNOWN_EXTRAS))
                     console.print(
@@ -2026,9 +2028,6 @@ def cli_main() -> None:
                         f"'{extra}' is not a known extra.\n"
                         f"Known extras: {known}",
                         highlight=False,
-                    )
-                    console.print(
-                        f"This will run: [cyan]{install_extra_command(extra)}[/cyan]"
                     )
                     if not args.yes:
                         if not sys.stdin.isatty():
@@ -2063,7 +2062,7 @@ def cli_main() -> None:
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{install_extra_command(extra)}[/cyan]",
+                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2074,13 +2073,14 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
+                fallback_cmd = (
+                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
+                )
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"
                     f"{escape(log_line)}\n"
-                    "Run manually: [cyan]"
-                    f"uv tool install -U 'deepagents-code[{escape(extra)}]'"
-                    "[/cyan]",
+                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
                     markup=True,
                     highlight=False,
                 )

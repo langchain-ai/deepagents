@@ -1215,6 +1215,7 @@ class TestInstallExtraSubcommand:
         yes: bool = False,
         interactive: bool = False,
         perform_return: tuple[bool, str] = (True, ""),
+        command_side_effect: BaseException | None = None,
     ) -> tuple[int, MagicMock]:
         """Invoke `cli_main()` with `--install`; return exit code + mock."""
         from deepagents_code.main import cli_main
@@ -1225,6 +1226,16 @@ class TestInstallExtraSubcommand:
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = interactive
+        # Empty piped input so `apply_stdin_pipe` returns before its TTY
+        # restoration path (`os.dup2`/`open(0)`) swaps out this mocked stdin
+        # for a real terminal where `/dev/tty` is openable, which would mask
+        # the handler's `isatty()` refusal check.
+        mock_stdin.read.return_value = ""
+        command_mock = MagicMock(
+            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+        )
+        if command_side_effect is not None:
+            command_mock.side_effect = command_side_effect
         with (
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
@@ -1244,6 +1255,10 @@ class TestInstallExtraSubcommand:
             patch(
                 "deepagents_code.update_check.create_update_log_path",
                 return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                command_mock,
             ),
             patch(
                 "deepagents_code.update_check.perform_install_extra",
@@ -1301,6 +1316,7 @@ class TestInstallExtraSubcommand:
         interactive: bool = False,
         perform_return: tuple[bool, str] = (True, ""),
         perform_side_effect: BaseException | None = None,
+        command_side_effect: BaseException | None = None,
         input_reply: str = "n",
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `--install` and capture console output.
@@ -1318,12 +1334,20 @@ class TestInstallExtraSubcommand:
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = interactive
+        # Empty piped input so `apply_stdin_pipe` returns before its TTY
+        # restoration path clobbers this mocked stdin. See `_run_install`.
+        mock_stdin.read.return_value = ""
         console_mock = MagicMock()
         perform_mock = AsyncMock()
         if perform_side_effect is not None:
             perform_mock.side_effect = perform_side_effect
         else:
             perform_mock.return_value = perform_return
+        command_mock = MagicMock(
+            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+        )
+        if command_side_effect is not None:
+            command_mock.side_effect = command_side_effect
         with (
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
@@ -1336,6 +1360,10 @@ class TestInstallExtraSubcommand:
             patch(
                 "deepagents_code.update_check.create_update_log_path",
                 return_value=Path("/tmp/deepagents-install.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                command_mock,
             ),
             patch(
                 "deepagents_code.update_check.perform_install_extra",
@@ -1373,7 +1401,8 @@ class TestInstallExtraSubcommand:
         assert "Install failed" in text
         assert "resolver: conflict" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+        assert "uv tool install -U 'deepagents-code" in text
+        assert "quickjs" in text
 
     def test_keyboard_interrupt_exits_130(self) -> None:
         """Ctrl-C during install exits 130 with an Aborted message."""
@@ -1395,7 +1424,22 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "disk full" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+        assert "uv tool install -U 'deepagents-code" in text
+        assert "quickjs" in text
+
+    def test_command_generation_exception_uses_literal_fallback(self) -> None:
+        """If resolved command construction fails, the fallback command is shown."""
+        code, perform_mock, console_mock = self._run_install_capture(
+            "quickjs",
+            command_side_effect=RuntimeError("metadata broken"),
+        )
+        assert code == 1
+        perform_mock.assert_not_awaited()
+        text = self._printed_text(console_mock)
+        assert "RuntimeError" in text
+        assert "metadata broken" in text
+        assert "Run manually: " in text
+        assert "uv tool install -U 'deepagents-code\\[quickjs]'" in text
 
     def test_interactive_decline_aborts(self) -> None:
         """Interactive TTY + reply 'n' to unknown extra aborts with exit 1."""

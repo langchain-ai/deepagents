@@ -35,6 +35,7 @@ from textual.widgets import Checkbox, Input, Static
 
 from deepagents_code._version import CHANGELOG_URL
 from deepagents_code.app import (
+    _DEEPAGENTS_IMPORT_LOCK,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -8600,7 +8601,7 @@ class TestPrewarmAwait:
             call_order.append("prewarm")
             await asyncio.sleep(0)  # yield so any out-of-order calls would land first
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             result = MagicMock()
             result.apply_to_settings = MagicMock()
@@ -8646,7 +8647,7 @@ class TestPrewarmAwait:
         app._assistant_id = "coder"
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8697,7 +8698,7 @@ class TestPrewarmAwait:
             call_order.append(f"save_recent_agent:{name}")
             return True
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             msg = "no credentials"
             raise ModelConfigError(msg)
@@ -8742,7 +8743,7 @@ class TestPrewarmAwait:
         app._assistant_id = None
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8841,6 +8842,24 @@ class TestPrewarmAwait:
         assert notify_mock.call_args.kwargs["severity"] == "warning"
         assert notify_mock.call_args.kwargs["markup"] is False
 
+    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
+        """Cache-miss skill discovery must use the process import gate."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.object(
+                app,
+                "_discover_skills_and_roots_with_import_lock",
+                return_value=([], []),
+            ) as guarded_discover_mock,
+            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
+            patch.object(app, "_mount_message", AsyncMock()),
+        ):
+            await app._invoke_skill("missing")
+
+        guarded_discover_mock.assert_called_once()
+        raw_discover_mock.assert_not_called()
+
     async def test_start_server_waits_for_skill_discovery_import_gate(
         self,
     ) -> None:
@@ -8848,19 +8867,17 @@ class TestPrewarmAwait:
         from deepagents_code import config as cli_config
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-8"}
         app._server_kwargs = None
         app._mcp_preload_kwargs = None
         app._resume_thread_intent = None
         app._assistant_id = None
 
-        await app._deepagents_import_lock.acquire()
-
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
-            result.model_name = "claude-opus-4-7"
+            result.model_name = "claude-opus-4-8"
             return result
 
         with (
@@ -8871,14 +8888,17 @@ class TestPrewarmAwait:
             patch("deepagents_code.model_config.save_recent_model"),
             patch.object(app, "post_message"),
         ):
-            task = asyncio.create_task(app._start_server_background())
-            await asyncio.sleep(0)
-            assert create_model_mock.call_count == 0
-            app._deepagents_import_lock.release()
+            _DEEPAGENTS_IMPORT_LOCK.acquire()
+            try:
+                task = asyncio.create_task(app._start_server_background())
+                await asyncio.sleep(0)
+                assert create_model_mock.call_count == 0
+            finally:
+                _DEEPAGENTS_IMPORT_LOCK.release()
             with contextlib.suppress(Exception):
                 await task
 
-        create_model_mock.assert_called_once()
+            create_model_mock.assert_called_once()
 
 
 class TestHeaderAndTitle:

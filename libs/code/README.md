@@ -18,7 +18,7 @@ curl -LsSf https://langch.in/dcode | bash
 ```bash
 # With model provider extras
 # OpenAI, Anthropic, and Gemini are included by default
-DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
+DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
 Run:

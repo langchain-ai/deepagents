@@ -6,12 +6,17 @@ import json
 import os
 import time
 import tomllib
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 from packaging.version import InvalidVersion, Version
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from deepagents_code._version import __version__
+from deepagents_code.extras_info import installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
     _extract_release_times,
@@ -33,6 +38,7 @@ from deepagents_code.update_check import (
     get_sdk_release_time,
     get_seen_version,
     install_extra_command,
+    install_extras_command,
     install_package_command,
     is_auto_update_enabled,
     is_update_available,
@@ -83,6 +89,21 @@ def _mock_pypi_response(
     }
     resp.raise_for_status = MagicMock()
     return resp
+
+
+def _write_dist_info(
+    root: Path,
+    name: str,
+    *,
+    version: str = "1.0.0",
+    requires: tuple[str, ...] = (),
+) -> None:
+    normalized = name.replace("-", "_")
+    dist_info = root / f"{normalized}-{version}.dist-info"
+    dist_info.mkdir()
+    metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
+    metadata.extend(f"Requires-Dist: {req}" for req in requires)
+    dist_info.joinpath("METADATA").write_text("\n".join(metadata), encoding="utf-8")
 
 
 class TestParseVersion:
@@ -891,20 +912,82 @@ class TestInstallExtraCommand:
     def test_basic(self) -> None:
         """Single-quoted bracket form, with `-U` to reinstall."""
         assert (
-            install_extra_command("quickjs")
+            install_extra_command("quickjs", distribution_name="missing-dcode-test")
             == "uv tool install -U 'deepagents-code[quickjs]'"
         )
 
     def test_provider_extra(self) -> None:
         assert (
-            install_extra_command("fireworks")
+            install_extra_command("fireworks", distribution_name="missing-dcode-test")
             == "uv tool install -U 'deepagents-code[fireworks]'"
+        )
+
+    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
+        """Installing a new extra keeps already-installed extras selected."""
+        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'langchain-nvidia-ai-endpoints; extra == "nvidia"',
+                'langchain-baseten; extra == "baseten"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_extra_command("baseten", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+        )
+
+    def test_dedupes_existing_extra(self, tmp_path, monkeypatch) -> None:
+        """Installing an already-present extra does not duplicate it."""
+        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('langchain-nvidia-ai-endpoints; extra == "nvidia"',),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert (
+            install_extra_command("nvidia", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[nvidia]'"
+        )
+
+    def test_drops_composite_extras(self, tmp_path, monkeypatch) -> None:
+        """Composite extras are not echoed back into uv reinstall commands."""
+        _write_dist_info(tmp_path, "langchain-nvidia-ai-endpoints")
+        _write_dist_info(tmp_path, "langchain-openai")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'langchain-nvidia-ai-endpoints; extra == "nvidia"',
+                'langchain-openai; extra == "all-providers"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_extra_command("baseten", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+        )
+
+    def test_sorts_extras_deterministically(self) -> None:
+        assert (
+            install_extras_command({"quickjs", "baseten", "nvidia"})
+            == "uv tool install -U 'deepagents-code[baseten,nvidia,quickjs]'"
         )
 
     def test_rejects_shell_metacharacters(self) -> None:
         assert not is_valid_extra_name("quickjs']; touch /tmp/pwned; '")
         with pytest.raises(ValueError, match="Invalid extra name"):
             install_extra_command("quickjs']; touch /tmp/pwned; '")
+        with pytest.raises(ValueError, match="Invalid extra name"):
+            install_extras_command(["quickjs", "bad;name"])
 
 
 class TestEditableExtraHint:

@@ -1373,7 +1373,8 @@ class TestInstallExtraSubcommand:
         assert "Install failed" in text
         assert "resolver: conflict" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+        assert "uv tool install -U 'deepagents-code" in text
+        assert "quickjs" in text
 
     def test_keyboard_interrupt_exits_130(self) -> None:
         """Ctrl-C during install exits 130 with an Aborted message."""
@@ -1395,7 +1396,8 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "disk full" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code[quickjs]'" in text
+        assert "uv tool install -U 'deepagents-code" in text
+        assert "quickjs" in text
 
     def test_interactive_decline_aborts(self) -> None:
         """Interactive TTY + reply 'n' to unknown extra aborts with exit 1."""

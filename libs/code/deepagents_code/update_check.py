@@ -21,7 +21,7 @@ import shutil
 import sys
 import time
 import tomllib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TextIO
@@ -942,34 +942,60 @@ def install_package_command(package: str) -> str:
     return f"uv tool install -U deepagents-code --with {package}"
 
 
-def install_extra_command(extra: str) -> str:
+def install_extras_command(extras: Iterable[str]) -> str:
+    """Return the uv command that installs the exact set of dcode extras.
+
+    Args:
+        extras: Extra names to include in the tool reinstall.
+
+    Returns:
+        Shell command string suitable for display in error messages and
+            execution via `perform_install_extra`.
+
+    Raises:
+        ValueError: If any extra fails PEP 508 validation.
+    """
+    names = sorted(set(extras))
+    for name in names:
+        if not is_valid_extra_name(name):
+            msg = (
+                f"Invalid extra name {name!r}: must match PEP 508 "
+                f"({_EXTRA_NAME_RE.pattern})"
+            )
+            raise ValueError(msg)
+    extras_part = ",".join(names)
+    return f"uv tool install -U 'deepagents-code[{extras_part}]'"
+
+
+def install_extra_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
     """Return the shell command that adds `extra` to the installed dcode tool.
 
     The documented install path is `uv tool install` (see
-    `scripts/install.sh`), so the only correct way to add an extra to an
-    existing dcode install is to reinstall the tool with the extra
-    specified. Single-quoting the bracket form keeps zsh from globbing it.
+    `scripts/install.sh`), so extras must be preserved across reinstalls.
+    Single-quoting the bracket form keeps zsh from globbing it.
 
     Args:
         extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'fireworks'`).
             Validated internally against PEP 508 grammar before interpolation
             into the shell command.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
 
     Returns:
         Shell command string suitable for display in error messages and
             for execution via `perform_install_extra`.
 
-    Raises:
-        ValueError: If `extra` fails PEP 508 validation. Prevents shell
-            injection via crafted bracket-escape sequences.
+    Validation prevents shell injection via crafted bracket-escape sequences.
     """
-    if not is_valid_extra_name(extra):
-        msg = (
-            f"Invalid extra name {extra!r}: must match PEP 508 "
-            f"({_EXTRA_NAME_RE.pattern})"
-        )
-        raise ValueError(msg)
-    return f"uv tool install -U 'deepagents-code[{extra}]'"
+    from deepagents_code.extras_info import installed_extra_names
+
+    extras = installed_extra_names(distribution_name)
+    extras.add(extra)
+    return install_extras_command(extras)
 
 
 def editable_extra_hint(extra: str) -> str:
@@ -995,10 +1021,11 @@ async def perform_install_extra(
 ) -> tuple[bool, str]:
     """Add `extra` to the installed dcode tool environment.
 
-    Runs `uv tool install -U 'deepagents-code[<extra>]'`. Editable installs
-    are refused — the caller should rerun their `uv tool install --editable`
-    command with `--with 'deepagents-code[<extra>]'` added so the extra is
-    resolved against the editable source.
+    Runs `uv tool install -U 'deepagents-code[<extras>]'`, preserving any
+    extras that are already installed. Editable installs are refused — the
+    caller should rerun their `uv tool install --editable` command with `--with
+    'deepagents-code[<extra>]'` added so the extra is resolved against the
+    editable source.
 
     Args:
         extra: The extra name to install. Must satisfy `is_valid_extra_name`;

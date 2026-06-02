@@ -180,6 +180,27 @@ def get_extras_status(
     return result
 
 
+def installed_extra_names(distribution_name: str = "deepagents-code") -> set[str]:
+    """Return extras with at least one installed dependency.
+
+    Args:
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        Set of extra names whose optional dependency metadata has at least one
+            installed package. Composite extras are excluded.
+    """
+    try:
+        statuses = get_optional_dependency_status(distribution_name)
+    except PackageNotFoundError:
+        return set()
+    return {
+        extra.name
+        for extra in statuses
+        if extra.installed and extra.name not in _COMPOSITE_EXTRAS
+    }
+
+
 def get_optional_dependency_status(
     distribution_name: str = "deepagents-code",
 ) -> tuple[ExtraDependencyStatus, ...]:

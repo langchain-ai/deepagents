@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch help lint_package coverage update_snapshots
+.PHONY: test tests integration_test integration_tests lint format benchmark bench bench-memory help
 
 .DEFAULT_GOAL := help
 
@@ -10,12 +10,13 @@ UV_FROZEN = true
 ######################
 
 TEST_FILE ?= tests/unit_tests/
+PYTEST_EXTRA ?=
 
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test: ## Run unit tests
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE) \
+	uv run --group test pytest -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
 		--cov=langchain_quickjs \
 		--cov-report=term-missing
 
@@ -31,6 +32,16 @@ integration_test integration_tests:
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
+
+benchmark: ## Run benchmark tests
+	uv run --group test pytest ./tests -m benchmark
+	uv run --group test pytest ./tests -m memory_benchmark
+
+bench: ## Run benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests -m benchmark --codspeed
+
+bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests -m memory_benchmark --codspeed
 
 update_snapshots: ## Update smoke test prompt snapshots
 	uv run --group test pytest tests/unit_tests/smoke_tests/test_system_prompt.py --update-snapshots

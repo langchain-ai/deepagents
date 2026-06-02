@@ -1,0 +1,12 @@
+[project]
+name = "llm-wiki-example"
+version = "0.1.0"
+description = "LLM wiki using Deep Agents + LangSmith CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.6.1",
+    "langsmith[sandbox]>=0.8.0",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }

@@ -1,4 +1,29 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        # Types mirror `.github/workflows/pr_lint.yml`. Scopes are validated in
+        # CI on the PR title, not here — keeps the local hook lean and avoids
+        # drift on the partner-scope list.
+        args:
+          - feat
+          - fix
+          - docs
+          - style
+          - refactor
+          - perf
+          - test
+          - build
+          - ci
+          - chore
+          - revert
+          - release
+          - hotfix
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.3.0
     hooks:
@@ -8,14 +33,17 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/repl/tests/unit_tests/smoke_tests/snapshots/|libs/deepagents/tests/unit_tests/smoke_tests/snapshots/
       - id: trailing-whitespace # remove trailing whitespace from lines
-        exclude: \.ambr$
+        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/
 
   - repo: https://github.com/sirosen/texthooks
     rev: 0.6.8
     hooks:
       - id: fix-smartquotes
+        exclude: libs/evals/tests/evals/tau2_airline/data/
       - id: fix-spaces
+        exclude: libs/evals/tests/evals/tau2_airline/data/
 
   - repo: local
     hooks:
@@ -31,11 +59,11 @@ repos:
         entry: make -C libs/cli format lint
         files: ^libs/cli/
         pass_filenames: false
-      - id: harbor
-        name: format and lint harbor
+      - id: evals
+        name: format and lint evals
         language: system
-        entry: make -C libs/harbor format lint
-        files: ^libs/harbor/
+        entry: make -C libs/evals format eval-catalog lint
+        files: ^libs/evals/
         pass_filenames: false
       - id: acp
         name: format and lint acp
@@ -43,10 +71,16 @@ repos:
         entry: make -C libs/acp format lint
         files: ^libs/acp/
         pass_filenames: false
+      - id: commands-catalog
+        name: regenerate deepagents-code COMMANDS.md
+        language: system
+        entry: make -C libs/code commands-catalog
+        files: ^libs/code/(deepagents_code/command_registry\.py|COMMANDS\.md|scripts/generate_commands_catalog\.py)$
+        pass_filenames: false
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: make lock-check
+        entry: make -C libs lock-check
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
         pass_filenames: false
       - id: extras-sync

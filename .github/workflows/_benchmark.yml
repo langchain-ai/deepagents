@@ -1,0 +1,72 @@
+# Reusable workflow: CodSpeed wall-time benchmarks
+#
+# Runs pytest-benchmark tests under CodSpeed instrumentation so that
+# regressions are tracked across commits on the CodSpeed dashboard.
+#
+# Authenticates via OpenID Connect (OIDC) — no repository secret required.
+
+name: "Benchmark"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Package directory (e.g. libs/deepagents)"
+        required: true
+        type: string
+      python-version:
+        description: "Python version"
+        required: false
+        type: string
+        default: "3.13"
+      has-memory-benchmarks:
+        description: "Whether the package defines memory_benchmark tests"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  benchmark:
+    name: "CodSpeed"
+    runs-on: codspeed-macro
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "Set up Python + uv"
+        uses: ./.github/actions/uv_setup
+        with:
+          python-version: ${{ inputs.python-version }}
+          working-directory: ${{ inputs.working-directory }}
+          enable-cache: "true"
+          cache-suffix: benchmark-${{ inputs.python-version }}
+
+      - name: "Install dependencies"
+        run: uv sync --group test
+
+      - name: "Run benchmarks"
+        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          run: make bench
+          mode: walltime
+
+      - name: "Run memory benchmarks"
+        if: ${{ inputs.has-memory-benchmarks }}
+        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          run: make bench-memory
+          mode: memory

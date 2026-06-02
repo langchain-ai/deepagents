@@ -15,11 +15,11 @@ class TestFilesystemToolSchemas:
         Uses tool_call_schema.model_json_schema() which is the schema passed to the LLM.
         """
         # Create the middleware to get the tools
-        backend = StateBackend(None)  # type: ignore[arg-type]
+        backend = StateBackend()
         middleware = FilesystemMiddleware(backend=backend)
         tools = middleware.tools
 
-        # Expected tools and their user-facing args (excludes `runtime` which is internal)
+        # Expected tools and their user-facing args
         expected_tools = {
             "ls": ["path"],
             "read_file": ["file_path", "offset", "limit"],
@@ -60,7 +60,7 @@ class TestFilesystemToolSchemas:
         This ensures that the sync_* and async_* function pairs would generate
         the same tool schema if used independently.
         """
-        backend = StateBackend(None)  # type: ignore[arg-type]
+        backend = StateBackend()
         middleware = FilesystemMiddleware(backend=backend)
         tools = middleware.tools
 
@@ -82,3 +82,15 @@ class TestFilesystemToolSchemas:
                 f"Sync schema: {sync_schema}\n"
                 f"Async schema: {async_schema}"
             )
+
+    def test_glob_path_defaults_to_nullable_backend_root(self) -> None:
+        """Verify `glob.path` matches `grep.path` optional default semantics."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        schema = glob_tool.tool_call_schema.model_json_schema()
+        path_schema = schema["properties"]["path"]
+
+        assert path_schema["default"] is None
+        assert {"type": "null"} in path_schema["anyOf"]
+        assert "backend's default root" in path_schema["description"]

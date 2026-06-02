@@ -12,38 +12,49 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Literal, NotRequired, TypeAlias
+from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
 
+from deepagents._api.deprecation import deprecated, warn_deprecated
+
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
 
-- `"v1"`: Legacy format — `content` stored as `list[str]` (lines split
-  on `\\n`), no `encoding` field.
-- `"v2"`: Current format — `content` stored as a plain `str` (UTF-8 text
-  or base64-encoded binary), with an `encoding` field (`"utf-8"` or
-  `"base64"`).
+- `'v1'`: Legacy format — `content` stored as `list[str]` (lines split
+    on `\\n`), no `encoding` field.
+- `'v2'`: Current format — `content` stored as a plain `str` (UTF-8 text
+    or base64-encoded binary), with an `encoding` field (`"utf-8"` or
+    `"base64"`).
 """
 
 logger = logging.getLogger(__name__)
 
 FileOperationError = Literal[
-    "file_not_found",  # Download: file doesn't exist
-    "permission_denied",  # Both: access denied
-    "is_directory",  # Download: tried to download directory as file
-    "invalid_path",  # Both: path syntax malformed (parent dir missing, invalid chars)
+    "file_not_found",
+    "permission_denied",
+    "is_directory",
+    "invalid_path",
 ]
 """Standardized error codes for file upload/download operations.
 
-These represent common, recoverable errors that an LLM can understand and potentially fix:
+These represent common, recoverable errors that an LLM can understand and
+potentially fix:
+
 - file_not_found: The requested file doesn't exist (download)
-- parent_not_found: The parent directory doesn't exist (upload)
 - permission_denied: Access denied for the operation
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
 """
+
+# Named constants for each `FileOperationError` literal. Use these instead of
+# bare string literals at producer/consumer sites so a rename in one place
+# surfaces as a type error (rather than silently reverting to a fallback branch).
+FILE_NOT_FOUND: Final = "file_not_found"
+PERMISSION_DENIED: Final = "permission_denied"
+IS_DIRECTORY: Final = "is_directory"
+INVALID_PATH: Final = "invalid_path"
 
 
 @dataclass
@@ -51,16 +62,10 @@ class FileDownloadResponse:
     """Result of a single file download operation.
 
     The response is designed to allow partial success in batch operations.
-    The errors are standardized using FileOperationError literals
-    for certain recoverable conditions for use cases that involve
-    LLMs performing file operations.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results, especially useful for error messages.
-        content: File contents as bytes on success, None on failure.
-        error: Standardized error code on failure, None on success.
-            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success
@@ -70,8 +75,18 @@ class FileDownloadResponse:
     """
 
     path: str
+    """The file path that was requested. Included for easy correlation when
+    processing batch results, especially useful for error messages."""
+
     content: bytes | None = None
+    """File contents as bytes on success, `None` on failure."""
+
     error: FileOperationError | None = None
+    """A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 @dataclass
@@ -79,15 +94,10 @@ class FileUploadResponse:
     """Result of a single file upload operation.
 
     The response is designed to allow partial success in batch operations.
-    The errors are standardized using FileOperationError literals
-    for certain recoverable conditions for use cases that involve
-    LLMs performing file operations.
 
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results and for clear error messages.
-        error: Standardized error code on failure, None on success.
-            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+    The errors are standardized using `FileOperationError` literals for certain
+    recoverable conditions for use cases that involve LLMs performing
+    file operations.
 
     Examples:
         >>> # Success
@@ -97,28 +107,51 @@ class FileUploadResponse:
     """
 
     path: str
+    """The file path that was requested.
+
+    Included for easy correlation when processing batch results and for clear
+    error messages.
+    """
+
     error: FileOperationError | None = None
+    """error: A `FileOperationError` literal for known conditions, or a
+    backend-specific error string when the failure cannot be normalized.
+
+    `None` on success.
+    """
 
 
 class FileInfo(TypedDict):
     """Structured file listing info.
 
-    Minimal contract used across backends. Only "path" is required.
+    Minimal contract used across backends. Only `path` is required.
     Other fields are best-effort and may be absent depending on backend.
     """
 
     path: str
+    """Absolute or relative file path."""
+
     is_dir: NotRequired[bool]
-    size: NotRequired[int]  # bytes (approx)
-    modified_at: NotRequired[str]  # ISO timestamp if known
+    """Whether the entry is a directory."""
+
+    size: NotRequired[int]
+    """File size in bytes (approximate)."""
+
+    modified_at: NotRequired[str]
+    """ISO 8601 timestamp of last modification, if known."""
 
 
 class GrepMatch(TypedDict):
-    """Structured grep match entry."""
+    """A single match from a grep search."""
 
     path: str
+    """Path to the file containing the match."""
+
     line: int
+    """1-indexed line number of the match."""
+
     text: str
+    """Content of the matching line."""
 
 
 class FileData(TypedDict):
@@ -130,10 +163,10 @@ class FileData(TypedDict):
     encoding: str
     """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
 
-    created_at: str
+    created_at: NotRequired[str]
     """ISO 8601 timestamp of file creation."""
 
-    modified_at: str
+    modified_at: NotRequired[str]
     """ISO 8601 timestamp of last modification."""
 
 
@@ -150,56 +183,97 @@ class ReadResult:
     file_data: FileData | None = None
 
 
-@dataclass
+class _Unset:
+    """Sentinel type for detecting explicit parameter usage."""
+
+
+Unset = _Unset()
+
+
+def _normalize_files_update(
+    files_update: dict[str, Any] | None | _Unset,
+) -> dict[str, Any] | None:
+    """Normalize file updates."""
+    if isinstance(files_update, _Unset):
+        return None
+
+    # `stacklevel=3` lifts attribution past `__init__` and this helper to the
+    # user's `WriteResult(...)` / `EditResult(...)` call site.
+    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/deepagents/issues/3220  # noqa: FIX002
+    warn_deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        message=(
+            "`files_update` was deprecated in deepagents 0.5.0 and will be "
+            "removed in deepagents==0.7.0. State updates are now handled "
+            "internally by the backend."
+        ),
+        package="deepagents",
+        stacklevel=3,
+    )
+    return files_update
+
+
+@dataclass(init=False)
 class WriteResult:
     """Result from backend write operations.
 
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of written file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
 
     Examples:
-        >>> # Checkpoint storage
-        >>> WriteResult(path="/f.txt", files_update={"/f.txt": {...}})
-        >>> # External storage
-        >>> WriteResult(path="/f.txt", files_update=None)
-        >>> # Error
+        >>> WriteResult(path="/f.txt")
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None = None
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+    ) -> None:
+        """Initialize WriteResult."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
 
 
-@dataclass
+@dataclass(init=False)
 class EditResult:
     """Result from backend edit operations.
 
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of edited file, None on failure.
-        files_update: State update dict for checkpoint backends, None for external storage.
-            Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
-            External backends set None (already persisted to disk/S3/database/etc).
         occurrences: Number of replacements made, None on failure.
 
     Examples:
-        >>> # Checkpoint storage
-        >>> EditResult(path="/f.txt", files_update={"/f.txt": {...}}, occurrences=1)
-        >>> # External storage
-        >>> EditResult(path="/f.txt", files_update=None, occurrences=2)
-        >>> # Error
+        >>> EditResult(path="/f.txt", occurrences=1)
         >>> EditResult(error="File not found")
     """
 
-    error: str | None = None
-    path: str | None = None
-    files_update: dict[str, Any] | None = None
-    occurrences: int | None = None
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+    occurrences: int | None
+
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+        occurrences: int | None = None,
+    ) -> None:
+        """Initialize edit result."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
+        self.occurrences = occurrences
 
 
 @dataclass
@@ -248,35 +322,50 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure::
+    All file data is represented as dicts with the following structure:
 
-        {
-            "content": str,  # Text content (utf-8) or base64-encoded binary
-            "encoding": str,  # "utf-8" for text, "base64" for binary data
-            "created_at": str,  # ISO format timestamp
-            "modified_at": str,  # ISO format timestamp
-        }
+    ```python
+    {
+        "content": str,  # Text content (utf-8) or base64-encoded binary
+        "encoding": str,  # "utf-8" for text, "base64" for binary data
+        "created_at": str,  # ISO format timestamp
+        "modified_at": str,  # ISO format timestamp
+    }
+    ```
 
     Note:
         Legacy data may still contain `"content": list[str]` (lines split on
-        `\\n`).  Backends accept this for backwards compatibility and emit a
-        `DeprecationWarning`.
+        `\\n`). Backends accept this for backwards compatibility and emit a
+        `LangChainDeprecationWarning` (a `DeprecationWarning` subclass).
     """
 
-    def ls_info(self, path: str) -> "LsResult":
+    def ls(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            LsResult with directory entries or error.
+            `LsResult` with directory entries or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `ls` (or
+                the legacy `ls_info`).
         """
+        if type(self).ls_info is not BackendProtocol.ls_info:
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`ls_info` is deprecated and will be removed in deepagents==0.7.0; rename to `ls` instead."),
+                package="deepagents",
+            )
+            return LsResult(entries=self.ls_info(path))
+
         raise NotImplementedError
 
-    async def als_info(self, path: str) -> "LsResult":
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path)
+    async def als(self, path: str) -> "LsResult":
+        """Async version of `ls`."""
+        return await asyncio.to_thread(self.ls, path)
 
     def read(
         self,
@@ -296,13 +385,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             starting at line 1. Lines longer than 2000 characters are truncated.
 
             Returns an error string if the file doesn't exist or can't be read.
-
-        !!! note
-            - Use pagination (offset/limit) for large files to avoid context overflow
-            - First scan: `read(path, limit=100)` to see file structure
-            - Read more: `read(path, offset=100, limit=200)` for next section
-            - ALWAYS read a file before editing it
-            - If file exists but is empty, you'll receive a system reminder warning
         """
         raise NotImplementedError
 
@@ -315,7 +397,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -325,55 +407,78 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             pattern: Literal string to search for (NOT regex).
-                     Performs exact substring matching within file content.
-                     Example: "TODO" matches any line containing "TODO"
+
+                Performs exact substring matching within file content.
+
+                Example: "TODO" matches any line containing "TODO"
 
             path: Optional directory path to search in.
-                  If None, searches in current working directory.
-                  Example: "/workspace/src"
+
+                If None, searches in current working directory.
+
+                Example: `'/workspace/src'`
 
             glob: Optional glob pattern to filter which FILES to search.
-                  Filters by filename/path, not content.
-                  Supports standard glob wildcards:
-                  - `*` matches any characters in filename
-                  - `**` matches any directories recursively
-                  - `?` matches single character
-                  - `[abc]` matches one character from set
+
+                Filters by filename/path, not content.
+
+                Supports standard glob wildcards:
+
+                - `*` matches any characters in filename
+                - `**` matches any directories recursively
+                - `?` matches single character
+                - `[abc]` matches one character from set
 
         Examples:
-                  - "*.py" - only search Python files
-                  - "**/*.txt" - search all .txt files recursively
-                  - "src/**/*.js" - search JS files under src/
-                  - "test[0-9].txt" - search test0.txt, test1.txt, etc.
+            - `'*.py'` - only search Python files
+            - `'**/*.txt'` - search all `.txt` files recursively
+            - `'src/**/*.js'` - search JS files under src/
+            - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
 
         Returns:
-            GrepResult with matches or error.
+            `GrepResult` with matches or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `grep` (or
+                the legacy `grep_raw`).
         """
+        if type(self).grep_raw is not BackendProtocol.grep_raw:
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`grep_raw` is deprecated and will be removed in deepagents==0.7.0; rename to `grep` instead."),
+                package="deepagents",
+            )
+            result = self.grep_raw(pattern, path, glob)
+            if isinstance(result, str):
+                return GrepResult(error=result)
+            return GrepResult(matches=result)
+
         raise NotImplementedError
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of grep_raw.
+        """Async version of `grep`.
 
         Wraps the sync call with an async timeout as a safety net. Some sync
-        `grep_raw` implementations (e.g., `FilesystemBackend`) have their own
+        `grep` implementations (e.g., `FilesystemBackend`) have their own
         internal timeouts, but this ensures the async caller is never blocked
         indefinitely regardless of backend.
         """
-        # Must exceed the sync grep_raw timeout to let internal timeouts fire first
+        # Must exceed the sync grep timeout to let internal timeouts fire first
         _async_timeout = 60
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self.grep_raw, pattern, path, glob),
+                asyncio.to_thread(self.grep, pattern, path, glob),
                 timeout=_async_timeout,
             )
         except TimeoutError:
             logger.warning(
-                "agrep_raw timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
                 _async_timeout,
                 pattern,
                 path,
@@ -384,28 +489,46 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 error=f"Error: grep timed out after {_async_timeout}s. Try a more specific pattern or a narrower path.",
             )
 
-    def glob_info(self, pattern: str, path: str = "/") -> "GlobResult":
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern with wildcards to match file paths.
-                     Supports standard glob syntax:
-                     - `*` matches any characters within a filename/directory
-                     - `**` matches any directories recursively
-                     - `?` matches a single character
-                     - `[abc]` matches one character from set
 
-            path: Base directory to search from. Default: "/" (root).
-                  The pattern is applied relative to this path.
+                Supports standard glob syntax:
+
+                - `*` matches any characters within a filename/directory
+                - `**` matches any directories recursively
+                - `?` matches a single character
+                - `[abc]` matches one character from set
+
+            path: Optional base directory to search from.
+
+                If omitted, the backend chooses its default search root.
+
+                The pattern is applied relative to this path.
 
         Returns:
-            GlobResult with matching files or error.
+            `GlobResult` with matching files or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `glob` (or
+                the legacy `glob_info`).
         """
+        if type(self).glob_info is not BackendProtocol.glob_info:
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`glob_info` is deprecated and will be removed in deepagents==0.7.0; rename to `glob` instead."),
+                package="deepagents",
+            )
+            return GlobResult(matches=self.glob_info(pattern, path or "/"))
+
         raise NotImplementedError
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> "GlobResult":
-        """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path)
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
+        """Async version of `glob`."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     def write(
         self,
@@ -416,7 +539,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Args:
             file_path: Absolute path where the file should be created.
-                       Must start with '/'.
+
+                Must start with '/'.
             content: String content to write to the file.
 
         Returns:
@@ -442,13 +566,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Perform exact string replacements in an existing file.
 
         Args:
-            file_path: Absolute path to the file to edit. Must start with '/'.
+            file_path: Absolute path to the file to edit. Must start with `'/'`.
             old_string: Exact string to search for and replace.
-                       Must match exactly including whitespace and indentation.
+
+                Must match exactly including whitespace and indentation.
             new_string: String to replace old_string with.
-                       Must be different from old_string.
-            replace_all: If True, replace all occurrences. If False (default),
-                        old_string must be unique in the file or the edit fails.
+
+                Must be different from old_string.
+            replace_all: If True, replace all occurrences.
+
+                If False (default), `old_string` must be unique in the file or
+                the edit fails.
 
         Returns:
             EditResult
@@ -468,16 +596,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
-        This API is designed to allow developers to use it either directly or
-        by exposing it to LLMs via custom tools.
+        This API is designed to allow developers to use it either directly or by
+        exposing it to LLMs via custom tools.
 
         Args:
             files: List of (path, content) tuples to upload.
 
         Returns:
             List of FileUploadResponse objects, one per input file.
-            Response order matches input order (response[i] for files[i]).
-            Check the error field to determine success/failure per file.
+
+                Response order matches input order (response[i] for files[i]).
+
+                Check the error field to determine success/failure per file.
 
         Examples:
             ```python
@@ -505,15 +635,140 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order (response[i] for paths[i]).
-            Check the error field to determine success/failure per file.
+            List of `FileDownloadResponse` objects, one per input path.
+
+                Response order matches input order (response[i] for paths[i]).
+
+                Check the error field to determine success/failure per file.
         """
         raise NotImplementedError
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
+
+    # -- deprecated methods --------------------------------------------------
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="ls",
+        package="deepagents",
+    )
+    def ls_info(self, path: str) -> list["FileInfo"]:
+        """List all files in a directory with metadata.
+
+        !!! warning "Deprecated"
+            Use `ls` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = self.ls(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `ls` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="als",
+        package="deepagents",
+    )
+    async def als_info(self, path: str) -> list["FileInfo"]:
+        """Async version of `ls_info`.
+
+        !!! warning "Deprecated"
+
+            Use `als` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = await self.als(path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `als` API."
+            raise NotImplementedError(msg)
+        return result.entries or []
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="glob",
+        package="deepagents",
+    )
+    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+        """Find files matching a glob pattern.
+
+        !!! warning "Deprecated"
+
+            Use `glob` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = self.glob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `glob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="aglob",
+        package="deepagents",
+    )
+    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+        """Async version of `glob_info`.
+
+        !!! warning "Deprecated"
+
+            Use `aglob` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = await self.aglob(pattern, path)
+        if result.error is not None:
+            msg = "This behavior is only available via the new `aglob` API."
+            raise NotImplementedError(msg)
+        return result.matches or []
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="grep",
+        package="deepagents",
+    )
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list["GrepMatch"] | str:
+        """Search for a literal text pattern in files.
+
+        !!! warning "Deprecated"
+
+            Use `grep` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = self.grep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
+
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="agrep",
+        package="deepagents",
+    )
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list["GrepMatch"] | str:
+        """Async version of `grep_raw`.
+
+        !!! warning "Deprecated"
+
+            Use `agrep` instead. Will be removed in `deepagents==0.7.0`.
+        """
+        result = await self.agrep(pattern, path, glob)
+        if result.error is not None:
+            return result.error
+        return result.matches or []
 
 
 @dataclass
@@ -527,7 +782,10 @@ class ExecuteResponse:
     """Combined stdout and stderr output of the executed command."""
 
     exit_code: int | None = None
-    """The process exit code. 0 indicates success, non-zero indicates failure."""
+    """The process exit code.
+
+    0 indicates success, non-zero indicates failure.
+    """
 
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
@@ -571,7 +829,7 @@ class SandboxBackendProtocol(BackendProtocol):
                 backends that support no-timeout execution.
 
         Returns:
-            ExecuteResponse with combined output, exit code, and truncation flag.
+            `ExecuteResponse` with combined output, exit code, and truncation flag.
         """
         raise NotImplementedError
 
@@ -596,7 +854,8 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """

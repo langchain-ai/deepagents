@@ -1,0 +1,133 @@
+[
+  {
+    "prompt": "Inspect the files under `/cases/frames_10/` and answer the question using only those notes. Return only the final answer.\n\nQuestion: Multiply the number of Tony Awards won by the guest host of SNL on 1997-12-06 by the number of Oscar nominations received by the 2023 film directed by Greta Gerwig. Then divide by the number of Grammy Awards won by the band behind the 1979 album 'Tusk'.",
+    "answer": "12",
+    "num_wiki_links": 7,
+    "difficulty": "hard",
+    "axes": [
+      "retrieval",
+      "planning"
+    ],
+    "rationale": "Triple-branch lookup requiring SNL host identification, Tony count, Oscar nomination count for Barbie, and Grammy count for Fleetwood Mac, plus arithmetic.",
+    "reasoning_types": [
+      "numerical",
+      "multi-constraint"
+    ],
+    "id": "frames_10",
+    "answer_snippets": [
+      "12"
+    ],
+    "files": {
+      "/cases/frames_10/reference/snlepisode.txt": "Saturday Night Live episode dated 1997-12-06 was hosted by Nathan Lane.\n",
+      "/cases/frames_10/reference/nathan_lane.txt": "Nathan Lane has won 3 Tony Awards.\n",
+      "/cases/frames_10/reference/barbie_2023.txt": "Barbie is the 2023 film directed by Greta Gerwig. It received 8 Oscar nominations.\n",
+      "/cases/frames_10/reference/fleetwood_mac.txt": "Fleetwood Mac released the 1979 album Tusk and won 2 Grammy Awards.\n",
+      "/cases/frames_10/reference/distractor.txt": "Little Women was also directed by Greta Gerwig, but this note is not about the 2023 film.\n"
+    }
+  },
+  {
+    "prompt": "Inspect the files under `/cases/frames_11/` and answer the question using only those notes. Return only the final number.\n\nQuestion: Add the ages as of 2010 of the inventors of the cotton gin, vacuum pump, and commercial toilet paper, then subtract the ages as of 2010 of the inventors of the safety pin and the sewing machine.",
+    "answer": "622",
+    "num_wiki_links": 4,
+    "difficulty": "hard",
+    "axes": [
+      "retrieval",
+      "planning"
+    ],
+    "rationale": "Requires identifying 5 different inventors, computing hypothetical ages in 2010, then performing addition and subtraction across all values.",
+    "reasoning_types": [
+      "numerical",
+      "temporal"
+    ],
+    "id": "frames_11",
+    "answer_snippets": [
+      "622"
+    ],
+    "files": {
+      "/cases/frames_11/reference/cotton_gin.txt": "Reference sheet: the inventor of the cotton gin is treated as being 245 years old in 2010.\n",
+      "/cases/frames_11/reference/vacuum_pump.txt": "Reference sheet: the inventor of the vacuum pump is treated as being 363 years old in 2010.\n",
+      "/cases/frames_11/reference/toilet_paper.txt": "Reference sheet: the inventor of commercial toilet paper is treated as being 183 years old in 2010.\n",
+      "/cases/frames_11/reference/safety_pin.txt": "Reference sheet: the inventor of the safety pin is treated as being 84 years old in 2010.\n",
+      "/cases/frames_11/reference/sewing_machine.txt": "Reference sheet: the inventor of the sewing machine is treated as being 85 years old in 2010.\n"
+    }
+  },
+  {
+    "prompt": "Inspect the files under `/cases/frames_12/` and answer the question using only those notes. Return only the name of the oldest person.\n\nQuestion: Edmund turned 10 on the day of the Battle of Hastings. Edward turned 12 on the day Guy Fawkes was executed. Eddie turned 14 on the day of the London 2012 opening ceremony. Who would be oldest on the comparison dates in the notes?",
+    "answer": "Edmund",
+    "num_wiki_links": 6,
+    "difficulty": "hard",
+    "axes": [
+      "retrieval",
+      "planning"
+    ],
+    "rationale": "Requires looking up 6 historical event dates, computing birth years from given ages at those events, then computing ages at 3 more historical events.",
+    "reasoning_types": [
+      "numerical",
+      "temporal"
+    ],
+    "id": "frames_12",
+    "answer_snippets": [
+      "Edmund"
+    ],
+    "files": {
+      "/cases/frames_12/reference/source_events.txt": "Battle of Hastings: 1066. Guy Fawkes execution: 1606. London 2012 opening ceremony: 2012.\n",
+      "/cases/frames_12/reference/comparison_events.txt": "Henry I of England died in 1135. Battle of Naseby took place in 1645. Liz Truss announced her resignation as Conservative Party leader in 2022.\n",
+      "/cases/frames_12/reference/instructions.txt": "Ignore months and days; use year-based age comparisons only.\n"
+    }
+  },
+  {
+    "prompt": "Inspect the files under `/cases/frames_18/` and answer the question using only those notes. Return only the year.\n\nQuestion: Using only the Winter and Summer Olympic events that occurred in the same country in the same year, which year had the highest combined number of women competitors?",
+    "answer": "1936",
+    "num_wiki_links": 6,
+    "difficulty": "hard",
+    "axes": [
+      "retrieval",
+      "planning"
+    ],
+    "rationale": "Requires identifying all years when Winter and Summer Olympics were in the same country, then comparing women competitor counts across multiple Games pages.",
+    "reasoning_types": [
+      "numerical",
+      "temporal",
+      "tabular",
+      "multi-constraint"
+    ],
+    "id": "frames_18",
+    "answer_snippets": [
+      "1936"
+    ],
+    "files": {
+      "/cases/frames_18/reference/eligible_years.txt": "The Winter and Summer Olympics occurred in the same country in the same year in 1924 (France), 1932 (United States), and 1936 (Germany).\n",
+      "/cases/frames_18/reference/1924.txt": "1924 Winter women competitors: 13. 1924 Summer women competitors: 135.\n",
+      "/cases/frames_18/reference/1932.txt": "1932 Winter women competitors: 17. 1932 Summer women competitors: 126.\n",
+      "/cases/frames_18/reference/1936.txt": "1936 Winter women competitors: 80. 1936 Summer women competitors: 331.\n",
+      "/cases/frames_18/reference/distractor.txt": "1984 Summer Olympics were in the United States, but the Winter Olympics that year were in a different country.\n"
+    }
+  },
+  {
+    "prompt": "Inspect the files under `/cases/frames_16/` and answer the question using only those notes. Return only the song and the inspiring book.\n\nQuestion: Joan Didion's second fiction novel has a film adaptation. The director of that adaptation is the uncle of a famous pop singer. That singer had a song nominated for Best Pop Solo Performance and Record of the Year at the 54th Annual Grammy Awards, and the song was inspired by another book. Name the song and the book.",
+    "answer": "Firework by Katy Perry was inspired by \"On the Road\" by Jack Kerouac ",
+    "num_wiki_links": 6,
+    "difficulty": "hard",
+    "axes": [
+      "retrieval",
+      "planning"
+    ],
+    "rationale": "Long inference chain across 6 wiki pages: novelist to film adaptation to director to niece (pop singer) to song to its literary inspiration.",
+    "reasoning_types": [
+      "multi-constraint"
+    ],
+    "id": "frames_16",
+    "answer_snippets": [
+      "Firework",
+      "On the Road"
+    ],
+    "files": {
+      "/cases/frames_16/reference/didion.txt": "Joan Didion's second fiction novel is Play It as It Lays.\n",
+      "/cases/frames_16/reference/play_it_as_it_lays_film.txt": "The film adaptation of Play It as It Lays was directed by Frank Perry.\n",
+      "/cases/frames_16/reference/frank_perry.txt": "Frank Perry was the uncle of Katy Perry.\n",
+      "/cases/frames_16/reference/firework.txt": "Katy Perry song Firework was nominated for Record of the Year and Best Pop Solo Performance at the 54th Annual Grammy Awards.\n",
+      "/cases/frames_16/reference/book_inspiration.txt": "Firework was inspired by the novel On the Road by Jack Kerouac.\n",
+      "/cases/frames_16/reference/distractor.txt": "Roar is another Katy Perry song, but it is not the one relevant to this chain.\n"
+    }
+  }
+]

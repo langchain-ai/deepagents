@@ -1,0 +1,136 @@
+# Worked example for optimizing a Deep Agents-based harness.
+#
+# Copy this file and replace the placeholder paths, targets, and eval cases
+# with the ones from your repo.
+#
+# Learn more:
+# - Deep Agents repo: https://github.com/langchain-ai/deepagents
+# - Custom middleware in LangChain: https://docs.langchain.com/oss/python/langchain/middleware/custom
+# - Middleware in Deep Agents customization: https://docs.langchain.com/oss/python/deepagents/customization#middleware
+#
+# Notes:
+# - This example is intentionally one file. It uses `base_value` so the outer
+#   agent can see the starting prompt/tools/skills/middleware directly.
+# - Middleware usually needs two surfaces:
+#   1. the middleware implementation file
+#   2. the file that wires that middleware into `create_deep_agent(...)`
+
+[experiment]
+name = "my-deepagents-harness"
+runner = "pytest"
+workspace_root = "${DEEPAGENTS_ROOT}"
+model = "claude-sonnet-4-6"
+max_iterations = 3
+
+[better_agent]
+model = "claude-sonnet-4-6"
+max_turns = 11000
+
+[runner.pytest]
+project_root = "${DEEPAGENTS_ROOT}/libs/evals"
+model_flag = "--model"
+summary_flag = "--evals-report-file"
+pytest_args = ["-q"]
+
+[surfaces.prompt]
+kind = "module_attr"
+target = "deepagents.graph:BASE_AGENT_PROMPT"
+filename = "prompt.txt"
+base_value = """
+You are a helpful agent.
+
+If a request is underspecified, ask the minimum followup needed to make the next useful move.
+Do not ask for details the user already supplied.
+Use reasonable defaults when the request clearly implies them.
+"""
+
+[surfaces.tools]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/custom_tools.py"
+filename = "custom_tools.py"
+base_value = """
+from langchain.tools import tool
+
+
+@tool
+def send_report(recipient: str, subject: str, body: str) -> str:
+    \"\"\"Send a report to a user.\"\"\"
+    return f"sent report to {recipient} with subject {subject}"
+"""
+
+[surfaces.skills]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/skills/reporting.md"
+filename = "reporting.md"
+base_value = """
+# Reporting skill
+
+- Ask domain-defining questions before implementation questions.
+- For recurring summaries, clarify format or detail level before broad setup details.
+- Prefer acting when the destination and core intent are already clear.
+"""
+
+[surfaces.middleware_impl]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/custom_middleware.py"
+filename = "custom_middleware.py"
+base_value = """
+from langchain.agents.middleware import wrap_tool_call
+
+
+@wrap_tool_call
+def log_tool_calls(request, handler):
+    \"\"\"Simple example middleware that logs tool calls.\"\"\"
+    result = handler(request)
+    return result
+"""
+
+[surfaces.middleware_registration]
+kind = "workspace_file"
+target = "libs/deepagents/deepagents/agent_setup.py"
+filename = "agent_setup.py"
+base_value = """
+from deepagents import create_deep_agent
+
+from deepagents.custom_middleware import log_tool_calls
+from deepagents.custom_tools import send_report
+
+
+def build_agent(model: str):
+    return create_deep_agent(
+        model=model,
+        tools=[send_report],
+        middleware=[log_tool_calls],
+        system_prompt="You are a helpful agent.",
+    )
+"""
+
+[[cases]]
+case_id = "tests/evals/test_tool_selection.py::test_indirect_email_report[{model}]"
+split = "train"
+stratum = "tool_use"
+
+[[cases]]
+case_id = "tests/evals/test_followup_quality.py::test_followup_question_quality[{model}-vague_send_report]"
+split = "train"
+stratum = "conversation"
+
+[[cases]]
+case_id = "tests/evals/test_tool_selection.py::test_direct_request_slack_dm[{model}]"
+split = "holdout"
+stratum = "tool_use"
+
+[[cases]]
+case_id = "tests/evals/test_followup_quality.py::test_followup_question_quality[{model}-detailed_calendar_brief]"
+split = "holdout"
+stratum = "conversation"
+
+[[cases]]
+case_id = "tests/evals/test_tool_selection.py::test_direct_request_github_pr[{model}]"
+split = "scorecard"
+stratum = "tool_use"
+
+[[cases]]
+case_id = "tests/evals/test_followup_quality.py::test_followup_question_quality[{model}-vague_data_analysis]"
+split = "scorecard"
+stratum = "conversation"

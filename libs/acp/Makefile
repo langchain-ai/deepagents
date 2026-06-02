@@ -8,9 +8,10 @@
 
 # Define a variable for the test file path.
 TEST_FILE ?= tests/
+PYTEST_EXTRA ?=
 
 test: ## Run unit tests with coverage
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
+	uv run pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
 
 test_watch: ## Run tests in watch mode
 	uv run ptw . -- $(TEST_FILE)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import TYPE_CHECKING
 
@@ -96,6 +97,56 @@ def convert_embedded_resource_block_to_content_blocks(
         "Block expected either a `text` or `blob` property."
     )
     raise ValueError(msg)
+
+
+DANGEROUS_SHELL_PATTERNS = (
+    "$(",  # Command substitution
+    "`",  # Backtick command substitution
+    "$'",  # ANSI-C quoting (can encode dangerous chars via escape sequences)
+    "\n",  # Newline (command injection)
+    "\r",  # Carriage return (command injection)
+    "\t",  # Tab (can be used for injection in some shells)
+    "<(",  # Process substitution (input)
+    ">(",  # Process substitution (output)
+    "<<<",  # Here-string
+    "<<",  # Here-doc (can embed commands)
+    ">>",  # Append redirect
+    ">",  # Output redirect
+    "<",  # Input redirect
+    "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
+)
+"""Literal substrings that indicate shell injection risk.
+
+Ported from ``deepagents_cli.config.DANGEROUS_SHELL_PATTERNS``.  Used by
+``contains_dangerous_patterns`` to reject commands that embed arbitrary
+execution via redirects, substitution operators, or control characters —
+even when the base command is on the allow-list.
+"""
+
+
+def contains_dangerous_patterns(command: str) -> bool:
+    """Check if a command contains dangerous shell patterns.
+
+    These patterns can be used to bypass allow-list validation by embedding
+    arbitrary commands within seemingly safe commands.
+
+    Args:
+        command: The shell command to check.
+
+    Returns:
+        True if dangerous patterns are found, False otherwise.
+    """
+    if any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS):
+        return True
+
+    # Bare variable expansion ($VAR without braces) can leak sensitive paths.
+    # We already block ${ and $( above; this catches plain $HOME, $IFS, etc.
+    if re.search(r"\$[A-Za-z_]", command):
+        return True
+
+    # Standalone & (background execution) should not be auto-approved.
+    # Check for & that is NOT part of &&.
+    return bool(re.search(r"(?<![&])&(?![&])", command))
 
 
 def extract_command_types(command: str) -> list[str]:  # noqa: C901, PLR0915  # Complex shell command parser with nested helper functions
@@ -233,10 +284,11 @@ def extract_command_types(command: str) -> list[str]:  # noqa: C901, PLR0915  # 
 
     command_types: list[str] = []
 
-    # Split by && to handle chained commands
-    and_segments = command.split("&&")
+    # Split by compound operators (&&, ||) and semicolons first,
+    # then by pipes within each segment.
+    compound_segments = re.split(r"&&|\|\||;", command)
 
-    for raw_segment in and_segments:
+    for raw_segment in compound_segments:
         segment = raw_segment.strip()
         if not segment:
             continue

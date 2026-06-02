@@ -10,8 +10,7 @@ Examples:
     from deepagents.backends.state import StateBackend
     from deepagents.backends.store import StoreBackend
 
-    runtime = make_runtime()
-    composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime)})
+    composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
 
     composite.write("/temp.txt", "ephemeral")
     composite.write("/memories/note.md", "persistent")
@@ -19,7 +18,6 @@ Examples:
 """
 
 from collections import defaultdict
-from dataclasses import replace
 from typing import cast
 
 from deepagents.backends.protocol import (
@@ -127,10 +125,12 @@ class CompositeBackend(BackendProtocol):
         default: Backend for paths that don't match any route.
         routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
         sorted_routes: Routes sorted by length (longest first) for correct matching.
+        artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
+            Defaults to `"/"`.
 
     Examples:
         ```python
-        composite = CompositeBackend(default=StateBackend(runtime), routes={"/memories/": StoreBackend(runtime), "/cache/": StoreBackend(runtime)})
+        composite = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(), "/cache/": StoreBackend()})
 
         composite.write("/temp.txt", "data")
         composite.write("/memories/note.txt", "data")
@@ -141,6 +141,8 @@ class CompositeBackend(BackendProtocol):
         self,
         default: BackendProtocol | StateBackend,
         routes: dict[str, BackendProtocol],
+        *,
+        artifacts_root: str = "/",
     ) -> None:
         """Initialize composite backend.
 
@@ -148,6 +150,8 @@ class CompositeBackend(BackendProtocol):
             default: Backend for paths that don't match any route.
             routes: Map of path prefixes to backends. Prefixes must start with "/"
                 and should end with "/" (e.g., "/memories/").
+            artifacts_root: Root path for artifacts, such as messages offloaded
+                by middleware. Defaults to `"/"`.
         """
         # Default backend
         self.default = default
@@ -157,6 +161,8 @@ class CompositeBackend(BackendProtocol):
 
         # Sort routes by length (longest first) for correct prefix matching
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+
+        self.artifacts_root = artifacts_root
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(
@@ -168,12 +174,12 @@ class CompositeBackend(BackendProtocol):
 
     @staticmethod
     def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:
-        """Normalize legacy ``list[FileInfo]`` returns to `LsResult`."""
+        """Normalize legacy `list[FileInfo]` returns to `LsResult`."""
         if isinstance(raw, LsResult):
             return raw
         return LsResult(entries=raw)
 
-    def ls_info(self, path: str) -> LsResult:
+    def ls(self, path: str) -> LsResult:
         """List directory contents (non-recursive).
 
         If path matches a route, lists only that backend. If path is "/", aggregates
@@ -187,8 +193,8 @@ class CompositeBackend(BackendProtocol):
 
         Examples:
             ```python
-            result = composite.ls_info("/")
-            result = composite.ls_info("/memories/")
+            result = composite.ls("/")
+            result = composite.ls("/memories/")
             ```
         """
         backend, backend_path, route_prefix = _route_for_path(
@@ -197,7 +203,7 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(backend.ls_info(backend_path))
+            ls_result = self._coerce_ls_result(backend.ls(backend_path))
             if ls_result.error:
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
@@ -205,7 +211,7 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(self.default.ls_info(path))
+            default_result = self._coerce_ls_result(self.default.ls(path))
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -222,17 +228,17 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return self._coerce_ls_result(self.default.ls_info(path))
+        return self._coerce_ls_result(self.default.ls(path))
 
-    async def als_info(self, path: str) -> LsResult:
-        """Async version of ls_info."""
+    async def als(self, path: str) -> LsResult:
+        """Async version of ls."""
         backend, backend_path, route_prefix = _route_for_path(
             default=self.default,
             sorted_routes=self.sorted_routes,
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(await backend.als_info(backend_path))
+            ls_result = self._coerce_ls_result(await backend.als(backend_path))
             if ls_result.error:
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
@@ -240,7 +246,7 @@ class CompositeBackend(BackendProtocol):
         # At root, aggregate default and all routed backends
         if path == "/":
             results: list[FileInfo] = []
-            default_result = self._coerce_ls_result(await self.default.als_info(path))
+            default_result = self._coerce_ls_result(await self.default.als(path))
             results.extend(default_result.entries or [])
             for route_prefix, _backend in self.sorted_routes:
                 # Add the route itself as a directory (e.g., /memories/)
@@ -257,7 +263,7 @@ class CompositeBackend(BackendProtocol):
             return LsResult(entries=results)
 
         # Path doesn't match a route: query only default backend
-        return self._coerce_ls_result(await self.default.als_info(path))
+        return self._coerce_ls_result(await self.default.als(path))
 
     def read(
         self,
@@ -290,14 +296,14 @@ class CompositeBackend(BackendProtocol):
 
     @staticmethod
     def _coerce_grep_result(raw: GrepResult | list[GrepMatch] | str) -> GrepResult:
-        """Normalize legacy ``list[GrepMatch] | str`` returns to `GrepResult`."""
+        """Normalize legacy `list[GrepMatch] | str` returns to `GrepResult`."""
         if isinstance(raw, GrepResult):
             return raw
         if isinstance(raw, str):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -319,9 +325,9 @@ class CompositeBackend(BackendProtocol):
 
         Examples:
             ```python
-            result = composite.grep_raw("TODO", path="/memories/")
-            result = composite.grep_raw("error", path="/")
-            result = composite.grep_raw("import", path="/", glob="*.py")
+            result = composite.grep("TODO", path="/memories/")
+            result = composite.grep("error", path="/")
+            result = composite.grep("import", path="/", glob="*.py")
             ```
         """
         if path is not None:
@@ -331,7 +337,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -340,30 +346,30 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(backend.grep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(self.default.grep_raw(pattern, path, glob))
+        return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Async version of grep_raw.
+        """Async version of grep.
 
-        See grep_raw() for detailed documentation on routing behavior and parameters.
+        See grep() for detailed documentation on routing behavior and parameters.
         """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
@@ -372,7 +378,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, backend_path, glob))
+                grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
                 return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
@@ -381,45 +387,46 @@ class CompositeBackend(BackendProtocol):
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            default_result = self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep_raw(pattern, "/", glob))
+                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
 
             return GrepResult(matches=all_matches)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(await self.default.agrep_raw(pattern, path, glob))
+        return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
-    def glob_info(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
-        backend, backend_path, route_prefix = _route_for_path(
-            default=self.default,
-            sorted_routes=self.sorted_routes,
-            path=path,
-        )
-        if route_prefix is not None:
-            glob_result = backend.glob_info(pattern, backend_path)
-            matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
-            if isinstance(glob_result, GlobResult) and glob_result.error:
-                return glob_result
-            return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+        if path is not None:
+            backend, backend_path, route_prefix = _route_for_path(
+                default=self.default,
+                sorted_routes=self.sorted_routes,
+                path=path,
+            )
+            if route_prefix is not None:
+                glob_result = backend.glob(pattern, backend_path)
+                matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
+                if isinstance(glob_result, GlobResult) and glob_result.error:
+                    return glob_result
+                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = self.default.glob_info(pattern, path)
+        default_result = self.default.glob(pattern, path)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = backend.glob_info(route_pattern, "/")
+            sub_result = backend.glob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -427,30 +434,31 @@ class CompositeBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results)
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> GlobResult:
-        """Async version of glob_info."""
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Async version of glob."""
         results: list[FileInfo] = []
 
-        backend, backend_path, route_prefix = _route_for_path(
-            default=self.default,
-            sorted_routes=self.sorted_routes,
-            path=path,
-        )
-        if route_prefix is not None:
-            glob_result = await backend.aglob_info(pattern, backend_path)
-            matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
-            if isinstance(glob_result, GlobResult) and glob_result.error:
-                return glob_result
-            return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+        if path is not None:
+            backend, backend_path, route_prefix = _route_for_path(
+                default=self.default,
+                sorted_routes=self.sorted_routes,
+                path=path,
+            )
+            if route_prefix is not None:
+                glob_result = await backend.aglob(pattern, backend_path)
+                matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
+                if isinstance(glob_result, GlobResult) and glob_result.error:
+                    return glob_result
+                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
 
         # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob_info(pattern, path)
+        default_result = await self.default.aglob(pattern, path)
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob_info(route_pattern, "/")
+            sub_result = await backend.aglob(route_pattern, "/")
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
 
@@ -475,18 +483,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.write(stripped_key, content)
         if res.path is not None:
-            res = replace(res, path=file_path)
-        # If this is a state-backed update and default has state, merge so listings reflect changes
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
+            res.path = file_path
         return res
 
     async def awrite(
@@ -498,18 +495,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.awrite(stripped_key, content)
         if res.path is not None:
-            res = replace(res, path=file_path)
-        # If this is a state-backed update and default has state, merge so listings reflect changes
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
+            res.path = file_path
         return res
 
     def edit(
@@ -533,17 +519,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
-            res = replace(res, path=file_path)
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
+            res.path = file_path
         return res
 
     async def aedit(
@@ -557,17 +533,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
-            res = replace(res, path=file_path)
-        if res.files_update:
-            try:
-                runtime = getattr(self.default, "runtime", None)
-                if runtime is not None:
-                    state = runtime.state
-                    files = state.get("files", {})
-                    files.update(res.files_update)
-                    state["files"] = files
-            except Exception:  # noqa: BLE001, S110  # Intentional for best-effort state sync
-                pass
+            res.path = file_path
         return res
 
     def execute(
@@ -592,7 +558,8 @@ class CompositeBackend(BackendProtocol):
 
         Raises:
             NotImplementedError: If the default backend is not a
-                `SandboxBackendProtocol` (i.e., it doesn't support execution).
+                [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]
+                (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self.default)):

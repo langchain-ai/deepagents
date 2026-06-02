@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
 
+
+class ExtrasIntrospectionError(RuntimeError):
+    """Raised when installed extras cannot be determined safely."""
+
+
 _COMPOSITE_EXTRAS: frozenset[str] = frozenset({"all-providers", "all-sandboxes"})
 """Extras whose package set is already covered by other, more specific extras.
 
@@ -83,6 +88,31 @@ Drift-protected by `test_model_config.TestProviderApiKeyEnv` and the
 model-provider-drift checks; new extras must be added to the corresponding
 category frozenset above.
 """
+
+
+def format_known_extras() -> str:
+    """Render the installable extras grouped by category as plain text.
+
+    Drives the no-argument `/install` slash-command help so users can
+    discover valid extras without consulting `pyproject.toml`. Sourced from
+    the category frozensets above, so it stays in sync with `KNOWN_EXTRAS`
+    automatically.
+
+    Returns:
+        Multi-line string with one labeled line per category, each listing
+            its extras alphabetically.
+    """
+    groups: tuple[tuple[str, frozenset[str]], ...] = (
+        ("Model providers", MODEL_PROVIDER_EXTRAS),
+        ("Sandboxes", SANDBOX_EXTRAS),
+        ("Other", STANDALONE_EXTRAS),
+    )
+    lines = ["Available extras:"]
+    lines.extend(
+        f"  {label}: {', '.join(sorted(extras))}" for label, extras in groups if extras
+    )
+    return "\n".join(lines)
+
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
@@ -155,21 +185,55 @@ def get_extras_status(
     return result
 
 
+def installed_extra_names(
+    distribution_name: str = "deepagents-code",
+    *,
+    strict: bool = False,
+) -> set[str]:
+    """Return extras with at least one installed dependency.
+
+    Args:
+        distribution_name: Name of the installed distribution to inspect.
+        strict: Raise when the distribution metadata cannot be read or parsed
+            reliably.
+
+    Returns:
+        Set of extra names whose optional dependency metadata has at least one
+            installed package. Composite extras are excluded.
+    """
+    statuses = get_optional_dependency_status(distribution_name, strict=strict)
+    return {extra.name for extra in statuses if extra.installed}
+
+
 def get_optional_dependency_status(
     distribution_name: str = "deepagents-code",
+    *,
+    strict: bool = False,
 ) -> tuple[ExtraDependencyStatus, ...]:
     """Return installed and missing optional dependencies grouped by extra.
 
     Args:
         distribution_name: Name of the installed distribution to inspect.
+        strict: Raise when the distribution metadata cannot be read or parsed
+            reliably.
 
     Returns:
         Sorted tuple of optional extra statuses. An empty tuple is returned
             when the distribution itself is not found.
+
+    Raises:
+        ExtrasIntrospectionError: If `strict` is `True` and metadata
+            introspection fails.
     """
     try:
         dist = distribution(distribution_name)
     except PackageNotFoundError:
+        if strict:
+            msg = (
+                f"Distribution {distribution_name!r} not found; cannot preserve "
+                "already-installed extras safely"
+            )
+            raise ExtrasIntrospectionError(msg) from None
         # Editable installs renamed by the user, dev checkouts without metadata,
         # or vendored copies all hit this path. The dependency screen otherwise
         # silently renders "none detected" twice; warn so the cause is visible.
@@ -186,6 +250,12 @@ def get_optional_dependency_status(
         try:
             req = Requirement(raw)
         except InvalidRequirement:
+            if strict:
+                msg = (
+                    "Could not parse optional-dependency metadata; cannot "
+                    f"preserve already-installed extras safely: {raw}"
+                )
+                raise ExtrasIntrospectionError(msg) from None
             logger.warning("Could not parse Requires-Dist entry: %s", raw)
             continue
         if not req.marker:

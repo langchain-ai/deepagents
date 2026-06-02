@@ -33,7 +33,6 @@ from deepagents._excluded_middleware import (
 )
 from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
-from deepagents._subagent_transformer import SubagentTransformer
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -795,14 +794,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
-    # Bake declared subagent names into a scope-aware factory so each
-    # subgraph mini-mux spawns a fresh `SubagentTransformer` that knows
-    # which nested runs belong to declared subagents.
-    subagent_names = frozenset(sub_agent_middleware.subagent_names if sub_agent_middleware is not None else ())
-
-    def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
-        return SubagentTransformer(scope, subagent_names=subagent_names)
-
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -816,7 +807,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         name=name,
         cache=cache,
         state_schema=state_schema if state_schema is not None else DeepAgentState,
-        transformers=[_subagent_factory],
     ).with_config(
         {
             "recursion_limit": 9_999,

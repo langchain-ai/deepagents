@@ -109,6 +109,8 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     # glob
     gl = comp.glob("*.md", path="/").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
+    gl_default = comp.glob("*.md").matches
+    assert gl_default == gl
 
 
 def test_composite_backend_store_to_store():

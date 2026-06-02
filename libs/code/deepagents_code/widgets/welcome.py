@@ -438,8 +438,9 @@ class WelcomeBanner(Static):
         warn_color: str = "bold yellow" if ansi else colors.warning
         if self._mcp_unauthenticated > 0:
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
+            verb = "needs" if self._mcp_unauthenticated == 1 else "need"
             unauth_text = (
-                f"{self._mcp_unauthenticated} MCP {server_label} need login "
+                f"{self._mcp_unauthenticated} MCP {server_label} {verb} login "
                 "— open /mcp\n"
             )
             parts.extend(

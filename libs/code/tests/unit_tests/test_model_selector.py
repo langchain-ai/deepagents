@@ -253,6 +253,41 @@ class TestRecommendedToggle:
             info = screen.query_one("#model-selector-info", Static)
             assert "Showing recommended models" in str(info.content)
 
+    def test_search_uses_full_list_from_recommended_view(self) -> None:
+        """Typing a filter should search beyond the recommended subset."""
+        screen = ModelSelectorScreen()
+        screen._unfiltered_models = [
+            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-4o", "openai"),
+        ]
+        screen._all_models = screen._apply_subset(screen._unfiltered_models)
+
+        assert screen._recommended_only is True
+        assert screen._all_models == [("openai:gpt-5.5", "openai")]
+
+        screen._filter_text = "gpt-4o"
+        screen._update_filtered_list()
+
+        assert screen._filtered_models == [("openai:gpt-4o", "openai")]
+
+    async def test_info_line_reflects_active_search(self) -> None:
+        """Typing a filter should avoid stale recommended-only copy."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+            assert "Showing recommended models" in str(info.content)
+
+            for char in "gpt":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert "Searching all models" in str(info.content)
+            assert "Showing recommended models" not in str(info.content)
+
     async def test_toggle_expands_to_full_list(self) -> None:
         """Ctrl+R from the default recommended view should expand to all."""
         app = ModelSelectorTestApp()

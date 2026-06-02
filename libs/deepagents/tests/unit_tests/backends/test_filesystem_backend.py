@@ -63,6 +63,25 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert any(i["path"] == str(f2) for i in g)
 
 
+def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    in_root = root / "dir" / "inside.py"
+    outside_root = tmp_path / "outside.py"
+    write_file(in_root, "print('inside')")
+    write_file(outside_root, "print('outside')")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    omitted = be.glob("**/*.py").matches or []
+    explicit_root = be.glob("**/*.py", path="/").matches or []
+
+    omitted_paths = {info["path"] for info in omitted}
+    explicit_root_paths = {info["path"] for info in explicit_root}
+    assert omitted_paths == explicit_root_paths
+    assert str(in_root) in omitted_paths
+    assert str(outside_root) not in omitted_paths
+
+
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"

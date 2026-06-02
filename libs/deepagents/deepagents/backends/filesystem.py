@@ -784,12 +784,12 @@ class FilesystemBackend(BackendProtocol):
 
         return results, None
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
-            path: Base directory to search from. Defaults to root (`/`).
+            path: Base directory to search from. Defaults to `root_dir` / `cwd`.
 
         Returns:
             GlobResult with matching files or error.
@@ -802,11 +802,12 @@ class FilesystemBackend(BackendProtocol):
             raise ValueError(msg)
 
         try:
-            search_path = self.cwd if path == "/" else self._resolve_path(path)
+            search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
             if not search_path.exists() or not search_path.is_dir():
                 return GlobResult(matches=[])
         except (OSError, RuntimeError) as e:
-            return GlobResult(error=f"Error globbing path '{path}': {e}", matches=[])
+            display_path = path if path is not None else "<default>"
+            return GlobResult(error=f"Error globbing path '{display_path}': {e}", matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -862,7 +863,8 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError, ValueError) as e:
             # rglob() raised mid-iteration. Return whatever was accumulated
             # but flag the partial result so callers don't trust it as complete.
-            msg = f"Glob of '{path}' aborted partway: {e}"
+            display_path = path if path is not None else "<default>"
+            msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(error=msg, matches=results)

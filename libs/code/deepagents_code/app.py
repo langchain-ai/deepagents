@@ -4847,9 +4847,21 @@ class DeepAgentsApp(App):
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
             SIDE_EFFECT_FREE,
+            STARTUP_RECOVERY_COMMANDS,
         )
 
         cmd = value.split(maxsplit=1)[0] if value else ""
+        # Recovery escape hatch: when startup failed (`_server_startup_error`
+        # set) and nothing is running, the commands that repair the session
+        # must run instead of being parked behind the failure they fix — e.g.
+        # `/install <pkg>` for a missing provider package. Gated on no active
+        # work so a reinstall never swaps the running binary mid-turn.
+        if (
+            cmd in STARTUP_RECOVERY_COMMANDS
+            and self._server_startup_error is not None
+            and not (self._agent_running or self._shell_running)
+        ):
+            return True
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:

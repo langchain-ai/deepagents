@@ -10765,3 +10765,107 @@ class TestRespawnServer:
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
             assert ready[0].mcp_server_info is None
+
+
+class TestCanBypassQueue:
+    """Tests for `_can_bypass_queue`, focused on failed-startup recovery.
+
+    A failed model build (e.g. a missing provider package) leaves the app in a
+    `_server_startup_error` state that parks queued messages until a successful
+    start drains them. Recovery commands like `/install` must escape that wedge
+    so the user can repair the session, but only while nothing is running.
+    """
+
+    def _app(self) -> DeepAgentsApp:
+        return DeepAgentsApp(thread_id="thread-bypass")
+
+    def test_install_bypasses_when_startup_failed(self) -> None:
+        app = self._app()
+        app._server_startup_error = "Missing package for provider 'baseten'."
+        app._agent_running = False
+        app._shell_running = False
+        assert app._can_bypass_queue("/install baseten") is True
+
+    def test_reload_and_update_bypass_when_startup_failed(self) -> None:
+        app = self._app()
+        app._server_startup_error = "boom"
+        assert app._can_bypass_queue("/reload") is True
+        assert app._can_bypass_queue("/update") is True
+
+    def test_install_does_not_bypass_without_startup_error(self) -> None:
+        # Normal idle: `/install` is QUEUED-tier and only earns the recovery
+        # exemption when startup has actually failed.
+        app = self._app()
+        app._server_startup_error = None
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_install_does_not_bypass_while_agent_running(self) -> None:
+        # Reinstalling the tool mid-turn could swap the running binary, so the
+        # recovery bypass is gated on no active work even when an error is set.
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._agent_running = True
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_install_does_not_bypass_while_shell_running(self) -> None:
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._shell_running = True
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_non_recovery_queued_command_stays_queued_on_failure(self) -> None:
+        # The exemption is allowlisted; an unrelated QUEUED command (`/clear`)
+        # must not ride along into the failed-startup bypass.
+        app = self._app()
+        app._server_startup_error = "boom"
+        assert app._can_bypass_queue("/clear") is False
+
+    def test_install_bypasses_even_during_startup_sequence(self) -> None:
+        # `_startup_sequence_running` and `_connecting` intentionally do NOT
+        # block recovery — only active agent/shell work does. This pins that
+        # decision so a future "tightening" of the guard can't silently
+        # re-wedge the recovery path.
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._startup_sequence_running = True
+        app._connecting = True
+        assert app._can_bypass_queue("/install baseten") is True
+
+    async def test_submit_input_processes_install_after_failed_startup(self) -> None:
+        # End-to-end: the fix is only real if `_submit_input` actually routes
+        # `/install` to processing instead of the pending queue. The predicate
+        # tests above don't catch a regression that unwires `_can_bypass_queue`
+        # from the queue decision — this does.
+        app = self._app()
+        app._server_startup_error = "Missing package for provider 'baseten'."
+        processed: list[tuple[str, str]] = []
+
+        async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
+            processed.append((value, mode))
+
+        app._process_message = _process  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        await app._submit_input("/install baseten", "command")
+
+        assert processed == [("/install baseten", "command")]
+        assert not app._pending_messages
+
+    async def test_submit_input_queues_non_recovery_after_failed_startup(self) -> None:
+        # The mirror of the above: a non-recovery command still parks in the
+        # queue during the failed-startup state instead of being processed.
+        app = self._app()
+        app._server_startup_error = "boom"
+        processed: list[tuple[str, str]] = []
+
+        async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
+            processed.append((value, mode))
+
+        app._process_message = _process  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        await app._submit_input("/clear", "command")
+
+        assert processed == []
+        assert len(app._pending_messages) == 1
+        assert app._pending_messages[0].text == "/clear"

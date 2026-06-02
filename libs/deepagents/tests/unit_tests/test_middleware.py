@@ -1,6 +1,6 @@
 import mimetypes
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -19,6 +19,7 @@ from langgraph.types import Command, Overwrite
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     ReadResult,
     SandboxBackendProtocol,
@@ -1409,6 +1410,52 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
+
+    def test_delete_file_filtered_when_backend_lacks_delete(self):
+        """delete_file is removed from the request when the backend can't delete.
+
+        Mirrors how the execute tool is filtered out when the backend doesn't
+        support execution, rather than advertising a tool that fails at call time.
+        """
+
+        class _NoDeleteBackend(StateBackend):
+            # Opt out of delete support by inheriting the protocol's default.
+            delete = BackendProtocol.delete
+
+        middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete_file"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        request.override.assert_called_once()
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "delete_file" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_delete_file_kept_when_backend_supports_delete(self):
+        """delete_file stays in the request when the backend supports deletion."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete_file"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # StateBackend supports delete (and no execute tool is present), so no
+        # tool filtering — and with an empty system prompt, no override at all.
+        request.override.assert_not_called()
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""

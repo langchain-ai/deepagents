@@ -1080,6 +1080,7 @@ def _assert_expectations(
 def _build_invoke_inputs(
     query: str | list[AnyMessage],
     initial_files: dict[str, str] | None,
+    extra_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the input payload passed to the agent invoke methods."""
     if isinstance(query, str):
@@ -1090,6 +1091,11 @@ def _build_invoke_inputs(
         invoke_inputs["files"] = {
             path: create_file_data(content) for path, content in initial_files.items()
         }
+    if extra_state:
+        # Shallow merge so callers can populate middleware-owned state fields
+        # (e.g. `rubric` for RubricMiddleware) without clobbering `messages`/`files`.
+        for key, value in extra_state.items():
+            invoke_inputs[key] = value
     return invoke_inputs
 
 
@@ -1131,6 +1137,7 @@ def run_agent(
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
 
@@ -1142,6 +1149,8 @@ def run_agent(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -1149,7 +1158,7 @@ def run_agent(
     Raises:
         TypeError: If the invoke result is not a `Mapping`.
     """
-    invoke_inputs = _build_invoke_inputs(query, initial_files)
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
 
     if thread_id is None:
         thread_id = str(uuid.uuid4())
@@ -1179,6 +1188,7 @@ async def run_agent_async(
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval asynchronously against the given query.
 
@@ -1190,6 +1200,8 @@ async def run_agent_async(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -1197,7 +1209,7 @@ async def run_agent_async(
     Raises:
         TypeError: If the invoke result is not a `Mapping`.
     """
-    invoke_inputs = _build_invoke_inputs(query, initial_files)
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
 
     if thread_id is None:
         thread_id = str(uuid.uuid4())

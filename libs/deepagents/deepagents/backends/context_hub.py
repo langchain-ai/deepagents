@@ -264,7 +264,7 @@ class ContextHubBackend(BackendProtocol):
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: ARG002
         """Return files matching `pattern` (`path` unused — flat namespace)."""
         try:
             cache = self._ensure_cache()

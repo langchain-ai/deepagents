@@ -88,6 +88,22 @@ style(cli): strip trailing annotations from `ask_user` questions
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
 
+#### Branch naming
+
+Branches should be prefixed `<github-username>/<scope>/<short-description>`:
+
+- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<short-description>` — kebab-case, brief, no trailing slash.
+
+Examples:
+
+```txt
+mdrxy/sdk/concrete-toolruntime-middleware-tools
+mdrxy/code/help-screen-drift-test
+mdrxy/cli/startup-cmd-flag
+```
+
 #### PR descriptions
 
 The description *is* the summary — do not add a `# Summary` header.
@@ -292,6 +308,10 @@ See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overridi
 #### Reverting a merged-but-unreleased PR
 
 See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
+
+#### Developing a new version line
+
+See [Developing a new version line](.github/RELEASING.md#developing-a-new-version-line) in `RELEASING.md` before creating a version branch (e.g. staging `0.7` while `main` stays `0.6.x`, or maintaining `0.6.x` after `main` moves on). Branches must be named `vX.Y` to match the protection ruleset (CI-passing PRs required like `main`, but `v[0-9].*` additionally allows merge commits — `main` stays squash-only); release-please only runs on `main`; keep a staging branch current by opening forward-merge PRs from `main` (a merge commit, not squash), reserving cherry-pick for when the branch deliberately diverges; and the cutover is an admin merge-commit to `main` that preserves individual commits (don't squash) so the changelog stays itemized.
 
 ### PR labeling and linting
 

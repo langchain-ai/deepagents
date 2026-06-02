@@ -43,7 +43,6 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -60,6 +59,7 @@ from deepagents_code._session_stats import (
 # after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
 from deepagents_code.config import is_ascii_mode
+from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
     ActionId,
@@ -91,7 +91,6 @@ from deepagents_code.widgets.status import StatusBar
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -103,6 +102,63 @@ _DEFERRED_START_NOTICE = (
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
 _CONFIG_WRITE_LOCK = threading.Lock()
+
+_DEEPAGENTS_IMPORT_LOCK = threading.RLock()
+"""Serializes process-local cold imports into the Deep Agents SDK graph.
+
+The SDK currently has a package-to-backend circular import that is safe when a
+single thread imports it re-entrantly, but can trip CPython's per-module import
+deadlock detector when two threads cold-import overlapping modules.
+"""
+
+_MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
+
+_TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
+    {MessageType.APP, MessageType.SUMMARIZATION}
+)
+"""Message types that never receive a timestamp footer.
+
+App-status notes (e.g. "Resumed thread: ...", version/update notices, command
+feedback) are not conversation turns, so they do not get timestamp footers.
+`SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
+reason.
+"""
+
+
+def _message_timestamp_footer_id(message_id: str) -> str:
+    """Return the DOM id for a message timestamp footer."""
+    return f"{message_id}-timestamp-footer"
+
+
+def _is_message_timestamp_footer(widget: Widget) -> bool:
+    """Return whether `widget` is a timestamp footer."""
+    return widget.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS)
+
+
+def _create_model_with_deepagents_import_lock(
+    model_spec: str | None = None,
+    *,
+    extra_kwargs: dict[str, Any] | None = None,
+    profile_overrides: dict[str, Any] | None = None,
+) -> ModelResult:
+    """Create a model while serializing Deep Agents SDK import entry.
+
+    Args:
+        model_spec: Model specification in `provider:model` format.
+        extra_kwargs: Extra model constructor kwargs.
+        profile_overrides: Model profile metadata overrides.
+
+    Returns:
+        Created model and resolved metadata.
+    """
+    with _DEEPAGENTS_IMPORT_LOCK:
+        from deepagents_code.config import create_model
+
+        return create_model(
+            model_spec,
+            extra_kwargs=extra_kwargs,
+            profile_overrides=profile_overrides,
+        )
 
 
 @dataclass(frozen=True)
@@ -134,6 +190,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.config import ModelResult
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -368,6 +425,46 @@ def _load_theme_preference() -> str:
     return theme.DEFAULT_THEME
 
 
+def _load_message_timestamps_visible() -> bool:
+    """Load the saved message-timestamp-footer visibility preference.
+
+    Reads `[ui].show_message_timestamps` from `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved preference, or `False` when it is unset or unreadable.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for timestamp preference: %s", exc)
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading timestamp preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("show_message_timestamps")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].show_message_timestamps should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
 def _replace_malformed_ui(
     data: dict[str, object],
 ) -> tuple[dict[str, object], str | None]:
@@ -385,8 +482,7 @@ def _replace_malformed_ui(
     ui = {}
     data["ui"] = ui
     return ui, (
-        "Existing [ui] was not a table and was replaced while saving the theme "
-        "configuration."
+        "Existing [ui] was not a table and was replaced while saving UI settings."
         if replaced_malformed
         else None
     )
@@ -604,6 +700,65 @@ def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
     return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
+def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult:
+    """Persist the timestamp-footer visibility preference.
+
+    Writes `[ui].show_message_timestamps` atomically (temp file +
+    `Path.replace`). Mirrors `_save_theme_preference_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["show_message_timestamps"] = visible
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save timestamp preference")
+        return _ConfigWriteResult(
+            False,
+            f"Timestamps toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
     """Extract `--model-params` and its JSON value from a `/model` arg string.
 
@@ -805,6 +960,10 @@ class _ThreadHistoryPayload:
 
     context_tokens: int
     """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
+
+    model_spec: str
+    """Persisted `_model_spec` from the checkpoint, or `""` for legacy threads
+    saved before model persistence existed."""
 
 
 def _new_thread_id() -> str:
@@ -1020,6 +1179,20 @@ class _StaticHeader(Header):
         event.stop()
 
 
+class _ChatScroll(VerticalScroll):
+    """Chat scroll container that doesn't steal focus when clicked.
+
+    `ScrollableContainer` is focusable by default, so Textual's
+    `Screen._forward_event` walks up from a clicked (non-focusable) message
+    widget to this container and calls `set_focus` on it, de-focusing the chat
+    input's `TextArea`. Setting `FOCUS_ON_CLICK = False` keeps the container
+    focusable (e.g. for keyboard scrolling) while leaving input focus intact
+    when the user clicks a message to expand it.
+    """
+
+    FOCUS_ON_CLICK = False
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1132,6 +1305,7 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        model_explicitly_set: bool = False,
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
@@ -1185,6 +1359,11 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            model_explicitly_set: Whether the user passed `--model` on the
+                command line.
+
+                When `True`, an explicit choice wins over the model persisted
+                in a resumed thread (no resume adoption).
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
@@ -1403,6 +1582,20 @@ class DeepAgentsApp(App):
         first paint; consumed by the startup worker and reset to `None`.
         """
 
+        self._model_explicitly_set = model_explicitly_set
+        """Whether `--model` was passed on the command line.
+
+        Suppresses adopting a resumed thread's persisted model.
+        """
+
+        self._should_adopt_resumed_model = False
+        """One-shot flag set by `_resolve_resume_thread` when an existing
+        thread is resumed without an explicit `--model`.
+
+        Consumed before the first resumed agent turn to adopt the thread's
+        persisted model.
+        """
+
         raw = (server_kwargs or {}).get("sandbox_type")
         """Raw argparse sandbox value from `server_kwargs` before normalization.
 
@@ -1427,6 +1620,15 @@ class DeepAgentsApp(App):
 
         self._model_params_override: dict[str, Any] | None = None
         """Per-turn model params override set via `/model --model-params`."""
+
+        self._last_model_unchanged_message: str | None = None
+        """Most recent same-model notice, used to suppress duplicates."""
+
+        self._message_timestamps_visible = _load_message_timestamps_visible()
+        """Whether message timestamp footers are shown in the chat surface.
+
+        Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
+        """
 
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
@@ -1476,14 +1678,6 @@ class DeepAgentsApp(App):
 
         Awaited via `_await_prewarm_imports` before any caller on the event
         loop re-enters the same module graph (see that method for why).
-        """
-
-        self._deepagents_import_lock = asyncio.Lock()
-        """Serializes cold imports into the Deep Agents graph after prewarm.
-
-        Startup model creation and skill discovery can both be triggered during
-        first paint. If prewarm failed or did not cover a transitive module,
-        both paths may cold-import overlapping modules at the same time.
         """
 
         # Lifecycle flags & re-entry guards
@@ -1780,8 +1974,9 @@ class DeepAgentsApp(App):
         if is_env_truthy(SHOW_HEADER):
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
-        # VerticalScroll tracks user scroll intent for better auto-scroll behavior
-        with VerticalScroll(id="chat"):
+        # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
+        # `_ChatScroll` keeps clicks on messages from stealing input focus.
+        with _ChatScroll(id="chat"):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
@@ -2272,8 +2467,9 @@ class DeepAgentsApp(App):
             # graph in separate workers. Let prewarm finish first so CPython's
             # per-module import locks cannot form a cycle.
             await self._await_prewarm_imports()
-            async with self._deepagents_import_lock:
-                skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
+            skills, roots = await asyncio.to_thread(
+                self._discover_skills_and_roots_with_import_lock,
+            )
         except OSError:
             logger.warning(
                 "Filesystem error during skill discovery",
@@ -2331,6 +2527,17 @@ class DeepAgentsApp(App):
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         return discover_skills_and_roots(assistant_id)
 
+    def _discover_skills_and_roots_with_import_lock(
+        self,
+    ) -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+        """Discover skills while serializing Deep Agents SDK import entry.
+
+        Returns:
+            Tuple of `(skill metadata list, pre-resolved containment roots)`.
+        """
+        with _DEEPAGENTS_IMPORT_LOCK:
+            return self._discover_skills_and_roots()
+
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
 
@@ -2370,6 +2577,7 @@ class DeepAgentsApp(App):
                         if self._server_kwargs:
                             self._server_kwargs["assistant_id"] = agent_name
                     self._lc_thread_id = thread_id
+                    self._should_adopt_resumed_model = not self._model_explicitly_set
                 else:
                     self._lc_thread_id = generate_thread_id()
                     if agent_filter:
@@ -2379,6 +2587,7 @@ class DeepAgentsApp(App):
                     self.notify(msg, severity="warning", markup=False)
             elif await thread_exists(resume):
                 self._lc_thread_id = resume
+                self._should_adopt_resumed_model = not self._model_explicitly_set
                 if self._assistant_id == default_agent:
                     agent_name = await get_thread_agent(resume)
                     if agent_name:
@@ -2459,7 +2668,6 @@ class DeepAgentsApp(App):
             # `_await_prewarm_imports` for the deadlock rationale.
             await self._await_prewarm_imports()
 
-            from deepagents_code.config import create_model
             from deepagents_code.model_config import (
                 ModelConfigError,
                 save_recent_model,
@@ -2467,8 +2675,10 @@ class DeepAgentsApp(App):
             )
 
             try:
-                async with self._deepagents_import_lock:
-                    result = create_model(**self._model_kwargs)
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
+                    **self._model_kwargs,
+                )
             except ModelConfigError as exc:
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
@@ -2822,12 +3032,13 @@ class DeepAgentsApp(App):
             # tool_display — hit on first message send and first tool
             # approval. Best-effort: missing optional deps should not block the
             # TUI from rendering.
-            from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
-            from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
-                ApproveDecision,
-            )
-            from langchain_core.messages import AIMessage  # noqa: F401
-            from langgraph.types import Command  # noqa: F401
+            with _DEEPAGENTS_IMPORT_LOCK:
+                from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
+                from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
+                    ApproveDecision,
+                )
+                from langchain_core.messages import AIMessage  # noqa: F401
+                from langgraph.types import Command  # noqa: F401
         except Exception:
             logger.warning("Could not prewarm third-party imports", exc_info=True)
 
@@ -3213,9 +3424,13 @@ class DeepAgentsApp(App):
         force = "--force" in parts[1:]
         extras = [p for p in parts[1:] if not p.startswith("-")]
         if not extras:
+            from deepagents_code.extras_info import format_known_extras
+
             await self._mount_message(
                 AppMessage(
-                    "Usage: /install <extra> [--force]\nExample: /install quickjs",
+                    "Usage: /install <extra> [--force]\n"
+                    "Example: /install quickjs\n\n"
+                    f"{format_known_extras()}",
                 ),
             )
             return
@@ -3236,6 +3451,7 @@ class DeepAgentsApp(App):
                 KNOWN_EXTRAS,
                 MODEL_PROVIDER_EXTRAS,
                 SANDBOX_EXTRAS,
+                ExtrasIntrospectionError,
             )
             from deepagents_code.update_check import (
                 create_update_log_path,
@@ -3270,12 +3486,20 @@ class DeepAgentsApp(App):
             return
 
         if extra not in KNOWN_EXTRAS and not force:
+            try:
+                manual_cmd = await asyncio.to_thread(install_extra_command, extra)
+            except (ExtrasIntrospectionError, ValueError) as exc:
+                logger.warning("/install command failed", exc_info=True)
+                await self._mount_message(
+                    ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+                )
+                return
             known = ", ".join(sorted(KNOWN_EXTRAS))
             await self._mount_message(
                 AppMessage(
                     f"'{extra}' is not a known extra.\n"
                     f"Known extras: {known}\n\n"
-                    f"This would run: `{install_extra_command(extra)}`\n"
+                    f"This would run: `{manual_cmd}`\n"
                     f"Re-run with `--force` to install anyway: "
                     f"`/install {extra} --force`",
                 ),
@@ -3286,7 +3510,16 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Installing extra '{extra}'..."),
         )
-        manual_cmd = install_extra_command(extra)
+        try:
+            manual_cmd = await asyncio.to_thread(install_extra_command, extra)
+        except (ExtrasIntrospectionError, ValueError) as exc:
+            logger.warning("/install command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
+                ),
+            )
+            return
         try:
             success, output = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
@@ -3565,10 +3798,17 @@ class DeepAgentsApp(App):
 
         for widget, msg_data in reversed(hydrated_widgets):
             try:
+                footer = self._build_message_timestamp_footer(msg_data)
                 if first_child:
-                    await messages_container.mount(widget, before=first_child)
+                    if footer is not None:
+                        await messages_container.mount(footer, before=first_child)
+                        await messages_container.mount(widget, before=footer)
+                    else:
+                        await messages_container.mount(widget, before=first_child)
                 else:
                     await messages_container.mount(widget)
+                    if footer is not None:
+                        await messages_container.mount(footer)
                 first_child = widget
                 hydrated_count += 1
                 # Render Markdown content for hydrated assistant messages
@@ -4213,6 +4453,24 @@ class DeepAgentsApp(App):
             )
             if should_load_history:
                 await self._load_thread_history()
+            elif self._has_initial_submission():
+                try:
+                    await self._adopt_resumed_model_if_needed(
+                        thread_id=self._lc_thread_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to adopt resumed model for %s before startup "
+                        "submission",
+                        self._lc_thread_id,
+                    )
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Could not read the resumed thread state. "
+                            "Startup prompt was not submitted."
+                        ),
+                    )
+                    return
 
             if self._startup_cmd:
                 cmd = self._startup_cmd
@@ -4682,9 +4940,21 @@ class DeepAgentsApp(App):
             BYPASS_WHEN_CONNECTING,
             IMMEDIATE_UI,
             SIDE_EFFECT_FREE,
+            STARTUP_RECOVERY_COMMANDS,
         )
 
         cmd = value.split(maxsplit=1)[0] if value else ""
+        # Recovery escape hatch: when startup failed (`_server_startup_error`
+        # set) and nothing is running, the commands that repair the session
+        # must run instead of being parked behind the failure they fix — e.g.
+        # `/install <pkg>` for a missing provider package. Gated on no active
+        # work so a reinstall never swaps the running binary mid-turn.
+        if (
+            cmd in STARTUP_RECOVERY_COMMANDS
+            and self._server_startup_error is not None
+            and not (self._agent_running or self._shell_running)
+        ):
+            return True
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:
@@ -5293,7 +5563,7 @@ class DeepAgentsApp(App):
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
-                "/skill-creator, /theme, /tokens, /threads, /trace, "
+                "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -5407,6 +5677,9 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/timestamps":
+            await self._mount_message(UserMessage(command))
+            await self._toggle_message_timestamp_footers()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -5677,7 +5950,7 @@ class DeepAgentsApp(App):
         if cached is None:
             try:
                 skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots,
+                    self._discover_skills_and_roots_with_import_lock,
                 )
                 # Backfill cache so subsequent invocations are fast
                 self._discovered_skills = skills
@@ -5846,31 +6119,33 @@ class DeepAgentsApp(App):
         """Resolve the offload retention budget as a human-readable string.
 
         Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor.
+        not a trivial accessor. Call only from a worker thread; cold imports
+        and model construction run under the process-wide import lock.
 
         Returns:
             A string like `"20.0K (10% of 200.0K)"` or
             `"last 6 messages"`, or `None` if the budget cannot be determined.
         """
-        from deepagents_code.config import create_model, settings
+        from deepagents_code.config import settings
 
         try:
-            from deepagents.middleware.summarization import (
-                compute_summarization_defaults,
-            )
+            with _DEEPAGENTS_IMPORT_LOCK:
+                from deepagents.middleware.summarization import (
+                    compute_summarization_defaults,
+                )
 
-            model_spec = f"{settings.model_provider}:{settings.model_name}"
-            result = create_model(
-                model_spec,
-                profile_overrides=self._profile_override,
-            )
-            defaults = compute_summarization_defaults(result.model)
-            from deepagents_code.offload import format_offload_limit
+                model_spec = f"{settings.model_provider}:{settings.model_name}"
+                result = _create_model_with_deepagents_import_lock(
+                    model_spec,
+                    profile_overrides=self._profile_override,
+                )
+                defaults = compute_summarization_defaults(result.model)
+                from deepagents_code.offload import format_offload_limit
 
-            return format_offload_limit(
-                defaults["keep"],
-                settings.model_context_limit,
-            )
+                return format_offload_limit(
+                    defaults["keep"],
+                    settings.model_context_limit,
+                )
         except Exception:  # best-effort for /tokens display
             logger.debug("Failed to compute offload budget string", exc_info=True)
             return None
@@ -6068,6 +6343,24 @@ class DeepAgentsApp(App):
         self._server_startup_deferred_notice_shown = True
         await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
 
+    def _effective_model_spec(self) -> str | None:
+        """Return the `provider:model` spec in effect for the next invocation.
+
+        Prefers a per-session `/model` override; otherwise falls back to the
+        startup-resolved model from `settings`. Returns `None` when neither
+        yields a usable spec (e.g. credentials not yet configured), so
+        `ResumeStateMiddleware` records nothing rather than a malformed spec.
+        """
+        if self._model_override:
+            return self._model_override
+        from deepagents_code.config import settings
+
+        provider = settings.model_provider or ""
+        model = settings.model_name or ""
+        if provider and model:
+            return f"{provider}:{model}"
+        return None
+
     async def _run_agent_task(
         self,
         message: str,
@@ -6108,6 +6401,7 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    effective_model=self._effective_model_spec(),
                 ),
                 turn_stats=turn_stats,
             )
@@ -6366,18 +6660,20 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
-            Payload containing converted message data and the persisted
-            context-token count.
+            Payload containing converted message data, the persisted
+            context-token count, and the persisted model spec (if any).
         """
         state_values = await self._get_thread_state_values(thread_id)
         raw_tokens = state_values.get("_context_tokens")
         context_tokens = (
             raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
         )
+        raw_spec = state_values.get("_model_spec")
+        model_spec = raw_spec if isinstance(raw_spec, str) else ""
         messages = state_values.get("messages", [])
 
         if not messages:
-            return _ThreadHistoryPayload([], context_tokens)
+            return _ThreadHistoryPayload([], context_tokens, model_spec)
 
         # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
@@ -6388,7 +6684,37 @@ class DeepAgentsApp(App):
 
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        return _ThreadHistoryPayload(data, context_tokens)
+        return _ThreadHistoryPayload(data, context_tokens, model_spec)
+
+    async def _adopt_resumed_model_if_needed(
+        self,
+        *,
+        model_spec: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        """Adopt a resumed thread's persisted model for this session only.
+
+        Args:
+            model_spec: Already-fetched `_model_spec`, when available.
+            thread_id: Thread ID to fetch `_model_spec` from if needed.
+        """
+        if not self._should_adopt_resumed_model:
+            return
+
+        self._should_adopt_resumed_model = False
+        spec = model_spec
+        if spec is None and thread_id:
+            state_values = await self._get_thread_state_values(thread_id)
+            raw_spec = state_values.get("_model_spec")
+            spec = raw_spec if isinstance(raw_spec, str) else ""
+
+        if spec:
+            await self._switch_model(
+                spec,
+                announce_unchanged=False,
+                persist=False,
+                from_resume=True,
+            )
 
     async def _upgrade_thread_message_link(
         self,
@@ -6491,6 +6817,16 @@ class DeepAgentsApp(App):
                 if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
+            # Adopt the resumed thread's model (session-only) so the session
+            # continues on the model it was last using, not the global default.
+            # One-shot: only on the initial `-r` resume, never on in-session
+            # thread switches, and never when `--model` was passed explicitly.
+            # Runs before the empty-history early return so the flag is always
+            # consumed on this first load — otherwise a legacy thread (no
+            # persisted spec) could leave it armed for a later in-session
+            # `/threads` switch.
+            await self._adopt_resumed_model_if_needed(model_spec=payload.model_spec)
+
             if not payload.messages:
                 return
 
@@ -6510,7 +6846,13 @@ class DeepAgentsApp(App):
             # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
             widgets = [msg_data.to_widget() for msg_data in visible]
             if widgets:
-                await messages_container.mount(*widgets)
+                nodes: list[Widget] = []
+                for widget, msg_data in zip(widgets, visible, strict=False):
+                    nodes.append(widget)
+                    footer = self._build_message_timestamp_footer(msg_data)
+                    if footer is not None:
+                        nodes.append(footer)
+                await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
@@ -6555,6 +6897,111 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
+    def _build_message_timestamp_footer(self, data: MessageData) -> Static | None:
+        """Build a visible timestamp footer for a message.
+
+        Args:
+            data: Message data carrying the timestamp.
+
+        Returns:
+            A footer widget, or `None` when disabled, when the timestamp is
+            invalid, or when the message type is in
+            `_TIMESTAMP_FOOTER_EXCLUDED_TYPES`.
+        """
+        if not self._message_timestamps_visible:
+            return None
+        if data.type in _TIMESTAMP_FOOTER_EXCLUDED_TYPES:
+            return None
+        label = format_message_timestamp(data.timestamp)
+        if label is None:
+            logger.warning("Invalid timestamp for message %s", data.id)
+            return None
+        return Static(
+            Content.styled(label, "dim"),
+            id=_message_timestamp_footer_id(data.id),
+            classes=_MESSAGE_TIMESTAMP_FOOTER_CLASS,
+        )
+
+    async def _toggle_message_timestamp_footers(self) -> None:
+        """Toggle visible timestamp footers and persist the preference."""
+        self._message_timestamps_visible = not self._message_timestamps_visible
+        if self._message_timestamps_visible:
+            await self._show_message_timestamp_footers()
+        else:
+            await self._hide_message_timestamp_footers()
+        await self._persist_message_timestamps_visible()
+
+    async def _persist_message_timestamps_visible(self) -> None:
+        """Persist the timestamp-footer preference without blocking the loop."""
+        try:
+            status = await asyncio.to_thread(
+                _save_message_timestamps_visible_result,
+                self._message_timestamps_visible,
+            )
+            if status.message is not None:
+                self.notify(
+                    status.message,
+                    severity=status.severity,
+                    timeout=6,
+                    markup=False,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist message timestamp preference",
+                exc_info=True,
+            )
+
+    async def _show_message_timestamp_footers(self) -> None:
+        """Insert timestamp footers under mounted message widgets."""
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        for widget in list(messages.children):
+            if (
+                _is_message_timestamp_footer(widget)
+                or isinstance(widget, QueuedUserMessage)
+                or not widget.id
+            ):
+                continue
+            data = self._message_store.get_message(widget.id)
+            if data is None:
+                # Mounted widget without a backing store entry => DOM/store
+                # desync; skip it but leave a breadcrumb (mirrors pruning).
+                logger.debug(
+                    "No store entry for mounted widget %s; skipping footer",
+                    widget.id,
+                )
+                continue
+            footer_id = _message_timestamp_footer_id(data.id)
+            with suppress(NoMatches):
+                messages.query_one(f"#{footer_id}")
+                continue
+            footer = self._build_message_timestamp_footer(data)
+            if footer is None:
+                continue
+            children = list(messages.children)
+            try:
+                index = children.index(widget)
+            except ValueError:
+                await messages.mount(footer)
+                continue
+            next_child = children[index + 1] if index + 1 < len(children) else None
+            if next_child is not None:
+                await messages.mount(footer, before=next_child)
+            else:
+                await messages.mount(footer)
+
+    async def _hide_message_timestamp_footers(self) -> None:
+        """Remove all mounted timestamp footers."""
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        for widget in list(messages.children):
+            if _is_message_timestamp_footer(widget):
+                await widget.remove()
+
     async def _mount_message(
         self,
         widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
@@ -6582,20 +7029,29 @@ class DeepAgentsApp(App):
         if not messages.is_attached:
             return
 
+        if isinstance(widget, QueuedUserMessage):
+            # Queued placeholders mount at the bottom and stay out of the
+            # message store; drain remounts them as real UserMessage widgets.
+            await messages.mount(widget)
+            try:
+                input_container = self.query_one("#bottom-app-container", Container)
+                input_container.scroll_visible()
+            except NoMatches:
+                pass
+            return
+
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
-        # Ensure the widget's DOM id matches the store id so that
-        # features like click-to-show-timestamp can look it up.
         if not widget.id:
+            # Keep the widget DOM id == store id so timestamp-footer toggling
+            # can map a mounted widget back to its MessageData.
             widget.id = message_data.id
         self._message_store.append(message_data)
+        footer = self._build_message_timestamp_footer(message_data)
 
-        # Queued-message widgets must always stay at the bottom so they
-        # remain visually anchored below the current agent response.
-        if isinstance(widget, QueuedUserMessage):
-            await messages.mount(widget)
-        else:
-            await self._mount_before_queued(messages, widget)
+        await self._mount_before_queued(messages, widget)
+        if footer is not None:
+            await self._mount_before_queued(messages, footer)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -6630,6 +7086,10 @@ class DeepAgentsApp(App):
         for msg_data in to_prune:
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
+                footer_id = _message_timestamp_footer_id(msg_data.id)
+                with suppress(NoMatches):
+                    footer = messages_container.query_one(f"#{footer_id}")
+                    await footer.remove()
                 await widget.remove()
                 pruned_ids.append(msg_data.id)
             except NoMatches:
@@ -8855,7 +9315,7 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — run `/mcp reconnect` to load.",
+                            error="Re-enabled — press Ctrl+R to load.",
                         ),
                     )
         self._mcp_server_info = updated
@@ -9537,6 +9997,11 @@ class DeepAgentsApp(App):
                 warn_if_missing=False,
             )
 
+            # Adopt the switched-to thread's model (session-only), mirroring
+            # launch-time `-r` resume — unless `--model` pinned an explicit
+            # choice for this session. Consumed by `_load_thread_history`.
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+
             # Load thread history
             await self._load_thread_history(
                 thread_id=thread_id,
@@ -9587,12 +10052,36 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
+    async def _mount_resume_adoption_failure(
+        self, desired: str, reason: str, *, hint: str = ""
+    ) -> None:
+        """Tell the user a resumed thread's model couldn't be restored.
+
+        Unlike the interactive `/model` errors, this names the desired model,
+        the reason, and the model the session is falling back to — so a `-r`
+        resume that can't restore its model doesn't silently switch the user
+        onto a different one.
+
+        Args:
+            desired: The `provider:model` spec the resumed thread wanted.
+            reason: Short human-readable cause (e.g. missing credentials).
+            hint: Optional trailing remediation hint.
+        """
+        current = self._effective_model_spec()
+        fallback = f"; continuing on {current}." if current else "."
+        body = f"Couldn't restore this thread's model {desired} ({reason}){fallback}"
+        if hint:
+            body += f" {hint}"
+        await self._mount_message(ErrorMessage(body))
+
     async def _switch_model(
         self,
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
         announce_unchanged: bool = True,
+        persist: bool = True,
+        from_resume: bool = False,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -9610,8 +10099,20 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
             announce_unchanged: Whether to mount a message when the requested
                 model is already active.
+            persist: Whether to write the model to the user's recent/default
+                config.
+
+                Set `False` for session-only switches (e.g. adopting a
+                resumed thread's model) so a one-off resume does not redefine
+                the user's persisted default.
+            from_resume: Whether this switch is auto-adopting a resumed thread's
+                model.
+
+                When `True`, failures are reported with resume-specific
+                messaging (which model couldn't be restored and what the session
+                is falling back to) rather than the interactive `/model` errors.
         """
-        from deepagents_code.config import create_model, detect_provider, settings
+        from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import (
             ModelSpec,
             ProviderAuthState,
@@ -9644,6 +10145,8 @@ class DeepAgentsApp(App):
                                 model_spec,
                                 extra_kwargs=extra_kwargs,
                                 announce_unchanged=announce_unchanged,
+                                persist=persist,
+                                from_resume=from_resume,
                             ),
                         ),
                     )
@@ -9680,13 +10183,20 @@ class DeepAgentsApp(App):
             # Check credentials
             auth_status = get_provider_auth_status(provider) if provider else None
             if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, then "
-                        f"re-issue `/model {model_spec}`.",
-                    ),
-                )
+                if from_resume:
+                    await self._mount_resume_adoption_failure(
+                        model_spec,
+                        f"missing credentials for '{auth_status.provider}'",
+                        hint=f"Run `/auth` then `/model {model_spec}` to use it.",
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                            f"Run `/auth` for the '{auth_status.provider}' provider, "
+                            f"then re-issue `/model {model_spec}`.",
+                        ),
+                    )
                 return
             if (
                 auth_status is not None
@@ -9711,9 +10221,10 @@ class DeepAgentsApp(App):
                 self._model_params_override = extra_kwargs
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
-                    await self._mount_message(
-                        AppMessage(f"Already using {current}{params_suffix}"),
-                    )
+                    message = f"Already using {current}{params_suffix}"
+                    if message != self._last_model_unchanged_message:
+                        await self._mount_message(AppMessage(message))
+                        self._last_model_unchanged_message = message
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
@@ -9727,7 +10238,8 @@ class DeepAgentsApp(App):
                 display = f"{provider}:{model_name}"
 
             try:
-                result = create_model(
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
                     display,
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,
@@ -9735,9 +10247,14 @@ class DeepAgentsApp(App):
                 result.apply_to_settings()
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
-                await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc)),
-                )
+                if from_resume:
+                    await self._mount_resume_adoption_failure(
+                        display, "the model could not be initialized"
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(_build_model_switch_error_body(exc)),
+                    )
                 return
 
             # Set the model override for ConfigurableModelMiddleware.
@@ -9752,7 +10269,15 @@ class DeepAgentsApp(App):
                     model=settings.model_name or "",
                 )
 
-            if not await asyncio.to_thread(save_recent_model, display):
+            self._last_model_unchanged_message = None
+            params_suffix = _format_model_params(extra_kwargs)
+            if not persist:
+                # Session-only switch (e.g. adopting a resumed thread's model):
+                # announce but never touch the user's persisted recent/default.
+                await self._mount_message(
+                    AppMessage(f"Switched to {display}{params_suffix}"),
+                )
+            elif not await asyncio.to_thread(save_recent_model, display):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
@@ -9760,17 +10285,18 @@ class DeepAgentsApp(App):
                     ),
                 )
             else:
-                params_suffix = _format_model_params(extra_kwargs)
                 await self._mount_message(
                     AppMessage(f"Switched to {display}{params_suffix}"),
                 )
-            # Best-effort MRU update for the `/model` Recent section.
-            # `display` may be a bare model name when provider auto-detection
-            # fails; use the post-resolution spec so touch_recent_model always
-            # gets a valid "provider:model" string. Silent on failure —
-            # debug log captures it when DEEPAGENTS_CODE_DEBUG=1.
-            resolved_spec = f"{result.provider}:{result.model_name}"
-            await asyncio.to_thread(touch_recent_model, resolved_spec)
+            if persist:
+                # Best-effort MRU update for the `/model` Recent section.
+                # `display` may be a bare model name when provider
+                # auto-detection fails; use the post-resolution spec so
+                # touch_recent_model always gets a valid "provider:model"
+                # string. Silent on failure — the debug log captures it when
+                # debug logging is enabled.
+                resolved_spec = f"{result.provider}:{result.model_name}"
+                await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",
                 display,
@@ -9991,6 +10517,7 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    model_explicitly_set: bool = False,
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
@@ -10037,6 +10564,11 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        model_explicitly_set: Whether the user passed `--model` on the command
+            line.
+
+            When `True`, the explicit choice wins over a resumed thread's
+            persisted model (no resume adoption).
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
@@ -10066,6 +10598,7 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        model_explicitly_set=model_explicitly_set,
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,

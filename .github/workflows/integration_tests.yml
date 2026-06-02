@@ -105,8 +105,8 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test
 
-      - name: "📦 Install Sandbox Extras (CLI only)"
-        if: matrix.working-directory == 'libs/cli'
+      - name: "📦 Install Sandbox Extras (Code only)"
+        if: matrix.working-directory == 'libs/code'
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test --extra all-sandboxes
 

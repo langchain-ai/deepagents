@@ -171,7 +171,8 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert len(utils_paths) == 2
 
     empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    assert empty_listing.entries is None
+    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
@@ -236,7 +237,8 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
     empty = be.ls("/nonexistent/")
-    assert empty.entries == []
+    assert empty.entries is None
+    assert empty.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
@@ -1065,6 +1067,38 @@ class TestEditCrlfNormalization:
         assert "Human: next" in final
 
 
+def test_ls_nonexistent_path_sets_error(tmp_path: Path) -> None:
+    """Ls on a missing path must surface the failure on .error, not return []."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
+
+
+def test_ls_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
+    """Ls on a file path must surface not_a_directory on .error."""
+    write_file(tmp_path / "file.txt", "content")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/file.txt")
+
+    assert result.entries is None
+    assert result.error == "Path '/file.txt': not_a_directory"
+
+
+def test_ls_empty_directory_returns_empty_entries(tmp_path: Path) -> None:
+    """Ls on an empty directory returns success with an empty entries list."""
+    (tmp_path / "empty").mkdir()
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/empty/")
+
+    assert result.error is None
+    assert result.entries == []
+
+
 def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     """A resolver failure in `ls` should not escape the backend boundary."""
     make_symlink_loop(tmp_path / "loop")
@@ -1072,7 +1106,7 @@ def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     result = be.ls("loop")
 
-    assert result.entries == []
+    assert result.entries is None
     assert result.error is not None
     assert "Cannot list 'loop'" in result.error
 

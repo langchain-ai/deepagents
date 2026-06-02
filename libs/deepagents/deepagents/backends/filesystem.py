@@ -241,10 +241,17 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `LsResult` with `entries` listing files and directories directly in the
-            directory on success. Directories have a trailing `/` in their path and
-            `is_dir=True`. Missing paths set `error` to `Path '<path>': path_not_found`
-            with `entries=None`. File paths set `error` to `Path '<path>': not_a_directory`
-            with `entries=None`. Empty directories return `error=None` and `entries=[]`.
+                directory on success.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
+
+                Missing paths set `error` to `Path '<path>': path_not_found`
+                with `entries=None`.
+
+                File paths set `error` to `Path '<path>': not_a_directory`
+                with `entries=None`.
+
+                Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)

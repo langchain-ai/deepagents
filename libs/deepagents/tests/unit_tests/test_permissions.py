@@ -286,6 +286,44 @@ class TestBuildInterruptOnFromPermissions:
         when = _make_fs_when_predicate([rule], "read", "path", "bulk")
         assert when(_FakeReq(args)) is expected
 
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # Absolute pattern: Python `glob` ignores `path` (the backend's
+            # `os.chdir(path)` has no effect on an absolute pattern), so gate on
+            # the pattern's own anchor. A benign `path` must not suppress the
+            # interrupt when the pattern reaches into a protected subtree.
+            ({"pattern": "/secrets/**", "path": "/workspace"}, True),
+            ({"pattern": "/secrets/sub/*.txt", "path": "/workspace"}, True),
+            # Absolute pattern anchored at root → overlaps everything → fire.
+            ({"pattern": "/**/key.pem", "path": "/workspace"}, True),
+            # Absolute pattern outside any interrupt rule → no fire.
+            ({"pattern": "/workspace/**", "path": "/workspace"}, False),
+            # Relative pattern climbing out of `path` via `..` can't be
+            # localized statically → fire conservatively.
+            ({"pattern": "../secrets/*", "path": "/workspace"}, True),
+            ({"pattern": "../../etc/*", "path": "/workspace/sub"}, True),
+            # Benign relative pattern under a non-overlapping path → no fire.
+            ({"pattern": "*.txt", "path": "/workspace"}, False),
+            # Relative pattern under the protected subtree still fires via the
+            # existing `path` check.
+            ({"pattern": "*.txt", "path": "/secrets"}, True),
+        ],
+    )
+    def test_bulk_glob_pattern_arg(self, args, expected):
+        """The glob bulk predicate gates on its `pattern` arg, not just `path`.
+
+        Regression for the HITL bypass where `glob(pattern="/secrets/**",
+        path="/workspace")` slipped past an interrupt rule on `/secrets/**`:
+        the predicate saw only the benign `/workspace` path while the sandbox
+        backend (`os.chdir(path)` then `glob.glob(pattern)`) enumerated
+        `/secrets` anyway, because Python's `glob` ignores the working
+        directory for absolute patterns.
+        """
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _build_interrupt_on_from_permissions([rule])["glob"]["when"]
+        assert when(_FakeReq(args)) is expected
+
 
 class TestGlobAnchorAndOverlap:
     @pytest.mark.parametrize(

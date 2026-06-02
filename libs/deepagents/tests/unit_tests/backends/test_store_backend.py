@@ -517,7 +517,7 @@ def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
                 be.write("/test.txt", "content")
 
 
-def test_store_backend_delete():
+def test_store_backend_delete() -> None:
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
@@ -531,7 +531,7 @@ def test_store_backend_delete():
     assert be.read("/docs/readme.md").error is not None
 
 
-def test_store_backend_delete_missing_returns_error():
+def test_store_backend_delete_missing_returns_error() -> None:
     be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
     result = be.delete("/nope.md")
     assert result.path is None
@@ -539,7 +539,7 @@ def test_store_backend_delete_missing_returns_error():
     assert "not found" in result.error
 
 
-async def test_store_backend_adelete():
+async def test_store_backend_adelete() -> None:
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 

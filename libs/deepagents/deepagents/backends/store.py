@@ -685,6 +685,10 @@ class StoreBackend(BackendProtocol):
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file from the store.
 
+        `file_path` is used as an exact store key. Wildcards (e.g. `*`) are treated
+        literally and do not expand to multiple entries.
+
+
         Returns `DeleteResult` with the deleted path on success, or an error if
         the file does not exist.
         """

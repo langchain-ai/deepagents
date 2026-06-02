@@ -570,3 +570,28 @@ def test_delete_failure_invalidates_cache() -> None:
 
     backend.read("/a.md")
     assert mock_client.pull_agent.call_count == 2
+
+
+async def test_adelete_commits_none_entry() -> None:
+    """Async delete (protocol default `asyncio.to_thread`) behaves like sync."""
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="bye")})
+    result = await backend.adelete("/a.md")
+
+    assert result.error is None
+    assert result.path == "/a.md"
+    mock_client.push_agent.assert_called_once()
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # A None entry is the deletion marker, same as the sync path.
+    assert files_arg["a.md"] is None
+    # Cache was updated, so a follow-up read finds the file gone without re-pulling.
+    assert backend.read("/a.md").error is not None
+
+
+async def test_adelete_missing_returns_not_found() -> None:
+    backend, mock_client = _make_backend()
+    result = await backend.adelete("/ghost.md")
+
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+    mock_client.push_agent.assert_not_called()

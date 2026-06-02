@@ -1402,7 +1402,7 @@ def test_edit_result_path_restored_to_full_routed_path():
     assert res.path == "/memories/notes.md"  # not "/notes.md"
 
 
-def test_composite_delete_routes_to_correct_backend():
+def test_composite_delete_routes_to_correct_backend() -> None:
     mem_store = InMemoryStore()
     be = CompositeBackend(
         default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
@@ -1425,7 +1425,7 @@ def test_composite_delete_routes_to_correct_backend():
     assert be.read("/memories/note.txt").error is not None
 
 
-def test_composite_delete_missing_returns_error():
+def test_composite_delete_missing_returns_error() -> None:
     mem_store = InMemoryStore()
     be = CompositeBackend(
         default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
@@ -1436,7 +1436,7 @@ def test_composite_delete_missing_returns_error():
     assert result.error is not None and "not found" in result.error
 
 
-async def test_composite_adelete_routes_to_correct_backend():
+async def test_composite_adelete_routes_to_correct_backend() -> None:
     mem_store = InMemoryStore()
     be = CompositeBackend(
         default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
@@ -1447,3 +1447,14 @@ async def test_composite_adelete_routes_to_correct_backend():
     assert res.error is None
     assert res.path == "/memories/note.txt"
     assert (await be.aread("/memories/note.txt")).error is not None
+
+
+async def test_composite_adelete_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = await be.adelete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error

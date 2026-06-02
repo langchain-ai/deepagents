@@ -1356,6 +1356,119 @@ class TestDeepAgentEndToEnd:
         assert "base64" in tm.content[0]
 
 
+class TestDeleteFileTool:
+    """End-to-end tests for the `delete_file` filesystem tool."""
+
+    def test_delete_file_removes_existing_file(self) -> None:
+        """delete_file removes a file from state and reports success."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete_file",
+                                "args": {"file_path": "/keep.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete it")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Deleted file /keep.txt"
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    def test_delete_file_missing_returns_error(self) -> None:
+        """delete_file on a missing path returns an error tool message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete_file",
+                                "args": {"file_path": "/nope.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="delete it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "not found" in tool_messages[0].content
+
+    def test_delete_file_permission_deny_blocks_delete(self) -> None:
+        """FilesystemPermission deny write blocks delete_file (delete is a write op)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete_file",
+                                "args": {"file_path": "/secrets/key.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete secret")],
+                "files": {"/secrets/key.txt": create_file_data("data")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "permission denied" in tool_messages[0].content
+        assert "write" in tool_messages[0].content
+        # The file must still be present after a denied delete.
+        assert "/secrets/key.txt" in result["files"]
+
+
 class TestDeepAgentPermissionsEndToEnd:
     """End-to-end tests for create_deep_agent with FilesystemPermission."""
 

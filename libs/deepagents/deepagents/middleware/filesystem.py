@@ -39,6 +39,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
@@ -77,6 +78,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
+    "delete_file": "write",
 }
 
 
@@ -304,6 +306,12 @@ class EditFileSchema(BaseModel):
     )
 
 
+class DeleteFileSchema(BaseModel):
+    """Input schema for the `delete_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
+
+
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
@@ -378,6 +386,14 @@ Usage:
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+
+Usage:
+- Permanently removes the file at the given absolute path.
+- Returns an error if the file does not exist or the path is a directory.
+- This cannot be undone, so only delete files you are sure are no longer needed.
+"""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
@@ -449,7 +465,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -458,6 +474,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
+- delete_file: delete a file from the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -527,6 +544,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
+    "delete_file",
 )
 
 
@@ -719,6 +737,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_read_file_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
+            self._create_delete_file_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
             self._create_execute_tool(),
@@ -1188,6 +1207,113 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_edit_file,
             infer_schema=False,
             args_schema=EditFileSchema,
+        )
+
+    def _create_delete_file_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/support handling
+        """Create the delete_file tool."""
+        tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
+
+        unsupported_msg = "Error: Deletion not available. This agent's backend does not implement the delete operation."
+
+        def sync_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                res: DeleteResult = resolved_backend.delete(validated_path)
+            except NotImplementedError:
+                return ToolMessage(
+                    content=unsupported_msg,
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Deleted file {res.path}",
+                name="delete_file",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                res: DeleteResult = await resolved_backend.adelete(validated_path)
+            except NotImplementedError:
+                return ToolMessage(
+                    content=unsupported_msg,
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Deleted file {res.path}",
+                name="delete_file",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="delete_file",
+            description=tool_description,
+            func=sync_delete_file,
+            coroutine=async_delete_file,
+            infer_schema=False,
+            args_schema=DeleteFileSchema,
         )
 
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping

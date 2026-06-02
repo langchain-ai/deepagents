@@ -64,6 +64,24 @@ def test_init_scaffold_loads_as_valid_project(
     assert project.subagents[0].model_id == "openai:gpt-5.5"
 
 
+def test_init_prints_welcome_walkthrough(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    execute_init_command(_ns("my-agent"))
+    out = capsys.readouterr().out
+    # Walkthrough covers editing, the API key prereq + MCP servers
+    # (API key and OAuth auth), and deploy.
+    assert "Next steps" in out
+    assert "AGENTS.md" in out
+    assert "LANGSMITH_API_KEY" in out
+    assert "mcp-servers" in out
+    assert "OAuth" in out
+    assert "deepagents deploy" in out
+
+
 def test_init_refuses_existing_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

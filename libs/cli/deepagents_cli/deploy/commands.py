@@ -74,6 +74,7 @@ def execute_init_command(args: argparse.Namespace) -> None:
             print("Error: project name is required.")
             raise SystemExit(1)
     _scaffold(name=name, force=args.force)
+    _print_post_init_welcome(name)
 
 
 def _scaffold(*, name: str, force: bool) -> None:
@@ -101,14 +102,32 @@ def _scaffold(*, name: str, force: bool) -> None:
         f"Created {name}/ with: agent.json, AGENTS.md, .gitignore, tools.json, "
         f"skills/{_STARTER_SKILL_NAME}/, subagents/{_STARTER_SUBAGENT_NAME}/"
     )
-    print("\nNext steps:")
-    print(f"  cd {name}")
-    print("  # set LANGSMITH_API_KEY in your shell, repo .env, or ~/.deepagents/.env")
-    print("  # edit AGENTS.md; tweak or remove subagents/ and skills/")
-    print("  # to give your agent tools, first register an MCP server:")
-    print("  #   deepagents mcp-servers add --url <url> --header KEY=VALUE")
-    print("  #   then reference it in tools.json by its mcp_server_url")
-    print("  deepagents deploy")
+
+
+def _print_post_init_welcome(name: str) -> None:
+    """Print a formatted, scannable walkthrough after scaffolding."""
+    print("\nNext steps")
+    print("──────────")
+    print("  1. Edit your agent's files")
+    print("       AGENTS.md    system prompt / instructions")
+    print("       agent.json   name, model, backend")
+    print("       tools.json   tools the agent can call (starts empty)")
+    print("       skills/      reusable instructions (optional; example included)")
+    print("       subagents/   delegated agents (optional; example included)")
+    print()
+    print("  2. Connect tools (optional)")
+    print("       Set LANGSMITH_API_KEY, then register or reuse an MCP server:")
+    print("         deepagents mcp-servers list      # servers already connected")
+    print("         deepagents mcp-servers add ...   # register a new server")
+    print("       Auth options for `add`:")
+    print("         --header X-Api-Key=$LANGSMITH_API_KEY   # API key")
+    print("         --auth-type oauth --connect             # OAuth (browser)")
+    print("       List a server's tools (prints a tools.json snippet):")
+    print("         deepagents mcp-servers tools <id|name|url>")
+    print()
+    print("  3. Deploy")
+    print(f"       cd {name}")
+    print("       deepagents deploy")
 
 
 _STARTER_AGENT_JSON = """\
@@ -572,6 +591,11 @@ def _add_mcp_servers_parser(
     a.add_argument("--header", action="append", default=[], metavar="KEY=VALUE")
     a.add_argument("--auth-type", default="headers", choices=["headers", "oauth"])
     a.add_argument(
+        "--no-tools",
+        action="store_true",
+        help="Skip listing the server's tools after registering",
+    )
+    a.add_argument(
         "--connect",
         action="store_true",
         help="Start OAuth connection after creating an OAuth MCP server",
@@ -592,6 +616,8 @@ def _add_mcp_servers_parser(
     c = sub.add_parser("connect")
     c.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
     _add_oauth_connect_options(c)
+    tl = sub.add_parser("tools")
+    tl.add_argument("mcp_server_id", metavar="ID|NAME|URL", help=id_help)
 
 
 def _add_oauth_connect_options(parser: argparse.ArgumentParser) -> None:
@@ -712,6 +738,7 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
             srv_name = srv.get("name")
             srv_url = srv.get("url")
             print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
+            connect_attempted = False
             if getattr(args, "connect", False):
                 if not isinstance(srv_id, str) or not srv_id:
                     print("Error: created OAuth MCP server did not include an id.")
@@ -724,6 +751,14 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                     timeout_seconds=args.timeout,
                     no_browser=args.no_browser,
                 )
+                connect_attempted = True
+            _show_tools_after_add(
+                client,
+                srv,
+                auth_type=args.auth_type,
+                connect_attempted=connect_attempted,
+                suppressed=getattr(args, "no_tools", False),
+            )
         elif args.mcp_cmd == "get":
             server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
             server = client.get_mcp_server(server_id)
@@ -775,6 +810,18 @@ def execute_mcp_servers_command(args: argparse.Namespace) -> None:
                 timeout_seconds=args.timeout,
                 no_browser=args.no_browser,
             )
+        elif args.mcp_cmd == "tools":
+            server = client.get_mcp_server(
+                _resolve_mcp_server_id(client, args.mcp_server_id)
+            )
+            url = server.get("url")
+            if not isinstance(url, str) or not url:
+                print("Error: that MCP server record has no URL.")
+                raise SystemExit(1)
+            tools = client.list_mcp_server_tools(
+                url, oauth_provider_id=server.get("oauth_provider_id")
+            )
+            _print_mcp_tools(server, tools)
     except ApiError as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
@@ -912,6 +959,85 @@ def _parse_update_headers(
     if raw is None:
         return None
     return _parse_header_args(raw)
+
+
+def _show_tools_after_add(
+    client: ApiClient,
+    srv: dict[str, Any],
+    *,
+    auth_type: str,
+    connect_attempted: bool,
+    suppressed: bool,
+) -> None:
+    """Best-effort: list a freshly registered server's tools after `add`.
+
+    Closes the discovery loop so the user sees what the server exposes (and a
+    paste-ready tools.json snippet) without a separate `tools` call. It never
+    raises: a missing tools endpoint, OAuth server that isn't connected yet, or
+    any API error degrades to a hint pointing at `mcp-servers tools`.
+
+    Args:
+        client: Authenticated deploy API client.
+        srv: The MCP server record returned by `create_mcp_server`.
+        auth_type: The server's auth type (`headers` or `oauth`).
+        connect_attempted: Whether an OAuth connect flow was just run.
+        suppressed: When `True` (the `--no-tools` flag), skip listing entirely.
+    """
+    if suppressed:
+        return
+    srv_id = srv.get("id")
+    if not isinstance(srv_id, str) or not srv_id:
+        return
+    if auth_type == "oauth" and not connect_attempted:
+        print(f"  After connecting, run: deepagents mcp-servers tools {srv_id}")
+        return
+
+    try:
+        # OAuth servers need `oauth_provider_id`, which is only populated after
+        # connect, so refresh the record before listing.
+        record = client.get_mcp_server(srv_id) if auth_type == "oauth" else srv
+        url = record.get("url")
+        if not isinstance(url, str) or not url:
+            return
+        tools = client.list_mcp_server_tools(
+            url, oauth_provider_id=record.get("oauth_provider_id")
+        )
+    except Exception:  # tool listing is best-effort; it must never fail `add`
+        print(f"  Run `deepagents mcp-servers tools {srv_id}` to list its tools.")
+        return
+    print()
+    _print_mcp_tools(record, tools)
+
+
+def _print_mcp_tools(server: dict[str, Any], tools: list[dict[str, Any]]) -> None:
+    """Print an MCP server's tools and a paste-ready tools.json snippet."""
+    url = str(server.get("url") or "")
+    name = str(server.get("name") or "")
+    label = name or url
+    if not tools:
+        print(f"No tools found for {label}.")
+        return
+
+    print(f"Tools for {label} ({url}):")
+    width = max(len(str(t.get("name") or "")) for t in tools)
+    for tool in tools:
+        tname = str(tool.get("name") or "")
+        description = str(tool.get("description") or "").strip()
+        summary = description.splitlines()[0] if description else ""
+        print(f"  {tname.ljust(width)}  {summary}")
+
+    entries: list[dict[str, str]] = []
+    for tool in tools:
+        tname = str(tool.get("name") or "")
+        if not tname:
+            continue
+        entry = {"name": tname, "mcp_server_url": url, "display_name": tname}
+        if name:
+            entry["mcp_server_name"] = name
+        entries.append(entry)
+    snippet = {"tools": entries, "interrupt_config": {}}
+    print("\nAdd to tools.json:")
+    print(json.dumps(snippet, indent=2))
 
 
 def _redact_mcp_server(server: dict[str, Any]) -> dict[str, Any]:

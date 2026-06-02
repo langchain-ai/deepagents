@@ -82,6 +82,7 @@ deepagents agents delete <agent_id>     # delete an agent
 deepagents mcp-servers list                  # list workspace MCP servers
 deepagents mcp-servers add --url URL          # register a server
 deepagents mcp-servers get <id|name|url>      # show one server
+deepagents mcp-servers tools <id|name|url>    # list a server's tools
 deepagents mcp-servers update <id|name|url>   # update server URL or headers
 deepagents mcp-servers delete <id|name|url>   # remove a server
 deepagents mcp-servers connect <id|name|url>  # start OAuth for a server

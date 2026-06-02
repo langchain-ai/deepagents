@@ -77,6 +77,7 @@ def test_mcp_servers_add_parses_header_pairs(
             name="Fleet",
             header=["X-Api-Key=secret-value"],
             auth_type="headers",
+            no_tools=True,
         )
     )
     assert dotenv_calls
@@ -105,6 +106,7 @@ def test_mcp_servers_add_defaults_name_to_hostname(
             name=None,
             header=[],
             auth_type="headers",
+            no_tools=True,
         )
     )
     assert captured["body"]["name"] == "tools.langchain.com"
@@ -132,6 +134,7 @@ def test_mcp_servers_add_oauth_sends_per_user_mode(
             force_new=False,
             timeout=300,
             no_browser=False,
+            no_tools=True,
         )
     )
     assert captured["body"] == {
@@ -205,6 +208,7 @@ def test_mcp_servers_add_connect_runs_oauth_flow(
             force_new=False,
             timeout=300,
             no_browser=True,
+            no_tools=True,
         )
     )
     assert requests == [
@@ -307,6 +311,134 @@ def test_mcp_servers_add_bad_header_raises(
                 auth_type="headers",
             )
         )
+
+
+def test_mcp_servers_add_headers_lists_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/mcp-servers"):
+            return httpx.Response(
+                201,
+                json={"id": _SID, "name": "Fleet", "url": "https://tools.example"},
+            )
+        if request.url.path == "/v1/deepagents/mcp/tools":
+            assert request.url.params.get("url") == "https://tools.example"
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "read_url", "description": "Read a URL."}]},
+            )
+        msg = f"unexpected path {request.url.path}"
+        raise AssertionError(msg)
+
+    _patch_client(monkeypatch, handler)
+    execute_mcp_servers_command(
+        argparse.Namespace(
+            mcp_cmd="add",
+            url="https://tools.example",
+            name="Fleet",
+            header=["X-Api-Key=secret"],
+            auth_type="headers",
+            no_tools=False,
+        )
+    )
+    out = capsys.readouterr().out
+    assert "Created mcp_server" in out
+    assert "read_url" in out
+    assert '"mcp_server_url": "https://tools.example"' in out
+
+
+def test_mcp_servers_add_oauth_without_connect_hints(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            201,
+            json={"id": _SID, "name": "GitHub", "url": "https://tools.example"},
+        )
+
+    _patch_client(monkeypatch, handler)
+    execute_mcp_servers_command(
+        argparse.Namespace(
+            mcp_cmd="add",
+            url="https://tools.example",
+            name="GitHub",
+            header=[],
+            auth_type="oauth",
+            connect=False,
+            scope=[],
+            force_new=False,
+            timeout=300,
+            no_browser=False,
+            no_tools=False,
+        )
+    )
+    out = capsys.readouterr().out
+    assert "After connecting, run" in out
+    assert "/v1/deepagents/mcp/tools" not in paths
+
+
+def test_mcp_servers_add_tool_listing_error_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/mcp-servers"):
+            return httpx.Response(
+                201,
+                json={"id": _SID, "name": "Fleet", "url": "https://tools.example"},
+            )
+        if request.url.path == "/v1/deepagents/mcp/tools":
+            return httpx.Response(404, json={"detail": "not found"})
+        msg = f"unexpected path {request.url.path}"
+        raise AssertionError(msg)
+
+    _patch_client(monkeypatch, handler)
+    # `add` must still succeed (exit 0) even though tool discovery 404s.
+    execute_mcp_servers_command(
+        argparse.Namespace(
+            mcp_cmd="add",
+            url="https://tools.example",
+            name="Fleet",
+            header=[],
+            auth_type="headers",
+            no_tools=False,
+        )
+    )
+    out = capsys.readouterr().out
+    assert "Created mcp_server" in out
+    assert "mcp-servers tools" in out
+
+
+def test_mcp_servers_add_no_tools_skips_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            201,
+            json={"id": _SID, "name": "Fleet", "url": "https://tools.example"},
+        )
+
+    _patch_client(monkeypatch, handler)
+    execute_mcp_servers_command(
+        argparse.Namespace(
+            mcp_cmd="add",
+            url="https://tools.example",
+            name="Fleet",
+            header=[],
+            auth_type="headers",
+            no_tools=True,
+        )
+    )
+    assert "/v1/deepagents/mcp/tools" not in paths
 
 
 def test_mcp_servers_list(
@@ -462,6 +594,48 @@ def test_mcp_servers_delete(
     )
     assert methods == ["DELETE"]
     assert "Deleted" in capsys.readouterr().out
+
+
+def test_mcp_servers_tools_lists_and_prints_snippet(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == f"/v1/deepagents/mcp-servers/{_SID}":
+            return httpx.Response(
+                200,
+                json={
+                    "id": _SID,
+                    "name": "deep-wiki",
+                    "url": "https://mcp.deepwiki.com/mcp",
+                },
+            )
+        if request.url.path == "/v1/deepagents/mcp/tools":
+            assert request.url.params.get("url") == "https://mcp.deepwiki.com/mcp"
+            return httpx.Response(
+                200,
+                json={
+                    "tools": [
+                        {"name": "read_wiki", "description": "Read a page.\nMore."},
+                        {"name": "search", "description": "Search."},
+                    ],
+                    "cached": True,
+                },
+            )
+        msg = f"unexpected path {request.url.path}"
+        raise AssertionError(msg)
+
+    _patch_client(monkeypatch, handler)
+    execute_mcp_servers_command(
+        argparse.Namespace(mcp_cmd="tools", mcp_server_id=_SID)
+    )
+    out = capsys.readouterr().out
+    assert "read_wiki" in out
+    assert "Read a page." in out  # only the first description line
+    assert '"mcp_server_url": "https://mcp.deepwiki.com/mcp"' in out
+    assert '"mcp_server_name": "deep-wiki"' in out
+    snippet = json.loads(out[out.index("{") :])
+    assert [t["name"] for t in snippet["tools"]] == ["read_wiki", "search"]
 
 
 def test_mcp_servers_delete_resolves_name(

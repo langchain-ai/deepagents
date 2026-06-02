@@ -169,7 +169,7 @@ class TestDeprecatedMethodsRouteToNewNames:
 
     def test_glob_info_delegates_to_glob(self) -> None:
         class MyBackend(BackendProtocol):
-            def glob(self, pattern: str, path: str = "/") -> GlobResult:
+            def glob(self, pattern: str, path: str | None = None) -> GlobResult:
                 return GlobResult(matches=[{"path": f"{path}/{pattern}"}])
 
         with warnings.catch_warnings(record=True) as w:

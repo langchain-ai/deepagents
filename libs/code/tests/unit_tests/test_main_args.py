@@ -1226,6 +1226,11 @@ class TestInstallExtraSubcommand:
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = interactive
+        # Empty piped input so `apply_stdin_pipe` returns before its TTY
+        # restoration path (`os.dup2`/`open(0)`) swaps out this mocked stdin
+        # for a real terminal where `/dev/tty` is openable, which would mask
+        # the handler's `isatty()` refusal check.
+        mock_stdin.read.return_value = ""
         command_mock = MagicMock(
             return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
         )
@@ -1329,6 +1334,9 @@ class TestInstallExtraSubcommand:
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = interactive
+        # Empty piped input so `apply_stdin_pipe` returns before its TTY
+        # restoration path clobbers this mocked stdin. See `_run_install`.
+        mock_stdin.read.return_value = ""
         console_mock = MagicMock()
         perform_mock = AsyncMock()
         if perform_side_effect is not None:

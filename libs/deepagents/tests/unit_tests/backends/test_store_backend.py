@@ -515,3 +515,39 @@ def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
             warnings.simplefilter("always")
             with pytest.raises(ValueError, match="disallowed characters"):
                 be.write("/test.txt", "content")
+
+
+def test_store_backend_delete():
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/docs/readme.md", "hello store")
+    assert be.read("/docs/readme.md").error is None
+
+    result = be.delete("/docs/readme.md")
+    assert result.error is None
+    assert result.path == "/docs/readme.md"
+    # File is gone
+    assert be.read("/docs/readme.md").error is not None
+
+
+def test_store_backend_delete_missing_returns_error():
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    result = be.delete("/nope.md")
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+async def test_store_backend_adelete():
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    await be.awrite("/a.md", "x")
+    result = await be.adelete("/a.md")
+    assert result.error is None
+    assert result.path == "/a.md"
+    assert (await be.aread("/a.md")).error is not None
+
+    missing = await be.adelete("/a.md")
+    assert missing.error is not None and "not found" in missing.error

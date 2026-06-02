@@ -15,6 +15,7 @@ from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -102,13 +103,18 @@ class ContextHubBackend(BackendProtocol):
         self._ensure_cache()
         return self._commit_hash is not None
 
-    def _commit(self, files: dict[str, str]) -> None:
-        """Push `files` as one commit; update the cache on success."""
-        if not files:
+    def _commit(self, changes: dict[str, str | None]) -> None:
+        """Push `changes` as one commit; update the cache on success.
+
+        Each value is either new file content or `None`. A `None` value is the
+        deletion marker: relative to `parent_commit`, the server drops that path
+        from the tree.
+        """
+        if not changes:
             return
 
         payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) for path, content in files.items()
+            path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
         }
         url = self._client.push_agent(
             self._identifier,
@@ -120,8 +126,11 @@ class ContextHubBackend(BackendProtocol):
             self._commit_hash = match.group(1)
 
         if self._cache is not None:
-            for path, content in files.items():
-                self._cache[path] = content
+            for path, content in changes.items():
+                if content is None:
+                    self._cache.pop(path, None)
+                else:
+                    self._cache[path] = content
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -199,6 +208,20 @@ class ContextHubBackend(BackendProtocol):
             self._cache = None
             return EditResult(error=f"Hub unavailable: {exc}")
         return EditResult(path=file_path, occurrences=occurrences)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file by committing its removal from the hub repo."""
+        hub_path = self._strip_prefix(file_path)
+        try:
+            cache = self._ensure_cache()
+            if hub_path not in cache:
+                return DeleteResult(error=f"Error: File '{file_path}' not found")
+            self._commit({hub_path: None})
+        except LangSmithError as exc:
+            logger.exception("Hub delete failed for %r", self._identifier)
+            self._cache = None
+            return DeleteResult(error=f"Hub unavailable: {exc}")
+        return DeleteResult(path=file_path)
 
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""
@@ -282,7 +305,7 @@ class ContextHubBackend(BackendProtocol):
         """Upload text files in one commit; non-UTF-8 inputs rejected per file."""
         # Decode each input; `None` text means we'll reject this entry as invalid.
         decoded: list[tuple[str, str | None]] = []
-        valid_files: dict[str, str] = {}
+        valid_files: dict[str, str | None] = {}
         for path, content in files:
             try:
                 text = content.decode("utf-8")

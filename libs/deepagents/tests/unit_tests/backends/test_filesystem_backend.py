@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -1180,3 +1180,52 @@ class TestReadTrailingNewlineRoundtrip:
         assert result.error is not None
         assert "old_string ends with a newline" in result.error
         assert target.read_text() == "# Agent Role:\nyou are an assistant"
+
+
+class TestFilesystemDelete:
+    """Tests for FilesystemBackend.delete."""
+
+    def test_delete_existing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.delete("/a.txt")
+        assert isinstance(result, DeleteResult)
+        assert result.error is None
+        assert result.path == "/a.txt"
+        assert not f.exists()
+
+    def test_delete_missing_file_returns_error(self, tmp_path: Path) -> None:
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.delete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_delete_directory_returns_error(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.delete("/sub")
+        assert result.path is None
+        assert result.error is not None
+        assert "directory" in result.error
+
+    def test_delete_only_removes_target(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "keep.txt", "keep")
+        write_file(tmp_path / "drop.txt", "drop")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        assert be.delete("/drop.txt").error is None
+        assert not (tmp_path / "drop.txt").exists()
+        assert (tmp_path / "keep.txt").exists()
+
+    async def test_adelete_existing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = await be.adelete("/a.txt")
+        assert result.error is None
+        assert result.path == "/a.txt"
+        assert not f.exists()

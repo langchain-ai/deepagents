@@ -139,6 +139,13 @@ class TestFilesystemMiddlewareAsync:
         assert "/pokemon/charmander.txt" not in result.content
         assert "/pokemon/water/squirtle.txt" not in result.content
 
+    async def test_als_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
+
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
         files = {
@@ -290,7 +297,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     async def test_glob_timeout_returns_error_message_async(self):
         backend, _ = _make_backend()

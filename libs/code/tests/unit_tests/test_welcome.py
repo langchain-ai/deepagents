@@ -695,7 +695,7 @@ class TestMcpServerCounters:
         ):
             widget = WelcomeBanner(mcp_unauthenticated=1)
         plain = widget._build_banner().plain
-        assert "1 MCP server need login — open /mcp" in plain
+        assert "1 MCP server needs login — open /mcp" in plain
         assert "/mcp login" not in plain
 
     def test_errored_line_plural(self) -> None:
@@ -739,7 +739,7 @@ class TestMcpServerCounters:
                 mcp_awaiting_reconnect=1,
             )
         plain = widget._build_banner().plain
-        assert "need login" in plain
+        assert "needs login" in plain
         assert "failed to load" in plain
         assert "ready to load" in plain
 

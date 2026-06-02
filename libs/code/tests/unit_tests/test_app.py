@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import locale
 import logging
 import os
 import signal
@@ -26,6 +27,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -33,6 +35,7 @@ from textual.widgets import Checkbox, Input, Static
 
 from deepagents_code._version import CHANGELOG_URL
 from deepagents_code.app import (
+    _DEEPAGENTS_IMPORT_LOCK,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -48,6 +51,7 @@ from deepagents_code.widgets.messages import (
     AppMessage,
     ErrorMessage,
     QueuedUserMessage,
+    SummarizationMessage,
     UserMessage,
 )
 
@@ -2066,6 +2070,25 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
+    async def test_queued_widget_not_stored_as_user_message(self) -> None:
+        """Queued placeholders should stay out of persistent message data."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("test msg", "normal"))
+            await pilot.pause()
+
+            assert len(app.query(QueuedUserMessage)) == 1
+            assert app._message_store.get_all_messages() == []
+
+            await app._mount_message(UserMessage("test msg"))
+
+            messages = app._message_store.get_all_messages()
+            assert len(messages) == 1
+            assert messages[0].content == "test msg"
+
     async def test_queued_incognito_shell_preserves_mode_on_drain(self) -> None:
         """Queued incognito shell commands should drain as incognito shell."""
         app = DeepAgentsApp()
@@ -3419,7 +3442,7 @@ class TestChatScrollKeepsInputFocus:
                     ctrl=False,
                     screen_x=x,
                     screen_y=y,
-                    style=None,  # type: ignore[arg-type]
+                    style=None,
                 )
             )
             await pilot.pause()
@@ -3437,6 +3460,184 @@ class TestChatScrollKeepsInputFocus:
             # Stays focusable (keyboard scrolling) but doesn't grab focus on click.
             assert chat.focusable
             assert chat.focus_on_click() is False
+
+
+class TestMessageTimestampFooters:
+    """Tests for toggleable message timestamp footers."""
+
+    @staticmethod
+    def _sync_tz() -> None:
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    async def test_toggle_adds_and_removes_footers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `/timestamps` toggle adds and removes visible footer widgets."""
+        previous_tz = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "UTC")
+        # Sandbox config so the toggle's persistence starts from "hidden" and
+        # does not touch the real user config.
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        # Pin the clock style so the assertion is locale-independent.
+        monkeypatch.setattr(
+            "deepagents_code.formatting.uses_24_hour_clock", lambda: False
+        )
+        self._sync_tz()
+        app = DeepAgentsApp()
+
+        try:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._mount_message(UserMessage("hello", id="msg-fixed"))
+                data = app._message_store.get_message("msg-fixed")
+                assert data is not None
+                data.timestamp = 1_704_110_405.0
+
+                await app._toggle_message_timestamp_footers()
+                await pilot.pause()
+
+                footer = app.query_one("#msg-fixed-timestamp-footer", Static)
+                rendered = footer.render()
+                assert isinstance(rendered, Content)
+                assert rendered.plain == "Jan 1, 12:00:05 PM"
+
+                await app._toggle_message_timestamp_footers()
+                await pilot.pause()
+
+                with pytest.raises(NoMatches):
+                    app.query_one("#msg-fixed-timestamp-footer", Static)
+        finally:
+            if previous_tz is None:
+                monkeypatch.delenv("TZ", raising=False)
+            else:
+                monkeypatch.setenv("TZ", previous_tz)
+            self._sync_tz()
+
+    async def test_mount_message_adds_footer_when_enabled(self) -> None:
+        """New messages receive a footer while timestamps are enabled."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(UserMessage("hello", id="msg-live"))
+            await pilot.pause()
+
+            assert app.query_one("#msg-live-timestamp-footer", Static)
+
+    async def test_app_message_has_no_footer_when_enabled(self) -> None:
+        """App-status notes (e.g. resumed-thread) never receive a footer."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(AppMessage("Resumed thread: abc123", id="msg-app"))
+            await pilot.pause()
+
+            assert app.query_one("#msg-app", AppMessage)
+            with pytest.raises(NoMatches):
+                app.query_one("#msg-app-timestamp-footer", Static)
+
+    async def test_summarization_message_has_no_footer(self) -> None:
+        """`SUMMARIZATION` system notices never receive a footer."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._message_timestamps_visible = True
+            await app._mount_message(
+                SummarizationMessage("Summarized prior turns", id="msg-summ")
+            )
+            await pilot.pause()
+
+            assert app.query_one("#msg-summ", SummarizationMessage)
+            with pytest.raises(NoMatches):
+                app.query_one("#msg-summ-timestamp-footer", Static)
+
+
+class TestMessageTimestampsPersistence:
+    """Tests for persisting the timestamp-footer visibility to config."""
+
+    def test_load_defaults_false_when_config_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing config yields the hidden default."""
+        from deepagents_code.app import _load_message_timestamps_visible
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _load_message_timestamps_visible() is False
+
+    def test_load_reads_saved_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `true` preference is read back."""
+        from deepagents_code.app import _load_message_timestamps_visible
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_message_timestamps = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_message_timestamps_visible() is True
+
+    def test_load_ignores_non_boolean(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-boolean preference is ignored with a warning."""
+        from deepagents_code.app import _load_message_timestamps_visible
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\nshow_message_timestamps = "yes"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_message_timestamps_visible() is False
+        assert any(
+            "show_message_timestamps" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_message_timestamps_visible,
+            _save_message_timestamps_visible_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_message_timestamps_visible_result(True).ok is True
+        assert _load_message_timestamps_visible() is True
+        assert _save_message_timestamps_visible_result(False).ok is True
+        assert _load_message_timestamps_visible() is False
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_message_timestamps_visible_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_message_timestamps_visible_result(True).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_message_timestamps"] is True
 
 
 class TestAppBlurPausesCursorBlink:
@@ -8400,7 +8601,7 @@ class TestPrewarmAwait:
             call_order.append("prewarm")
             await asyncio.sleep(0)  # yield so any out-of-order calls would land first
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             result = MagicMock()
             result.apply_to_settings = MagicMock()
@@ -8446,7 +8647,7 @@ class TestPrewarmAwait:
         app._assistant_id = "coder"
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8497,7 +8698,7 @@ class TestPrewarmAwait:
             call_order.append(f"save_recent_agent:{name}")
             return True
 
-        def record_create_model(**_: Any) -> MagicMock:
+        def record_create_model(*_: Any, **__: Any) -> MagicMock:
             call_order.append("create_model")
             msg = "no credentials"
             raise ModelConfigError(msg)
@@ -8542,7 +8743,7 @@ class TestPrewarmAwait:
         app._assistant_id = None
         app._default_assistant_id = "agent"
 
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
@@ -8641,6 +8842,24 @@ class TestPrewarmAwait:
         assert notify_mock.call_args.kwargs["severity"] == "warning"
         assert notify_mock.call_args.kwargs["markup"] is False
 
+    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
+        """Cache-miss skill discovery must use the process import gate."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.object(
+                app,
+                "_discover_skills_and_roots_with_import_lock",
+                return_value=([], []),
+            ) as guarded_discover_mock,
+            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
+            patch.object(app, "_mount_message", AsyncMock()),
+        ):
+            await app._invoke_skill("missing")
+
+        guarded_discover_mock.assert_called_once()
+        raw_discover_mock.assert_not_called()
+
     async def test_start_server_waits_for_skill_discovery_import_gate(
         self,
     ) -> None:
@@ -8648,19 +8867,17 @@ class TestPrewarmAwait:
         from deepagents_code import config as cli_config
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-8"}
         app._server_kwargs = None
         app._mcp_preload_kwargs = None
         app._resume_thread_intent = None
         app._assistant_id = None
 
-        await app._deepagents_import_lock.acquire()
-
-        def fake_create_model(**_: Any) -> MagicMock:
+        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
             result = MagicMock()
             result.apply_to_settings = MagicMock()
             result.provider = "anthropic"
-            result.model_name = "claude-opus-4-7"
+            result.model_name = "claude-opus-4-8"
             return result
 
         with (
@@ -8671,14 +8888,17 @@ class TestPrewarmAwait:
             patch("deepagents_code.model_config.save_recent_model"),
             patch.object(app, "post_message"),
         ):
-            task = asyncio.create_task(app._start_server_background())
-            await asyncio.sleep(0)
-            assert create_model_mock.call_count == 0
-            app._deepagents_import_lock.release()
+            _DEEPAGENTS_IMPORT_LOCK.acquire()
+            try:
+                task = asyncio.create_task(app._start_server_background())
+                await asyncio.sleep(0)
+                assert create_model_mock.call_count == 0
+            finally:
+                _DEEPAGENTS_IMPORT_LOCK.release()
             with contextlib.suppress(Exception):
                 await task
 
-        create_model_mock.assert_called_once()
+            create_model_mock.assert_called_once()
 
 
 class TestHeaderAndTitle:
@@ -9242,6 +9462,24 @@ class TestMCPLoginCommand:
 
         assert app._mcp_server_info == [original]
         assert app._mcp_optimistic_original_server_info == {}
+
+    def test_optimistic_reenable_started_disabled_points_to_ctrl_r(self) -> None:
+        """F2 re-enable guidance should use the in-modal reconnect shortcut."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        original = MCPServerInfo(
+            name="notion",
+            transport="http",
+            status="disabled",
+            error="Disabled by user.",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+
+        app._apply_optimistic_disabled_state("notion", disabled=False)
+
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0].status == "disabled"
+        assert app._mcp_server_info[0].error == "Re-enabled — press Ctrl+R to load."
 
     def test_optimistic_mcp_login_pending_state_relabels_only_target(self) -> None:
         """Deferred OAuth login updates the target without touching siblings."""
@@ -10566,3 +10804,107 @@ class TestRespawnServer:
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
             assert ready[0].mcp_server_info is None
+
+
+class TestCanBypassQueue:
+    """Tests for `_can_bypass_queue`, focused on failed-startup recovery.
+
+    A failed model build (e.g. a missing provider package) leaves the app in a
+    `_server_startup_error` state that parks queued messages until a successful
+    start drains them. Recovery commands like `/install` must escape that wedge
+    so the user can repair the session, but only while nothing is running.
+    """
+
+    def _app(self) -> DeepAgentsApp:
+        return DeepAgentsApp(thread_id="thread-bypass")
+
+    def test_install_bypasses_when_startup_failed(self) -> None:
+        app = self._app()
+        app._server_startup_error = "Missing package for provider 'baseten'."
+        app._agent_running = False
+        app._shell_running = False
+        assert app._can_bypass_queue("/install baseten") is True
+
+    def test_reload_and_update_bypass_when_startup_failed(self) -> None:
+        app = self._app()
+        app._server_startup_error = "boom"
+        assert app._can_bypass_queue("/reload") is True
+        assert app._can_bypass_queue("/update") is True
+
+    def test_install_does_not_bypass_without_startup_error(self) -> None:
+        # Normal idle: `/install` is QUEUED-tier and only earns the recovery
+        # exemption when startup has actually failed.
+        app = self._app()
+        app._server_startup_error = None
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_install_does_not_bypass_while_agent_running(self) -> None:
+        # Reinstalling the tool mid-turn could swap the running binary, so the
+        # recovery bypass is gated on no active work even when an error is set.
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._agent_running = True
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_install_does_not_bypass_while_shell_running(self) -> None:
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._shell_running = True
+        assert app._can_bypass_queue("/install baseten") is False
+
+    def test_non_recovery_queued_command_stays_queued_on_failure(self) -> None:
+        # The exemption is allowlisted; an unrelated QUEUED command (`/clear`)
+        # must not ride along into the failed-startup bypass.
+        app = self._app()
+        app._server_startup_error = "boom"
+        assert app._can_bypass_queue("/clear") is False
+
+    def test_install_bypasses_even_during_startup_sequence(self) -> None:
+        # `_startup_sequence_running` and `_connecting` intentionally do NOT
+        # block recovery — only active agent/shell work does. This pins that
+        # decision so a future "tightening" of the guard can't silently
+        # re-wedge the recovery path.
+        app = self._app()
+        app._server_startup_error = "boom"
+        app._startup_sequence_running = True
+        app._connecting = True
+        assert app._can_bypass_queue("/install baseten") is True
+
+    async def test_submit_input_processes_install_after_failed_startup(self) -> None:
+        # End-to-end: the fix is only real if `_submit_input` actually routes
+        # `/install` to processing instead of the pending queue. The predicate
+        # tests above don't catch a regression that unwires `_can_bypass_queue`
+        # from the queue decision — this does.
+        app = self._app()
+        app._server_startup_error = "Missing package for provider 'baseten'."
+        processed: list[tuple[str, str]] = []
+
+        async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
+            processed.append((value, mode))
+
+        app._process_message = _process  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        await app._submit_input("/install baseten", "command")
+
+        assert processed == [("/install baseten", "command")]
+        assert not app._pending_messages
+
+    async def test_submit_input_queues_non_recovery_after_failed_startup(self) -> None:
+        # The mirror of the above: a non-recovery command still parks in the
+        # queue during the failed-startup state instead of being processed.
+        app = self._app()
+        app._server_startup_error = "boom"
+        processed: list[tuple[str, str]] = []
+
+        async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
+            processed.append((value, mode))
+
+        app._process_message = _process  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        await app._submit_input("/clear", "command")
+
+        assert processed == []
+        assert len(app._pending_messages) == 1
+        assert app._pending_messages[0].text == "/clear"

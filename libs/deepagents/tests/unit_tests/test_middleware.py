@@ -179,6 +179,13 @@ class TestFilesystemMiddleware:
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result.content == str(["/test.txt", "/test2.txt"])
 
+    def test_ls_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
+
     def test_ls_shortterm_with_path(self):
         files = {
             "/test.txt": FileData(
@@ -411,7 +418,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()

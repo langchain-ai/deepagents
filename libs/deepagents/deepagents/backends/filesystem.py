@@ -240,14 +240,18 @@ class FilesystemBackend(BackendProtocol):
             path: Absolute directory path to list files from.
 
         Returns:
-            List of `FileInfo`-like dicts for files and directories directly in the
-                directory. Directories have a trailing `/` in their path and
-                `is_dir=True`.
+            `LsResult` with `entries` listing files and directories directly in the
+            directory on success. Directories have a trailing `/` in their path and
+            `is_dir=True`. Missing paths set `error` to `Path '<path>': path_not_found`
+            with `entries=None`. File paths set `error` to `Path '<path>': not_a_directory`
+            with `entries=None`. Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)
-            if not dir_path.exists() or not dir_path.is_dir():
-                return LsResult(entries=[])
+            if not dir_path.exists():
+                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+            if not dir_path.is_dir():
+                return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)

@@ -1106,7 +1106,7 @@ def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     result = be.ls("loop")
 
-    assert result.entries == []
+    assert result.entries is None
     assert result.error is not None
     assert "Cannot list 'loop'" in result.error
 

@@ -262,7 +262,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=[])
+            return LsResult(error=msg, entries=None)
 
         results: list[FileInfo] = []
         errors: list[str] = []

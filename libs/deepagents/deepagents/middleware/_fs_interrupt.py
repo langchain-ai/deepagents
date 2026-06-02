@@ -165,8 +165,12 @@ def _build_interrupt_on_from_permissions(
     if not any(r.mode == "interrupt" for r in rules):
         return {}
 
+    # Offer the approver the full decision set, matching the default for
+    # user-supplied `interrupt_on` tools. All four are human-controlled, so the
+    # human stays the authorization gate: `edit`ed calls still re-enter the tool
+    # and hit its pre-execution deny check, and `respond` skips execution.
     # Annotated so ty narrows to `list[DecisionType]` instead of `list[str]`.
-    allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "reject"]
+    allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "edit", "reject", "respond"]
     result: dict[str, InterruptOnConfig] = {}
     for tool_name, (op, arg, scope, pattern_arg) in _FS_TOOL_PATH_ARGS.items():
         if not any(r.mode == "interrupt" and op in r.operations for r in rules):

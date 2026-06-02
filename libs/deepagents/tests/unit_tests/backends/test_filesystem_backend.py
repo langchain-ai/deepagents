@@ -1003,6 +1003,35 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
 
 
+class TestGrepPythonFallbackTimeout:
+    """Tests for the wall-clock timeout on the Python grep fallback."""
+
+    def test_python_search_times_out_with_zero_timeout(self, tmp_path: Path) -> None:
+        """`_python_search` returns a `timed out` partial error when the deadline is exceeded."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
+        assert partial_error is not None
+        assert "timed out" in partial_error
+
+    def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`grep` surfaces the timeout as a partial error while still returning matches found so far."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            be,
+            "_python_search",
+            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, "Grep of '/' timed out after 0s with 1 matching file(s)"),
+        )
+        result = be.grep("hello", path="/")
+        assert result.error is not None
+        assert "timed out" in result.error
+        # Partial matches collected before the timeout are preserved.
+        assert result.matches
+        assert result.matches[0]["path"] == "/file.txt"
+
+
 class TestEditCrlfNormalization:
     """Tests for CRLF normalization in edit(). See #2247."""
 

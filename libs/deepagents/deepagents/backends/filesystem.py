@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import wcmatch.glob as wcglob
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
@@ -629,12 +631,12 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=DEFAULT_GREP_TIMEOUT,
                 check=False,
                 cwd=rg_cwd,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("ripgrep timed out after 30s; using Python grep fallback")
+            logger.warning("ripgrep timed out after %ds; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
             return None
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             # `rg` resolved at cache time but failed at exec — treat as a
@@ -713,25 +715,35 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]], str | None]:  # noqa: C901, PLR0912
+    def _python_search(  # noqa: C901, PLR0912
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        *,
+        timeout: int = DEFAULT_GREP_TIMEOUT,
+    ) -> tuple[dict[str, list[tuple[int, str]]], str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 
-        Recursively searches files, respecting `max_file_size_bytes` limit.
+        Recursively searches files, respecting `max_file_size_bytes` limit
+        and a wall-clock timeout.
 
         Args:
             pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            timeout: Maximum wall-clock seconds before the search is aborted.
 
         Returns:
             `results` contains every match found before iteration completed.
 
                 `partial_error` is `None` on a clean walk, otherwise a
-                human-readable message indicating the walk aborted early
-                (e.g., a directory entry was removed mid-walk); callers
+                human-readable message indicating the walk was incomplete:
+                either the wall-clock `timeout` elapsed or the walk aborted
+                early (e.g., a directory entry was removed mid-walk). Callers
                 should treat such results as incomplete.
         """
-        # Compile escaped pattern once for efficiency (used in loop)
+        deadline = time.monotonic() + timeout
         regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -739,6 +751,14 @@ class FilesystemBackend(BackendProtocol):
 
         try:
             for fp in root.rglob("*"):
+                if time.monotonic() > deadline:
+                    msg = (
+                        f"Grep of '{base_full}' timed out after {timeout}s "
+                        f"with {len(results)} matching file(s); try a more "
+                        f"specific pattern or a narrower path."
+                    )
+                    logger.warning("%s", msg)
+                    return results, msg
                 try:
                     if not fp.is_file():
                         continue

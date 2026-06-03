@@ -4,6 +4,10 @@
 
 From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and `mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API. The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
 
+## [0.2.1](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.0...deepagents-cli==0.2.1) (2026-06-03)
+
+* Version bumps
+
 ## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.2...deepagents-cli==0.2.0) (2026-06-01)
 
 ### ⚠ BREAKING CHANGES

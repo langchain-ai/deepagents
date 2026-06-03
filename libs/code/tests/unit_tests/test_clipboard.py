@@ -251,6 +251,25 @@ class TestCopySelectionToClipboard:
             markup=False,
         )
 
+    def test_copies_select_all_selection(self) -> None:
+        """Textual represents triple-click/select-all as `Selection(None, None)`."""
+        from textual.selection import SELECT_ALL
+
+        mock_app = MagicMock()
+        widget = MagicMock()
+        widget.is_attached = True
+        widget.text_selection = SELECT_ALL
+        widget.get_selection.return_value = ("full widget text", None)
+        mock_app.query.return_value = [widget]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "full widget text")
+
     def test_handles_widget_selection_failures(self, caplog) -> None:
         """A failing widget logs and is skipped, not re-raised."""
         mock_app = MagicMock()
@@ -264,6 +283,80 @@ class TestCopySelectionToClipboard:
 
         assert "Failed to get selection from widget" in caplog.text
         assert "No selection" in caplog.text
+
+    def test_skips_detached_widget_without_reading_text_selection(self) -> None:
+        """Un-attached widgets are skipped before `text_selection` is read.
+
+        Guards the contract that `is_attached` short-circuits the property
+        access — `widget.text_selection` raises `NoScreen` for detached
+        widgets, so reading it would re-introduce the crash this fix
+        addresses.
+        """
+        from unittest.mock import PropertyMock
+
+        mock_app = MagicMock()
+        detached = MagicMock()
+        detached.is_attached = False
+        type(detached).text_selection = PropertyMock(
+            side_effect=AssertionError("text_selection must not be read"),
+        )
+        mock_app.query.return_value = [detached]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_not_called()
+
+    def test_skips_widget_when_text_selection_raises_noscreen(self, caplog) -> None:
+        """`NoScreen` from a lifecycle race is logged; sibling copy proceeds."""
+        from unittest.mock import PropertyMock
+
+        from textual.dom import NoScreen
+
+        mock_app = MagicMock()
+
+        racy = MagicMock()
+        racy.is_attached = True
+        type(racy).text_selection = PropertyMock(
+            side_effect=NoScreen("node has no screen"),
+        )
+
+        sibling = MagicMock()
+        sibling.is_attached = True
+        sibling.text_selection = MagicMock(end=1)
+        sibling.get_selection.return_value = ("sibling text", None)
+
+        mock_app.query.return_value = [racy, sibling]
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy,
+        ):
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "sibling text")
+        assert "Skipping widget" in caplog.text
+
+
+class TestAppSelectionCopy:
+    """Regression coverage for click-chain selection copy timing."""
+
+    def test_mouse_up_defers_copy_until_after_click_selection_updates(self) -> None:
+        from deepagents_code.app import DeepAgentsApp
+
+        mock_app = MagicMock()
+        event = MagicMock()
+        with patch("deepagents_code.clipboard.copy_selection_to_clipboard") as copy:
+            DeepAgentsApp.on_mouse_up(mock_app, event)
+
+        copy.assert_not_called()
+        mock_app.call_after_refresh.assert_called_once_with(copy, mock_app)
 
 
 class TestClipboardLogger:

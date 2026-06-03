@@ -59,6 +59,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "toggle_authorize_url", "Toggle URL", show=False),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Esc unblocks the worker; the worker performs the actual shutdown.
@@ -111,7 +112,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     }
 
     MCPLoginScreen .ml-history-line {
-        height: 1;
+        height: auto;
         color: $text-muted;
         padding: 0 1;
     }
@@ -156,6 +157,10 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._help_widget: Static | None = None
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
+        self._authorize_url: str | None = None
+        self._authorize_url_opened_in_browser = False
+        self._authorize_url_expanded = False
+        self._waiting_for_authorization = False
 
         # Each prompt method blocks on a fresh Future; cancellation completes
         # it with MCPLoginCancelledError so the worker unblocks rather than
@@ -164,6 +169,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._cancelled = False
         self._done = False
         self._outcome: LoginOutcome | None = None
+        self._last_history_line: str | None = None
 
     @property
     def is_done(self) -> bool:
@@ -216,8 +222,17 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
             container.styles.border = ("ascii", colors.primary)
         self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301 - Textual handler
-        """Open style-embedded hyperlinks (the authorize and verification URLs)."""
+    def on_click(self, event: Click) -> None:
+        """Open style links, or expand/collapse the manual authorize URL."""
+        if (
+            event.widget is self._link_widget
+            and self._authorize_url is not None
+            and self._authorize_url_opened_in_browser
+            and not event.style.link
+        ):
+            self._toggle_authorize_url()
+            event.stop()
+            return
         open_style_link(event)
 
     # ------------------------------------------------------------------
@@ -225,21 +240,18 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     # ------------------------------------------------------------------
 
     async def show_authorize_url(self, url: str, *, opened_in_browser: bool) -> None:
-        """Render the authorize URL as a clickable link with surrounding text."""
+        """Render browser-open status and only reveal the URL when needed."""
+        self._authorize_url = url
+        self._authorize_url_opened_in_browser = opened_in_browser
+        self._authorize_url_expanded = not opened_in_browser
+        self._waiting_for_authorization = opened_in_browser
         if opened_in_browser:
-            self._set_status(
-                f"Opened your browser to approve access for {self._server_name}.",
-            )
+            self._render_authorization_wait_status(self._spinner.next_frame())
         else:
-            self._set_status("Open the authorize URL below in a browser to continue.")
-        if self._link_widget is not None:
-            self._link_widget.display = True
-            self._link_widget.update(
-                Content.assemble(
-                    ("Authorize URL: ", "bold"),
-                    (url, TStyle(link=url, underline=True)),
-                ),
+            self._set_status(
+                f"Open the authorization URL manually to connect {self._server_name}.",
             )
+        self._render_authorize_url()
 
     async def request_callback_url(self) -> str:
         """Wait for the user to paste back the OAuth callback URL.
@@ -257,6 +269,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         expires_in: int,
     ) -> None:
         """Render RFC 8628 device-code instructions inline."""
+        self._waiting_for_authorization = False
         self._set_status(
             f"Visit the URL below and enter the code (expires in {expires_in}s):",
         )
@@ -275,9 +288,10 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         )
 
     async def show_success(self, message: str) -> None:
-        """Render a success status line and append it to the history pane."""
+        """Render a success status line without leaving OAuth fallback UI behind."""
+        self._waiting_for_authorization = False
+        self._hide_authorize_url()
         self._set_status(message)
-        self._append_history(message)
 
     async def show_notice(self, message: str) -> None:
         """Append a progress notice without disrupting the active prompt."""
@@ -285,6 +299,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
 
     async def show_error(self, message: str) -> None:
         """Render a fatal (flow-ending) error status line and history entry."""
+        self._waiting_for_authorization = False
         self._set_status(message)
         self._append_history(message)
 
@@ -292,16 +307,92 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     # Internal helpers.
     # ------------------------------------------------------------------
 
+    def _hide_authorize_url(self) -> None:
+        """Hide any OAuth authorization URL or fallback affordance."""
+        self._authorize_url = None
+        self._authorize_url_opened_in_browser = False
+        self._authorize_url_expanded = False
+        self._waiting_for_authorization = False
+        self._render_authorize_url()
+        self._set_help("Esc to cancel")
+
+    def _toggle_authorize_url(self) -> None:
+        """Toggle the manual authorize URL when the fallback affordance is active."""
+        if (
+            self._pending_input is not None
+            or self._authorize_url is None
+            or not self._authorize_url_opened_in_browser
+        ):
+            return
+        self._authorize_url_expanded = not self._authorize_url_expanded
+        self._render_authorize_url()
+
+    def _render_authorize_url(self) -> None:
+        """Render the manual authorize URL affordance."""
+        if self._link_widget is None:
+            return
+        url = self._authorize_url
+        if url is None:
+            self._link_widget.display = False
+            self._link_widget.update("")
+            return
+        self._link_widget.display = True
+        glyphs = get_glyphs()
+        if self._authorize_url_opened_in_browser and not self._authorize_url_expanded:
+            self._link_widget.update(
+                Content.assemble(
+                    ("Having trouble? Show manual authorization URL ", "dim"),
+                    (glyphs.cursor, "dim"),
+                ),
+            )
+            self._set_help("Enter to show URL · Esc to cancel")
+            return
+        prefix = (
+            f"Having trouble? Hide manual authorization URL {glyphs.arrow_down}\n"
+            if self._authorize_url_opened_in_browser
+            else "Authorization URL:\n"
+        )
+        self._link_widget.update(
+            Content.assemble(
+                (prefix, "bold"),
+                (url, TStyle(link=url, underline=True)),
+            ),
+        )
+        if self._authorize_url_opened_in_browser:
+            self._set_help("Enter to hide URL · Esc to cancel")
+        else:
+            self._set_help("Esc to cancel")
+
+    def _render_authorization_wait_status(self, frame: str) -> None:
+        """Render the browser-opened waiting state with an animated status line."""
+        self._set_status(
+            f"We opened your browser to connect {self._server_name}.\n"
+            "Complete authorization there to continue.\n\n"
+            f"Status: {frame} Waiting…",
+        )
+
     def _set_status(self, message: str) -> None:
         """Update the top status line."""
         self._status = message
         if self._status_widget is not None:
             self._status_widget.update(Content.from_markup("$msg", msg=message))
 
+    def _set_help(self, message: str) -> None:
+        """Update the footer help text."""
+        if self._help_widget is not None:
+            self._help_widget.update(message)
+
+    def _hide_history(self) -> None:
+        """Hide the history pane for clean terminal states."""
+        if self._history_widget is not None:
+            self._history_widget.display = False
+        self._last_history_line = None
+
     def _append_history(self, line: str) -> None:
         """Append a line to the scrolling history pane."""
-        if self._history_widget is None:
+        if self._history_widget is None or line == self._last_history_line:
             return
+        self._last_history_line = line
         self._history_widget.display = True
         self._history_widget.mount(
             Static(line, classes="ml-history-line", markup=False)
@@ -356,6 +447,10 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         if future is not None and not future.done():
             future.set_result(event.value)
 
+    def action_toggle_authorize_url(self) -> None:
+        """Toggle the manual authorize URL fallback via Enter."""
+        self._toggle_authorize_url()
+
     def action_cancel(self) -> None:
         """Cancel the login flow.
 
@@ -390,10 +485,15 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
             return
         self._done = True
         self._outcome = "success" if success else "failed"
+        self._stop_spinner_timer()
+        self._waiting_for_authorization = False
+        if success:
+            self._hide_authorize_url()
+            self._hide_history()
         if message is not None:
             self._set_status(message)
-            self._append_history(message)
-        self._stop_spinner_timer()
+            if not success:
+                self._append_history(message)
         glyphs = get_glyphs()
         marker = glyphs.checkmark if success else glyphs.error
         if self._title_widget is not None:
@@ -415,17 +515,10 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self.set_timer(0.6, _deferred_dismiss)
 
     def _tick_spinner(self) -> None:
-        """Advance the title spinner while login is in progress."""
-        if self._done or self._title_widget is None:
+        """Advance the status-line spinner while waiting for browser auth."""
+        if self._done or not self._waiting_for_authorization:
             return
-        frame = self._spinner.next_frame()
-        self._title_widget.update(
-            Content.from_markup(
-                "MCP login: $name $frame",
-                name=self._server_name,
-                frame=frame,
-            )
-        )
+        self._render_authorization_wait_status(self._spinner.next_frame())
 
     def _stop_spinner_timer(self) -> None:
         if self._spinner_timer is not None:

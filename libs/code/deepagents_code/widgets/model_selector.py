@@ -375,6 +375,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             Styled `Content` for the info line.
         """
+        if self._filter_text.strip():
+            return Content.styled("Searching all models from installed providers")
         if self._recommended_only:
             return Content.styled(
                 "Showing recommended models — Ctrl+R for all",
@@ -382,6 +384,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         return Content.styled(
             "Showing all models from installed providers — Ctrl+R for recommended",
         )
+
+    def _update_info_line(self) -> None:
+        """Refresh the standard selector info line."""
+        if self._curated:
+            return
+        info = self.query_one("#model-selector-info", Static)
+        info.update(self._info_line_content())
 
     def _help_text(self) -> str:
         """Build the footer help text.
@@ -621,6 +630,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The input changed event.
         """
         self._filter_text = event.value
+        self._update_info_line()
         if not self._loaded:
             return  # on_mount will re-apply filter after data loads
         self._update_filtered_list()
@@ -647,7 +657,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
 
-        Results are sorted by match score (best first).
+        Results are sorted by match score (best first). In standard `/model`
+        mode, non-empty searches span the full installed model list even when
+        the default view is currently constrained to recommended models.
         """
         query = self._filter_text.strip()
         if not query:
@@ -656,11 +668,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return
 
         tokens = query.split()
+        search_models = self._all_models if self._curated else self._unfiltered_models
 
         try:
             matchers = [Matcher(token, case_sensitive=False) for token in tokens]
             scored: list[tuple[float, str, str]] = []
-            for spec, provider in self._all_models:
+            for spec, provider in search_models:
                 scores = [m.match(spec) for m in matchers]
                 if all(s > 0 for s in scores):
                     scored.append((min(scores), spec, provider))
@@ -671,7 +684,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 query,
                 exc_info=True,
             )
-            self._filtered_models = list(self._all_models)
+            self._filtered_models = list(search_models)
             self._selected_index = self._find_current_model_index()
             return
 

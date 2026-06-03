@@ -74,9 +74,10 @@ The middleware:
 
 ### Persistence
 
-The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. By default (`snapshot_between_turns=True`), state also persists across turns in the same LangGraph `thread_id` by snapshotting after each run and restoring before the next.
+The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. By default (`mode="thread"`), state also persists across turns in the same LangGraph `thread_id` by snapshotting after each run and restoring before the next.
 
-Set `snapshot_between_turns=False` to reset REPL state after each turn.
+Set `mode="call"` to reset REPL state on every `eval` tool call.
+Set `mode="turn"` to persist state only within each turn.
 Snapshot payloads are capped by `max_snapshot_bytes` (defaults to `memory_limit`); oversized snapshots are dropped instead of persisted.
 
 ```js
@@ -243,7 +244,7 @@ CodeInterpreterMiddleware(
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
-    snapshot_between_turns=True,     # snapshot in after_agent, restore in before_agent
+    mode="thread",                   # "thread" | "turn" | "call"
     max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
     skills_backend=None,             # BackendProtocol for @/skills/<name> imports

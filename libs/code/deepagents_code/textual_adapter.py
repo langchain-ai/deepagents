@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext  # noqa: TC001
-from deepagents_code._debug import configure_debug_logging
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     SessionStats as SessionStats,
@@ -71,7 +70,6 @@ from deepagents_code.widgets.messages import (
 )
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
@@ -954,8 +952,20 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                if adapter._set_spinner and keep_thinking_spinner:
-                                    await adapter._set_spinner("Thinking")
+                                if keep_thinking_spinner:
+                                    # The argument/approval phase uses the global
+                                    # "Thinking" spinner instead of a per-tool one.
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner("Thinking")
+                                else:
+                                    # Show a per-tool running spinner immediately so
+                                    # auto-executed tools such as grep, glob,
+                                    # read_file, and ls display activity instead of
+                                    # sitting idle until their result arrives. Every
+                                    # tool outside the frozenset hits this branch;
+                                    # those that go on to interrupt for approval are
+                                    # paused again below.
+                                    tool_msg.set_running()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -999,6 +1009,22 @@ async def execute_task_textual(
                 any_rejected = False
                 ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
+
+                # Tools mounted above start their spinner immediately, but a
+                # tool blocked on HITL approval or `ask_user` input is not
+                # actually running. Pause every in-flight row so none shows a
+                # misleading "Running..."; the approve branches below call
+                # `set_running` again to resume those that proceed. Guard each
+                # row individually so a single bad widget can't abort the whole
+                # interrupt handler (mirrors `clear_awaiting_approval` below).
+                for tool_msg in adapter._current_tool_messages.values():
+                    try:
+                        tool_msg.pause_running()
+                    except Exception:
+                        logger.exception(
+                            "Failed to pause running state on tool widget %s",
+                            tool_msg.tool_name,
+                        )
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
                     questions = ask_req["questions"]
@@ -1314,7 +1340,7 @@ async def execute_task_textual(
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     # Model call already completed (HITL interrupt fires after
-                    # the model node); `TokenStateMiddleware.after_model`
+                    # the model node); `ResumeStateMiddleware.after_model`
                     # persisted the count, so only refresh UI here.
                     _report_tokens(
                         adapter,
@@ -1342,7 +1368,7 @@ async def execute_task_textual(
         return turn_stats
 
     # Update token count and return stats. Persistence is handled inside the
-    # graph by `TokenStateMiddleware.after_model`, so this only refreshes UI.
+    # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     _report_tokens(
         adapter,
@@ -1466,7 +1492,7 @@ def _report_tokens(
 ) -> None:
     """Refresh the token-count UI display.
 
-    Persistence into graph state is owned by `TokenStateMiddleware.after_model`
+    Persistence into graph state is owned by `ResumeStateMiddleware.after_model`
     (normal turns), `_handle_offload` (offload turns), and the interrupt-cleanup
     `aupdate_state` write (partial turns) — never this helper.
 

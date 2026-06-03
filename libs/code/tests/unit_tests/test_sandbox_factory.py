@@ -416,7 +416,7 @@ class TestVerifySandboxDeps:
             pytest.raises(
                 ImportError,
                 match=rf"Missing dependencies for '{provider}' sandbox.*"
-                rf"pip install 'deepagents-code\[{provider}\]'",
+                rf"/install {provider}.*dcode --install {provider}",
             ),
         ):
             verify_sandbox_deps(provider)

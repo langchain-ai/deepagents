@@ -94,7 +94,7 @@ class TestSetServerDisabled:
         """Corrupt config must not be silently overwritten.
 
         A transient parse failure could otherwise truncate sibling
-        sections (e.g. `[mcp_trust]`) the next time the user toggles a
+        sections (e.g. model profiles) the next time the user toggles a
         disable state.
         """
         cfg = tmp_path / "config.toml"

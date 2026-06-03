@@ -10,7 +10,9 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
+from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _make_fs_when_predicate
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
@@ -163,6 +165,201 @@ class TestFilesystemPermission:
         """
         rule = FilesystemPermission(operations=["read"], paths=["/workspace\\sub\\**"])
         assert rule.paths == ["/workspace\\sub\\**"]
+
+    def test_interrupt_mode_accepted(self):
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        assert rule.mode == "interrupt"
+
+
+class _FakeReq:
+    """Stand-in for ToolCallRequest; we only read `tool_call['args']` in the predicate."""
+
+    def __init__(self, args: dict) -> None:
+        self.tool_call = {"args": args}
+
+
+class TestCheckFsPermissionInterrupt:
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("/secrets/x.txt", "interrupt"),
+            ("/workspace/x.txt", "allow"),
+        ],
+    )
+    def test_interrupt_rule_resolution(self, path, expected):
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
+        assert _check_fs_permission(rules, "write", path) == expected
+
+    def test_deny_rule_takes_precedence_when_listed_first(self):
+        """First-match wins; if deny is listed first, it beats a later interrupt rule."""
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt"),
+        ]
+        assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "deny"
+
+    def test_filter_paths_does_not_drop_interrupt_paths(self):
+        """Interrupt-mode paths must remain in result-filtered lists.
+
+        The pre-execution `when` predicate is scope-aware: it fires before the
+        tool runs for both exact-path tools and bulk-path tools (including the
+        pathless and parent-path cases), so by the time result-filtering runs
+        the user has either approved or the call was rejected. Stripping
+        interrupt-mode results here would silently empty out a listing the
+        user just approved.
+        """
+        rules = [FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="interrupt")]
+        kept = _filter_paths_by_permission(rules, "read", ["/secret/a.txt", "/public/b.txt"])
+        assert kept == ["/secret/a.txt", "/public/b.txt"]
+
+
+class TestBuildInterruptOnFromPermissions:
+    def test_empty_when_no_rules(self):
+        assert _build_interrupt_on_from_permissions([]) == {}
+
+    def test_empty_when_no_interrupt_rules(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        assert _build_interrupt_on_from_permissions(rules) == {}
+
+    def test_registers_only_tools_whose_op_could_interrupt(self):
+        """A write-only interrupt rule registers only the write-op tools."""
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        out = _build_interrupt_on_from_permissions([rule])
+        assert set(out) == {"write_file", "edit_file"}
+
+    def test_registers_read_tools_for_read_interrupt(self):
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        out = _build_interrupt_on_from_permissions([rule])
+        assert set(out) == {"ls", "read_file", "glob", "grep"}
+
+    @pytest.mark.parametrize(
+        ("file_path", "expected"),
+        [
+            # literal match inside the rule's subtree
+            ("/secrets/key.pem", True),
+            # outside the rule
+            ("/workspace/x.txt", False),
+            # the parent dir itself doesn't match `/secrets/**` (** requires content after the slash)
+            ("/secrets", False),
+        ],
+    )
+    def test_exact_predicate(self, file_path, expected):
+        """Exact-scope tools fire iff the literal path arg matches the rule."""
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "write", "file_path", "exact")
+        assert when(_FakeReq({"file_path": file_path})) is expected
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # pathless: can't localize → fire
+            ({"path": None}, True),
+            ({}, True),
+            # current-dir aliases collapse to root → fire
+            ({"path": "."}, True),
+            ({"path": ""}, True),
+            ({"path": "./"}, True),
+            ({"path": "/."}, True),
+            ({"path": "/"}, True),
+            # ancestor of the rule's anchor → fire (listing surfaces protected children)
+            ({"path": "/secrets"}, True),
+            # inside the rule's subtree → fire
+            ({"path": "/secrets/sub"}, True),
+            # unrelated subtree → no fire
+            ({"path": "/workspace"}, False),
+            # prefix lookalike — component-aware match, not string prefix
+            ({"path": "/secret"}, False),
+            # path-validation failure short-circuits to no interrupt
+            ({"path": "/secrets/../etc/passwd"}, False),
+        ],
+    )
+    def test_bulk_predicate(self, args, expected):
+        """Bulk-scope tools fire when the call subtree could intersect a rule.
+
+        Covers the HITL-bypass regressions for pathless calls and current-dir
+        aliases like ``"."``/``""``/``"./"``: `validate_path` collapses those to
+        ``/.``, which doesn't string-prefix any anchor, so the predicate
+        previously returned False and an agent could call e.g. ``grep(pattern,
+        path=".")`` to read interrupt-protected paths with no HITL prompt.
+        """
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        assert when(_FakeReq(args)) is expected
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # Absolute pattern: Python `glob` ignores `path` (the backend's
+            # `os.chdir(path)` has no effect on an absolute pattern), so gate on
+            # the pattern's own anchor. A benign `path` must not suppress the
+            # interrupt when the pattern reaches into a protected subtree.
+            ({"pattern": "/secrets/**", "path": "/workspace"}, True),
+            ({"pattern": "/secrets/sub/*.txt", "path": "/workspace"}, True),
+            # Absolute pattern anchored at root → overlaps everything → fire.
+            ({"pattern": "/**/key.pem", "path": "/workspace"}, True),
+            # Absolute pattern outside any interrupt rule → no fire.
+            ({"pattern": "/workspace/**", "path": "/workspace"}, False),
+            # Relative pattern climbing out of `path` via `..` can't be
+            # localized statically → fire conservatively.
+            ({"pattern": "../secrets/*", "path": "/workspace"}, True),
+            ({"pattern": "../../etc/*", "path": "/workspace/sub"}, True),
+            # Benign relative pattern under a non-overlapping path → no fire.
+            ({"pattern": "*.txt", "path": "/workspace"}, False),
+            # Relative pattern under the protected subtree still fires via the
+            # existing `path` check.
+            ({"pattern": "*.txt", "path": "/secrets"}, True),
+        ],
+    )
+    def test_bulk_glob_pattern_arg(self, args, expected):
+        """The glob bulk predicate gates on its `pattern` arg, not just `path`.
+
+        Regression for the HITL bypass where `glob(pattern="/secrets/**",
+        path="/workspace")` slipped past an interrupt rule on `/secrets/**`:
+        the predicate saw only the benign `/workspace` path while the sandbox
+        backend (`os.chdir(path)` then `glob.glob(pattern)`) enumerated
+        `/secrets` anyway, because Python's `glob` ignores the working
+        directory for absolute patterns.
+        """
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _build_interrupt_on_from_permissions([rule])["glob"]["when"]
+        assert when(_FakeReq(args)) is expected
+
+
+class TestGlobAnchorAndOverlap:
+    @pytest.mark.parametrize(
+        ("pattern", "expected"),
+        [
+            ("/secrets/**", "/secrets"),
+            ("/a/*/b", "/a"),
+            ("/secrets/key.pem", "/secrets/key.pem"),
+            ("/*/foo", "/"),
+            ("/**/secrets", "/"),
+        ],
+    )
+    def test_glob_anchor(self, pattern, expected):
+        assert _glob_anchor(pattern) == expected
+
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            # equal
+            ("/a/b", "/a/b", True),
+            # call inside rule
+            ("/a/b/c", "/a/b", True),
+            # rule inside call
+            ("/a", "/a/b", True),
+            # root overlaps everything, either direction
+            ("/", "/anywhere", True),
+            ("/anywhere", "/", True),
+            # component-aware: prefix lookalikes don't overlap
+            ("/secret", "/secrets", False),
+            ("/secrets", "/secret", False),
+            # disjoint
+            ("/workspace", "/secrets", False),
+        ],
+    )
+    def test_paths_overlap(self, a, b, expected):
+        assert _paths_overlap(a, b) is expected
 
 
 class TestFilesystemMiddlewarePermissionInit:

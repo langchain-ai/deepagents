@@ -156,6 +156,23 @@ class SlashCommandController:
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
+    def name_prefix_matches(self, text: str, cursor_index: int) -> list[CommandEntry]:
+        """Return commands whose names start with the current slash query."""
+        if cursor_index < 0 or cursor_index > len(text):
+            return []
+        if not self.can_handle(text, cursor_index):
+            return []
+
+        search = text[1:cursor_index].lower()
+        if not search or " " in search:
+            return []
+
+        return [
+            entry
+            for entry in self._commands
+            if entry.name.lstrip("/").lower().startswith(search)
+        ]
+
     @staticmethod
     def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
         """Score a command against a search string. Higher = better match.
@@ -300,6 +317,18 @@ class SlashCommandController:
         self._view.replace_completion_range(0, cursor_index, command)
         self.reset()
         return True
+
+    def apply_name_prefix_completion(
+        self, match: CommandEntry, cursor_index: int
+    ) -> None:
+        """Apply a command-name prefix match.
+
+        Args:
+            match: Command entry to apply.
+            cursor_index: Cursor index in completion-space coordinates.
+        """
+        self._view.replace_completion_range(0, cursor_index, match.name)
+        self.reset()
 
 
 # ============================================================================

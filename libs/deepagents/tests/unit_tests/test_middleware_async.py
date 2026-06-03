@@ -9,7 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 
 
@@ -347,6 +347,34 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    async def test_agrep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+        ):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""

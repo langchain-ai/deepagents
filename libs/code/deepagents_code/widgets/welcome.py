@@ -49,10 +49,12 @@ _TIPS: dict[str, int] = {
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
+    "Use /install <extra> to add optional dependencies (e.g. /install quickjs)": 1,
     "Use /theme to customize the TUI's colors": 1,
     "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Use /auto-update to toggle automatic updates": 1,
+    "Use /timestamps to show or hide message timestamp footers": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,
@@ -119,6 +121,7 @@ class WelcomeBanner(Static):
         *,
         mcp_unauthenticated: int = 0,
         mcp_errored: int = 0,
+        mcp_awaiting_reconnect: int = 0,
         connecting: bool = False,
         resuming: bool = False,
         local_server: bool = False,
@@ -132,6 +135,9 @@ class WelcomeBanner(Static):
             mcp_tool_count: Number of MCP tools loaded at startup.
             mcp_unauthenticated: Number of MCP servers awaiting login.
             mcp_errored: Number of MCP servers that failed to load.
+            mcp_awaiting_reconnect: Number of MCP servers that completed OAuth
+                login but are waiting for `/mcp reconnect` before their tools
+                can load.
             connecting: When `True`, show a "Connecting..." footer instead of
                 the normal ready prompt. Call `set_connected` to transition.
             resuming: When `True`, the connecting footer says "Resuming..."
@@ -154,6 +160,7 @@ class WelcomeBanner(Static):
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
+        self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self._connecting = connecting
         self._resuming = resuming
         self._local_server = local_server
@@ -270,6 +277,7 @@ class WelcomeBanner(Static):
         *,
         mcp_unauthenticated: int = 0,
         mcp_errored: int = 0,
+        mcp_awaiting_reconnect: int = 0,
     ) -> None:
         """Transition from "connecting" to "ready" state.
 
@@ -277,6 +285,9 @@ class WelcomeBanner(Static):
             mcp_tool_count: Number of MCP tools loaded during connection.
             mcp_unauthenticated: Number of MCP servers awaiting login.
             mcp_errored: Number of MCP servers that failed to load.
+            mcp_awaiting_reconnect: Number of MCP servers that completed OAuth
+                login but are waiting for `/mcp reconnect` before their tools
+                can load.
         """
         self._connecting = False
         self._reconnecting = False
@@ -287,6 +298,7 @@ class WelcomeBanner(Static):
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
+        self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self.update(self._build_banner(self._project_url))
 
     def set_connecting(self) -> None:
@@ -426,9 +438,10 @@ class WelcomeBanner(Static):
         warn_color: str = "bold yellow" if ansi else colors.warning
         if self._mcp_unauthenticated > 0:
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
+            verb = "needs" if self._mcp_unauthenticated == 1 else "need"
             unauth_text = (
-                f"{self._mcp_unauthenticated} MCP {server_label} need login "
-                "— open /mcp or run `/mcp login <server>`\n"
+                f"{self._mcp_unauthenticated} MCP {server_label} {verb} login "
+                "— open /mcp\n"
             )
             parts.extend(
                 [
@@ -446,6 +459,18 @@ class WelcomeBanner(Static):
                 [
                     (f"{get_glyphs().warning} ", warn_color),
                     (errored_text, "dim"),
+                ]
+            )
+        if self._mcp_awaiting_reconnect > 0:
+            server_label = "server" if self._mcp_awaiting_reconnect == 1 else "servers"
+            awaiting_text = (
+                f"{self._mcp_awaiting_reconnect} MCP {server_label} ready to load "
+                "— run `/mcp reconnect`\n"
+            )
+            parts.extend(
+                [
+                    (f"{get_glyphs().warning} ", warn_color),
+                    (awaiting_text, "dim"),
                 ]
             )
 

@@ -2,8 +2,8 @@
 
 Disabled servers are skipped at config merge time so their tools never
 reach the agent and no connection is attempted. State lives under
-`[mcp_disabled]` in `~/.deepagents/config.toml`, mirroring the layout
-used by `mcp_trust.py`.
+`[mcp_disabled]` in `~/.deepagents/config.toml`, alongside the user's
+other configuration sections.
 
 The store keys on server *name* alone. Two configs that both declare a
 `github` server will both be disabled by a single entry — intentional,
@@ -34,7 +34,7 @@ class _ConfigLoadError(Exception):
     Distinct from "file does not exist" so callers can refuse to
     overwrite a config they could not parse — otherwise a transient
     read error or a hand-edit typo would silently truncate sibling
-    sections (e.g. `[mcp_trust]`) on the next write.
+    sections (e.g. model profiles) on the next write.
     """
 
 
@@ -141,7 +141,7 @@ def set_server_disabled(
 
     Refuses to write when the existing config cannot be parsed so a
     corrupt or permission-denied file is not silently overwritten —
-    that would discard sibling sections such as `[mcp_trust]`.
+    that would discard sibling sections such as model profiles.
 
     Args:
         server_name: MCP server name from `mcpServers` config.

@@ -651,7 +651,7 @@ class TestMiddleware:
         with patch(
             "langchain_quickjs._swarm_task.create_agent",
             return_value=_make_fake_agent(),
-        ) as mock_create:
+        ):
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(

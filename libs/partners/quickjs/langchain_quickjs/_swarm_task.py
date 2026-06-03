@@ -4,17 +4,19 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents._models import resolve_model
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models import BaseChatModel  # noqa: TC002
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)

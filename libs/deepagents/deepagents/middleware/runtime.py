@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from typing import TYPE_CHECKING, Any, cast
 
 from langgraph.runtime import Runtime
@@ -55,10 +55,5 @@ class _DeepAgentsRuntimeMixin:
             return runtime
 
         backend = self._resolve_backend_for_runtime(runtime)
-        return DeepAgentsRuntime(
-            context=runtime.context,
-            store=runtime.store,
-            stream_writer=runtime.stream_writer,
-            previous=runtime.previous,
-            backend=backend,
-        )
+        inherited = {f.name: getattr(runtime, f.name) for f in dc_fields(Runtime)}
+        return DeepAgentsRuntime(**inherited, backend=backend)

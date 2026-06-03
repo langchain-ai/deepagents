@@ -1,0 +1,235 @@
+# Pre-merge blocking check for release-please scope fan-out via lockfile churn.
+#
+# Why this exists:
+#   release-please scopes a commit to a package by the file PATHS it touches —
+#   it has no notion of "this file is just a lockfile." When a bump-worthy
+#   commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of
+#   every dependent package, release-please attributes the bump-worthy commit to
+#   those dependents and opens a release PR for each — even though their only
+#   change is a lockfile. This is the lockfile-churn sibling of the empty-commit
+#   fan-out that `guard-empty-commit` (release-please.yml) blocks; see the
+#   "Empty commit fan-out" entry in .github/RELEASING.md for the related case.
+#
+#   This check inspects the PR's title type and changed files at PR time. When a
+#   bump-worthy PR changes only a lockfile inside a managed package it posts a
+#   sticky comment naming the affected packages and FAILS the check, so the
+#   fan-out is fixed before merge. When the condition is resolved (or the title
+#   isn't bump-worthy) the comment is removed and the check passes.
+#
+# Escape hatch:
+#   Lockfile-only releases are occasionally legitimate (e.g. a leaf-package
+#   security bump). Apply the `allow-lockfile-release` label to acknowledge the
+#   fan-out and let the PR pass; the `labeled` trigger re-runs the check so the
+#   red clears without a new commit.
+#
+# To actually gate merges, add this check to the branch's required status checks.
+#
+# How it stays faithful to release-please:
+#   - Package path -> component map and the bump-worthy type set are both read
+#     from release-please-config.json by the helper script — see
+#     .github/scripts/check_lockfile_release_scope.py for the rationale.
+#
+# Limitations:
+#   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
+#     get the read-only token and the comment is surfaced to the job summary
+#     instead (same fallback as release_please_parse_check.yml). No secrets are
+#     exposed to PR-author-controlled code.
+
+name: "🔍 Release-please scope check"
+
+on:
+  pull_request:
+    # `labeled`/`unlabeled` so applying the bypass label re-runs the check and
+    # clears the red without needing a new commit.
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scope-check:
+    name: "flag lockfile-only release fan-out"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: "Collect changed files"
+        # Use the API rather than `git diff` so the changed-file list is
+        # authoritative regardless of checkout depth. Newline-delimited to
+        # changed_files.txt, which the detector reads from stdin.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // listFiles is hard-capped by GitHub at 3000 files regardless of
+            // pagination. A truncated list would make a package look
+            // lockfile-only when its real edits are past the cap (false block)
+            // or hide a lockfile past the cap (false pass). Fail closed if the
+            // collected count doesn't match the PR's reported total.
+            const expected = context.payload.pull_request.changed_files;
+            if (typeof expected === 'number' && files.length !== expected) {
+              core.setFailed(`Changed-file list is incomplete (${files.length} of ${expected}); cannot determine release scope reliably. Failing closed.`);
+              return;
+            }
+            fs.writeFileSync('changed_files.txt', files.map(f => f.filename).join('\n'));
+            core.info(`Collected ${files.length} changed file(s).`);
+
+      - name: "Detect lockfile-only release scope"
+        id: detect
+        # PR title is passed via env (never interpolated into the script body)
+        # to avoid shell injection from PR-author-controlled text.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # A config-read error in the detector exits non-zero; under `set -e`
+          # the command substitution propagates it and this step fails, so the
+          # comment step (default `if: success()`) is skipped — fail closed.
+          offenders=$(python .github/scripts/check_lockfile_release_scope.py "$PR_TITLE" < changed_files.txt)
+          # Heredoc form so a multi-line value can never corrupt $GITHUB_OUTPUT.
+          {
+            echo "offenders<<__SCOPE_EOF__"
+            echo "$offenders"
+            echo "__SCOPE_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detector offenders: $offenders"
+
+      - name: "Comment on lockfile-only fan-out"
+        # Offenders passed via env (not interpolated into the script body) for
+        # the same injection-safety reason as the title above.
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OFFENDERS: ${{ steps.detect.outputs.offenders }}
+        with:
+          script: |
+            const STICKY_MARKER = '<!-- release-please-scope-check -->';
+            const BYPASS_LABEL = 'allow-lockfile-release';
+            const { number, labels } = context.payload.pull_request;
+
+            // Strict, fail-closed parse. The detector always prints a JSON array
+            // ("[]" when clean), so empty or non-array output means the detector
+            // didn't run as expected — block rather than silently coerce a
+            // missing result into "no offenders → pass."
+            const raw = process.env.OFFENDERS;
+            if (raw === undefined || raw.trim() === '') {
+              core.setFailed('Detector produced no output; cannot determine release scope. Failing closed.');
+              return;
+            }
+            let offenders;
+            try {
+              offenders = JSON.parse(raw);
+            } catch (parseErr) {
+              core.setFailed(`Detector output was not valid JSON: ${JSON.stringify(raw)} (${parseErr.message})`);
+              return;
+            }
+            if (!Array.isArray(offenders)) {
+              core.setFailed(`Detector output was not a JSON array: ${JSON.stringify(raw)}`);
+              return;
+            }
+
+            // Constant string comparison against the structured label payload —
+            // no PR-author-controlled text reaches a code path.
+            const bypassed = (labels || []).some(l => l.name === BYPASS_LABEL);
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            async function deleteSticky() {
+              const existing = await findStickyComment();
+              if (existing) {
+                await github.rest.issues.deleteComment({ ...context.repo, comment_id: existing.id });
+              }
+            }
+
+            async function upsertSticky(body) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+                } else {
+                  await github.rest.issues.createComment({ ...context.repo, issue_number: number, body });
+                }
+              } catch (commentErr) {
+                // Fork PRs run with a restricted token; surface to the job
+                // summary so the fan-out is still visible alongside the red check.
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                // Guard the summary write too: if it throws (unwritable summary,
+                // size limit) it must not escape upsertSticky and preempt the
+                // caller's core.setFailed — the red check is the load-bearing signal.
+                try {
+                  await core.summary
+                    .addHeading('Lockfile-only release fan-out')
+                    .addRaw(`Affected components: ${offenders.join(', ')}`)
+                    .write();
+                } catch (summaryErr) {
+                  core.warning(`Could not write job summary fallback: ${summaryErr.message}`);
+                }
+              }
+            }
+
+            if (offenders.length === 0) {
+              // Resolved (or title not bump-worthy): clear any stale comment and
+              // pass. Wrapped so a cleanup hiccup can't turn a clean result red.
+              try {
+                await deleteSticky();
+              } catch (cleanupErr) {
+                core.warning(`Could not clean up prior scope-check comment: ${cleanupErr.message}`);
+              }
+              core.info('No lockfile-only release fan-out detected.');
+              return;
+            }
+
+            const list = offenders.map(c => `\`${c}\``).join(', ');
+            const singular = offenders.length === 1;
+
+            if (bypassed) {
+              // Acknowledged as intentional via the bypass label: leave an
+              // informational note (not a failure) and pass.
+              await upsertSticky([
+                STICKY_MARKER,
+                `ℹ️ **Lockfile-only release fan-out acknowledged** via the \`${BYPASS_LABEL}\` label.`,
+                '',
+                `${singular ? 'This package' : 'These packages'} will get a release PR for a lockfile-only change: ${list}. Remove the label to re-enable the block.`,
+              ].join('\n'));
+              core.info(`Bypassed via ${BYPASS_LABEL} label.`);
+              return;
+            }
+
+            await upsertSticky([
+              STICKY_MARKER,
+              '⛔ **This PR changes only a lockfile inside one or more release-please-managed packages.**',
+              '',
+              `Affected: ${list}`,
+              '',
+              `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this package' : 'each of these packages'} — even though ${singular ? 'its' : 'their'} only change is a regenerated lockfile. This check is **blocking**.`,
+              '',
+              '### To resolve',
+              '',
+              'Move the lockfile regeneration into a separate `chore(deps):` commit/PR — `chore` is hidden and does not trigger a release — so only the package with real source changes is released.',
+              '',
+              '### If intentional',
+              '',
+              `Apply the \`${BYPASS_LABEL}\` label (e.g. a deliberate dependency bump shipping as a lockfile-only release). The check re-runs and passes.`,
+              '',
+              '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
+            ].join('\n'));
+            core.setFailed(`Lockfile-only release fan-out for: ${offenders.join(', ')}. Resolve, or apply the '${BYPASS_LABEL}' label if intentional.`);

@@ -63,6 +63,21 @@ jobs:
     name: "validate format"
     runs-on: ubuntu-latest
     steps:
+      - name: "🚫 Reject leading/trailing whitespace"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The semantic-pull-request action reports a confusing "No release
+          # type found" error when the title is otherwise valid but has
+          # surrounding whitespace (e.g., " feat(sdk): ..."). Catch that here
+          # with a clearer message before delegating to the action.
+          trimmed="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+          if [[ "$PR_TITLE" != "$trimmed" ]]; then
+            echo "::error::PR title has leading or trailing whitespace: '$PR_TITLE'"
+            echo "Edit the PR title to remove surrounding whitespace. Suggested title: '$trimmed'"
+            exit 1
+          fi
       - name: "🚫 Reject empty scope"
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

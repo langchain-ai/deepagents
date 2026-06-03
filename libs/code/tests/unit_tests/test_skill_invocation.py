@@ -282,6 +282,9 @@ def _make_app() -> MagicMock:
     app._discover_skills_and_roots = DeepAgentsApp._discover_skills_and_roots.__get__(
         app
     )
+    app._discover_skills_and_roots_with_import_lock = (
+        DeepAgentsApp._discover_skills_and_roots_with_import_lock.__get__(app)
+    )
     return app
 
 

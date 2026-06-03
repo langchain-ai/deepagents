@@ -388,6 +388,45 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
+# Characters that mark a glob path component as a wildcard segment for the
+# purposes of `_glob_anchor`. Keep in sync with the wcmatch flags used by the
+# filesystem middleware (`BRACE | GLOBSTAR`).
+_GLOB_WILDCARD_CHARS = frozenset("*?[{")
+
+
+def _glob_anchor(pattern: str) -> str:
+    """Return the longest leading directory of `pattern` with no wildcards.
+
+    For `/secrets/**` returns `/secrets`; for `/a/*/b` returns `/a`; for a
+    pattern with a wildcard at or near the root (`/**/secrets`, `/*/foo`)
+    falls back to `/`. The root fallback causes overlap checks to match
+    *any* subtree — conservative over-gating, since we cannot statically
+    pin down where the rule could resolve. Callers wanting precise gating
+    should anchor the rule's leading components.
+    """
+    parts = PurePosixPath(to_posix_path(pattern)).parts
+    safe: list[str] = []
+    for part in parts:
+        if any(c in _GLOB_WILDCARD_CHARS for c in part):
+            break
+        safe.append(part)
+    if not safe:
+        return "/"
+    return str(PurePosixPath(*safe))
+
+
+def _paths_overlap(call_path: str, rule_anchor: str) -> bool:
+    """Return True if the subtree at `call_path` intersects the subtree at `rule_anchor`.
+
+    Two subtrees overlap when one is a (component-wise) prefix of the other,
+    or they're equal. Comparison runs on `PurePosixPath` components, so
+    `/secret` does not overlap `/secrets`. The root `/` overlaps everything.
+    """
+    a = PurePosixPath(call_path)
+    b = PurePosixPath(rule_anchor)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
 def to_posix_path(path: str) -> str:
     r"""Normalize backslash separators to forward slashes for `PurePosixPath` use.
 
@@ -546,14 +585,14 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
-    path: str = "/",
+    path: str | None = None,
 ) -> str:
     r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
         pattern: Glob pattern (e.g., "*.py", "**/*.ts").
-        path: Base path to search from.
+        path: Base path to search from. `None` defaults to root.
 
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).

@@ -4,11 +4,9 @@
 
 ## [0.1.4](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.3...langchain-quickjs==0.1.4) (2026-06-03)
 
-
 ### Features
 
 * Surface subagents via inherited `lc_agent_name` projection ([e0a1ed2](https://github.com/langchain-ai/deepagents/commit/e0a1ed24e6b44c31d0aac3358aeee0d6cb66b2c4))
-
 
 ### Bug Fixes
 

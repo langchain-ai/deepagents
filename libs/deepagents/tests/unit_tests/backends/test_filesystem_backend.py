@@ -1248,3 +1248,32 @@ class TestFilesystemDelete:
         assert result.error is None
         assert result.path == "/a.txt"
         assert not f.exists()
+
+    def test_delete_resolve_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A failure resolving the path surfaces as a deletion error, not a raise.
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        def _boom(_path: str) -> Path:
+            raise OSError
+
+        monkeypatch.setattr(be, "_resolve_path", _boom)
+        result = be.delete("/a.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+
+    def test_delete_unlink_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An OSError from unlink (e.g. permission denied) is reported, file kept.
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        def _boom(_self: Path, *_args: object, **_kwargs: object) -> None:
+            raise OSError
+
+        monkeypatch.setattr(Path, "unlink", _boom)
+        result = be.delete("/a.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert f.exists()

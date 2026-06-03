@@ -435,6 +435,7 @@ test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "langchain-tests", specifier = ">=1.1.6" },
+    { name = "mypy", specifier = ">=1.0.0" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-benchmark" },

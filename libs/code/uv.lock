@@ -9,10 +9,7 @@ resolution-markers = [
 ]
 
 [manifest]
-constraints = [
-    { name = "agent-client-protocol", specifier = ">=0.9.0" },
-    { name = "fireworks-ai", specifier = ">=1.2.0a71" },
-]
+constraints = [{ name = "fireworks-ai", specifier = ">=1.2.0a71" }]
 
 [[package]]
 name = "agent-client-protocol"

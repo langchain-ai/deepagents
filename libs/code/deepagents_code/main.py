@@ -2501,11 +2501,12 @@ def cli_main() -> None:
                         console.print()
                         release_age = format_release_age_parenthetical(latest)
                         installed_age = format_installed_age_suffix(cli_version)
-                        update_msg = Text("Update available: ", style="yellow bold")
-                        update_msg.append(f"v{latest}", style="yellow")
-                        update_msg.append(release_age, style="dim")
+                        update_msg = Text(
+                            f"Update available: v{latest}", style="yellow bold"
+                        )
                         update_msg.append(
-                            f". Currently installed: {cli_version}{installed_age}.",
+                            f"{release_age}. "
+                            f"Currently installed: {cli_version}{installed_age}.",
                             style="dim",
                         )
                         console.print(update_msg)

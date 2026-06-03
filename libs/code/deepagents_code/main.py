@@ -463,6 +463,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "skills": ("skills_command", "show_skills_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
+    "config": ("config_command", "show_config_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -524,6 +525,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
@@ -652,6 +654,12 @@ def parse_args() -> argparse.Namespace:
     setup_mcp_parsers(
         subparsers,
         make_help_action=_make_help_action,
+    )
+
+    setup_config_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
     )
 
     threads_parser = subparsers.add_parser(
@@ -2220,6 +2228,10 @@ def cli_main() -> None:
             if args.mcp_command == "config":
                 sys.exit(run_mcp_config())
             show_mcp_help()
+        elif args.command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
         elif args.command == "threads":
             from deepagents_code.sessions import (
                 delete_thread_command,

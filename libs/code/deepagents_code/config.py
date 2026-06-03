@@ -20,6 +20,15 @@ from urllib.parse import unquote, urlparse
 from deepagents_code._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
 from deepagents_code._git import resolve_git_branch
 from deepagents_code._version import __version__
+from deepagents_code.config_manifest import (
+    INTERPRETER_ENABLE_DEFAULT,
+    INTERPRETER_MAX_PTC_CALLS_DEFAULT,
+    INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
+    INTERPRETER_MEMORY_LIMIT_MB_DEFAULT,
+    INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
+    INTERPRETER_PTC_DEFAULT,
+    INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -820,36 +829,6 @@ INTERPRETER_PTC_SAFE_SENTINEL = "safe"
 `INTERPRETER_PTC_SAFE_PRESET`."""
 
 
-def _read_config_toml_interpreter() -> dict[str, Any] | None:
-    """Read `[interpreter]` from `~/.deepagents/config.toml`.
-
-    Returns:
-        Mapping of interpreter setting names to raw values, or `None` if the
-        section is absent or the file cannot be read.
-    """
-    import tomllib
-
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
-
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except FileNotFoundError:
-        return None
-    except (PermissionError, OSError, tomllib.TOMLDecodeError):
-        logger.warning(
-            "Could not read interpreter config from %s",
-            DEFAULT_CONFIG_PATH,
-            exc_info=True,
-        )
-        return None
-
-    section = data.get("interpreter")
-    if isinstance(section, dict):
-        return section
-    return None
-
-
 def _parse_interpreter_ptc(
     raw: Any,  # noqa: ANN401  # accepts TOML-shaped value
 ) -> str | bool | list[str]:
@@ -901,86 +880,6 @@ def _parse_interpreter_ptc(
         f"names; got {type(raw).__name__}."
     )
     raise ValueError(msg)
-
-
-def _resolve_interpreter_kwargs(
-    section: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Translate the `[interpreter]` TOML section into `Settings` kwargs.
-
-    Unknown keys are ignored; invalid values fall back to the dataclass
-    default and emit a warning so a malformed config never blocks startup.
-
-    Args:
-        section: Raw mapping returned by `_read_config_toml_interpreter`, or
-            `None` when the section is absent.
-
-    Returns:
-        Subset of `Settings` field kwargs to splat into the constructor.
-    """
-    if not section:
-        return {}
-
-    kwargs: dict[str, Any] = {}
-
-    def _coerce(name: str, expected: type, raw: Any) -> None:  # noqa: ANN401
-        if isinstance(raw, expected):
-            kwargs[name] = raw
-            return
-        logger.warning(
-            "Ignoring [interpreter].%s=%r in config.toml (expected %s)",
-            name,
-            raw,
-            expected.__name__,
-        )
-
-    if "enable_interpreter" in section:
-        _coerce("enable_interpreter", bool, section["enable_interpreter"])
-    if "timeout_seconds" in section:
-        raw = section["timeout_seconds"]
-        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            kwargs["interpreter_timeout_seconds"] = float(raw)
-        else:
-            logger.warning(
-                "Ignoring [interpreter].timeout_seconds=%r in config.toml", raw
-            )
-    if "memory_limit_mb" in section:
-        raw = section["memory_limit_mb"]
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            kwargs["interpreter_memory_limit_mb"] = raw
-        else:
-            logger.warning(
-                "Ignoring [interpreter].memory_limit_mb=%r in config.toml", raw
-            )
-    if "max_ptc_calls" in section:
-        raw = section["max_ptc_calls"]
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            kwargs["interpreter_max_ptc_calls"] = raw
-        else:
-            logger.warning(
-                "Ignoring [interpreter].max_ptc_calls=%r in config.toml", raw
-            )
-    if "max_result_chars" in section:
-        raw = section["max_result_chars"]
-        if isinstance(raw, int) and not isinstance(raw, bool):
-            kwargs["interpreter_max_result_chars"] = raw
-        else:
-            logger.warning(
-                "Ignoring [interpreter].max_result_chars=%r in config.toml", raw
-            )
-    if "ptc" in section:
-        try:
-            kwargs["interpreter_ptc"] = _parse_interpreter_ptc(section["ptc"])
-        except ValueError as exc:
-            logger.warning("Ignoring [interpreter].ptc in config.toml: %s", exc)
-    if "ptc_acknowledge_unsafe" in section:
-        _coerce(
-            "interpreter_ptc_acknowledge_unsafe",
-            bool,
-            section["ptc_acknowledge_unsafe"],
-        )
-
-    return kwargs
 
 
 def _read_config_toml_skills_dirs() -> list[str] | None:
@@ -1126,32 +1025,35 @@ class Settings:
     `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
     """
 
-    enable_interpreter: bool = False
+    enable_interpreter: bool = INTERPRETER_ENABLE_DEFAULT
     """Wire `CodeInterpreterMiddleware` from `langchain-quickjs` into the main
     agent. Local-mode only; raises `ValueError` at agent-build time when a
     remote sandbox is active. Subagents never receive the interpreter in v1.
 
     The `quickjs` optional extra must be installed when this flag is `True`.
+
+    Defaults are owned by `config_manifest` (the canonical config surface) so
+    they are defined in exactly one place.
     """
 
-    interpreter_timeout_seconds: float = 5.0
+    interpreter_timeout_seconds: float = INTERPRETER_TIMEOUT_SECONDS_DEFAULT
     """Per-`js_eval`-call wall-clock timeout (seconds) for the QuickJS REPL."""
 
-    interpreter_memory_limit_mb: int = 64
+    interpreter_memory_limit_mb: int = INTERPRETER_MEMORY_LIMIT_MB_DEFAULT
     """QuickJS heap memory cap (MB), shared across all calls within a session."""
 
-    interpreter_max_ptc_calls: int = 256
+    interpreter_max_ptc_calls: int = INTERPRETER_MAX_PTC_CALLS_DEFAULT
     """Maximum `tools.*` host-bridge invocations allowed per `js_eval` call.
 
     PTC calls bypass `interrupt_on`/HITL approval — this budget is the only
     runtime limiter on bursty tool fan-out from inside the REPL.
     """
 
-    interpreter_max_result_chars: int = 4000
+    interpreter_max_result_chars: int = INTERPRETER_MAX_RESULT_CHARS_DEFAULT
     """Independent cap (chars) on `js_eval` result and stdout blocks before
     truncation."""
 
-    interpreter_ptc: str | bool | list[str] = False
+    interpreter_ptc: str | bool | list[str] = INTERPRETER_PTC_DEFAULT
     """Programmatic tool calling allowlist for `js_eval`.
 
     Accepted values:
@@ -1164,7 +1066,9 @@ class Settings:
     - `list[str]`: explicit tool names, validated at agent-build time.
     """
 
-    interpreter_ptc_acknowledge_unsafe: bool = False
+    interpreter_ptc_acknowledge_unsafe: bool = (
+        INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT
+    )
     """Explicit acknowledgement required when `interpreter_ptc="all"` is set
     without `auto_approve`.
 
@@ -1229,9 +1133,9 @@ class Settings:
             _read_config_toml_skills_dirs(),
         )
 
-        interpreter_kwargs = _resolve_interpreter_kwargs(
-            _read_config_toml_interpreter()
-        )
+        from deepagents_code.config_manifest import resolve_interpreter_kwargs
+
+        interpreter_kwargs = resolve_interpreter_kwargs()
 
         return cls(
             openai_api_key=openai_key,

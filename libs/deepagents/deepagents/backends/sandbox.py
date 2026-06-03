@@ -93,14 +93,12 @@ Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
-MAX_BINARY_BYTES: Final = 10 * 1024 * 1024
-"""Maximum size of a binary file returned by `read()` as base64.
+MAX_BINARY_BYTES: Final = 500 * 1024
+"""Inline blob threshold for `read()`: blobs at or below this size are base64-encoded
+via `execute()` stdout; larger blobs fall back to `download_files()`.
 
-Files exceeding this size return a `Binary file exceeds maximum preview size`
-error rather than being base64-encoded in full. Backends overriding `read()`
-should import and reuse this constant to stay in sync with the base
-implementation. Kept in lockstep with the `MAX_BINARY_BYTES` literal in
-`_READ_COMMAND_TEMPLATE` (asserted by `test_read_constants_match_template`).
+Kept in lockstep with the `MAX_BINARY_BYTES` literal in `_READ_COMMAND_TEMPLATE`
+(asserted by `test_read_constants_match_template`).
 """
 
 MAX_OUTPUT_BYTES: Final = 500 * 1024
@@ -195,6 +193,15 @@ Keeps a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
 detect end-of-input on a newline-delimited heredoc feed can observe completion.
 """
 
+_MAX_BLOB_DOWNLOAD_BYTES: Final = 10 * 1024 * 1024
+"""Blobs above MAX_BINARY_BYTES and at or below this size are fetched via
+`download_files()` and returned as base64. Blobs exceeding this limit return
+a threshold error."""
+
+_BLOB_PREVIEW_TOO_LARGE_ERROR: Final = f"Binary file exceeds maximum preview size of {MAX_BINARY_BYTES} bytes"
+"""Error string emitted by `_READ_COMMAND_TEMPLATE` when a blob exceeds MAX_BINARY_BYTES.
+Must stay in sync with the dynamic string the template constructs."""
+
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
 """Maximum combined byte size of old_string + new_string for inline server-side edit.
 
@@ -284,7 +291,7 @@ _READ_COMMAND_TEMPLATE = """python3 -c "
 import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
-MAX_BINARY_BYTES = 10 * 1024 * 1024
+MAX_BINARY_BYTES = 500 * 1024
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -495,10 +502,10 @@ except PermissionError:
         with guidance to continue pagination using a different `offset` or
         smaller `limit`.
 
-        Blob files up to 10 MiB are returned inline as base64. Blob files over
-        10 MiB are fetched via `download_files()` and then returned as base64.
-        Larger blobs return an error explaining that the current size threshold
-        is exceeded.
+        Blob files up to 500 KiB are returned inline as base64 via `execute()`
+        stdout. Larger blobs (up to 10 MiB) are fetched via `download_files()`
+        to avoid stdout transport limits. Blobs above 10 MiB return a threshold
+        error.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -549,7 +556,11 @@ except PermissionError:
         )
 
     def _read_blob(self, file_path: str) -> ReadResult:
-        """Read non-text file content as base64, up to MAX_BINARY_BYTES."""
+        """Read a non-text blob.
+
+        Blobs up to MAX_BINARY_BYTES are returned inline via execute() stdout.
+        Larger blobs (up to _MAX_BLOB_DOWNLOAD_BYTES) are fetched via download_files().
+        """
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         cmd = _READ_COMMAND_TEMPLATE.format(
             path_b64=path_b64,
@@ -570,13 +581,38 @@ except PermissionError:
             detail = output[:200] if output else "(empty)"
             return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
 
-        if "error" in data:
+        if "error" not in data:
+            return ReadResult(
+                file_data=FileData(
+                    content=data["content"],
+                    encoding=data.get("encoding", "utf-8"),
+                )
+            )
+
+        if data["error"] != _BLOB_PREVIEW_TOO_LARGE_ERROR:
             return ReadResult(error=f"File '{file_path}': {data['error']}")
+
+        return self._download_blob(file_path)
+
+    def _download_blob(self, file_path: str) -> ReadResult:
+        """Fetch a blob via download_files() and return it as base64."""
+        responses = self.download_files([file_path])
+        if not responses:
+            return ReadResult(error=f"File '{file_path}': download_files returned no response")
+        response = responses[0]
+        if response.error is not None:
+            return ReadResult(error=f"File '{file_path}': {response.error}")
+        if response.content is None:
+            return ReadResult(error=f"File '{file_path}': download_files returned no content")
+
+        size = len(response.content)
+        if size > _MAX_BLOB_DOWNLOAD_BYTES:
+            return ReadResult(error=(f"File '{file_path}': blob size {size} bytes exceeds the {_MAX_BLOB_DOWNLOAD_BYTES}-byte download threshold"))
 
         return ReadResult(
             file_data=FileData(
-                content=data["content"],
-                encoding=data.get("encoding", "utf-8"),
+                content=base64.b64encode(response.content).decode("ascii"),
+                encoding="base64",
             )
         )
 

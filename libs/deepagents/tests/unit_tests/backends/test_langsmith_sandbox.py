@@ -288,7 +288,7 @@ def test_read_binary_file() -> None:
 
 def test_read_large_binary_returns_error() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * MAX_BINARY_BYTES
+    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * (500 * 1024)
 
     result = sb.read("/app/large.png")
 
@@ -434,8 +434,8 @@ def test_max_binary_bytes_constant_matches_template() -> None:
     Drift here would silently desync `LangSmithSandbox.read()` from
     `BaseSandbox.read()` because the template does not import the constant.
     """
-    assert "MAX_BINARY_BYTES = 10 * 1024 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
-    assert MAX_BINARY_BYTES == 10 * 1024 * 1024
+    assert "MAX_BINARY_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
+    assert MAX_BINARY_BYTES == 500 * 1024
 
 
 def test_max_output_bytes_constant_matches_template() -> None:

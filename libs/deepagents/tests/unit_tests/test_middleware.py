@@ -1464,6 +1464,29 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
+    def test_delete_file_invalid_path_returns_error(self):
+        """The sync delete_file tool rejects a traversal path before deleting."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    def test_delete_file_unsupported_backend_returns_error(self):
+        """The sync delete_file tool reports a clear message on NotImplementedError."""
+
+        class _NoDeleteBackend(StateBackend):
+            # Opt out of delete support by inheriting the protocol's default.
+            delete = BackendProtocol.delete
+
+        middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = delete_tool.invoke({"file_path": "/test.txt", "runtime": _runtime("d2")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "does not implement the delete operation" in result.content
+
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
 

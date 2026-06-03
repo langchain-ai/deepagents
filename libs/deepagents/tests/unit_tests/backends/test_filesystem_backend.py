@@ -63,6 +63,25 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     assert any(i["path"] == str(f2) for i in g)
 
 
+def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    in_root = root / "dir" / "inside.py"
+    outside_root = tmp_path / "outside.py"
+    write_file(in_root, "print('inside')")
+    write_file(outside_root, "print('outside')")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    omitted = be.glob("**/*.py").matches or []
+    explicit_root = be.glob("**/*.py", path="/").matches or []
+
+    omitted_paths = {info["path"] for info in omitted}
+    explicit_root_paths = {info["path"] for info in explicit_root}
+    assert omitted_paths == explicit_root_paths
+    assert str(in_root) in omitted_paths
+    assert str(outside_root) not in omitted_paths
+
+
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"
@@ -152,7 +171,8 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert len(utils_paths) == 2
 
     empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    assert empty_listing.entries is None
+    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
@@ -217,7 +237,8 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
     empty = be.ls("/nonexistent/")
-    assert empty.entries == []
+    assert empty.entries is None
+    assert empty.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
@@ -982,6 +1003,35 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
 
 
+class TestGrepPythonFallbackTimeout:
+    """Tests for the wall-clock timeout on the Python grep fallback."""
+
+    def test_python_search_times_out_with_zero_timeout(self, tmp_path: Path) -> None:
+        """`_python_search` returns a `timed out` partial error when the deadline is exceeded."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
+        assert partial_error is not None
+        assert "timed out" in partial_error
+
+    def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`grep` surfaces the timeout as a partial error while still returning matches found so far."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            be,
+            "_python_search",
+            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, "Grep of '/' timed out after 0s with 1 matching file(s)"),
+        )
+        result = be.grep("hello", path="/")
+        assert result.error is not None
+        assert "timed out" in result.error
+        # Partial matches collected before the timeout are preserved.
+        assert result.matches
+        assert result.matches[0]["path"] == "/file.txt"
+
+
 class TestEditCrlfNormalization:
     """Tests for CRLF normalization in edit(). See #2247."""
 
@@ -1046,6 +1096,38 @@ class TestEditCrlfNormalization:
         assert "Human: next" in final
 
 
+def test_ls_nonexistent_path_sets_error(tmp_path: Path) -> None:
+    """Ls on a missing path must surface the failure on .error, not return []."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
+
+
+def test_ls_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
+    """Ls on a file path must surface not_a_directory on .error."""
+    write_file(tmp_path / "file.txt", "content")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/file.txt")
+
+    assert result.entries is None
+    assert result.error == "Path '/file.txt': not_a_directory"
+
+
+def test_ls_empty_directory_returns_empty_entries(tmp_path: Path) -> None:
+    """Ls on an empty directory returns success with an empty entries list."""
+    (tmp_path / "empty").mkdir()
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/empty/")
+
+    assert result.error is None
+    assert result.entries == []
+
+
 def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     """A resolver failure in `ls` should not escape the backend boundary."""
     make_symlink_loop(tmp_path / "loop")
@@ -1053,7 +1135,7 @@ def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     result = be.ls("loop")
 
-    assert result.entries == []
+    assert result.entries is None
     assert result.error is not None
     assert "Cannot list 'loop'" in result.error
 

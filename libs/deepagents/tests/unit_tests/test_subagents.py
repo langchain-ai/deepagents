@@ -855,6 +855,104 @@ class TestSubAgents:
         # so that lc_agent_name in streamed chunks reflects the declared subagent name.
         assert captured_config["metadata"]["lc_agent_name"] == "general-purpose"
 
+    def test_subagent_inherits_parent_user_metadata(self) -> None:
+        """User metadata set on the parent invoke reaches subagent runs (deepagents#3634).
+
+        `langgraph`'s `ensure_config` seeds each run's metadata from the ambient
+        parent config and merges it per-key (langgraph#7926). A user key like
+        `customer_id` therefore propagates into subagent runs, while the
+        subagent's bound `lc_agent_name` wins the key collision and is preserved.
+
+        Requires a `langgraph` that includes langgraph#7926's merge semantics;
+        with the older overwrite behaviour the parent metadata is dropped.
+        """
+        captured_config: Any = None
+
+        @tool
+        def capture_metadata(runtime: ToolRuntime) -> str:
+            """Capture the runtime config from inside the subagent."""
+            nonlocal captured_config
+            captured_config = runtime.config
+            return "OK"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Capture metadata and report it.",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_subagent_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The subagent finished successfully."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_metadata",
+                                "args": {},
+                                "id": "call_capture_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            tools=[capture_metadata],
+            name="subagent-runtime-check",
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent for various tasks.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the metadata check.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                # `lc_agent_name` collides with the subagent's bound identity (it
+                # must keep its own value); `customer_id` is a non-colliding user
+                # key that must survive the merge into the subagent's runs.
+                "metadata": {"customer_id": "abc-123", "lc_agent_name": "parent-agent"},
+            },
+            durability="exit",
+        )
+
+        assert captured_config is not None
+        subagent_metadata = captured_config["metadata"]
+        # User-set parent metadata propagated into the subagent run.
+        assert subagent_metadata["customer_id"] == "abc-123"
+        # The subagent's bound identity won the `lc_agent_name` collision.
+        assert subagent_metadata["lc_agent_name"] == "general-purpose"
+
     def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
         interrupt_payloads: list[Any] = []
 

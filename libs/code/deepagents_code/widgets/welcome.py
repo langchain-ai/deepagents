@@ -54,6 +54,7 @@ _TIPS: dict[str, int] = {
     "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Use /auto-update to toggle automatic updates": 1,
+    "Use /timestamps to show or hide message timestamp footers": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,
@@ -437,9 +438,10 @@ class WelcomeBanner(Static):
         warn_color: str = "bold yellow" if ansi else colors.warning
         if self._mcp_unauthenticated > 0:
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
+            verb = "needs" if self._mcp_unauthenticated == 1 else "need"
             unauth_text = (
-                f"{self._mcp_unauthenticated} MCP {server_label} need login "
-                "— open /mcp or run `/mcp login <server>`\n"
+                f"{self._mcp_unauthenticated} MCP {server_label} {verb} login "
+                "— open /mcp\n"
             )
             parts.extend(
                 [

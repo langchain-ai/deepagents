@@ -1,0 +1,5 @@
+{
+  "name": "research-assistant",
+  "description": "Researches a topic and returns a summary.",
+  "system_prompt": "# Research Assistant\n\nYou are a careful research assistant.\n"
+}

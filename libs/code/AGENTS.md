@@ -65,6 +65,14 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 - Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
+## Logging
+
+Debug logging is configured **once**, on the `deepagents_code` package logger, by the `configure_debug_logging` call in `deepagents_code/__init__.py`. Child module loggers (`logging.getLogger(__name__)`) reach the shared debug file via propagation.
+
+- Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
+- Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
+- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEV.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
+
 ## CLI help screen
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.

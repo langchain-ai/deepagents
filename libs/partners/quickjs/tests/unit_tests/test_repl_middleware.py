@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
+from langchain.tools import ToolRuntime
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
@@ -167,8 +168,58 @@ def test_system_prompt_injected_once() -> None:
 
 
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
-    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert "DO NOT persist across multiple turns" in mw._base_system_prompt
+
+
+def test_system_prompt_mentions_mode_call() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert "fresh sandboxed REPL for each invocation" in mw._base_system_prompt
+    assert "does not persist across tool calls" in mw._base_system_prompt
+
+
+def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert mw._snapshot_between_turns is False
+
+
+def test_mode_turn_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
+    assert mw._snapshot_between_turns is False
+
+
+def test_snapshot_between_turns_false_resolves_to_mode_turn() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    assert mw._mode == "turn"
+
+
+def test_snapshot_between_turns_emits_deprecation_warning() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        CodeInterpreterMiddleware(snapshot_between_turns=True)
+
+
+def test_mode_call_with_snapshot_between_turns_true_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="call",
+            snapshot_between_turns=True,
+        )
+
+
+def test_mode_thread_with_snapshot_between_turns_false_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="thread",
+            snapshot_between_turns=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +254,27 @@ def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     outcome = b.eval_sync("typeof shared")
     # QuickJS returns "undefined" for missing globals — an isolated context
     # must not see A's binding.
+    assert outcome.result == "undefined"
+
+
+def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    try:
+        repl = reg.get("thread-a")
+        old_runtime = reg._slots["thread-a"].runtime
+        repl.eval_sync("globalThis.answer = 42")
+        reg.reset_repl("thread-a")
+        replaced = reg.get("thread-a")
+        outcome = replaced.eval_sync("typeof answer")
+        assert replaced is not repl
+        assert reg._slots["thread-a"].runtime is old_runtime
+    finally:
+        reg.close()
     assert outcome.result == "undefined"
 
 
@@ -716,7 +788,8 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
 
 
 def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("globalThis.answer = 42")
@@ -730,6 +803,55 @@ def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
         )
         assert before_update is None
         assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+def test_mode_call_ignores_snapshot_payload() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        before_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b"ignored"},
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+async def test_mode_call_resets_state_between_tool_calls() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        tool = mw.tools[0]
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tools=[tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        assert tool.coroutine is not None
+        first_repl = mw._registry.get(mw._fallback_thread_id)
+        first_runtime = mw._registry._slots[mw._fallback_thread_id].runtime
+        first = await tool.coroutine(
+            runtime=runtime,
+            code="globalThis.answer = 42; answer",
+        )
+        assert "<result>42</result>" in first.content
+        after_first = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_first is not None
+        assert after_first is not first_repl
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
+
+        second = await tool.coroutine(runtime=runtime, code="typeof answer")
+        assert "<result>undefined</result>" in second.content
+        after_second = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_second is not None
+        assert after_second is not after_first
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
     finally:
         mw._registry.close()
 

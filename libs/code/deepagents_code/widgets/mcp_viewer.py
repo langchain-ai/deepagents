@@ -14,6 +14,8 @@ from textual.events import (
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code.clipboard import copy_text_to_clipboard
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
+from deepagents_code.unicode_security import sanitize_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -145,28 +148,12 @@ def _format_prop_type(prop_type: Any) -> str:  # noqa: ANN401 - JSON Schema fiel
     return str(prop_type) or "any"
 
 
-def _sanitize_inline(text: str, *, max_length: int = 200) -> str:
-    """Strip control characters and truncate text rendered inline in a header.
+_INLINE_TEXT_LIMIT = 200
+"""Max characters for untrusted text rendered inline in a server header.
 
-    External-origin strings (e.g. `MCPServerInfo.error` returned by an MCP
-    server) might contain newlines, ANSI escape sequences, or other control
-    characters that would corrupt the modal layout. Replace control chars
-    with spaces and truncate to `max_length` so a hostile or buggy server
-    cannot break the screen.
-
-    Args:
-        text: Untrusted inline text.
-        max_length: Maximum characters to retain (truncated with `…`).
-
-    Returns:
-        Sanitized single-line text safe to embed inside a `Content.assemble`
-        tuple or `from_markup` substitution.
-    """
-    cleaned = "".join(ch if ch == " " or ch.isprintable() else " " for ch in text)
-    cleaned = " ".join(cleaned.split())
-    if len(cleaned) > max_length:
-        cleaned = cleaned[: max_length - 1] + "…"
-    return cleaned
+Bounds a hostile or buggy server's error/name so it cannot overflow the
+single-line header; full text is available in the error-detail modal.
+"""
 
 
 def _sort_servers_for_display(
@@ -447,7 +434,7 @@ def _render_server_header(
     injection-safe: each span's `text` is rendered verbatim, never
     markup-parsed, so a server name like `[bold]foo[/]` shows literally
     rather than getting styled. `server.error` additionally goes through
-    `_sanitize_inline` because MCP servers can return arbitrary error
+    `sanitize_control_chars` because MCP servers can return arbitrary error
     text including newlines or terminal escapes.
 
     Args:
@@ -466,15 +453,14 @@ def _render_server_header(
     dim_style = "" if selected else "dim"
     tool_count = len(visible_tools)
     t_label = "tool" if tool_count == 1 else "tools"
-    if server.is_loaded():
+    if server.status == "ok":
         summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
             (summary, dim_style),
         )
-    error_text = _sanitize_inline(server.error or "")
-    if server.needs_attention():
+    if server.status == "unauthenticated":
         login_hint = " — Enter to log in"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
@@ -491,7 +477,18 @@ def _render_server_header(
             (f" {glyphs.bullet} ready to load", indicator_color),
             (f" — {MCP_RECONNECT_KEY_LABEL} to load tools", dim_style),
         )
-    if server.status in {"error", "disabled"}:
+    if server.status == "error":
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (" — Enter for details", dim_style),
+        )
+    if server.status == "disabled":
+        error_text = sanitize_control_chars(
+            server.error or "", max_length=_INLINE_TEXT_LIMIT
+        )
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
             (server.name, "bold"),
@@ -500,6 +497,123 @@ def _render_server_header(
             (f" — {error_text}", dim_style) if error_text else "",
         )
     assert_never(server.status)
+
+
+class MCPServerErrorScreen(ModalScreen[None]):
+    """Read-only modal for a failed MCP server's error details."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("c", "copy_error", "Copy", show=False, priority=True),
+        Binding("escape", "cancel", "Close", show=False, priority=True),
+    ]
+
+    CSS = """
+    MCPServerErrorScreen {
+        align: center middle;
+    }
+
+    MCPServerErrorScreen > Vertical {
+        width: 100;
+        max-width: 90%;
+        height: 80%;
+        background: $surface;
+        border: solid $error;
+        padding: 1 2;
+    }
+
+    MCPServerErrorScreen .mcp-error-title {
+        text-style: bold;
+        color: $error;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MCPServerErrorScreen .mcp-error-body {
+        height: 1fr;
+        background: $background;
+        scrollbar-gutter: stable;
+        padding: 0 1;
+    }
+
+    MCPServerErrorScreen .mcp-error-text {
+        color: $text;
+    }
+
+    MCPServerErrorScreen .mcp-error-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        margin-top: 1;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, server: MCPServerInfo) -> None:
+        """Initialize the error-detail modal.
+
+        Args:
+            server: Failed MCP server whose error text should be displayed.
+        """
+        super().__init__()
+        self._server = server
+        self._error = sanitize_control_chars(
+            server.error or "No error details were reported.",
+            keep_newlines=True,
+            collapse_whitespace=False,
+        )
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal layout.
+
+        Yields:
+            Modal shell with title, scrollable error text, and help footer.
+        """
+        glyphs = get_glyphs()
+        yield Vertical(
+            Static(
+                Content.from_markup(
+                    "MCP Server Error: $server",
+                    server=sanitize_control_chars(
+                        self._server.name, max_length=_INLINE_TEXT_LIMIT
+                    ),
+                ),
+                classes="mcp-error-title",
+            ),
+            VerticalScroll(
+                Static(
+                    Content.from_markup("$error", error=self._error),
+                    classes="mcp-error-text",
+                ),
+                classes="mcp-error-body",
+            ),
+            Static(
+                f"c copy error {glyphs.bullet} Esc close",
+                classes="mcp-error-help",
+            ),
+        )
+
+    def action_copy_error(self) -> None:
+        """Copy the server error details to the clipboard."""
+        success, error = copy_text_to_clipboard(self.app, self._error)
+        if success:
+            self.app.notify(
+                "MCP error copied",
+                severity="information",
+                timeout=2,
+                markup=False,
+            )
+            return
+        suffix = f": {error}" if error else ""
+        self.app.notify(
+            f"Failed to copy MCP error{suffix}",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def action_cancel(self) -> None:
+        """Close the error details modal."""
+        self.dismiss(None)
 
 
 class MCPServerHeaderItem(Static):
@@ -623,9 +737,9 @@ class MCPServerHeaderItem(Static):
         """Handle click — select the header, or start login on unauth re-click.
 
         Headers are not expandable. Clicking once moves the cursor;
-        clicking the already-selected header for a server in
-        `unauthenticated` state dismisses the viewer with the server name
-        so the parent app can start in-TUI OAuth login.
+        clicking the already-selected header either starts login for
+        an `unauthenticated` server or opens details for an `error`
+        server.
 
         Args:
             event: The click event.
@@ -637,6 +751,9 @@ class MCPServerHeaderItem(Static):
         if self._selected and self._server.needs_attention():
             screen.dismiss(self._server.name)
             return
+        if self._selected and self._server.status == "error":
+            screen.show_server_error(self._server)
+            return
         screen._move_to(self.index)
 
 
@@ -644,10 +761,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
     """Modal viewer for active MCP servers and their tools.
 
     Displays servers grouped by name with transport type and tool count.
-    Navigate with arrow keys, Enter to expand/collapse tool descriptions
-    or start in-app OAuth login for an unauthenticated server, Ctrl+R to
-    request a reconnect, F2 on a server header to toggle its disabled
-    state, and Escape to close.
+    Navigate with arrow keys, Enter to expand/collapse tool descriptions,
+    start in-app OAuth login for an unauthenticated server, or inspect a
+    failed server. Ctrl+R requests a reconnect, F2 on a server header
+    toggles its disabled state, and Escape closes the modal.
 
     Dismisses with `None` when closed without action, the server name to
     drive an in-TUI OAuth login when the user activates an
@@ -1101,7 +1218,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
-            "Enter expand/login",
+            "Enter expand/login/details",
             "F2 disable/enable",
             "Ctrl+E expand all",
         ]
@@ -1341,13 +1458,22 @@ class MCPViewerScreen(ModalScreen[str | None]):
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=1)
 
+    def show_server_error(self, server: MCPServerInfo) -> None:
+        """Open the read-only error detail modal for `server`.
+
+        Args:
+            server: Failed MCP server to inspect.
+        """
+        self.app.push_screen(MCPServerErrorScreen(server))
+
     def action_toggle_expand(self) -> None:
-        """Toggle expand on a tool row, or start login on an unauth header.
+        """Toggle expand on a tool row, log in, or show error details.
 
         Tool rows expand/collapse as before; activating a header row for
         a server in `unauthenticated` state dismisses the viewer with the
-        server name so the app can drive in-TUI OAuth login. Headers for
-        other states (ok, awaiting reconnect, error, disabled) remain no-ops.
+        server name so the app can drive in-TUI OAuth login. Activating an
+        `error` header opens a read-only detail modal. Headers for other
+        states (ok, awaiting reconnect, disabled) remain no-ops.
         """
         if not self._row_widgets:
             return
@@ -1362,6 +1488,9 @@ class MCPViewerScreen(ModalScreen[str | None]):
         server = row.server
         if server.needs_attention():
             self.dismiss(server.name)
+            return
+        if server.status == "error":
+            self.show_server_error(server)
 
     def action_toggle_all(self) -> None:
         """Expand or collapse every visible tool at once.

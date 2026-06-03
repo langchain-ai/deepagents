@@ -829,11 +829,12 @@ except PermissionError:
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Structured glob matching returning `GlobResult`."""
+        search_path = path or "/"
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
-        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+        path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
         result = self.execute(cmd)
@@ -864,7 +865,7 @@ except PermissionError:
             )
 
         if error is not None:
-            return GlobResult(matches=None, error=f"Path '{path}': {error}")
+            return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
         return GlobResult(matches=file_infos)
 
     @property

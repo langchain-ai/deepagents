@@ -110,7 +110,7 @@ all-providers = [
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.3,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.6"]
 modal = ["langchain-modal>=0.0.4"]
-runloop = ["langchain-runloop>=0.0.5"]
+runloop = ["langchain-runloop>=0.0.6"]
 all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop]",
 ]

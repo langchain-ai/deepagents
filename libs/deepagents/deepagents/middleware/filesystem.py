@@ -949,9 +949,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
+            # Empty files get a uniform warning regardless of encoding/type, so
+            # check before routing to avoid a degenerate empty content block for
+            # binary reads.
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return ToolMessage(
+                    content=empty_msg,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    status="success",
+                )
+
             # Route on the backend-declared encoding first: `"base64"` means the
             # content is binary and must never be line-numbered as text, even
-            # when the extension is absent from `_EXTENSION_TO_FILE_TYPE` (#3657).
+            # when the extension is absent from `_EXTENSION_TO_FILE_TYPE`.
             # The extension map is only consulted to pick the multimodal block
             # type; unknown binary extensions fall back to the generic `"file"`.
             if encoding == "base64" or file_type != "text":
@@ -962,15 +974,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
-                    status="success",
-                )
-
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return ToolMessage(
-                    content=empty_msg,
-                    name="read_file",
-                    tool_call_id=tool_call_id,
                     status="success",
                 )
 

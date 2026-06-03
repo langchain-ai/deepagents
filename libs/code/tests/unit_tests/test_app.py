@@ -9200,6 +9200,21 @@ from deepagents_code.command_registry import BypassTier  # noqa: E402
 class TestSetSpinnerTerminalProgress:
     """`_set_spinner` should drive the `OSC 9;4` terminal progress indicator."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Point the config path at an empty temp dir.
+
+        Without this, `_load_terminal_progress_preference` reads the developer's
+        real `~/.deepagents/config.toml` during `DeepAgentsApp.__init__`, so a
+        local `[ui].terminal_progress = false` would silently flip the
+        positive-path tests below to failing. Tests that need a specific config
+        write to and re-point at this same path.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+
     async def test_status_triggers_indeterminate_progress(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -9261,6 +9276,74 @@ class TestSetSpinnerTerminalProgress:
             await app._set_spinner(None)
             await pilot.pause()
 
+        assert "clear" in calls
+
+    async def test_config_opt_out_suppresses_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[ui].terminal_progress = false` should suppress progress escapes."""
+        from deepagents_code import terminal_escape
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = false\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-disabled")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert calls == []
+
+    async def test_config_opt_in_emits_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[ui].terminal_progress = true` should emit set and clear escapes."""
+        from deepagents_code import terminal_escape
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-enabled")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert "set" in calls
         assert "clear" in calls
 
     async def test_consecutive_set_spinner_calls_keep_emitting(

@@ -560,16 +560,21 @@ def save_theme_preference(name: str) -> bool:
     return _save_theme_preference_result(name).ok
 
 
-def _load_cursor_blink_preference() -> bool:
-    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+def _load_bool_ui_preference(key: str, *, log_label: str) -> bool:
+    """Load a boolean `[ui]` preference from `~/.deepagents/config.toml`.
 
-    The chat input cursor blink can be turned off by setting
-    `[ui].cursor_blink = false` in the config file. There is no in-app command
-    for this; the file is edited manually.
+    These preferences have no in-app command; the file is edited manually. The
+    loader is intentionally forgiving: any problem reading or parsing the config
+    falls back to `True` (the feature stays on) after logging a warning, so a
+    typo in a cosmetic setting never breaks startup.
+
+    Args:
+        key: The key to read from the `[ui]` table.
+        log_label: Human-readable name of the preference, used in warning logs.
 
     Returns:
-        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
-            unreadable, or malformed.
+        The saved `[ui].<key>` value, or `True` when unset, unreadable,
+            or malformed.
     """
     import tomllib
 
@@ -581,26 +586,58 @@ def _load_cursor_blink_preference() -> bool:
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for cursor blink preference: %s", exc)
+        logger.warning("Could not read config for %s preference: %s", log_label, exc)
         return True
 
     ui = data.get("ui", {})
     if not isinstance(ui, dict):
         logger.warning(
-            "[ui] should be a table; got %s while loading cursor blink preference",
+            "[ui] should be a table; got %s while loading %s preference",
             type(ui).__name__,
+            log_label,
         )
         return True
 
-    value = ui.get("cursor_blink")
+    value = ui.get(key)
     if isinstance(value, bool):
         return value
     if value is not None:
         logger.warning(
-            "[ui].cursor_blink should be a boolean; got %s",
+            "[ui].%s should be a boolean; got %s",
+            key,
             type(value).__name__,
         )
     return True
+
+
+def _load_cursor_blink_preference() -> bool:
+    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+
+    The chat input cursor blink can be turned off by setting
+    `[ui].cursor_blink = false` in the config file. There is no in-app command
+    for this; the file is edited manually.
+
+    Returns:
+        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
+        unreadable, or malformed.
+    """
+    return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
+
+
+def _load_terminal_progress_preference() -> bool:
+    """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
+
+    The terminal taskbar/dock/tab progress indicator (where supported) can be
+    turned off by setting `[ui].terminal_progress = false` in the config file.
+    There is no in-app command for this; the file is edited manually. The
+    `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` environment variable still disables all
+    terminal escapes regardless of this value.
+
+    Returns:
+        The saved `[ui].terminal_progress` value, or `True` (progress on) when
+        unset, unreadable, or malformed.
+    """
+    return _load_bool_ui_preference("terminal_progress", log_label="terminal progress")
 
 
 def _save_terminal_theme_mapping_result(
@@ -1409,6 +1446,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._terminal_progress_enabled = _load_terminal_progress_preference()
+        """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
 
         self.sync_terminal_background()
 
@@ -3948,18 +3988,20 @@ class DeepAgentsApp(App):
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
-            try:
-                clear_terminal_progress()
-            except Exception:
-                # Cosmetic only — must never break spinner lifecycle.
-                logger.exception("clear_terminal_progress raised unexpectedly")
+            if self._terminal_progress_enabled:
+                try:
+                    clear_terminal_progress()
+                except Exception:
+                    # Cosmetic only — must never break spinner lifecycle.
+                    logger.exception("clear_terminal_progress raised unexpectedly")
             return
 
-        try:
-            set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
-        except Exception:
-            # Cosmetic only — must never break spinner lifecycle.
-            logger.exception("set_terminal_progress raised unexpectedly")
+        if self._terminal_progress_enabled:
+            try:
+                set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("set_terminal_progress raised unexpectedly")
 
         try:
             messages = self.query_one("#messages", Container)

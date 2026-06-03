@@ -34,6 +34,15 @@ class TestLoadTerminalProgressPreference:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         assert _load_terminal_progress_preference() is False
 
+    def test_default_true_when_key_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `[ui]` table without `terminal_progress` defaults to `True`."""
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\ncursor_blink = false\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_terminal_progress_preference() is True
+
     def test_default_true_on_corrupt_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

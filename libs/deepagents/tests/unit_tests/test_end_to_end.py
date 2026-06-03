@@ -2695,6 +2695,100 @@ class TestStateBackendConfigKeys:
         assert "buffered" in tool_msg.content
         assert "ERROR" not in tool_msg.content
 
+    def test_state_backend_delete_in_graph_context(self) -> None:
+        """delete() removes a file from state; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        def delete_path(path: str) -> str:
+            """Delete a file via StateBackend."""
+            result = backend.delete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[delete_path])
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    async def test_state_backend_delete_in_graph_context_async(self) -> None:
+        """adelete() removes a file from state on the async path; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        async def adelete_path(path: str) -> str:
+            """Delete a file via StateBackend's async path."""
+            result = await backend.adelete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[adelete_path])
+        result = await agent.ainvoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
+
 
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""

@@ -46,6 +46,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _supports_delete,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
@@ -1610,6 +1611,61 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infer_schema=False,
             args_schema=ExecuteSchema,
         )
+
+    def _filter_unsupported_tools_and_apply_prompt(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Drop capability-gated tools the backend can't serve, then apply the system prompt.
+
+        Shared by the sync and async `wrap_model_call` paths (the only part that
+        differs between them is sync vs. async message eviction). The `execute`
+        and `delete_file` tools are optional per backend, so when the resolved
+        backend doesn't support a capability the corresponding tool is filtered
+        out of the request rather than advertised to the model and left to fail
+        at call time. Resolving the backend and probing support is synchronous,
+        so both paths route through here.
+
+        Returns the request with unsupported tools removed and the filesystem
+        system prompt appended.
+        """
+        tool_names = {(tool.name if hasattr(tool, "name") else tool.get("name")) for tool in request.tools}
+        has_execute_tool = "execute" in tool_names
+        has_delete_tool = "delete_file" in tool_names
+
+        # `execute` and `delete_file` are optional per backend; resolve the
+        # backend once and filter out any tool the backend can't serve.
+        if has_execute_tool or has_delete_tool:
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            unsupported: set[str | None] = set()
+            if has_execute_tool and not supports_execution(backend):
+                unsupported.add("execute")
+                has_execute_tool = False
+            if has_delete_tool and not _supports_delete(backend):
+                unsupported.add("delete_file")
+            if unsupported:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
+                request = request.override(tools=filtered_tools)
+
+        # Use custom system prompt if provided, otherwise generate dynamically
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions only if the execute tool survived filtering
+            if has_execute_tool:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
+
+        if system_prompt:
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
+
+        return request
 
     def wrap_model_call(
         self,

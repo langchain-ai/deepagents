@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -530,6 +531,31 @@ class FilesystemBackend(BackendProtocol):
             return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the filesystem.
+
+        Args:
+            file_path: Path to the file to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                file does not exist, is a directory, or removal fails.
+        """
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting file '{file_path}': {e}")
+
+        try:
+            if resolved_path.is_dir():
+                return DeleteResult(error=f"Error: '{file_path}' is a directory, not a file")
+            if not resolved_path.exists() and not resolved_path.is_symlink():
+                return DeleteResult(error=f"Error: File '{file_path}' not found")
+            resolved_path.unlink()
+            return DeleteResult(path=file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting file '{file_path}': {e}")
 
     def grep(
         self,

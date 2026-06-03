@@ -12,10 +12,12 @@ import pytest
 from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     GlobResult,
     GrepResult,
     LsResult,
     SandboxBackendProtocol,
+    _supports_delete,
 )
 
 
@@ -64,6 +66,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.edit("/file.txt", "old", "new")
 
+    def test_delete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.delete("/file.txt")
+
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.upload_files([("/file.txt", b"data")])
@@ -107,6 +113,24 @@ class TestAsyncMethodsPropagateNotImplemented:
     async def test_aedit(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
+
+    async def test_adelete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.adelete("/file.txt")
+
+
+class TestSupportsDelete:
+    """`_supports_delete` detects whether a backend overrides `delete`."""
+
+    def test_false_when_not_overridden(self, backend: BareBackend) -> None:
+        assert _supports_delete(backend) is False
+
+    def test_true_when_overridden(self) -> None:
+        class MyBackend(BackendProtocol):
+            def delete(self, file_path: str) -> DeleteResult:
+                return DeleteResult(path=file_path)
+
+        assert _supports_delete(MyBackend()) is True
 
 
 class TestDeprecatedMethodsRouteToNewNames:

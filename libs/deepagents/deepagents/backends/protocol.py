@@ -277,6 +277,23 @@ class EditResult:
 
 
 @dataclass
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of the deleted file, None on failure.
+
+    Examples:
+        >>> DeleteResult(path="/f.txt")
+        >>> DeleteResult(error="File not found")
+    """
+
+    error: str | None = None
+    path: str | None = None
+
+
+@dataclass
 class LsResult:
     """Result from backend ls operations.
 
@@ -569,6 +586,35 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a single file from the filesystem.
+
+        This method is optional. Backends that do not implement it inherit this
+        default, which raises `NotImplementedError`. Callers that need to support
+        a mix of backends should guard with
+        [`supports_delete`][deepagents.backends.protocol.supports_delete] before
+        calling, or catch `NotImplementedError`.
+
+        Directories are not supported. Directory-based backends return an error for
+        directory paths; key-value backends treat `file_path` as an exact key.
+
+        Args:
+            file_path: Absolute path to the file to delete. Must start with '/'
+                and refer to a file, not a directory.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                file does not exist or `file_path` refers to a directory.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `delete`.
+        """
+        raise NotImplementedError
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of `delete`."""
+        return await asyncio.to_thread(self.delete, file_path)
+
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -846,6 +892,25 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return False
     else:
         return "timeout" in sig.parameters
+
+
+def _supports_delete(backend: BackendProtocol) -> bool:
+    """Check whether a backend implements `delete`.
+
+    `delete` is optional: backends that don't override it inherit the
+    `NotImplementedError` default from
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol]. This
+    helper lets callers detect support without invoking the method (and
+    triggering the error), mirroring the override check used for the legacy
+    `ls_info`/`grep_raw`/`glob_info` methods.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        True if the backend overrides `delete`, False otherwise.
+    """
+    return type(backend).delete is not BackendProtocol.delete
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

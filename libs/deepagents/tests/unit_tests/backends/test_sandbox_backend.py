@@ -214,44 +214,15 @@ def test_read_binary_file() -> None:
     assert result.file_data["encoding"] == "base64"
 
 
-def test_read_binary_file_uses_download_for_medium_blob() -> None:
-    """Test that blobs over the inline limit use download_files up to 10 MiB."""
+def test_read_binary_file_returns_error_for_oversized_blob() -> None:
+    """Test that blobs over MAX_BINARY_BYTES return the template's size error."""
     sandbox = MockSandbox()
     sandbox._next_output = json.dumps({"error": "Binary file exceeds maximum preview size of 10485760 bytes"})
-    download_called = False
-    payload = b"\x80\x81\x82\xff" * 200_000
-
-    def tracking_download(paths: list[str]) -> list[FileDownloadResponse]:
-        nonlocal download_called
-        download_called = True
-        assert paths == ["/test/medium.jpg"]
-        return [FileDownloadResponse(path=paths[0], content=payload, error=None)]
-
-    sandbox.download_files = tracking_download  # type: ignore[assignment]
-
-    result = sandbox.read("/test/medium.jpg")
-
-    assert download_called
-    assert result.error is None
-    assert result.file_data == {
-        "encoding": "base64",
-        "content": base64.b64encode(payload).decode("ascii"),
-    }
-
-
-def test_read_binary_file_returns_threshold_error_for_large_blob() -> None:
-    """Test that blobs over 10 MiB return a threshold error."""
-    sandbox = MockSandbox()
-    sandbox._next_output = json.dumps({"error": "Binary file exceeds maximum preview size of 10485760 bytes"})
-    payload = b"x" * (10 * 1024 * 1024 + 1)
-
-    sandbox.download_files = lambda paths: [FileDownloadResponse(path=paths[0], content=payload, error=None)]  # type: ignore[assignment]
 
     result = sandbox.read("/test/large.jpg")
 
     assert result.error is not None
-    assert "exceeds the current threshold" in result.error
-    assert str(10 * 1024 * 1024) in result.error
+    assert "Binary file exceeds maximum preview size" in result.error
 
 
 def test_read_binary_file_preserves_non_threshold_errors() -> None:

@@ -12,7 +12,9 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.backends.utils import create_file_data
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -1403,3 +1405,67 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+class TestCompositeLsKeyLayouts:
+    """`ls` behaves like a local `ls` for both absolute and relative store keys.
+
+    Regression for issue #3436: a routed store holding *full* route-prefixed
+    keys (e.g. seeded via direct `store.put`) must not produce duplicated path
+    segments, while a store written through the composite (mount-relative keys)
+    keeps working.
+    """
+
+    def _absolute_keyed_composite(self) -> CompositeBackend:
+        store = InMemoryStore()
+        # Keys carry the FULL mounted path, as a direct store.put caller writes.
+        store.put(("agent",), "/memory/skills/test_skill/SKILL.md", create_file_data("x"))
+        store.put(("agent",), "/memory/skills/notes.md", create_file_data("y"))
+        return CompositeBackend(
+            default=StateBackend(),
+            routes={"/memory/skills/": StoreBackend(store=store, namespace=lambda _rt: ("agent",))},
+        )
+
+    def _relative_keyed_composite(self) -> CompositeBackend:
+        be = CompositeBackend(
+            default=StateBackend(),
+            routes={"/memory/skills/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("agent",))},
+        )
+        # Written through the composite -> stored as mount-relative keys.
+        be.write("/memory/skills/test_skill/SKILL.md", "x")
+        be.write("/memory/skills/notes.md", "y")
+        return be
+
+    def test_ls_absolute_keys_no_duplication(self) -> None:
+        be = self._absolute_keyed_composite()
+        assert {e["path"] for e in be.ls("/memory/skills/").entries or []} == {
+            "/memory/skills/test_skill/",
+            "/memory/skills/notes.md",
+        }
+        assert {e["path"] for e in be.ls("/memory/skills/test_skill/").entries or []} == {
+            "/memory/skills/test_skill/SKILL.md",
+        }
+
+    def test_ls_relative_keys_still_work(self) -> None:
+        be = self._relative_keyed_composite()
+        assert {e["path"] for e in be.ls("/memory/skills/").entries or []} == {
+            "/memory/skills/test_skill/",
+            "/memory/skills/notes.md",
+        }
+        assert {e["path"] for e in be.ls("/memory/skills/test_skill/").entries or []} == {
+            "/memory/skills/test_skill/SKILL.md",
+        }
+
+    async def test_als_absolute_keys_no_duplication(self) -> None:
+        be = self._absolute_keyed_composite()
+        assert {e["path"] for e in (await be.als("/memory/skills/")).entries or []} == {
+            "/memory/skills/test_skill/",
+            "/memory/skills/notes.md",
+        }
+
+    async def test_als_relative_keys_still_work(self) -> None:
+        be = self._relative_keyed_composite()
+        assert {e["path"] for e in (await be.als("/memory/skills/")).entries or []} == {
+            "/memory/skills/test_skill/",
+            "/memory/skills/notes.md",
+        }

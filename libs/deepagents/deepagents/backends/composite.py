@@ -203,10 +203,13 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(backend.ls(backend_path))
-            if ls_result.error:
-                return ls_result
-            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
+            absolute = self._coerce_ls_result(backend.ls(path))
+            if not absolute.error and absolute.entries:
+                return absolute
+            relative = self._coerce_ls_result(backend.ls(backend_path))
+            if relative.error:
+                return relative
+            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (relative.entries or [])])
 
         # At root, aggregate default and all routed backends
         if path == "/":
@@ -238,10 +241,13 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
-            ls_result = self._coerce_ls_result(await backend.als(backend_path))
-            if ls_result.error:
-                return ls_result
-            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
+            absolute = self._coerce_ls_result(await backend.als(path))
+            if not absolute.error and absolute.entries:
+                return absolute
+            relative = self._coerce_ls_result(await backend.als(backend_path))
+            if relative.error:
+                return relative
+            return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (relative.entries or [])])
 
         # At root, aggregate default and all routed backends
         if path == "/":

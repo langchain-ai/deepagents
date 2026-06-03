@@ -551,3 +551,63 @@ async def test_store_backend_adelete() -> None:
 
     missing = await be.adelete("/a.md")
     assert missing.error is not None and "not found" in missing.error
+
+
+def test_store_backend_delete_treats_wildcard_as_literal_key() -> None:
+    """`*` is used as an exact store key, not a wildcard.
+
+    Deleting "*" must only remove an entry whose key is literally "*" and must
+    never expand to match/remove other files in the namespace.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+    be.write("*", "literal star")
+
+    # Deleting "*" removes only the literally-named entry.
+    result = be.delete("*")
+    assert result.error is None
+    assert result.path == "*"
+
+    # The other files are untouched — "*" did not expand to a wildcard.
+    assert be.read("/a.md").error is None
+    assert be.read("/b.md").error is None
+    assert be.read("*").error is not None
+
+
+def test_store_backend_delete_wildcard_missing_does_not_match_files() -> None:
+    """Deleting "*" when no literal "*" key exists is a not-found, not a purge."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+
+    result = be.delete("*")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+    # Nothing was deleted by the wildcard-looking key.
+    assert be.read("/a.md").error is None
+    assert be.read("/b.md").error is None
+
+
+async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
+    """Async delete also treats `*` as an exact key, not a wildcard."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    await be.awrite("/a.md", "a")
+    await be.awrite("*", "literal star")
+
+    result = await be.adelete("*")
+    assert result.error is None
+    assert result.path == "*"
+
+    assert (await be.aread("/a.md")).error is None
+    assert (await be.aread("*")).error is not None
+
+    missing = await be.adelete("*")
+    assert missing.error is not None and "not found" in missing.error

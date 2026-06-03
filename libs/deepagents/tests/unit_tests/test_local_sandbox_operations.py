@@ -194,9 +194,10 @@ class LocalSubprocessSandbox(BaseSandbox):
                 match["path"] = self._to_virtual_path(match["path"])
         return result
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Run glob against mapped real paths."""
-        result = super().glob(pattern, path=self._to_real_path(path))
+        mapped_path = self._to_real_path(path) if path is not None else None
+        result = super().glob(pattern, path=mapped_path)
         if result.error is not None:
             result.error = self._to_virtual_path(result.error)
         if result.matches is not None:

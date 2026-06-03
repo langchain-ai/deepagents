@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from inspect import Parameter, signature
 from typing import Any
 from unittest.mock import MagicMock, NonCallableMagicMock, patch
 
@@ -638,6 +639,22 @@ def test_create_summarization_tool_middleware_returns_instance() -> None:
 
     assert isinstance(mw, SummarizationToolMiddleware)
     assert mw.tools[0].name == "compact_conversation"
+
+
+def test_create_summarization_tool_middleware_accepts_system_prompt() -> None:
+    """Factory passes explicit `system_prompt` through to the tool middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 120_000}
+    mw = create_summarization_tool_middleware(model, MagicMock(), system_prompt="custom nudge")
+
+    assert mw.system_prompt == "custom nudge"
+
+
+def test_create_summarization_tool_middleware_system_prompt_is_keyword_only() -> None:
+    """Requires the optional tool nudge to be passed by name."""
+    params = signature(create_summarization_tool_middleware).parameters
+
+    assert params["system_prompt"].kind is Parameter.KEYWORD_ONLY
 
 
 # --- system_prompt override / suppression --------------------------------

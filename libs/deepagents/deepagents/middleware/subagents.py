@@ -695,20 +695,19 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = [task_tool]
 
     @property
-    def _private_state_keys(self) -> frozenset[str]:
-        return self.__private_state_keys_value
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before invoking subagents."""
+        return self._private_state_keys
 
-    @_private_state_keys.setter
-    def _private_state_keys(self, value: frozenset[str]) -> None:
-        self.__private_state_keys_value = value
-        if hasattr(self, "_subagent_specs"):
-            self.tools = [
-                _build_task_tool(
-                    self._subagent_specs,
-                    task_description=self._task_description,
-                    private_state_keys=value,
-                )
-            ]
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+        task_tool = _build_task_tool(
+            self._subagent_specs,
+            task_description=self._task_description,
+            private_state_keys=value,
+        )
+        self.tools = [task_tool]
 
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.

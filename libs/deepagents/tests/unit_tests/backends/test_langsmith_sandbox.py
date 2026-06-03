@@ -10,7 +10,12 @@ from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
 from deepagents.backends import sandbox as base_sandbox
 from deepagents.backends.langsmith import LangSmithSandbox
-from deepagents.backends.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES, TRUNCATION_MSG
+from deepagents.backends.sandbox import (
+    _MAX_BLOB_DOWNLOAD_BYTES,
+    MAX_BINARY_BYTES,
+    MAX_OUTPUT_BYTES,
+    TRUNCATION_MSG,
+)
 
 
 def _make_sandbox() -> tuple[LangSmithSandbox, MagicMock]:
@@ -288,7 +293,7 @@ def test_read_binary_file() -> None:
 
 def test_read_large_binary_returns_error() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * (500 * 1024)
+    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * (10 * 1024 * 1024)
 
     result = sb.read("/app/large.png")
 
@@ -375,7 +380,7 @@ def test_read_truncates_at_max_output_bytes() -> None:
 
 def test_read_binary_at_exact_max_size_succeeds() -> None:
     sb, mock_sdk = _make_sandbox()
-    raw = b"\x00" * MAX_BINARY_BYTES
+    raw = b"\x00" * _MAX_BLOB_DOWNLOAD_BYTES
     mock_sdk.read.return_value = raw
 
     result = sb.read("/app/exact.png")
@@ -387,7 +392,7 @@ def test_read_binary_at_exact_max_size_succeeds() -> None:
 
 def test_read_binary_one_byte_over_max_returns_error() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.read.return_value = b"\x00" * (MAX_BINARY_BYTES + 1)
+    mock_sdk.read.return_value = b"\x00" * (_MAX_BLOB_DOWNLOAD_BYTES + 1)
 
     result = sb.read("/app/over.png")
 

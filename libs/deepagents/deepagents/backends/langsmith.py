@@ -15,7 +15,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.sandbox import (
-    MAX_BINARY_BYTES,
+    _MAX_BLOB_DOWNLOAD_BYTES,
     MAX_OUTPUT_BYTES,
     TRUNCATION_MSG,
     BaseSandbox,
@@ -35,8 +35,8 @@ def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
     `_READ_COMMAND_TEMPLATE` in `sandbox.py`, including the `File '<path>': `
     prefix that `BaseSandbox.read()` adds when it wraps script errors.
     """
-    if len(raw) > MAX_BINARY_BYTES:
-        return ReadResult(error=(f"File '{file_path}': Binary file exceeds maximum preview size of {MAX_BINARY_BYTES} bytes"))
+    if len(raw) > _MAX_BLOB_DOWNLOAD_BYTES:
+        return ReadResult(error=(f"File '{file_path}': Binary file exceeds maximum preview size of {_MAX_BLOB_DOWNLOAD_BYTES} bytes"))
     return ReadResult(
         file_data=FileData(
             content=base64.b64encode(raw).decode("ascii"),
@@ -132,7 +132,7 @@ class LangSmithSandbox(BaseSandbox):
 
         - Empty files surface the "empty contents" reminder.
         - Files routed as binary by extension (or that fail UTF-8 decode) are
-            returned base64-encoded, capped at `MAX_BINARY_BYTES`.
+            returned base64-encoded, capped at `_MAX_BLOB_DOWNLOAD_BYTES`.
         - Text content is normalized for universal newlines (`\r\n` and bare
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`

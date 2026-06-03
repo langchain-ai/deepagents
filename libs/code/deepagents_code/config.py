@@ -1896,8 +1896,47 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
-def fetch_langsmith_project_url(project_name: str) -> str | None:
-    """Fetch the LangSmith project URL via the LangSmith client.
+class LangSmithLookupError(Exception):
+    """Base class for typed LangSmith project URL lookup failures.
+
+    Concrete subclasses (`LangSmithImportError`, `LangSmithLookupTimeoutError`,
+    `LangSmithApiError`) let interactive callers like `/trace` show the user
+    the actual cause instead of collapsing every failure into a generic
+    "could not reach LangSmith" message.
+    """
+
+
+class LangSmithImportError(LangSmithLookupError):
+    """The `langsmith` package is not installed."""
+
+
+class LangSmithLookupTimeoutError(LangSmithLookupError):
+    """The LangSmith project URL lookup exceeded its hard timeout."""
+
+
+class LangSmithApiError(LangSmithLookupError):
+    """The LangSmith SDK call raised — auth, 404, network, etc.
+
+    Wraps the underlying SDK exception in `__cause__`.
+    """
+
+
+def _assemble_langsmith_thread_url(project_url: str, thread_id: str) -> str:
+    """Format a LangSmith thread URL from a project URL prefix.
+
+    Args:
+        project_url: Project URL prefix from `fetch_langsmith_project_url`
+            (e.g. `https://smith.langchain.com/o/<org>/projects/p/<proj>`).
+        thread_id: Thread identifier to append.
+
+    Returns:
+        Full thread URL with the `deepagents-code` utm tag.
+    """
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-code"
+
+
+def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
+    """Fetch the LangSmith project URL, raising on any failure.
 
     Successful results are cached at module level so repeated calls do not
     make additional network requests.
@@ -1906,15 +1945,17 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
     calling thread for at most that duration even if LangSmith is unreachable.
 
-    Returns None (with a debug log) on any failure: missing `langsmith` package,
-    network errors, invalid project names, client initialization issues,
-    or timeouts.
-
     Args:
         project_name: LangSmith project name to look up.
 
     Returns:
-        Project URL string if found, None otherwise.
+        Project URL string.
+
+    Raises:
+        LangSmithImportError: `langsmith` is not installed.
+        LangSmithLookupTimeoutError: lookup exceeded the hard timeout.
+        LangSmithApiError: the SDK call raised (auth, 404, network, etc.);
+            wraps the original exception in `__cause__`.
     """
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
@@ -1926,13 +1967,14 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
 
     try:
         from langsmith import Client
-    except ImportError:
+    except ImportError as exc:
         logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
+            "langsmith package not installed; cannot fetch project URL for '%s'",
             project_name,
             exc_info=True,
         )
-        return None
+        msg = "langsmith package is not installed"
+        raise LangSmithImportError(msg) from exc
 
     result: str | None = None
     lookup_error: Exception | None = None
@@ -1964,7 +2006,11 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
             project_name,
             _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS,
         )
-        return None
+        msg = (
+            f"LangSmith project URL lookup timed out after "
+            f"{_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS:.1f}s"
+        )
+        raise LangSmithLookupTimeoutError(msg)
 
     if lookup_error is not None:
         logger.debug(
@@ -1976,11 +2022,36 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
                 lookup_error.__traceback__,
             ),
         )
-        return None
+        msg = str(lookup_error) or repr(lookup_error)
+        raise LangSmithApiError(msg) from lookup_error
 
-    if result is not None:
-        _langsmith_url_cache = (project_name, result)
+    if not result:
+        # SDK returned a project with an empty URL — treat as an API anomaly.
+        msg = f"LangSmith returned no URL for project '{project_name}'"
+        raise LangSmithApiError(msg)
+
+    _langsmith_url_cache = (project_name, result)
     return result
+
+
+def fetch_langsmith_project_url(project_name: str) -> str | None:
+    """Fetch the LangSmith project URL, returning None on any failure.
+
+    Thin back-compat wrapper around `fetch_langsmith_project_url_or_raise`
+    for passive callers (status banners, non-interactive output) that just
+    want a URL-or-nothing answer. Interactive callers that need to tell the
+    user *why* the lookup failed should use the raising variant directly.
+
+    Args:
+        project_name: LangSmith project name to look up.
+
+    Returns:
+        Project URL string if found, None otherwise.
+    """
+    try:
+        return fetch_langsmith_project_url_or_raise(project_name)
+    except LangSmithLookupError:
+        return None
 
 
 def build_langsmith_thread_url(thread_id: str) -> str | None:
@@ -2004,7 +2075,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-code"
+    return _assemble_langsmith_thread_url(project_url, thread_id)
 
 
 def reset_langsmith_url_cache() -> None:
@@ -2393,10 +2464,27 @@ def _create_model_via_init(
                 f"import for provider '{provider}': {e}"
             )
         else:
-            msg = (
-                f"Missing package for provider '{provider}'. "
-                f"Install: pip install {package}"
-            )
+            from deepagents_code.extras_info import extra_for_package
+
+            extra = extra_for_package(package)
+            if extra is not None:
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"Install: /install {extra}"
+                )
+            else:
+                from deepagents_code.update_check import install_package_command
+
+                try:
+                    install_cmd = install_package_command(package)
+                except ValueError:
+                    install_hint = f"Install the '{package}' package manually"
+                else:
+                    install_hint = f"Install with: {install_cmd}"
+                msg = (
+                    f"Missing package for provider '{provider}'. "
+                    f"{install_hint}, then retry with `/model`."
+                )
             raise MissingProviderPackageError(
                 msg, provider=provider, package=package
             ) from e

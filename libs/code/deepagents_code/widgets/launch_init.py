@@ -261,7 +261,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                 # single explanatory line instead of "none detected" twice.
                 yield Static(
                     "Could not read installed dependency metadata. Reinstall "
-                    "with `pip install deepagents-code[<extra>]` to populate.",
+                    "with `/install <extra>` to populate.",
                     classes="launch-dependencies-section",
                 )
             yield Static(

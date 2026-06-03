@@ -24,13 +24,11 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
-from deepagents_code._debug import configure_debug_logging
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
-configure_debug_logging(logger)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
 
@@ -191,9 +189,9 @@ class MissingProviderPackageError(ModelConfigError):
 
     Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
     keep working. Carries the `provider` name and the `package` to install so
-    callers can render targeted recovery hints (e.g., suggest
-    `pip install langchain-fireworks` or the `/model` slash command) without
-    string-matching on the formatted exception message.
+    callers can render targeted recovery hints (e.g., suggest `/install fireworks`
+    or the `/model` slash command) without string-matching on the formatted
+    exception message.
     """
 
     def __init__(self, message: str, *, provider: str, package: str) -> None:

@@ -1,7 +1,8 @@
 ---
 name: swarm
 description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency. Returns a summary object with {total, completed, failed, results[]} — iterate `.results` for per-task output.
-module: ./index.ts
+metadata:
+  entrypoint: scripts/index.ts
 ---
 
 # Swarm

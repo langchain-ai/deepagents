@@ -14,6 +14,16 @@ on:
     branches:
       - main
 
+# Serialize release-please runs. Every run mutates the shared release branches
+# and reads in-flight release state (tags + autorelease labels); two overlapping
+# runs can race and recompute a component from stale state. cancel-in-progress
+# is false so a run that is mid-PR-write is never interrupted — newer pushes
+# queue and coalesce, which is fine: release-please is idempotent and always
+# recomputes from the latest main.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -47,8 +57,86 @@ jobs:
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
           exit 1
 
-  release-please:
+  # Defer release computation while a publish is in flight.
+  #
+  # release.yml (the PyPI publisher) creates the git tag and flips the release
+  # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
+  # the release PR merges, in a separate dispatched run. In that window the
+  # manifest already names the new version but the tag does not exist yet. A
+  # normal (non-release) push landing in that window re-runs release-please
+  # against this half-updated state: it finds no tag, and if the label has just
+  # flipped, release-please's own "untagged outstanding -> abort" guard appears
+  # not to fire — so it treats the component as never-released and proposes a
+  # bootstrap downgrade (observed once: 0.1.8 -> 0.1.0 with the full history).
+  #
+  # We skip release-please for non-release commits while any merged release PR
+  # is still `autorelease: pending`. Release commits (HEAD matches `release(`)
+  # are NOT skipped: their run must reach `trigger-releases` to dispatch the
+  # publish, and release-please's built-in abort already stops them from
+  # writing bad draft PRs.
+  guard-pending-release:
     needs: guard-empty-commit
+    name: Defer while a publish is in flight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
+      - name: Check for in-flight releases
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          COMMIT_MSG=$(git log -1 --format=%s HEAD)
+          if echo "$COMMIT_MSG" | grep -qE "^release\("; then
+            echo "HEAD is a release commit; not deferring (its run must dispatch the publish)."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # `autorelease: pending` is release-please-action's built-in label,
+          # applied to release PRs and cleared to `autorelease: tagged` by
+          # release.yml once the tag and GitHub release exist, so a merged PR
+          # still carrying it means a publish has not finished.
+          #
+          # --limit is explicit and generous: the default (30) could drop a
+          # genuinely stuck pending PR past the window precisely in the backlog
+          # scenario this guard exists to catch, silently reporting "none".
+          PENDING=$(gh pr list --repo "$REPO" --state merged \
+            --label "autorelease: pending" --limit 100 --json number,title \
+            --jq '[.[] | "#\(.number) \(.title)"] | join("; ")')
+
+          if [ -z "$PENDING" ]; then
+            echo "No in-flight releases; proceeding."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::Deferring release-please: merged release PR(s) still awaiting tag/publish: $PENDING"
+          {
+            echo "## release-please deferred"
+            echo ""
+            echo "A publish is in flight — these merged release PR(s) are still labeled \`autorelease: pending\`:"
+            echo ""
+            echo "$PENDING"
+            echo ""
+            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`autorelease: tagged\`."
+            echo ""
+            echo "If a publish is genuinely **stuck** on \`autorelease: pending\`, clear it per [Release PR Stuck with \"autorelease: pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-please:
+    needs: [guard-empty-commit, guard-pending-release]
+    if: needs.guard-pending-release.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

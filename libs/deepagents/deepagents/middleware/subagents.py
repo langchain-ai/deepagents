@@ -694,13 +694,18 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         self.tools = [task_tool]
 
-    def set_private_state_keys(self, private_state_keys: frozenset[str]) -> None:
-        """Update the private-state filter and rebuild the task tool."""
-        self._private_state_keys = private_state_keys
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before invoking subagents."""
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
         task_tool = _build_task_tool(
             self._subagent_specs,
             task_description=self._task_description,
-            private_state_keys=private_state_keys,
+            private_state_keys=value,
         )
         self.tools = [task_tool]
 

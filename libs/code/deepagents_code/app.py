@@ -3053,10 +3053,11 @@ class DeepAgentsApp(App):
             # inline imports will still succeed — just without the warm-up.
             logger.debug("Import prewarm worker was cancelled", exc_info=True)
         except WorkerFailed:
-            # Prewarm body best-efforts third-party imports and already
-            # warns; logging at WARNING here surfaces unexpected failures
-            # (e.g. a regression that breaks a non-optional import) that
-            # the body itself didn't catch.
+            # Defense in depth: `_prewarm_deferred_imports` swallows every
+            # import failure in its own guard, so this branch is effectively
+            # unreachable for import errors. It stays as a backstop for a
+            # failure originating outside that guard (e.g. the worker
+            # machinery itself) so a failed prewarm never propagates here.
             logger.warning("Import prewarm worker failed", exc_info=True)
 
     @staticmethod
@@ -3065,12 +3066,38 @@ class DeepAgentsApp(App):
 
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
+
+        Prewarming is purely a cache optimization, so every failure is
+        swallowed (logged at WARNING): the affected module simply cold-loads
+        on first use instead. This guard is load-bearing when the installed
+        package is replaced in place mid-session — e.g. a concurrent
+        `uv tool upgrade deepagents-code`, which rewrites the tool
+        environment's files. A module that hasn't been imported yet can be
+        transiently absent on disk during that swap, and the deferred import
+        then raises `ModuleNotFoundError`. Letting that propagate would crash
+        the whole TUI (the worker exception surfaces as a fatal full-screen
+        traceback) over a transient filesystem race that resolves itself by
+        the time the user actually triggers the import.
         """
-        # Internal modules moved from top-level to local imports — a failure
-        # here indicates a packaging or code bug, not a missing optional dep, so
-        # we let the exception propagate (the worker catches it and logs
-        # at WARNING). textual_adapter and update_check are included so
-        # _post_paint_init's inline imports are dict lookups.
+        try:
+            DeepAgentsApp._load_deferred_modules()
+        except Exception:
+            logger.warning(
+                "Import prewarm failed; deferred modules will cold-load on first use",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _load_deferred_modules() -> None:
+        """Import the modules prewarmed by `_prewarm_deferred_imports`.
+
+        Split out so the prewarm worker entry point can wrap the entire
+        import sequence in a single best-effort guard — see that method's
+        docstring for why a failure here must never be fatal.
+        """
+        # Internal modules moved from top-level to local imports. textual_adapter
+        # and update_check are included so _post_paint_init's inline imports are
+        # dict lookups.
         from deepagents_code.clipboard import (
             copy_selection_to_clipboard,  # noqa: F401
         )
@@ -3085,7 +3112,11 @@ class DeepAgentsApp(App):
             # Heavy third-party deps deferred from textual_adapter /
             # tool_display — hit on first message send and first tool
             # approval. Best-effort: missing optional deps should not block the
-            # TUI from rendering.
+            # TUI from rendering. This inner guard is intentionally narrower
+            # than the outer one in `_prewarm_deferred_imports`: an absent
+            # optional dep is expected, so it logs and lets the remaining
+            # (always-present) modules still warm rather than aborting the
+            # whole sequence.
             with _DEEPAGENTS_IMPORT_LOCK:
                 from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
                 from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
@@ -3109,9 +3140,7 @@ class DeepAgentsApp(App):
         # language in skill bodies.
         _get_lexer("python")
 
-        # Widgets deferred from app.py module level — a failure here indicates
-        # a packaging or code bug (same as the block above), so we let
-        # exceptions propagate.
+        # Widgets deferred from app.py module level.
         from deepagents_code.widgets.approval import ApprovalMenu  # noqa: F401
         from deepagents_code.widgets.ask_user import AskUserMenu  # noqa: F401
         from deepagents_code.widgets.launch_init import LaunchNameScreen  # noqa: F401

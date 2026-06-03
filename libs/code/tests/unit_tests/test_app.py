@@ -9263,6 +9263,39 @@ class TestSetSpinnerTerminalProgress:
 
         assert "clear" in calls
 
+    async def test_config_opt_out_suppresses_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[ui].terminal_progress = false` should suppress progress escapes."""
+        from deepagents_code import terminal_escape
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = false\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-disabled")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert calls == []
+
     async def test_consecutive_set_spinner_calls_keep_emitting(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

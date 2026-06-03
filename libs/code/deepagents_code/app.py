@@ -603,6 +603,53 @@ def _load_cursor_blink_preference() -> bool:
     return True
 
 
+def _load_terminal_progress_preference() -> bool:
+    """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
+
+    The terminal taskbar/dock/tab progress indicator can be turned off by
+    setting `[ui].terminal_progress = false` in the config file. There is no
+    in-app command for this; the file is edited manually. The
+    `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` environment variable still disables all
+    terminal escapes regardless of this value.
+
+    Returns:
+        The saved `[ui].terminal_progress` value, or `True` (progress on) when
+            unset, unreadable, or malformed.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return True
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning(
+            "Could not read config for terminal progress preference: %s", exc
+        )
+        return True
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading terminal progress preference",
+            type(ui).__name__,
+        )
+        return True
+
+    value = ui.get("terminal_progress")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].terminal_progress should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return True
+
+
 def _save_terminal_theme_mapping_result(
     term_program: str,
     name: str,
@@ -1409,6 +1456,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._terminal_progress_enabled = _load_terminal_progress_preference()
+        """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
 
         self.sync_terminal_background()
 
@@ -3948,18 +3998,20 @@ class DeepAgentsApp(App):
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
-            try:
-                clear_terminal_progress()
-            except Exception:
-                # Cosmetic only — must never break spinner lifecycle.
-                logger.exception("clear_terminal_progress raised unexpectedly")
+            if self._terminal_progress_enabled:
+                try:
+                    clear_terminal_progress()
+                except Exception:
+                    # Cosmetic only — must never break spinner lifecycle.
+                    logger.exception("clear_terminal_progress raised unexpectedly")
             return
 
-        try:
-            set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
-        except Exception:
-            # Cosmetic only — must never break spinner lifecycle.
-            logger.exception("set_terminal_progress raised unexpectedly")
+        if self._terminal_progress_enabled:
+            try:
+                set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("set_terminal_progress raised unexpectedly")
 
         try:
             messages = self.query_one("#messages", Container)

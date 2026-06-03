@@ -1649,8 +1649,12 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer == "y":
-        if not debug_prompt:
-            trust_project_mcp(project_root, fingerprint)
+        if not debug_prompt and not trust_project_mcp(project_root, fingerprint):
+            prompt_console.print(
+                "[yellow]Approved for this session, but the decision could not be "
+                "saved — you'll be asked again next time.[/yellow]",
+                highlight=False,
+            )
         return True
     return False
 

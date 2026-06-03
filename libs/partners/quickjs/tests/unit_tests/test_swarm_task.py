@@ -645,7 +645,7 @@ class TestMiddleware:
             middleware_b,
         ]
 
-    def test_passes_middleware_to_variant_recompilation(self) -> None:
+    async def test_passes_middleware_to_variant_recompilation(self) -> None:
         middleware_a = MagicMock()
 
         with patch(
@@ -668,19 +668,15 @@ class TestMiddleware:
             "langchain_quickjs._swarm_task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create_variant:
-            import asyncio
-
-            asyncio.get_event_loop().run_until_complete(
-                tool.ainvoke(
-                    {
-                        "description": "work",
-                        "subagent_type": "worker",
-                        "response_schema": {
-                            "type": "object",
-                            "properties": {"label": {"type": "string"}},
-                        },
-                    }
-                )
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}},
+                    },
+                }
             )
 
         mock_create_variant.assert_called_once()

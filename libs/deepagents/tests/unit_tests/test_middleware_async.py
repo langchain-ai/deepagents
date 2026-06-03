@@ -679,25 +679,6 @@ class TestFilesystemMiddlewareAsync:
         assert result.status == "error"
         assert "not found" in result.content
 
-    async def test_adelete_file_unsupported_backend(self):
-        """Async delete_file reports a clear message when the backend lacks delete."""
-        backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend)
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
-
-        async def _raise(*_args: object, **_kwargs: object) -> None:
-            raise NotImplementedError
-
-        backend.adelete = _raise
-        result = await delete_tool.ainvoke(
-            {
-                "file_path": "/test.txt",
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d4", store=None, stream_writer=lambda _: None, config={}),
-            }
-        )
-        assert result.status == "error"
-        assert "does not implement the delete operation" in result.content
-
     async def test_adelete_file_permission_denied(self):
         """Async delete_file is blocked by a deny write permission."""
         files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}

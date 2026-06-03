@@ -146,7 +146,7 @@
   },
   {
     "function": {
-      "description": "Deletes a file from the filesystem.\n\nUsage:\n- Permanently removes the file at the given absolute path.\n- Returns an error if the file does not exist or the path is a directory.\n- This cannot be undone, so only delete files you are sure are no longer needed.",
+      "description": "Deletes a file from the filesystem.\n\nUsage:\n- Permanently removes the file at the given absolute path.\n- This cannot be undone, so only delete files you are sure are no longer needed.",
       "name": "delete_file",
       "parameters": {
         "properties": {

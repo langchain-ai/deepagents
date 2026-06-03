@@ -398,7 +398,6 @@ DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
 
 Usage:
 - Permanently removes the file at the given absolute path.
-- Returns an error if the file does not exist or the path is a directory.
 - This cannot be undone, so only delete files you are sure are no longer needed.
 """
 
@@ -1217,11 +1216,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_delete_file_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/support handling
+    def _create_delete_file_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
         """Create the delete_file tool."""
         tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
-
-        unsupported_msg = "Error: Deletion not available. This agent's backend does not implement the delete operation."
 
         def sync_delete_file(
             file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
@@ -1246,15 +1243,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            try:
-                res: DeleteResult = resolved_backend.delete(validated_path)
-            except NotImplementedError:
-                return ToolMessage(
-                    content=unsupported_msg,
-                    name="delete_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
+            res: DeleteResult = resolved_backend.delete(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -1292,15 +1281,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            try:
-                res: DeleteResult = await resolved_backend.adelete(validated_path)
-            except NotImplementedError:
-                return ToolMessage(
-                    content=unsupported_msg,
-                    name="delete_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
+            res: DeleteResult = await resolved_backend.adelete(validated_path)
             if res.error:
                 return ToolMessage(
                     content=res.error,

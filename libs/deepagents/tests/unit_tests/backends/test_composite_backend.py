@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     SandboxBackendProtocol,
     WriteResult,
@@ -1460,3 +1461,36 @@ async def test_composite_adelete_missing_returns_error() -> None:
     result = await be.adelete("/memories/ghost.txt")
     assert result.path is None
     assert result.error is not None and "not found" in result.error
+
+
+class _NoDeleteStore(StoreBackend):
+    """StoreBackend variant that opts out of delete (inherits protocol default)."""
+
+    delete = BackendProtocol.delete
+    adelete = BackendProtocol.adelete
+
+
+def test_composite_delete_unsupported_route_returns_error() -> None:
+    """A route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = be.delete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+async def test_composite_adelete_unsupported_route_returns_error() -> None:
+    """The async route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = await be.adelete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error

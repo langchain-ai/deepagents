@@ -39,6 +39,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.state import StateBackend
 
+_DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}' (its backend does not implement delete)."
+
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
     """Create a new GrepMatch with the route prefix prepended to the path."""
@@ -540,18 +542,24 @@ class CompositeBackend(BackendProtocol):
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file, routing to the appropriate backend.
 
+        `CompositeBackend` always advertises delete support (it overrides this
+        method), so the `delete_file` tool is never filtered out for it. A
+        route may still point at a backend that does not implement `delete`;
+        rather than letting `NotImplementedError` escape to the caller, that
+        case is converted into a `DeleteResult` error.
+
         Args:
             file_path: Absolute file path.
 
         Returns:
-            `DeleteResult` with the original path on success, or an error.
-
-        Raises:
-            NotImplementedError: If the routed backend does not implement
-                `delete`.
+            `DeleteResult` with the original path on success, or an error
+            (including when the routed backend does not support deletion).
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = backend.delete(stripped_key)
+        try:
+            res = backend.delete(stripped_key)
+        except NotImplementedError:
+            return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
         return res
@@ -559,7 +567,10 @@ class CompositeBackend(BackendProtocol):
     async def adelete(self, file_path: str) -> DeleteResult:
         """Async version of delete."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        res = await backend.adelete(stripped_key)
+        try:
+            res = await backend.adelete(stripped_key)
+        except NotImplementedError:
+            return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
         return res

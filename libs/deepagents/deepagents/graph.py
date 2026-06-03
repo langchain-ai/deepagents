@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast, overload
+from typing import Annotated, Any, Generic, Required, cast, overload
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -60,13 +60,13 @@ from deepagents.profiles.harness.harness_profiles import (
 logger = logging.getLogger(__name__)
 
 
-class DeepAgentState(AgentState):
+class DeepAgentState(AgentState[ResponseT], Generic[ResponseT]):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
 
-StateSchemaT = TypeVar("StateSchemaT", bound=DeepAgentState, default=DeepAgentState)
+StateSchemaT = TypeVar("StateSchemaT", bound=DeepAgentState[Any], default=DeepAgentState[Any])
 
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -262,7 +262,7 @@ def create_deep_agent(
     debug: bool = ...,
     name: str | None = ...,
     cache: BaseCache | None = ...,
-) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]: ...  # ty: ignore[invalid-type-arguments]
+) -> CompiledStateGraph[DeepAgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]: ...  # ty: ignore[invalid-type-arguments]
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -278,14 +278,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
-    state_schema: type[DeepAgentState] | None = None,
+    state_schema: type[DeepAgentState[Any]] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
+) -> CompiledStateGraph[DeepAgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
     !!! warning "Deep agents require a LLM that supports tool calling!"

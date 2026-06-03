@@ -6,7 +6,6 @@ this file without executing any real agent logic.
 
 from typing import Any, assert_type
 
-from langchain.agents import AgentState
 from langchain.agents.middleware.types import _InputAgentState, _OutputAgentState
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
@@ -35,12 +34,12 @@ assert_type(
 agent_response = create_deep_agent("anthropic:claude-sonnet-4-6", response_format=_MyResponse)
 assert_type(
     agent_response,
-    CompiledStateGraph[AgentState[_MyResponse], None, _InputAgentState, _OutputAgentState[_MyResponse]],
+    CompiledStateGraph[DeepAgentState[_MyResponse], None, _InputAgentState, _OutputAgentState[_MyResponse]],
 )
 
-# Overload 2: no args — state is AgentState[Any], response Any.
+# Overload 2: no args — state is DeepAgentState[Any].
 agent_default = create_deep_agent("anthropic:claude-sonnet-4-6")
 assert_type(
     agent_default,
-    CompiledStateGraph[AgentState[Any], None, _InputAgentState, _OutputAgentState[Any]],
+    CompiledStateGraph[DeepAgentState[Any], None, _InputAgentState, _OutputAgentState[Any]],
 )

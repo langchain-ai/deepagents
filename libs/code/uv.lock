@@ -9,18 +9,21 @@ resolution-markers = [
 ]
 
 [manifest]
-constraints = [{ name = "fireworks-ai", specifier = ">=1.2.0a71" }]
+constraints = [
+    { name = "agent-client-protocol", specifier = ">=0.9.0" },
+    { name = "fireworks-ai", specifier = ">=1.2.0a71" },
+]
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.8.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/a4/26698e0186933b4ab6e814626c99ee52b5522d039b5c94c983ecb3a66eed/agent_client_protocol-0.8.0.tar.gz", hash = "sha256:f9eade29167ff72a10fae7a0a0c1f27436909a790e159fb10265c2874e58d922", size = 68577, upload-time = "2026-02-07T17:08:46.513Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/a0/3b96cd8374725c69bc3dae9fcc2082f3f6cafec1be35d24d7af0f8c3265f/agent_client_protocol-0.10.1.tar.gz", hash = "sha256:355c65ca19f0568344aafc2c1552b7066a8fc491df23ab28e7e253c6c9a85a25", size = 81924, upload-time = "2026-05-24T18:46:44.444Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/04/e55a3c549c09c0023cb92c696c7b98d97bb657088f940e34f4bc47d1a49a/agent_client_protocol-0.8.0-py3-none-any.whl", hash = "sha256:2d5712b88b3249dbd6148b24d32c6eb8992e5663f224db6291524ac80cca8037", size = 54362, upload-time = "2026-02-07T17:08:45.575Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/18/d8c7ff337cf621ea79a84006a7252ff057bfb5767549bb102cc6649f4ec2/agent_client_protocol-0.10.1-py3-none-any.whl", hash = "sha256:a03d3198f4d772f2e0ec012c00ac1cce131b4710220a3dc9fae3c991d047c750", size = 65401, upload-time = "2026-05-24T18:46:43.202Z" },
 ]
 
 [[package]]

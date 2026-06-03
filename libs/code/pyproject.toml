@@ -77,7 +77,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.2,<1.0.0",
 
     # ACP
-    "deepagents-acp>=0.0.7,<1.0.0",
+    "deepagents-acp>=0.0.8,<1.0.0",
 ]
 
 [project.optional-dependencies]

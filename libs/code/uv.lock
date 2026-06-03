@@ -1001,16 +1001,16 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.7"
+version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "deepagents" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/f8/0ed7b07ef7a28a89ab10267ac018c2a88dd970698ea6fad73ed2162a6ea4/deepagents_acp-0.0.7.tar.gz", hash = "sha256:acd50daabd33319fa1b9a8ffe8c406cd7ccdfe50802adc653db67c2cb2c30b9e", size = 13010327, upload-time = "2026-06-03T16:53:59.016Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/4e/586cf7a70161e3eb0c3596ec9513f8249c0739283c2abe08b0c10537197e/deepagents_acp-0.0.8.tar.gz", hash = "sha256:9fb5cecfe9e9238de27e69ac76e7b0bc80a31cbff268c542bf5c9f4727dde1f4", size = 13010377, upload-time = "2026-06-03T18:08:17.321Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/23/0adabc5b879902d6dec1a70e652864de8408d842cc1d0fc8c3be5a289ab4/deepagents_acp-0.0.7-py3-none-any.whl", hash = "sha256:748400d3c62b10059b351bbb84de204101eb73042399b6839ec277314231acc8", size = 17628, upload-time = "2026-06-03T16:53:57.573Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/05/5cc23022dcf59543d5d26c5564754cdc8158866feba403d7527ddc788486/deepagents_acp-0.0.8-py3-none-any.whl", hash = "sha256:0380c8e804a5d5c0fa245a5b1d7dfde8a867f7a9a17ef54749a69da31ed341cf", size = 17630, upload-time = "2026-06-03T18:08:15.879Z" },
 ]
 
 [[package]]
@@ -1179,7 +1179,7 @@ test = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-acp", specifier = ">=0.0.7,<1.0.0" },
+    { name = "deepagents-acp", specifier = ">=0.0.8,<1.0.0" },
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },

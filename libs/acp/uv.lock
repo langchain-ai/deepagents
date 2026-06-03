@@ -474,7 +474,7 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -501,7 +501,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", specifier = ">=0.8.0" },
+    { name = "agent-client-protocol", specifier = ">=0.9.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
@@ -509,7 +509,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 examples = [
     { name = "langchain-baseten", specifier = ">=0.2.0" },
-    { name = "langchain-openai", specifier = ">=1.1.11" },
+    { name = "langchain-openai", specifier = ">=1.2.2" },
 ]
 test = [
     { name = "pytest", specifier = ">=8.3.4" },
@@ -829,16 +829,16 @@ wheels = [
 
 [[package]]
 name = "langchain-openai"
-version = "1.1.14"
+version = "1.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8e/f5/b1a56f703fb90952b07ff9fb5507123a39df1267d62a7f2bb821c5dbb628/langchain_openai-1.1.14.tar.gz", hash = "sha256:71b4262932fabe506ce79c175dbc956cc48f24d81e20b27662df493147750643", size = 1115195, upload-time = "2026-04-16T14:55:24.696Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/1b/c506c7f41156d3a6b4582b4c487f480001b8741deecc6e2d4931fdf4cf2c/langchain_openai-1.2.2.tar.gz", hash = "sha256:8698ffcee9a086e91ab6d207f0026181a03effcbf86bf9aee1808ee35af69dcc", size = 1147539, upload-time = "2026-05-21T22:08:31.123Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/fa/8c33befbc0cf81b21371cc1dab4e7bf94a80b8116194f263a5021ec02529/langchain_openai-1.1.14-py3-none-any.whl", hash = "sha256:cb525d2011f9813fc15a7dcfd4bca5b87badcbcb2c113a7fbe45d1b8a1bbb69c", size = 88705, upload-time = "2026-04-16T14:55:23.159Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/8e/7406c99afacafc8c2ce0fa4152f9f8b9598c93ceb291959821abd053b982/langchain_openai-1.2.2-py3-none-any.whl", hash = "sha256:7da39a3c70cbafa93853456199e39a264dc70651be79b12ac49b4f6a448bce2d", size = 99631, upload-time = "2026-05-21T22:08:29.527Z" },
 ]
 
 [[package]]

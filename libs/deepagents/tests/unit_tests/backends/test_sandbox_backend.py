@@ -1329,11 +1329,12 @@ def test_sandbox_edit_inline_permission_denied() -> None:
 
 
 class TestSandboxDelete:
-    """BaseSandbox.delete maps the server-side classification onto DeleteResult."""
+    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
 
     def test_delete_success(self) -> None:
         sandbox = MockSandbox()
-        sandbox._next_output = "__DELETED__"
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
         result = sandbox.delete("/file.txt")
         assert result.error is None
         assert result.path == "/file.txt"
@@ -1342,30 +1343,40 @@ class TestSandboxDelete:
         assert "rm -f" in sandbox.last_command
         assert "/file.txt" in sandbox.last_command
 
-    def test_delete_missing(self) -> None:
+    def test_delete_missing_is_noop_success(self) -> None:
+        # `rm -f` ignores a missing path: exit 0, so delete reports success.
         sandbox = MockSandbox()
-        sandbox._next_output = "__MISSING__"
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
         result = sandbox.delete("/missing.txt")
-        assert result.path is None
-        assert result.error is not None and "not found" in result.error
+        assert result.error is None
+        assert result.path == "/missing.txt"
 
-    def test_delete_directory(self) -> None:
+    def test_delete_failure_reports_output(self) -> None:
+        # A non-zero exit (e.g. the path is a directory) surfaces rm's stderr.
         sandbox = MockSandbox()
-        sandbox._next_output = "__ISDIR__"
+        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
+        sandbox._next_exit_code = 1
         result = sandbox.delete("/some/dir")
         assert result.path is None
-        assert result.error is not None and "directory" in result.error
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert "Is a directory" in result.error
 
-    def test_delete_failure(self) -> None:
+    def test_delete_failure_unknown_error(self) -> None:
+        # Non-zero exit with no output falls back to a generic message.
         sandbox = MockSandbox()
-        sandbox._next_output = "__FAILED__"
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 1
         result = sandbox.delete("/file.txt")
         assert result.path is None
-        assert result.error is not None and "Error deleting file" in result.error
+        assert result.error is not None
+        assert "unknown error" in result.error
 
     async def test_adelete_success(self) -> None:
         sandbox = MockSandbox()
-        sandbox._next_output = "__DELETED__"
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
         result = await sandbox.adelete("/file.txt")
         assert result.error is None
         assert result.path == "/file.txt"

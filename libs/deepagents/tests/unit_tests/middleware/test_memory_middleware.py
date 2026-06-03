@@ -631,14 +631,13 @@ def test_memory_middleware_with_state_backend() -> None:
     assert middleware.sources[0] == "/memory/AGENTS.md"
 
     # Create a mock Runtime (simplified for testing)
-    state = {"messages": [], "files": {}}
     runtime = SimpleNamespace(
         context=None,
         store=None,
         stream_writer=lambda _: None,
     )
 
-    backend = middleware._get_backend(state, runtime, {})  # type: ignore[arg-type]
+    backend = middleware._resolve_backend_for_runtime(runtime)  # type: ignore[arg-type]
     assert isinstance(backend, StateBackend)
 
 

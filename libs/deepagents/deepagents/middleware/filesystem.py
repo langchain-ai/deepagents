@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
+    from langgraph.runtime import Runtime
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -30,7 +31,6 @@ from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
-from langgraph.runtime import Runtime
 from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
@@ -66,6 +66,7 @@ from deepagents.middleware._message_eviction import (
     _offload_tool_message_content,
 )
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 
@@ -605,7 +606,7 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     return message.model_copy(update={"content": evicted})
 
 
-class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
+class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -740,6 +741,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_execute_tool(),
         ]
 
+    @property
+    def _backend(self) -> BACKEND_TYPES:
+        """Alias for ``self.backend`` so ``_DeepAgentsRuntimeMixin`` can resolve it.
+
+        ``FilesystemMiddleware`` exposes the backend as the public ``self.backend``
+        attribute.  The mixin expects ``self._backend``, so this property bridges
+        the two naming conventions without changing any public API.
+        """
+        return self.backend
+
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
@@ -763,6 +774,40 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
+
+    def _resolve_backend_for_runtime(self, runtime: "Runtime") -> BackendProtocol:
+        """Override to route through ``_get_backend`` so the factory deprecation warning fires.
+
+        When ``self.backend`` is a callable factory the deprecation notice that lives in
+        ``_get_backend`` must still fire for the ``wrap_model_call``/HumanMessage-eviction
+        path.  Routing through ``_get_backend`` (with a synthesised ``ToolRuntime``) keeps
+        the warning centralised and avoids duplicating the message string.
+
+        Args:
+            runtime: Any ``Runtime`` (or ``ToolRuntime``) in scope for the caller.
+
+        Returns:
+            Resolved ``BackendProtocol`` instance.
+        """
+        from deepagents.middleware.runtime import DeepAgentsRuntime  # noqa: PLC0415
+
+        if isinstance(runtime, DeepAgentsRuntime) and runtime.backend is not None:
+            return runtime.backend
+
+        if not callable(self.backend):
+            return self.backend
+
+        # Synthesise a minimal ToolRuntime so _get_backend (and its warning) can fire.
+        config = cast("RunnableConfig", getattr(runtime, "config", {}))
+        tool_rt = ToolRuntime(
+            state=None,
+            context=runtime.context,
+            stream_writer=runtime.stream_writer,
+            store=runtime.store,
+            config=config,
+            tool_call_id=None,
+        )
+        return self._get_backend(tool_rt)
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
@@ -1643,7 +1688,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._resolve_backend_for_runtime(request.runtime)
             backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1708,7 +1753,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            backend = self._resolve_backend_for_runtime(request.runtime)
             backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1820,37 +1865,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return message, False
         return processed_message, True
 
-    def _get_backend_from_runtime(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime[ContextT],
-    ) -> BackendProtocol:
-        """Resolve the backend from a bare `Runtime`.
-
-        Constructs a `ToolRuntime` from the `Runtime` to satisfy the backend
-        factory interface. Used by hooks like `before_agent` that receive
-        `Runtime` rather than `ToolRuntime`.
-
-        Args:
-            state: The current agent state.
-            runtime: The runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if not callable(self.backend):
-            return self.backend
-        config = cast("RunnableConfig", getattr(runtime, "config", {}))
-        tool_runtime = ToolRuntime(
-            state=state,
-            context=runtime.context,
-            stream_writer=runtime.stream_writer,
-            store=runtime.store,
-            config=config,
-            tool_call_id=None,
-        )
-        return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
-
     def _check_eviction_needed(
         self,
         messages: list[AnyMessage],
@@ -1948,7 +1962,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            backend = self._resolve_backend_for_runtime(request.runtime)
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
@@ -1974,7 +1988,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._get_backend_from_runtime(request.state, request.runtime)
+            backend = self._resolve_backend_for_runtime(request.runtime)
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 

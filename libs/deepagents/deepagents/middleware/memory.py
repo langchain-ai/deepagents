@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BACKEND_TYPES
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -75,11 +75,11 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     ResponseT,
 )
-from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,7 @@ def _strip_html_comments(text: str) -> str:
     return _HTML_COMMENT_RE.sub("", text)
 
 
-class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
+class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system
@@ -241,30 +241,6 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         self._add_cache_control = add_cache_control
         self.system_prompt = system_prompt
 
-    def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
-        return self._backend
-
     def _format_agent_memory(self, contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:
         """Format memory with locations and contents paired together.
 
@@ -299,7 +275,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         memory_body = "\n\n".join(sections)
         return template.format(agent_memory=memory_body)
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -317,7 +293,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._resolve_backend_for_runtime(runtime)
         contents: dict[str, str] = {}
 
         results = backend.download_files(list(self.sources))
@@ -333,7 +309,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -351,7 +327,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._resolve_backend_for_runtime(runtime)
         contents: dict[str, str] = {}
 
         results = await backend.adownload_files(list(self.sources))

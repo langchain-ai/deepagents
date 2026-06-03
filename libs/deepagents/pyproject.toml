@@ -159,5 +159,10 @@ python-version = "3.11"
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"
+# `ty` cannot resolve `@dataclass(**_DC_KWARGS)` in langgraph's `Runtime`, so it
+# treats `Runtime` as non-frozen and flags our `DeepAgentsRuntime(Runtime)` as an
+# invalid frozen subclass.  This is a false positive; `Runtime` IS frozen at
+# runtime (frozen=True is in _DC_KWARGS).
+invalid-frozen-dataclass-subclass = "ignore"
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"

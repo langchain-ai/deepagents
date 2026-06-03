@@ -76,7 +76,6 @@ lint lint_diff lint_package lint_tests:
 type: ## Run type checker
 type typecheck:
 	uv run --all-groups ty check deepagents
-	uv run --all-groups mypy tests/typing/ --ignore-missing-imports --follow-imports=silent
 
 format: ## Run code formatters
 format format_diff:

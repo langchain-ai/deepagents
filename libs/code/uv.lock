@@ -2961,7 +2961,7 @@ test = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },
@@ -2976,7 +2976,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 test = [
-    { name = "langchain-tests", specifier = ">=1.1.6" },
+    { name = "langchain-tests", specifier = ">=1.1.9" },
     { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov" },

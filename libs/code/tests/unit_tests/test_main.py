@@ -1039,6 +1039,59 @@ class TestCheckMcpProjectTrustPrompt:
         )
         assert "Learn more:" in captured.err
 
+    def test_warns_when_trust_cannot_be_saved(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """A failed persist still allows this session but warns it wasn't saved."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("fs", "stdio", "node server.js")],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.mcp_trust.trust_project_mcp",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        assert "could not be saved" in capsys.readouterr().err
+
 
 class TestCheckMcpProjectTrustDedupe:
     """Regression tests for the project MCP approval prompt deduplication.

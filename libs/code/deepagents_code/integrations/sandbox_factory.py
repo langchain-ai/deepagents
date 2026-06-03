@@ -666,7 +666,9 @@ class _RunloopProvider(SandboxProvider):
 
         Args:
             sandbox_id: Existing devbox ID, or None to create.
-            timeout: Seconds to wait for startup (forwarded where supported).
+            timeout: Accepted for parity with other providers; currently
+                forwarded but unused by the Runloop backend (the SDK manages
+                its own startup wait).
             **kwargs: Runloop-specific options (`snapshot` blueprint name,
                 `blueprint_dockerfile`).
 
@@ -674,8 +676,11 @@ class _RunloopProvider(SandboxProvider):
             `RunloopSandbox` instance.
 
         Raises:
-            SandboxNotFoundError: If `sandbox_id` does not exist.
-            KeyError: If a `sandbox_id` is not supplied and the SDK raises one.
+            SandboxNotFoundError: If `sandbox_id` does not exist. `RunloopProvider`
+                translates the SDK's not-found error into a `KeyError`, which is
+                mapped here.
+            KeyError: If a `KeyError` is raised while no `sandbox_id` was supplied
+                (re-raised unchanged rather than mislabeled as not-found).
         """
         try:
             return self._provider.get_or_create(

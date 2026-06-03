@@ -919,7 +919,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Sandbox snapshot/blueprint name to use or create (langsmith, runloop)",
+        help="Snapshot (langsmith) or blueprint (runloop) name to use or create",
     )
 
     parser.add_argument(

@@ -116,6 +116,37 @@ def test_runloop_provider_delegates_to_langchain_runloop(
     fake_provider.delete.assert_called_once_with(sandbox_id="dev-1")
 
 
+def test_runloop_provider_forwards_blueprint_dockerfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`blueprint_dockerfile` passes through `**kwargs` to `RunloopProvider`."""
+    from deepagents_code.integrations.sandbox_factory import _RunloopProvider
+
+    fake_provider = MagicMock()
+    fake_provider.get_or_create.return_value = MagicMock(id="dev-1")
+    fake_module = MagicMock()
+    fake_module.RunloopProvider.return_value = fake_provider
+
+    monkeypatch.setenv("RUNLOOP_API_KEY", "test-key")
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        return_value=fake_module,
+    ):
+        provider = _RunloopProvider()
+        provider.get_or_create(
+            sandbox_id=None,
+            snapshot="my-bp",
+            blueprint_dockerfile="FROM ubuntu:24.04\n",
+        )
+
+    fake_provider.get_or_create.assert_called_once_with(
+        sandbox_id=None,
+        timeout=180,
+        snapshot="my-bp",
+        blueprint_dockerfile="FROM ubuntu:24.04\n",
+    )
+
+
 def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
     """Snapshot names only apply to LangSmith and Runloop."""
     provider = MagicMock()
@@ -163,12 +194,16 @@ def test_create_sandbox_rejects_snapshot_name_with_sandbox_id(
 def test_runloop_provider_raises_sandbox_not_found_for_missing_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Missing devbox IDs surface as `SandboxNotFoundError`."""
+    """A missing devbox ID (surfaced as `KeyError`) maps to `SandboxNotFoundError`.
+
+    `RunloopProvider` translates the SDK's `NotFoundError` to a `KeyError`, so the
+    factory only ever sees the builtin and stays free of an SDK import.
+    """
     from deepagents_code.integrations.sandbox_factory import _RunloopProvider
     from deepagents_code.integrations.sandbox_provider import SandboxNotFoundError
 
     fake_provider = MagicMock()
-    fake_provider.get_or_create.side_effect = KeyError("missing")
+    fake_provider.get_or_create.side_effect = KeyError("missing-dev")
     fake_module = MagicMock()
     fake_module.RunloopProvider.return_value = fake_provider
 
@@ -180,6 +215,27 @@ def test_runloop_provider_raises_sandbox_not_found_for_missing_id(
         provider = _RunloopProvider()
         with pytest.raises(SandboxNotFoundError, match="missing-dev"):
             provider.get_or_create(sandbox_id="missing-dev")
+
+
+def test_runloop_provider_reraises_keyerror_without_sandbox_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `KeyError` with no `sandbox_id` is not mislabeled as `SandboxNotFoundError`."""
+    from deepagents_code.integrations.sandbox_factory import _RunloopProvider
+
+    fake_provider = MagicMock()
+    fake_provider.get_or_create.side_effect = KeyError("unexpected")
+    fake_module = MagicMock()
+    fake_module.RunloopProvider.return_value = fake_provider
+
+    monkeypatch.setenv("RUNLOOP_API_KEY", "test-key")
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        return_value=fake_module,
+    ):
+        provider = _RunloopProvider()
+        with pytest.raises(KeyError):
+            provider.get_or_create(sandbox_id=None)
 
 
 def test_agentcore_get_or_create_raises_for_missing_dep() -> None:

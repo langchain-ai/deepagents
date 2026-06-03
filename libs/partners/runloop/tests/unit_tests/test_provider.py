@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from langchain_runloop.provider import (
@@ -139,6 +140,20 @@ def test_sandbox_id_skips_blueprint_logic() -> None:
     assert sandbox.id == "existing-dev"
 
 
+def test_attach_to_missing_devbox_translates_not_found_to_keyerror() -> None:
+    """The SDK's `NotFoundError` on attach becomes a `KeyError(sandbox_id)`."""
+    from runloop_api_client import NotFoundError  # noqa: I001, PLC0415  # optional SDK error type
+
+    provider = _make_provider()
+    response = httpx.Response(404, request=httpx.Request("POST", "http://x"))
+    provider._sdk.devbox.from_id.side_effect = NotFoundError(  # noqa: SLF001
+        "missing", response=response, body=None
+    )
+
+    with pytest.raises(KeyError, match="missing-dev"):
+        provider.get_or_create(sandbox_id="missing-dev")
+
+
 def test_get_or_create_rejects_unknown_kwargs() -> None:
     """Extra kwargs raise TypeError like LangSmith provider."""
     provider = _make_provider()
@@ -158,6 +173,71 @@ def test_blueprint_failure_wraps_in_runtime_error() -> None:
         pytest.raises(RuntimeError, match="Failed to create Runloop devbox"),
     ):
         provider.get_or_create(snapshot="bad-bp")
+
+
+def test_auth_failure_wraps_with_credential_hint() -> None:
+    """Authentication errors surface a credential-specific message."""
+    from runloop_api_client import AuthenticationError  # noqa: I001, PLC0415  # optional SDK error type
+
+    provider = _make_provider()
+    response = httpx.Response(401, request=httpx.Request("POST", "http://x"))
+    provider._sdk.devbox.create.side_effect = AuthenticationError(  # noqa: SLF001
+        "bad key", response=response, body=None
+    )
+
+    with pytest.raises(RuntimeError, match="RUNLOOP_API_KEY"):
+        provider.get_or_create()
+
+
+def test_connection_failure_wraps_as_retryable() -> None:
+    """Transient connection errors are labeled retryable, not a hard failure."""
+    from runloop_api_client import APIConnectionError  # noqa: I001, PLC0415  # optional SDK error type
+
+    provider = _make_provider()
+    provider._sdk.devbox.create.side_effect = APIConnectionError(  # noqa: SLF001
+        request=httpx.Request("POST", "http://x")
+    )
+
+    with pytest.raises(RuntimeError, match="transient"):
+        provider.get_or_create()
+
+
+def test_blueprint_dockerfile_forwarded_to_ensure() -> None:
+    """A custom `blueprint_dockerfile` reaches `_ensure_blueprint`."""
+    provider = _make_provider()
+    provider._sdk.devbox.create_from_blueprint_name.return_value = MagicMock(  # noqa: SLF001
+        id="dev-df"
+    )
+
+    with patch("langchain_runloop.provider._ensure_blueprint") as mock_ensure:
+        provider.get_or_create(
+            snapshot="my-bp",
+            blueprint_dockerfile="FROM ubuntu:24.04\n",
+        )
+
+    assert mock_ensure.call_args.kwargs["dockerfile"] == "FROM ubuntu:24.04\n"
+
+
+def test_blueprint_dockerfile_defaults_when_omitted() -> None:
+    """Omitting `blueprint_dockerfile` falls back to the default Dockerfile."""
+    provider = _make_provider()
+    provider._sdk.devbox.create_from_blueprint_name.return_value = MagicMock(  # noqa: SLF001
+        id="dev-default"
+    )
+
+    with patch("langchain_runloop.provider._ensure_blueprint") as mock_ensure:
+        provider.get_or_create(snapshot="my-bp")
+
+    assert mock_ensure.call_args.kwargs["dockerfile"] == "FROM python:3\n"
+
+
+def test_delete_shuts_down_devbox() -> None:
+    """`delete` shuts the devbox down by ID via the raw client."""
+    provider = _make_provider()
+
+    provider.delete(sandbox_id="dev-x")
+
+    provider._client.devboxes.shutdown.assert_called_once_with(id="dev-x")  # noqa: SLF001
 
 
 def test_ensure_blueprint_reuses_build_complete() -> None:
@@ -195,8 +275,62 @@ def test_ensure_blueprint_raises_when_in_flight() -> None:
     page = MagicMock(blueprints=[building], has_more=False)
     client.blueprints.list.return_value = page
 
-    with pytest.raises(RuntimeError, match="in state 'building'"):
+    with pytest.raises(RuntimeError, match="still building"):
         _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+
+def test_ensure_blueprint_failed_status_advises_delete() -> None:
+    """A blueprint whose last build failed gets a failure-specific message."""
+    client = MagicMock()
+    failed = MagicMock(status="failed")
+    failed.name = "snap"
+    page = MagicMock(blueprints=[failed], has_more=False)
+    client.blueprints.list.return_value = page
+
+    with pytest.raises(RuntimeError, match="last build failed"):
+        _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+    client.blueprints.create_and_await_build_complete.assert_not_called()
+
+
+def test_ensure_blueprint_paginates_to_find_ready_match() -> None:
+    """A ready match on a later page is reused without rebuilding."""
+    client = MagicMock()
+    # Page 1: a different blueprint, more pages to follow.
+    other = MagicMock(id="bp-1", status="build_complete")
+    other.name = "other"
+    page1 = MagicMock(blueprints=[other], has_more=True)
+    # Page 2: the ready match.
+    ready = MagicMock(id="bp-2", status="build_complete")
+    ready.name = "snap"
+    page2 = MagicMock(blueprints=[ready], has_more=False)
+    client.blueprints.list.side_effect = [page1, page2]
+
+    _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+    # Reaching page two proves pagination advanced; the cursor must be page
+    # one's last blueprint ID.
+    assert client.blueprints.list.call_args_list[1].kwargs["starting_after"] == "bp-1"
+    client.blueprints.create_and_await_build_complete.assert_not_called()
+
+
+def test_ensure_blueprint_paginates_then_raises_for_non_ready_match() -> None:
+    """A non-ready match found only on a later page raises, never rebuilds."""
+    client = MagicMock()
+    other = MagicMock(id="bp-1", status="build_complete")
+    other.name = "other"
+    page1 = MagicMock(blueprints=[other], has_more=True)
+    building = MagicMock(id="bp-2", status="building")
+    building.name = "snap"
+    page2 = MagicMock(blueprints=[building], has_more=False)
+    client.blueprints.list.side_effect = [page1, page2]
+
+    with pytest.raises(RuntimeError, match="still building"):
+        _ensure_blueprint(client, "snap", dockerfile="FROM python:3\n")
+
+    # The non-ready match was only discoverable by paginating to page two.
+    assert client.blueprints.list.call_args_list[1].kwargs["starting_after"] == "bp-1"
+    client.blueprints.create_and_await_build_complete.assert_not_called()
 
 
 def test_ensure_blueprint_list_failure_raises_runtime_error() -> None:

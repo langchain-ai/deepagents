@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from runloop_api_client import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from runloop_api_client.sdk import RunloopSDK
 
 if TYPE_CHECKING:
@@ -15,19 +23,47 @@ if TYPE_CHECKING:
 
 from langchain_runloop.sandbox import RunloopSandbox
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_BLUEPRINT_DOCKERFILE = "FROM python:3\n"
 """Default Dockerfile when auto-building a missing blueprint."""
 
 
 def _default_resolve_env(name: str) -> str | None:
-    """Resolve an env var with optional `DEEPAGENTS_CODE_` prefix override."""
+    """Resolve an env var with optional `DEEPAGENTS_CODE_` prefix override.
+
+    Mirrors `deepagents_code.model_config.resolve_env_var` so that standalone
+    use of this package (without the CLI injecting its resolver) matches CLI
+    behavior, including treating a present-but-empty value as unset.
+    """
     if not name.startswith("DEEPAGENTS_CODE_"):
         prefixed = f"DEEPAGENTS_CODE_{name}"
         if prefixed in os.environ:
             value = os.environ[prefixed]
+            if not value:
+                logger.debug("%s is set but empty; treating as unset", prefixed)
             return value or None
     value = os.environ.get(name)
+    if name in os.environ and not value:
+        logger.debug("%s is set but empty; treating as unset", name)
     return value or None
+
+
+def _not_ready_message(blueprint_name: str, status: str) -> str:
+    """Build an actionable message for a same-name blueprint that isn't ready.
+
+    A `failed` status is terminal, so waiting is futile; any other non-complete
+    status (`queued`, `provisioning`, `building`) is still in progress.
+    """
+    if status == "failed":
+        return (
+            f"Blueprint '{blueprint_name}' exists but its last build failed. "
+            f"Delete it and retry, or fix the Dockerfile."
+        )
+    return (
+        f"Blueprint '{blueprint_name}' exists but is still building "
+        f"(state '{status}'). Wait for it to finish, or delete it to rebuild."
+    )
 
 
 def _ensure_blueprint(
@@ -36,7 +72,7 @@ def _ensure_blueprint(
     *,
     dockerfile: str,
 ) -> None:
-    """Guarantee a blueprint named ``blueprint_name`` has finished building.
+    """Guarantee a blueprint named `blueprint_name` has finished building.
 
     Args:
         client: Runloop API client.
@@ -72,12 +108,7 @@ def _ensure_blueprint(
         starting_after = page.blueprints[-1].id
 
     if non_ready_status is not None:
-        msg = (
-            f"Blueprint '{blueprint_name}' exists but is in state "
-            f"'{non_ready_status}'. Wait for it to finish building, or "
-            f"delete it to rebuild."
-        )
-        raise RuntimeError(msg)
+        raise RuntimeError(_not_ready_message(blueprint_name, non_ready_status))
 
     try:
         client.blueprints.create_and_await_build_complete(
@@ -120,9 +151,12 @@ class RunloopProvider:
     ) -> RunloopSandbox:
         """Return a sandbox backend for an existing or new devbox.
 
-        Blueprint boot runs only when ``snapshot``, ``RUNLOOP_SANDBOX_BLUEPRINT_ID``,
-        or ``RUNLOOP_SANDBOX_BLUEPRINT_NAME`` is set. Otherwise a fresh empty devbox
-        is created (same as before this feature).
+        Blueprint boot runs only when `snapshot`, `RUNLOOP_SANDBOX_BLUEPRINT_ID`,
+        or `RUNLOOP_SANDBOX_BLUEPRINT_NAME` is set. Otherwise a fresh empty devbox
+        is created (same as before this feature). Blueprint resolution order:
+        `RUNLOOP_SANDBOX_BLUEPRINT_ID` (boots by ID, skips listing/building) →
+        `snapshot` kwarg → `RUNLOOP_SANDBOX_BLUEPRINT_NAME` (both create-if-missing
+        by name) → empty devbox.
 
         Args:
             sandbox_id: Existing devbox ID to attach to, or `None` to create.
@@ -136,7 +170,9 @@ class RunloopProvider:
 
         Raises:
             TypeError: If unsupported keyword arguments are passed.
-            KeyError: If ``sandbox_id`` does not exist.
+            KeyError: If `sandbox_id` does not refer to an existing devbox
+                (the SDK's `NotFoundError` is translated to `KeyError` so
+                callers can map a missing sandbox without importing the SDK).
             RuntimeError: If devbox or blueprint creation fails.
         """
         if kwargs:
@@ -146,7 +182,13 @@ class RunloopProvider:
         dockerfile = blueprint_dockerfile or _DEFAULT_BLUEPRINT_DOCKERFILE
 
         if sandbox_id is not None:
-            devbox = self._sdk.devbox.from_id(sandbox_id)
+            try:
+                devbox = self._sdk.devbox.from_id(sandbox_id)
+            except NotFoundError as e:
+                # Translate the SDK's not-found error into a stable KeyError so
+                # callers (e.g. the deepagents-code factory) can detect a
+                # missing sandbox without importing runloop_api_client.
+                raise KeyError(sandbox_id) from e
             return RunloopSandbox(devbox=devbox)
 
         env_blueprint_id = self._resolve_env("RUNLOOP_SANDBOX_BLUEPRINT_ID")
@@ -163,6 +205,15 @@ class RunloopProvider:
                 )
             else:
                 devbox = self._sdk.devbox.create()
+        except (AuthenticationError, PermissionDeniedError) as e:
+            msg = (
+                "Runloop rejected the credentials; check RUNLOOP_API_KEY "
+                f"(or DEEPAGENTS_CODE_RUNLOOP_API_KEY): {e}"
+            )
+            raise RuntimeError(msg) from e
+        except (APIConnectionError, APITimeoutError) as e:
+            msg = f"Runloop API unreachable (transient — safe to retry): {e}"
+            raise RuntimeError(msg) from e
         except Exception as e:
             target = blueprint_name or env_blueprint_id or "devbox"
             msg = f"Failed to create Runloop devbox from '{target}': {e}"
@@ -186,5 +237,10 @@ class RunloopProvider:
         return self._sdk.devbox.create_from_blueprint_name(blueprint_name)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
-        """Shut down a devbox by ID."""
+        """Shut down a devbox by ID.
+
+        Raises:
+            runloop_api_client.NotFoundError: If `sandbox_id` does not refer to
+                an existing devbox.
+        """
         self._client.devboxes.shutdown(id=sandbox_id)

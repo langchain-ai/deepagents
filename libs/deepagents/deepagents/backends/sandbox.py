@@ -205,9 +205,7 @@ to avoid size limits on the execute() request body imposed by some sandbox provi
 _MAX_TEXT_READ_BYTES: Final = 500 * 1024
 _MAX_BLOB_INLINE_BYTES: Final = 10 * 1024 * 1024
 _MAX_BLOB_DOWNLOAD_BYTES: Final = 10 * 1024 * 1024
-_BLOB_PREVIEW_TOO_LARGE_ERROR: Final = (
-    f"Binary file exceeds maximum preview size of {_MAX_BLOB_INLINE_BYTES} bytes"
-)
+_BLOB_PREVIEW_TOO_LARGE_ERROR: Final = f"Binary file exceeds maximum preview size of {_MAX_BLOB_INLINE_BYTES} bytes"
 
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
 import os, stat as _stat, sys, json, base64
@@ -569,17 +567,13 @@ except PermissionError:
         try:
             data = json.loads(output)
         except (json.JSONDecodeError, ValueError):
-            detail = output[:200] if output else "(empty)"
-            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+            data = None
 
         if not isinstance(data, dict):
             detail = output[:200] if output else "(empty)"
             return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
 
-        if "error" in data:
-            if data["error"] != _BLOB_PREVIEW_TOO_LARGE_ERROR:
-                return ReadResult(error=f"File '{file_path}': {data['error']}")
-        else:
+        if "error" not in data:
             return ReadResult(
                 file_data=FileData(
                     content=data["content"],
@@ -587,6 +581,13 @@ except PermissionError:
                 )
             )
 
+        if data["error"] != _BLOB_PREVIEW_TOO_LARGE_ERROR:
+            return ReadResult(error=f"File '{file_path}': {data['error']}")
+
+        return self._download_blob(file_path)
+
+    def _download_blob(self, file_path: str) -> ReadResult:
+        """Fetch a blob via download_files() and return it as base64."""
         responses = self.download_files([file_path])
         if not responses:
             return ReadResult(error=f"File '{file_path}': download_files returned no response")
@@ -598,12 +599,7 @@ except PermissionError:
 
         size = len(response.content)
         if size > _MAX_BLOB_DOWNLOAD_BYTES:
-            return ReadResult(
-                error=(
-                    f"File '{file_path}': blob size {size} bytes exceeds the current "
-                    f"threshold of {_MAX_BLOB_DOWNLOAD_BYTES} bytes"
-                )
-            )
+            return ReadResult(error=(f"File '{file_path}': blob size {size} bytes exceeds the current threshold of {_MAX_BLOB_DOWNLOAD_BYTES} bytes"))
 
         return ReadResult(
             file_data=FileData(

@@ -8508,6 +8508,77 @@ class TestFatalErrorRedaction:
         super_fatal.assert_called_once()
 
 
+class TestPrewarmDeferredImports:
+    """Prewarming is a cache optimization and must never crash the app.
+
+    When the installed package is replaced in place mid-session (e.g. a
+    concurrent `uv tool upgrade deepagents-code`), a not-yet-imported module
+    can be transiently absent on disk, so a deferred import raises
+    `ModuleNotFoundError`. The prewarm worker must swallow that — the module
+    cold-loads on first use instead — rather than surfacing a fatal traceback.
+    """
+
+    def test_prewarm_swallows_transient_missing_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A deferred import failing mid-prewarm must not propagate.
+
+        Simulates the in-place-upgrade race by pinning a deferred internal
+        module to `None` in `sys.modules`, which makes Python's import machinery
+        raise `ModuleNotFoundError` for it — the same class the production crash
+        raised, and exactly what a transiently missing file would produce.
+        """
+        import sys
+
+        # `None` in sys.modules makes `from ... import ...` raise
+        # `ModuleNotFoundError` ("...halted; None in sys.modules"), mirroring a
+        # module file that is momentarily gone during an in-place file swap.
+        monkeypatch.setitem(
+            sys.modules,
+            "deepagents_code.widgets.approval",
+            None,
+        )
+
+        # Sanity check: the underlying import sequence really does raise, so the
+        # guard in `_prewarm_deferred_imports` is what keeps the app alive.
+        with pytest.raises(ModuleNotFoundError):
+            DeepAgentsApp._load_deferred_modules()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            # Must not raise — the worker entry point swallows the failure.
+            DeepAgentsApp._prewarm_deferred_imports()
+
+        assert any(
+            "Import prewarm failed" in record.message for record in caplog.records
+        ), "expected a WARNING when a deferred import fails"
+
+    async def test_prewarm_worker_stays_green_on_missing_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The guard must keep the background worker out of `WorkerFailed`.
+
+        The production wiring runs `_prewarm_deferred_imports` inside a Textual
+        worker via `asyncio.to_thread` (`run_worker` defaults to
+        `exit_on_error=True`, so an uncaught worker exception is fatal). This
+        exercises that same offload path under the missing-module race and
+        asserts it completes normally, confirming the guard — not a downstream
+        catch in `_await_prewarm_imports` — is what prevents the crash.
+        """
+        import sys
+
+        monkeypatch.setitem(
+            sys.modules,
+            "deepagents_code.widgets.approval",
+            None,
+        )
+
+        # Must not raise: the worker body completes instead of failing.
+        await asyncio.to_thread(DeepAgentsApp._prewarm_deferred_imports)
+
+
 class TestPrewarmAwait:
     """`_start_server_background` must wait for the prewarm worker first.
 

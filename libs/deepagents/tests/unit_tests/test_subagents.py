@@ -337,7 +337,7 @@ class TestSubAgents:
         class _LocalPrivateMiddleware(AgentMiddleware[_LocalPrivateState, Any, Any]):
             state_schema = _LocalPrivateState
 
-            def before_agent(self, state: _LocalPrivateState, _runtime: object) -> dict[str, Any] | None:
+            def before_agent(self, state: _LocalPrivateState, runtime: object) -> dict[str, Any] | None:
                 if "shared_value" in state:
                     return None
                 return {"shared_value": "seeded"}
@@ -425,14 +425,14 @@ class TestSubAgents:
         class _ChildCaptureMiddleware(AgentMiddleware[_ChildCaptureState, Any, Any]):
             state_schema = _ChildCaptureState
 
-            def before_agent(self, state: _ChildCaptureState, _runtime: object) -> dict[str, Any] | None:
+            def before_agent(self, state: _ChildCaptureState, runtime: object) -> dict[str, Any] | None:
                 captured_child_states.append(dict(state))
                 return None
 
         class _ParentSeedMiddleware(AgentMiddleware[_ParentPrivateState, Any, Any]):
             state_schema = _ParentPrivateState
 
-            def before_agent(self, state: _ParentPrivateState, _runtime: object) -> dict[str, Any] | None:
+            def before_agent(self, state: _ParentPrivateState, runtime: object) -> dict[str, Any] | None:
                 if "shared_value" in state:
                     return None
                 return {"shared_value": "parent-secret"}

@@ -457,144 +457,6 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
-def _build_task_tool(  # noqa: C901, PLR0915
-    subagents: list[_SubagentSpec],
-    task_description: str | None = None,
-    *,
-    private_state_keys: frozenset[str] = frozenset(),
-) -> BaseTool:
-    """Create a task tool from pre-built subagent graphs.
-
-    Args:
-        subagents: List of subagent specs containing name, description, and runnable.
-        task_description: Custom description for the task tool. If `None`,
-            uses default template. Supports `{available_agents}` placeholder.
-        private_state_keys: State keys marked with `PrivateStateAttr` that
-            should be stripped from parent state before invoking subagents.
-
-    Returns:
-        A StructuredTool that can invoke subagents by type.
-    """
-    # Build the graphs dict and descriptions from the unified spec list
-    subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
-
-    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
-
-    # Use custom description if provided, otherwise use default template
-    if task_description is None:
-        description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
-    elif "{available_agents}" in task_description:
-        description = task_description.format(available_agents=subagent_description_str)
-    else:
-        description = task_description
-
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
-        # Validate that the result contains a 'messages' key
-        if "messages" not in result:
-            error_msg = (
-                "CompiledSubAgent must return a state containing a 'messages' key. "
-                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
-                "in their state schema to communicate results back to the main agent."
-            )
-            raise ValueError(error_msg)
-
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-
-        structured = result.get("structured_response")
-        if structured is not None:
-            if hasattr(structured, "model_dump_json"):
-                content: str = structured.model_dump_json()
-            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
-                content = json.dumps(dataclasses.asdict(structured))
-            else:
-                content = json.dumps(structured)
-        else:
-            # Walk back to the last AIMessage with non-empty text. Anthropic
-            # occasionally emits a trailing empty `end_turn` AIMessage after a
-            # successful final tool call, which would otherwise be forwarded
-            # as an empty ToolMessage.
-            content = ""
-            for msg in reversed(result["messages"]):
-                if isinstance(msg, AIMessage):
-                    text = msg.text.rstrip() if msg.text else ""
-                    if text:
-                        content = text
-                        break
-
-        return Command(
-            update={
-                **state_update,
-                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
-            }
-        )
-
-    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
-        """Prepare state for invocation."""
-        subagent = subagent_graphs[subagent_type]
-        # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        subagent_state["messages"] = [HumanMessage(content=description)]
-        return subagent, subagent_state
-
-    def task(
-        description: str,
-        subagent_type: str,
-        runtime: ToolRuntime,
-    ) -> str | Command:
-        if subagent_type not in subagent_graphs:
-            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        if not runtime.tool_call_id:
-            value_error_msg = "Tool call ID is required for subagent invocation"
-            raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        # The parent's callbacks, tags and configurable reach the subagent
-        # automatically: langgraph's `ensure_config` seeds each run from the
-        # ambient parent config and (as of langgraph#7926) merges it per-key, so
-        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
-        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
-        # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
-
-    async def atask(
-        description: str,
-        subagent_type: str,
-        runtime: ToolRuntime,
-    ) -> str | Command:
-        if subagent_type not in subagent_graphs:
-            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
-            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        if not runtime.tool_call_id:
-            value_error_msg = "Tool call ID is required for subagent invocation"
-            raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        # The parent's callbacks, tags and configurable reach the subagent
-        # automatically: langgraph's `ensure_config` seeds each run from the
-        # ambient parent config and (as of langgraph#7926) merges it per-key, so
-        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
-        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
-        # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
-
-    return StructuredTool.from_function(
-        name="task",
-        func=task,
-        coroutine=atask,
-        description=description,
-        infer_schema=False,
-        args_schema=TaskToolSchema,
-    )
-
-
 class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for providing subagents to an agent via a `task` tool.
 
@@ -671,19 +533,13 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._backend = backend
         self._subagents = subagents
         self._private_state_keys = private_state_keys or frozenset()
-        self._task_description = task_description
         self._state_schema = state_schema
         subagent_specs = self._get_subagents()
-        self._subagent_specs = subagent_specs
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(
-            subagent_specs,
-            task_description,
-            private_state_keys=self._private_state_keys,
-        )
+        task_tool = self._build_task_tool(subagent_specs, task_description)
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -695,14 +551,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = [task_tool]
 
     def set_private_state_keys(self, private_state_keys: frozenset[str]) -> None:
-        """Update the private-state filter and rebuild the task tool."""
+        """Update the private-state filter applied when invoking subagents."""
         self._private_state_keys = private_state_keys
-        task_tool = _build_task_tool(
-            self._subagent_specs,
-            task_description=self._task_description,
-            private_state_keys=private_state_keys,
-        )
-        self.tools = [task_tool]
 
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.
@@ -759,6 +609,132 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             )
 
         return specs
+
+    def _build_task_tool(  # noqa: C901, PLR0915
+        self,
+        subagents: list[_SubagentSpec],
+        task_description: str | None = None,
+    ) -> BaseTool:
+        """Create the task tool.
+
+        The returned tool's closures read ``self._private_state_keys`` at
+        invocation time, so updating that attribute via
+        :meth:`set_private_state_keys` takes effect without rebuilding the tool.
+        """
+        subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+
+        subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+
+        if task_description is None:
+            description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+        elif "{available_agents}" in task_description:
+            description = task_description.format(available_agents=subagent_description_str)
+        else:
+            description = task_description
+
+        def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+            if "messages" not in result:
+                error_msg = (
+                    "CompiledSubAgent must return a state containing a 'messages' key. "
+                    "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+                    "in their state schema to communicate results back to the main agent."
+                )
+                raise ValueError(error_msg)
+
+            state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+
+            structured = result.get("structured_response")
+            if structured is not None:
+                if hasattr(structured, "model_dump_json"):
+                    content: str = structured.model_dump_json()
+                elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+                    content = json.dumps(dataclasses.asdict(structured))
+                else:
+                    content = json.dumps(structured)
+            else:
+                # Walk back to the last AIMessage with non-empty text. Anthropic
+                # occasionally emits a trailing empty `end_turn` AIMessage after a
+                # successful final tool call, which would otherwise be forwarded
+                # as an empty ToolMessage.
+                content = ""
+                for msg in reversed(result["messages"]):
+                    if isinstance(msg, AIMessage):
+                        text = msg.text.rstrip() if msg.text else ""
+                        if text:
+                            content = text
+                            break
+
+            return Command(
+                update={
+                    **state_update,
+                    "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
+                }
+            )
+
+        def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+            """Prepare state for invocation."""
+            subagent = subagent_graphs[subagent_type]
+            # Create a new state dict to avoid mutating the original
+            subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS and k not in self._private_state_keys}
+            subagent_state["messages"] = [HumanMessage(content=description)]
+            return subagent, subagent_state
+
+        def task(
+            description: str,
+            subagent_type: str,
+            runtime: ToolRuntime,
+        ) -> str | Command:
+            if subagent_type not in subagent_graphs:
+                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+                return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+            if not runtime.tool_call_id:
+                value_error_msg = "Tool call ID is required for subagent invocation"
+                raise ValueError(value_error_msg)
+            subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+            # The parent's callbacks, tags and configurable reach the subagent
+            # automatically: langgraph's `ensure_config` seeds each run from the
+            # ambient parent config and (as of langgraph#7926) merges it per-key, so
+            # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+            # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+            # Forwarding those keys explicitly would double-count under the merge
+            # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+            subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+            with _subagent_tracing_context():
+                result = subagent.invoke(subagent_state, subagent_config)
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+
+        async def atask(
+            description: str,
+            subagent_type: str,
+            runtime: ToolRuntime,
+        ) -> str | Command:
+            if subagent_type not in subagent_graphs:
+                allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+                return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+            if not runtime.tool_call_id:
+                value_error_msg = "Tool call ID is required for subagent invocation"
+                raise ValueError(value_error_msg)
+            subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+            # The parent's callbacks, tags and configurable reach the subagent
+            # automatically: langgraph's `ensure_config` seeds each run from the
+            # ambient parent config and (as of langgraph#7926) merges it per-key, so
+            # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+            # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+            # Forwarding those keys explicitly would double-count under the merge
+            # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+            subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+            with _subagent_tracing_context():
+                result = await subagent.ainvoke(subagent_state, subagent_config)
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+
+        return StructuredTool.from_function(
+            name="task",
+            func=task,
+            coroutine=atask,
+            description=description,
+            infer_schema=False,
+            args_schema=TaskToolSchema,
+        )
 
     def wrap_model_call(
         self,

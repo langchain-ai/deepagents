@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from deepagents_talon.channels.base import ChannelExposure, ExposureMode
 from deepagents_talon.channels.whatsapp import (
     BridgeTransport,
+    WhatsAppBridgeError,
     WhatsAppChannel,
     WhatsAppChannelConfig,
     bridge_script_path,
@@ -37,6 +39,19 @@ class RecordingTransport:
     async def post(self, path: str, payload: dict[str, object]) -> object:
         self.posts.append((path, payload))
         return {"success": True, "message_id": "sent"}
+
+
+class DelayedHealthTransport:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, path: str) -> object:
+        assert path == "/health"
+        self.calls += 1
+        if self.calls == 1:
+            msg = "bridge not listening yet"
+            raise WhatsAppBridgeError(msg)
+        return {"status": "qr_pending", "botId": None}
 
 
 def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
@@ -274,6 +289,35 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
             },
         ),
     ]
+
+
+async def test_channel_waits_for_bridge_health_before_polling(tmp_path: Path) -> None:
+    transport = DelayedHealthTransport()
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("BridgeTransport", transport),
+    )
+
+    await channel._wait_for_bridge()
+
+    assert transport.calls == 2
+    assert (await channel.status()).detail == "qr_pending"
+
+
+async def test_channel_forwards_bridge_output_to_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stream = asyncio.StreamReader()
+    channel = WhatsAppChannel(WhatsAppChannelConfig(session_dir=tmp_path))
+
+    with caplog.at_level(logging.INFO, logger="deepagents_talon.channels.whatsapp"):
+        task = asyncio.create_task(channel._forward_bridge_output(stream, logging.INFO))
+        stream.feed_data(b"Scan this QR code to pair WhatsApp:\n")
+        stream.feed_eof()
+        await task
+
+    assert "WhatsApp bridge: Scan this QR code to pair WhatsApp:" in caplog.text
 
 
 def test_bridge_script_is_packaged() -> None:

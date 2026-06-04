@@ -90,14 +90,15 @@ async function enqueueMessage(message) {
   if (message.from === "status@broadcast") {
     return;
   }
-  if (message.fromMe && isBridgeSentMessage(message)) {
+  const fromSelf = isSelfMessage(message);
+  if (fromSelf && isBridgeSentMessage(message)) {
     return;
   }
 
   const chat = await safeGetChat(message);
   const contact = await safeGetContact(message);
   const messageId = serializedId(message.id);
-  const chatId = serializedId(chat && chat.id) || (message.fromMe ? message.to : message.from);
+  const chatId = serializedId(chat && chat.id) || (fromSelf ? message.to : message.from);
   if (!messageId || !chatId) {
     console.error("Skipping WhatsApp message without a message id or chat id");
     return;
@@ -105,7 +106,7 @@ async function enqueueMessage(message) {
 
   const media = await downloadMessageMedia(message);
   const mediaType = classifyMedia(message, media);
-  const senderId = message.author || (message.fromMe && botId ? botId : message.from);
+  const senderId = message.author || (fromSelf && botId ? botId : message.from);
   const isGroup =
     chat && typeof chat.isGroup === "boolean"
       ? chat.isGroup
@@ -146,8 +147,8 @@ async function enqueueMessage(message) {
     media_types: media.map((item) => item.mimeType),
     mediaTypes: media.map((item) => item.mimeType),
     media_file_names: media.map((item) => item.fileName),
-    from_self: Boolean(message.fromMe),
-    fromSelf: Boolean(message.fromMe),
+    from_self: fromSelf,
+    fromSelf,
     mentionedIds: normalizeIds(message.mentionedIds || []),
     botIds: botId ? [botId] : [],
     quotedParticipant: await quotedParticipant(message),
@@ -155,6 +156,8 @@ async function enqueueMessage(message) {
       from: message.from,
       to: message.to,
       author: message.author || null,
+      fromMe: Boolean(message.fromMe),
+      idFromMe: Boolean(message.id && message.id.fromMe),
       timestamp: message.timestamp || null,
     },
   };
@@ -319,6 +322,14 @@ function serializedId(value) {
 
 function normalizeIds(values) {
   return values.map((value) => (typeof value === "object" ? value._serialized : value)).filter(Boolean);
+}
+
+function isSelfMessage(message) {
+  if (message.fromMe === true || (message.id && message.id.fromMe === true)) {
+    return true;
+  }
+  const id = serializedId(message.id);
+  return typeof id === "string" && id.startsWith("true_");
 }
 
 function rememberSentMessage(message, body) {

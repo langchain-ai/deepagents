@@ -36,6 +36,7 @@ DEFAULT_BRIDGE_PORT = 3000
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
+DEFAULT_BRIDGE_START_TIMEOUT_SECONDS = 10.0
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
@@ -207,6 +208,8 @@ class WhatsAppChannel:
         )
         self._handler: MessageHandler | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._bridge_stdout: asyncio.Task[None] | None = None
+        self._bridge_stderr: asyncio.Task[None] | None = None
         self._poll: asyncio.Task[None] | None = None
         self._health: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
@@ -328,6 +331,17 @@ class WhatsAppChannel:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if self._process.stdout is not None:
+            self._bridge_stdout = asyncio.create_task(
+                self._forward_bridge_output(self._process.stdout, logging.INFO),
+                name="talon:whatsapp:bridge:stdout",
+            )
+        if self._process.stderr is not None:
+            self._bridge_stderr = asyncio.create_task(
+                self._forward_bridge_output(self._process.stderr, logging.ERROR),
+                name="talon:whatsapp:bridge:stderr",
+            )
+        await self._wait_for_bridge()
 
     async def _stop_bridge(self) -> None:
         if self._process is None:
@@ -338,6 +352,7 @@ class WhatsAppChannel:
         except TimeoutError:
             self._process.kill()
             await self._process.wait()
+        await self._stop_bridge_output_tasks()
         self._process = None
 
     async def _restart_bridge(self) -> None:
@@ -373,6 +388,49 @@ class WhatsAppChannel:
                 if self._failed_health_checks >= _FAILED_HEALTH_RESTART_THRESHOLD:
                     await self._restart_bridge()
             await asyncio.sleep(self.config.health_interval_seconds)
+
+    async def _wait_for_bridge(self) -> None:
+        deadline = asyncio.get_running_loop().time() + DEFAULT_BRIDGE_START_TIMEOUT_SECONDS
+        last_error: WhatsAppBridgeError | None = None
+        while not self._stopped.is_set():
+            if self._process is not None and self._process.returncode is not None:
+                msg = f"WhatsApp bridge exited during startup with code {self._process.returncode}"
+                raise WhatsAppBridgeError(msg) from last_error
+            try:
+                payload = await self._transport.get("/health")
+                status = _parse_status(payload)
+            except WhatsAppBridgeError as error:
+                last_error = error
+                if asyncio.get_running_loop().time() >= deadline:
+                    msg = "WhatsApp bridge did not become ready before startup timeout"
+                    raise WhatsAppBridgeError(msg) from error
+                await asyncio.sleep(0.2)
+            else:
+                self._status = status
+                return
+
+    async def _forward_bridge_output(
+        self,
+        stream: asyncio.StreamReader,
+        level: int,
+    ) -> None:
+        async for raw in stream:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                logger.log(level, "WhatsApp bridge: %s", line)
+
+    async def _stop_bridge_output_tasks(self) -> None:
+        tasks = [
+            task
+            for task in (self._bridge_stdout, self._bridge_stderr)
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._bridge_stdout = None
+        self._bridge_stderr = None
 
     async def _dispatch(self, message: ChannelMessage) -> None:
         if self._handler is None:

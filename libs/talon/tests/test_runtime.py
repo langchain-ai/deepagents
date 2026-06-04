@@ -115,6 +115,66 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     } <= tool_names
 
 
+async def test_runtime_passes_openai_base_url_to_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    model = object()
+
+    def fake_init_chat_model(*args: Any, **kwargs: Any) -> object:
+        captured["init_args"] = args
+        captured["init_kwargs"] = kwargs
+        return model
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="openai:gpt-5.2",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"OPENAI_BASE_URL": "https://openai-compatible.example.com/v1"},
+    )
+
+    await runtime.start()
+
+    assert captured["init_args"] == ("openai:gpt-5.2",)
+    assert captured["init_kwargs"] == {
+        "base_url": "https://openai-compatible.example.com/v1",
+        "use_responses_api": True,
+    }
+    assert captured["model"] is model
+
+
+async def test_runtime_leaves_non_openai_model_string_with_openai_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="anthropic:claude-sonnet-4-6",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"OPENAI_BASE_URL": "https://openai-compatible.example.com/v1"},
+    )
+
+    await runtime.start()
+
+    assert captured["model"] == "anthropic:claude-sonnet-4-6"
+
+
 async def test_runtime_preserves_conversation_thread_across_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

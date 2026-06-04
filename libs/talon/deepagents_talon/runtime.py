@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, TypeGuard, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.profiles.provider.provider_profiles import apply_provider_profile
+from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
@@ -21,6 +23,7 @@ from deepagents_talon.tools import build_web_tools
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
+    from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
     from langgraph.types import Checkpointer
 
@@ -142,7 +145,7 @@ class DeepAgentRuntime:
         """Construct the Deep Agents graph."""
         tools = self._build_tools()
         self._graph = create_deep_agent(
-            model=self.model,
+            model=_resolve_model_from_env(self.model, self.env),
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
             backend=self.backend,
@@ -308,6 +311,22 @@ class DeepAgentRuntime:
 
 def _default_backend() -> LocalShellBackend:
     return LocalShellBackend(virtual_mode=False, inherit_env=True)
+
+
+def _resolve_model_from_env(model: str, env: Mapping[str, str]) -> str | BaseChatModel:
+    base_url = env.get("OPENAI_BASE_URL")
+    if not base_url or not _is_openai_model(model):
+        return model
+
+    return init_chat_model(
+        model,
+        base_url=base_url,
+        **apply_provider_profile(model),
+    )
+
+
+def _is_openai_model(model: str) -> bool:
+    return model.startswith("openai:")
 
 
 def _current_cron_origin() -> CronOrigin:

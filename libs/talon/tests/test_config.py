@@ -49,6 +49,20 @@ def test_from_env_keeps_langsmith_env(tmp_path: Path) -> None:
     assert config.env["LANGSMITH_PROJECT"] == "project"
 
 
+def test_from_env_keeps_openai_env(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant-1",
+            "OPENAI_API_KEY": "key",
+            "OPENAI_BASE_URL": "https://openai-compatible.example.com/v1",
+        },
+        base_home=tmp_path,
+    )
+
+    assert config.env["OPENAI_API_KEY"] == "key"
+    assert config.env["OPENAI_BASE_URL"] == "https://openai-compatible.example.com/v1"
+
+
 @pytest.mark.parametrize("assistant_id", ["", "../bad", "bad/slash", "bad space"])
 def test_from_env_rejects_unsafe_assistant_id(tmp_path: Path, assistant_id: str) -> None:
     with pytest.raises(TalonConfigError):

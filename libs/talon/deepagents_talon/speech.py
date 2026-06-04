@@ -8,6 +8,7 @@ import logging
 import subprocess
 import tempfile
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
@@ -15,15 +16,13 @@ from typing import TYPE_CHECKING, Protocol, cast
 from deepagents_talon.interfaces import ChannelMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from deepagents_talon.config import TalonConfig
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 _DEFAULT_LOCAL_VOICE_DEVICE = "cpu"
-_local_models: dict[tuple[str, str], _LocalSpeechModel] = {}
+_local_pipelines: dict[tuple[str, str], _LocalSpeechPipeline] = {}
 _local_model_lock = threading.Lock()
 
 
@@ -41,23 +40,17 @@ class VoiceTranscriber(Protocol):
         """
 
 
-class _LocalSpeechModel(Protocol):
-    def to(self, device: str) -> _LocalSpeechModel:
-        """Move the model to the target inference device."""
-
-    def eval(self) -> None:
-        """Put the model in inference mode."""
-
-    def transcribe(self, audio_paths: list[str]) -> Sequence[object]:
-        """Transcribe audio paths and return NeMo result objects."""
+class _LocalSpeechPipeline(Protocol):
+    def __call__(self, audio_path: str) -> object:
+        """Transcribe one audio path."""
 
 
 @dataclass(frozen=True, slots=True)
 class LocalParakeetVoiceTranscriber:
-    """Voice transcriber backed by local NVIDIA Parakeet ASR through NeMo.
+    """Voice transcriber backed by local NVIDIA Parakeet ASR through Transformers.
 
     Args:
-        model: NeMo model identifier to load.
+        model: Hugging Face model identifier to load.
         device: Inference device for the local model.
     """
 
@@ -223,14 +216,10 @@ def _transcribe_local_sync(path: Path, *, model: str, device: str) -> str:
     try:
         wav_path = _convert_to_wav(path)
         with _local_model_lock:
-            speech_model = _load_local_model(model, device)
-            outputs = speech_model.transcribe([str(wav_path)])
-        if not outputs:
-            return ""
-        result = outputs[0]
-        text = getattr(result, "text", None)
-        return text.strip() if isinstance(text, str) else str(result).strip()
-    except (AttributeError, ImportError, OSError, RuntimeError, ValueError) as exc:
+            speech_pipeline = _load_local_pipeline(model, device)
+            result = speech_pipeline(str(wav_path))
+        return _pipeline_text(result)
+    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.warning("Voice transcription failed for %s: %s", path, exc)
         return ""
     finally:
@@ -241,29 +230,39 @@ def _transcribe_local_sync(path: Path, *, model: str, device: str) -> str:
                 logger.debug("Could not delete temporary voice transcription file: %s", wav_path)
 
 
-def _load_local_model(model: str, device: str) -> _LocalSpeechModel:
+def _load_local_pipeline(model: str, device: str) -> _LocalSpeechPipeline:
     key = (model, device)
-    cached = _local_models.get(key)
+    cached = _local_pipelines.get(key)
     if cached is not None:
         return cached
 
     try:
-        module = importlib.import_module("nemo.collections.asr")
+        module = importlib.import_module("transformers")
     except ImportError as exc:
         msg = (
-            "nemo_toolkit[asr] is required for local voice transcription. "
-            "Install it with `nemo_toolkit[asr]` and ensure ffmpeg is on PATH."
+            "transformers[audio] is required for local voice transcription. "
+            "Install the `speech` extra and ensure ffmpeg is on PATH."
         )
         raise ImportError(msg) from exc
 
     logger.info("Loading local voice transcription model %s on device=%s", model, device)
-    asr_model = module.models.ASRModel
-    loaded = cast("_LocalSpeechModel", asr_model.from_pretrained(model_name=model))
-    loaded = loaded.to(device)
-    loaded.eval()
-    _local_models[key] = loaded
+    loaded = module.pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        device=device,
+    )
+    _local_pipelines[key] = loaded
     logger.info("Local voice transcription model %s ready on device=%s", model, device)
     return loaded
+
+
+def _pipeline_text(result: object) -> str:
+    if isinstance(result, Mapping):
+        values = cast("Mapping[str, object]", result)
+        text = values.get("text")
+        return text.strip() if isinstance(text, str) else ""
+    text = getattr(result, "text", None)
+    return text.strip() if isinstance(text, str) else str(result).strip()
 
 
 def _convert_to_wav(path: Path) -> Path:

@@ -60,11 +60,12 @@ DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED=true
 
 When enabled without `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_MODEL`, Talon uses the
 same local default as the original WhatsApp example:
-`nvidia/parakeet-tdt-0.6b-v3` through NeMo, with ffmpeg converting inbound audio
-to 16 kHz mono WAV first. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda`
-to use a GPU. The legacy example variables `SPEECH_ENABLED` and `SPEECH_DEVICE`
-are also accepted. Setting `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_MODEL` to a
-non-Parakeet model keeps the existing OpenAI SDK transcription path.
+`nvidia/parakeet-tdt-0.6b-v3` through Transformers, with ffmpeg converting
+inbound audio to 16 kHz mono WAV first. Set
+`DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` to use a GPU. The legacy
+example variables `SPEECH_ENABLED` and `SPEECH_DEVICE` are also accepted.
+Setting `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_MODEL` to a non-Parakeet model
+keeps the existing OpenAI SDK transcription path.
 
 `open` exposure allows arbitrary WhatsApp senders to trigger the agent while it
 runs with the operator's model credentials, channel credentials, MCP tool access,

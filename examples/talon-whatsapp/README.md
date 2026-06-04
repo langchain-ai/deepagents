@@ -17,6 +17,13 @@ only messages sent by the paired WhatsApp account trigger the agent. Use
 `allowlist` or `open` only when you intentionally want other chats to trigger
 the agent.
 
+Voice transcription is enabled in `.env.example`. The Docker example installs
+`ffmpeg` and the Talon `speech` extra so inbound WhatsApp voice notes are
+transcribed locally with NVIDIA Parakeet through Transformers before reaching
+the agent. The first voice message can be slow because the ASR model is
+downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when
+running on a GPU-enabled host.
+
 ## Local Run Without Docker
 
 ```bash
@@ -29,7 +36,7 @@ cd ../../libs/talon/deepagents_talon/channels/whatsapp_bridge
 npm install
 
 cd ../../../..
-uv sync --directory libs/talon
+uv sync --directory libs/talon --extra speech
 cp examples/talon-whatsapp/AGENTS.md ~/.deepagents/whatsapp-local/agent/AGENTS.md
 uv run --directory libs/talon deepagents-talon --whatsapp
 ```

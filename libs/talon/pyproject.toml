@@ -28,6 +28,12 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.2,<1.0.0",
 ]
 
+[project.optional-dependencies]
+speech = [
+    "torch>=2.2,<2.10",
+    "transformers[audio]>=4.57.0,<6.0.0",
+]
+
 [project.scripts]
 deepagents-talon = "deepagents_talon.__main__:main"
 

@@ -70,6 +70,7 @@ from deepagents_code.local_context import (
     _ExecutableBackend,
 )
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.provider_error_recovery import ProviderErrorRecoveryMiddleware
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -1240,9 +1241,13 @@ def create_cli_agent(
             }
             custom_subagents.append(general_purpose_subagent)
 
-    # Build middleware stack based on enabled features
+    # Build middleware stack based on enabled features.
+    # `ProviderErrorRecoveryMiddleware` sits just inside `ConfigurableModelMiddleware`
+    # so raw provider exceptions (openai.PermissionDeniedError, 5xx, etc.) are caught
+    # before they escape to outer middleware and abort the run.
     agent_middleware = [
         ConfigurableModelMiddleware(),
+        ProviderErrorRecoveryMiddleware(),
         _FilesystemEmptyResultMiddleware(),
     ]
 

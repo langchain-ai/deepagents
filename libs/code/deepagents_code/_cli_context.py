@@ -26,6 +26,14 @@ class CLIContext(TypedDict, total=False):
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
 
+    fallback_model: str | None
+    """Optional `provider:model` spec to swap to once when the primary model
+    raises a 401/403 auth error.
+
+    Read by `ProviderErrorRecoveryMiddleware`. `None` means surface the auth
+    error directly without retrying against an alternate provider.
+    """
+
     effective_model: str | None
     """Resolved `provider:model` spec actually in use for this invocation.
 

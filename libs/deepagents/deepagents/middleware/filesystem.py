@@ -524,22 +524,16 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 
 def _route_host_path_prompt(backend: BackendProtocol) -> str:
-    """Build a prompt section mapping virtual route prefixes to host shell paths.
+    """Build a prompt section mapping virtual route paths to host shell paths.
 
-    `execute` runs on the default backend's host shell, so a routed virtual path
-    (for example `/common/`) does not exist there and shell commands referencing
-    it fail (issue #3050). Rather than rewriting commands — which can't be done
-    correctly for arbitrary shell (quoting, `$VAR`/`$(...)` expansion, here-docs,
-    `cd`, dynamically built paths) — we tell the model the host path to use, so it
-    forms the correct command itself.
+    `execute` runs on the host shell, so virtual paths (e.g. `/common/`) may not
+    exist there. Instead of rewriting shell commands, provide the model with
+    virtual→host path mappings so it can generate correct commands directly.
 
-    Routes backed by a host filesystem (those exposing a `cwd` and running in
-    virtual mode) get an explicit virtual→host mapping. Routes with no host path
-    (for example store-backed mounts) are listed as shell-inaccessible so the
-    model uses the file tools for them instead.
+    Routes without a host path are marked as shell-inaccessible and should be
+    accessed through file tools instead.
 
-    Returns an empty string when there is nothing to describe (no composite
-    backend, or no routes).
+    Returns an empty string if there are no routes to describe.
     """
     if not isinstance(backend, CompositeBackend):
         return ""

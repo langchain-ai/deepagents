@@ -241,7 +241,6 @@ def show_agents_help() -> None:
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all agents")
     console.print("  reset             Reset an agent's prompt to default")
-    console.print("  import            Import a Fleet-style agent manifest")
     console.print()
     _print_option_section()
     console.print()
@@ -249,7 +248,6 @@ def show_agents_help() -> None:
     console.print("  dcode agents list")
     console.print("  dcode agents reset --agent coder")
     console.print("  dcode agents reset --agent coder --target researcher")
-    console.print("  dcode agents import ./fleet-agent --agent researcher")
     console.print()
 
 
@@ -279,31 +277,6 @@ def show_reset_help() -> None:
     console.print("  dcode reset --agent coder")
     console.print("  dcode reset --agent coder --target researcher")
     console.print("  dcode reset --agent coder --dry-run")
-    console.print()
-
-
-def show_agents_import_help() -> None:
-    """Show help information for the `agents import` subcommand."""
-    console.print()
-    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode agents import SOURCE --agent NAME [--backend TYPE]")
-    console.print()
-    console.print(
-        "Import a Fleet agent or file-tree manifest into a local agent directory.",
-    )
-    console.print()
-    _print_option_section(
-        "  SOURCE                Fleet id, manifest directory, or JSON payload path",
-        "  --agent NAME          Local agent to create",
-        "  --backend TYPE        Local backend: local, agentcore, daytona, "
-        "langsmith, modal, runloop",
-        "  --force               Replace an existing local agent directory",
-    )
-    console.print()
-    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode agents import agnt_123 --agent researcher")
-    console.print("  dcode agents import ./fleet-agent --agent researcher")
-    console.print("  dcode agents import agent.json --agent researcher --backend modal")
     console.print()
 
 

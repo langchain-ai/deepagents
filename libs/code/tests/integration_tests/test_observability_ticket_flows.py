@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -10,12 +9,7 @@ from unittest.mock import MagicMock, patch
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
-from deepagents_code.agent import create_cli_agent, import_agent_manifest
-from deepagents_code.agent_manifest import (
-    load_agent_manifest,
-    load_manifest_backend,
-    load_manifest_model,
-)
+from deepagents_code.agent import create_cli_agent
 from deepagents_code.integrations.sandbox_factory import create_sandbox
 
 if TYPE_CHECKING:
@@ -110,70 +104,3 @@ def test_sandbox_factory_reuses_persisted_backend_and_executes(
         "sandbox_id": "sandbox-1"
     }
     provider.delete.assert_not_called()
-
-
-def test_fleet_manifest_import_materializes_runnable_local_definition(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Fleet files should import locally with hosted-only fields dropped."""
-    from deepagents_code import agent as agent_module
-
-    source = tmp_path / "fleet-agent.json"
-    source.write_text(
-        json.dumps(
-            {
-                "name": "Imported",
-                "runtime": {"model": {"model_id": "provider:test-model"}},
-                "backend": {"type": "langsmith", "PolicyIDs": ["hosted-policy"]},
-                "permissions": {"users": ["hosted-user"]},
-                "files": {
-                    "AGENTS.md": "Imported system prompt",
-                    "tools.json": json.dumps(
-                        {
-                            "mcpServers": {
-                                "local": {"command": "uvx", "args": ["mcp-server"]},
-                                "hosted": {
-                                    "url": "https://example.com/mcp",
-                                    "auth": "oauth",
-                                },
-                            }
-                        }
-                    ),
-                    "subagents/reviewer/AGENTS.md": (
-                        "---\n"
-                        "name: reviewer\n"
-                        "description: Review work\n"
-                        "---\n"
-                        "Review carefully.\n"
-                    ),
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    target = tmp_path / "agents" / "imported"
-    monkeypatch.setattr(agent_module.settings, "get_agent_dir", lambda _name: target)
-
-    import_agent_manifest(
-        str(source),
-        "imported",
-        backend_type="modal",
-        output_format="json",
-    )
-    output = json.loads(capsys.readouterr().out)
-
-    manifest = load_agent_manifest(target)
-    assert manifest.system_prompt == "Imported system prompt"
-    assert load_manifest_model(target) == "provider:test-model"
-    assert load_manifest_backend(target) == "modal"
-    assert (target / "subagents" / "reviewer" / "AGENTS.md").is_file()
-    assert manifest.tools == {
-        "mcpServers": {"local": {"command": "uvx", "args": ["mcp-server"]}}
-    }
-    assert set(output["data"]["dropped_fields"]) == {
-        "backend.PolicyIDs",
-        "permissions",
-        "tools.mcpServers.hosted.oauth",
-    }

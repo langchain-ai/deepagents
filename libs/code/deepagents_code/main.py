@@ -766,34 +766,6 @@ def parse_args() -> argparse.Namespace:
         help="Show what would happen without making changes",
     )
 
-    agents_import = agents_sub.add_parser(
-        "import",
-        help="Import a Fleet-style agent manifest",
-        add_help=False,
-        parents=help_parent(_lazy_help("show_agents_import_help")),
-    )
-    add_json_output_arg(agents_import)
-    agents_import.add_argument(
-        "source",
-        help="Fleet agent id, manifest directory, or JSON payload path",
-    )
-    agents_import.add_argument(
-        "--agent",
-        required=True,
-        help="Local agent name to create",
-    )
-    agents_import.add_argument(
-        "--backend",
-        choices=["local", "agentcore", "modal", "daytona", "runloop", "langsmith"],
-        default="local",
-        help="Local execution backend to bind after import (default: local)",
-    )
-    agents_import.add_argument(
-        "--force",
-        action="store_true",
-        help="Replace the local agent directory if it already exists",
-    )
-
     setup_skills_parser(
         subparsers,
         make_help_action=_make_help_action,
@@ -1280,11 +1252,6 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_code.agent_manifest import (
-        get_agent_manifest_paths,
-        load_manifest_backend,
-        load_manifest_model,
-    )
     from deepagents_code.app import AppResult, run_textual_app
     from deepagents_code.config import (
         _get_default_model_spec,
@@ -1301,17 +1268,6 @@ async def run_textual_cli_async(
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
     # (~560ms) is deferred to a background worker.
-    agent_dir = settings.get_agent_dir(assistant_id)
-    _manifest_path, manifest_tools_path = get_agent_manifest_paths(agent_dir)
-    if model_name is None:
-        model_name = load_manifest_model(agent_dir)
-    if mcp_config_path is None and manifest_tools_path is not None:
-        mcp_config_path = str(manifest_tools_path)
-    if sandbox_type == "none":
-        manifest_backend = load_manifest_backend(agent_dir)
-        if manifest_backend and manifest_backend != "local":
-            sandbox_type = manifest_backend
-
     defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()
@@ -2472,11 +2428,7 @@ def cli_main() -> None:
 
             show_help()
         elif args.command == "agents":
-            from deepagents_code.agent import (
-                import_agent_manifest,
-                list_agents,
-                reset_agent,
-            )
+            from deepagents_code.agent import list_agents, reset_agent
             from deepagents_code.ui import show_agents_help
 
             # "ls" is an argparse alias for "list"
@@ -2487,14 +2439,6 @@ def cli_main() -> None:
                     args.agent,
                     args.source_agent,
                     dry_run=args.dry_run,
-                    output_format=output_format,
-                )
-            elif args.agents_command == "import":
-                import_agent_manifest(
-                    args.source,
-                    args.agent,
-                    backend_type=args.backend,
-                    force=args.force,
                     output_format=output_format,
                 )
             else:

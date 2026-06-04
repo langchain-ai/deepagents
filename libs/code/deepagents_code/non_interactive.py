@@ -1006,24 +1006,6 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
 
-    from deepagents_code.agent_manifest import (
-        get_agent_manifest_paths,
-        load_manifest_backend,
-        load_manifest_model,
-    )
-    from deepagents_code.config import settings
-
-    agent_dir = settings.get_agent_dir(assistant_id)
-    _manifest_path, manifest_tools_path = get_agent_manifest_paths(agent_dir)
-    if model_name is None:
-        model_name = load_manifest_model(agent_dir)
-    if mcp_config_path is None and manifest_tools_path is not None:
-        mcp_config_path = str(manifest_tools_path)
-    if sandbox_type == "none":
-        manifest_backend = load_manifest_backend(agent_dir)
-        if manifest_backend and manifest_backend != "local":
-            sandbox_type = manifest_backend
-
     if startup_cmd and startup_cmd.strip():
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
 

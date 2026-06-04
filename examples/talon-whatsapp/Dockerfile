@@ -16,7 +16,7 @@ RUN apt-get update && \
         npm && \
     rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /opt/deepagents-src
 
 COPY libs/deepagents ./libs/deepagents
 COPY libs/code ./libs/code
@@ -30,5 +30,7 @@ RUN mkdir -p /opt/whatsapp-bridge && \
     npm install --omit=dev
 
 RUN cd libs/talon && uv sync --frozen --extra speech
+
+WORKDIR /workspace
 
 CMD ["/opt/deepagents-talon-venv/bin/deepagents-talon", "--whatsapp"]

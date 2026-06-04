@@ -30,8 +30,12 @@ dependencies = [
 
 [project.optional-dependencies]
 speech = [
+    "librosa>=0.11,<1.0",
+    "numpy>=2.0,<3.0",
+    "phonemizer>=3.3,<4.0",
     "torch>=2.2,<2.10",
-    "transformers[audio]>=4.57.0,<6.0.0",
+    "torchaudio>=2.2,<2.12",
+    "transformers>=4.57.0,<6.0.0",
 ]
 
 [project.scripts]

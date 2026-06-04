@@ -379,6 +379,12 @@ class WhatsAppChannel:
                 for message in _parse_messages(payload):
                     if self.config.exposure.allows(message):
                         await self._dispatch(message)
+                    else:
+                        logger.debug(
+                            "Dropping WhatsApp message %s from %s due to exposure policy",
+                            message.message_id,
+                            message.conversation_id,
+                        )
             except WhatsAppBridgeError:
                 logger.exception("Failed to poll WhatsApp bridge messages")
             await asyncio.sleep(self.config.poll_interval_seconds)
@@ -518,7 +524,7 @@ def _parse_message(payload: object) -> ChannelMessage:
     message_type = _optional_str(
         values.get("message_type") or values.get("messageType") or values.get("mediaType"),
     )
-    media_type = _optional_str(values.get("media_type") or values.get("mediaType")) or message_type
+    media_type = _message_media_type(values, message_type, media_mime_types)
     text = values.get("text")
     if not isinstance(text, str):
         text = values.get("body")
@@ -586,6 +592,40 @@ def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _message_media_type(
+    values: Mapping[str, object],
+    message_type: str | None,
+    media_mime_types: list[str],
+) -> str | None:
+    raw = _optional_str(values.get("media_type") or values.get("mediaType"))
+    candidates = [raw, message_type, *media_mime_types]
+    if any(_is_voice_type(candidate) for candidate in candidates):
+        return "voice"
+    if any(_is_image_type(candidate) for candidate in candidates):
+        return "image"
+    if any(_is_video_type(candidate) for candidate in candidates):
+        return "video"
+    return raw or message_type
+
+
+def _is_voice_type(value: str | None) -> bool:
+    if value is None:
+        return False
+    lowered = value.lower()
+    return "audio" in lowered or lowered in {"voice", "ptt"}
+
+
+def _is_image_type(value: str | None) -> bool:
+    if value is None:
+        return False
+    lowered = value.lower()
+    return "image" in lowered or lowered in {"photo", "sticker"}
+
+
+def _is_video_type(value: str | None) -> bool:
+    return isinstance(value, str) and "video" in value.lower()
 
 
 def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:

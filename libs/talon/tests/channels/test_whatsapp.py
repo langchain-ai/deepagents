@@ -239,6 +239,84 @@ async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
     assert received[0].metadata["voice_path"] == str(media)
 
 
+async def test_channel_normalizes_ptt_payload_as_voice(tmp_path: Path) -> None:
+    media = tmp_path / "voice.ogg"
+    media.write_bytes(b"voice")
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "",
+                "chatId": "chat@lid",
+                "messageType": "ptt",
+                "mediaType": "document",
+                "mediaPaths": [str(media)],
+                "mediaMimeTypes": ["application/octet-stream"],
+                "fromSelf": True,
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert received[0].metadata["media_type"] == "voice"
+    assert received[0].metadata["voice_path"] == str(media)
+
+
+async def test_channel_normalizes_audio_mime_payload_as_voice(tmp_path: Path) -> None:
+    media = tmp_path / "audio.bin"
+    media.write_bytes(b"voice")
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "",
+                "chatId": "chat@lid",
+                "messageType": "document",
+                "mediaType": "document",
+                "mediaPaths": [str(media)],
+                "mediaMimeTypes": ["audio/ogg; codecs=opus"],
+                "fromSelf": True,
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert received[0].metadata["media_type"] == "voice"
+    assert received[0].metadata["voice_path"] == str(media)
+
+
 async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = WhatsAppChannel(

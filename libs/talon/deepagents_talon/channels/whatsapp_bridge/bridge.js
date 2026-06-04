@@ -106,6 +106,11 @@ async function enqueueMessage(message) {
 
   const media = await downloadMessageMedia(message);
   const mediaType = classifyMedia(message, media);
+  if (message.hasMedia && media.length === 0) {
+    console.log(
+      `[bridge] Message ${messageId} reported media but no attachment was downloaded; type=${message.type || "unknown"} mediaType=${mediaType}`,
+    );
+  }
   const senderId = message.author || (fromSelf && botId ? botId : message.from);
   const isGroup =
     chat && typeof chat.isGroup === "boolean"
@@ -136,8 +141,8 @@ async function enqueueMessage(message) {
       (contact && (contact.pushname || contact.name || contact.shortName)) || senderId || null,
     message_id: messageId,
     messageId,
-    has_media: media.length > 0,
-    hasMedia: media.length > 0,
+    has_media: Boolean(message.hasMedia || media.length > 0),
+    hasMedia: Boolean(message.hasMedia || media.length > 0),
     media_paths: media.map((item) => item.path),
     mediaPaths: media.map((item) => item.path),
     media_urls: media.map((item) => item.path),
@@ -287,7 +292,7 @@ async function downloadMessageMedia(message) {
 
 function classifyMedia(message, media) {
   const rawType = String(message.type || "").toLowerCase();
-  const mimeType = media.length > 0 ? String(media[0].mimeType || "").toLowerCase() : "";
+  const mimeType = messageMimeType(message, media);
   if (rawType === "ptt" || rawType === "audio" || mimeType.startsWith("audio/")) {
     return "voice";
   }
@@ -301,6 +306,14 @@ function classifyMedia(message, media) {
     return "document";
   }
   return "text";
+}
+
+function messageMimeType(message, media) {
+  if (media.length > 0) {
+    return String(media[0].mimeType || "").toLowerCase();
+  }
+  const data = message && message._data ? message._data : {};
+  return String(message.mimetype || data.mimetype || data.mimetypeOverride || "").toLowerCase();
 }
 
 function mediaExtension(mimeType, messageType) {

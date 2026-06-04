@@ -603,6 +603,46 @@ def _validate_tool_filter_fields(
             raise ValueError(error_msg)
 
 
+def load_mcp_config_from_dict(
+    config: Mapping[str, Any],
+    *,
+    source: str = "MCP config",
+) -> dict[str, Any]:
+    """Validate and copy an in-memory MCP configuration.
+
+    Args:
+        config: Parsed MCP configuration mapping.
+        source: Human-readable source name for error messages.
+
+    Returns:
+        Deep-copied configuration dictionary.
+
+    Raises:
+        TypeError: If config fields have wrong types.
+        ValueError: If config is missing required fields.
+    """
+    copied = copy.deepcopy(dict(config))
+    if "mcpServers" not in copied:
+        error_msg = (
+            f"{source} must contain 'mcpServers' field. "
+            'Expected format: {"mcpServers": {"server-name": {...}}}'
+        )
+        raise ValueError(error_msg)
+
+    if not isinstance(copied["mcpServers"], dict):
+        error_msg = f"{source} 'mcpServers' field must be a dictionary"
+        raise TypeError(error_msg)
+
+    if not copied["mcpServers"]:
+        error_msg = f"{source} 'mcpServers' field is empty - no servers configured"
+        raise ValueError(error_msg)
+
+    for server_name, server_config in copied["mcpServers"].items():
+        _validate_server_config(server_name, server_config)
+
+    return copied
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -649,25 +689,11 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         error_msg = f"Invalid JSON in MCP config file: {exc.msg}"
         raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
 
-    if "mcpServers" not in config:
-        error_msg = (
-            "MCP config must contain 'mcpServers' field. "
-            'Expected format: {"mcpServers": {"server-name": {...}}}'
-        )
-        raise ValueError(error_msg)
-
-    if not isinstance(config["mcpServers"], dict):
-        error_msg = "'mcpServers' field must be a dictionary"
+    if not isinstance(config, dict):
+        error_msg = "MCP config file must contain a JSON object"
         raise TypeError(error_msg)
 
-    if not config["mcpServers"]:
-        error_msg = "'mcpServers' field is empty - no servers configured"
-        raise ValueError(error_msg)
-
-    for server_name, server_config in config["mcpServers"].items():
-        _validate_server_config(server_name, server_config)
-
-    return config
+    return load_mcp_config_from_dict(config, source="MCP config")
 
 
 def _resolve_project_config_base(project_context: ProjectContext | None) -> Path:
@@ -1537,6 +1563,36 @@ async def get_mcp_tools(
     """  # noqa: DOC502 - surfaced via `load_mcp_config`
     config = load_mcp_config(config_path)
     return await _load_tools_from_config(config)
+
+
+async def get_mcp_tools_from_config(
+    config: Mapping[str, Any],
+    *,
+    stateless: bool = False,
+    session_manager: MCPSessionManager | None = None,
+) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
+    """Load MCP tools from an in-memory configuration.
+
+    Args:
+        config: Parsed MCP configuration mapping.
+        stateless: When `True`, do not return an owned runtime session manager.
+        session_manager: Optional externally owned runtime session manager.
+
+    Returns:
+        Tuple of `(tools_list, runtime_session_manager, server_infos)`.
+
+    Raises:
+        TypeError: If config fields have wrong types.
+        ValueError: If config is missing required fields.
+        RuntimeError: If `session_manager` is reconfigured incompatibly with
+            sessions already active on it.
+    """  # noqa: DOC502 - surfaced via `load_mcp_config_from_dict` / `MCPSessionManager.configure`
+    loaded = load_mcp_config_from_dict(config)
+    return await _load_tools_from_config(
+        loaded,
+        stateless=stateless,
+        session_manager=session_manager,
+    )
 
 
 async def resolve_and_load_mcp_tools(

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import pytest
 
+from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
     MCPConfigError,
@@ -23,22 +24,37 @@ class DummyTool:
     name: str
 
 
-class DummyMCPClient:
-    connections: ClassVar[list[dict[str, dict[str, object]]]] = []
-
-    def __init__(self, *, connections: dict[str, dict[str, object]]) -> None:
-        self.connections.append(connections)
-
-    async def get_tools(self) -> list[DummyTool]:
-        return [
-            DummyTool("files_read"),
-            DummyTool("files_write"),
-            DummyTool("search"),
-        ]
+FakeCodeLoaderResult: TypeAlias = tuple[list[DummyTool], None, list[CodeMCPServerInfo]]
 
 
-async def test_load_mcp_tools_filters_allowed_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", DummyMCPClient)
+async def _fake_code_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
+    tools = [
+        DummyTool("files_read"),
+        DummyTool("files_write"),
+        DummyTool("search"),
+    ]
+    infos = [
+        CodeMCPServerInfo(
+            name=name,
+            transport=str(server.get("type") or server.get("transport") or "stdio"),
+            tools=tuple(MCPToolInfo(name=tool.name, description="") for tool in tools),
+        )
+        for name, server in data["mcpServers"].items()
+        if isinstance(server, dict)
+    ]
+    return tools, None, infos
+
+
+async def test_load_mcp_tools_from_config_delegates_to_code_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def fake_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
+        seen.append(data)
+        return await _fake_code_loader(data)
+
+    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools_from_config", fake_loader)
 
     result = await load_mcp_tools_from_config(
         {
@@ -52,28 +68,9 @@ async def test_load_mcp_tools_filters_allowed_tools(monkeypatch: pytest.MonkeyPa
         },
     )
 
-    assert [tool.name for tool in result.tools] == ["files_read", "search"]
-    assert result.servers[0].tool_count == 2
-    assert DummyMCPClient.connections[-1]["files"]["transport"] == "stdio"
-
-
-async def test_load_mcp_tools_filters_disabled_tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", DummyMCPClient)
-
-    result = await load_mcp_tools_from_config(
-        {
-            "mcpServers": {
-                "files": {
-                    "type": "http",
-                    "url": "https://tools.example/mcp",
-                    "disabledTools": ["write"],
-                },
-            },
-        },
-    )
-
-    assert [tool.name for tool in result.tools] == ["files_read", "search"]
-    assert DummyMCPClient.connections[-1]["files"]["transport"] == "streamable_http"
+    assert seen[0]["mcpServers"]["files"]["allowedTools"] == ["read", "search"]
+    assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
+    assert result.servers[0].tool_count == 3
 
 
 def test_write_mcp_server_config_creates_config(tmp_path: Path) -> None:
@@ -111,7 +108,13 @@ async def test_load_mcp_tools_reads_manifest_and_env_headers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", DummyMCPClient)
+    seen: list[dict[str, Any]] = []
+
+    async def fake_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
+        seen.append(data)
+        return await _fake_code_loader(data)
+
+    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools_from_config", fake_loader)
     monkeypatch.setenv("TOKEN", "secret")
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     config.ensure_home()
@@ -132,6 +135,6 @@ async def test_load_mcp_tools_reads_manifest_and_env_headers(
     result = await load_mcp_tools(config)
 
     assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert DummyMCPClient.connections[-1]["remote"]["headers"] == {
-        "Authorization": "Bearer secret",
+    assert seen[0]["mcpServers"]["remote"]["headers"] == {
+        "Authorization": "Bearer ${TOKEN}",
     }

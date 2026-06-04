@@ -31,7 +31,9 @@ from deepagents_code.mcp_tools import (
     extract_project_server_summaries,
     extract_stdio_server_commands,
     get_mcp_tools,
+    get_mcp_tools_from_config,
     load_mcp_config,
+    load_mcp_config_from_dict,
     load_mcp_config_lenient,
     merge_mcp_configs,
     resolve_and_load_mcp_tools,
@@ -155,6 +157,33 @@ class TestLoadMCPConfig:
         """A valid config loads unchanged."""
         path = write_config(valid_config_data)
         assert load_mcp_config(path) == valid_config_data
+
+    def test_load_config_from_dict_returns_deep_copy(
+        self,
+        valid_config_data: dict,
+    ) -> None:
+        """The public in-memory helper validates and isolates caller data."""
+        config = load_mcp_config_from_dict(valid_config_data)
+        config["mcpServers"]["filesystem"]["args"].append("/other")
+
+        assert valid_config_data["mcpServers"]["filesystem"]["args"] == [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "/tmp",
+        ]
+
+    async def test_get_mcp_tools_from_config_validates_before_loading(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """In-memory tool loading rejects malformed configs through the public API."""
+        monkeypatch.setattr(
+            "deepagents_code.mcp_tools._load_tools_from_config",
+            AsyncMock(),
+        )
+
+        with pytest.raises(ValueError, match="command"):
+            await get_mcp_tools_from_config({"mcpServers": {"fs": {"args": []}}})
 
     def test_load_config_auth_oauth_http_ok(
         self,

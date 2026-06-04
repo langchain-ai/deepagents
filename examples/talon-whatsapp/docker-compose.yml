@@ -1,6 +1,9 @@
 services:
   talon:
-    image: ghcr.io/astral-sh/uv:python3.13-bookworm
+    build:
+      context: ../..
+      dockerfile: examples/talon-whatsapp/Dockerfile
+    image: deepagents-talon-whatsapp:local
     working_dir: /workspace
     env_file:
       - .env
@@ -14,15 +17,9 @@ services:
       - talon-state:/state
     command: >
       bash -lc "
-      apt-get update &&
-      apt-get install -y --no-install-recommends nodejs npm chromium ffmpeg ca-certificates fonts-liberation &&
-      cd /workspace/libs/talon/deepagents_talon/channels/whatsapp_bridge &&
-      npm install &&
       mkdir -p /state/$${AGENT_ASSISTANT_ID}/agent &&
       cp /workspace/examples/talon-whatsapp/AGENTS.md /state/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
-      cd /workspace/libs/talon &&
-      uv sync --extra speech &&
-      uv run deepagents-talon --whatsapp
+      deepagents-talon --whatsapp
       "
 
 volumes:

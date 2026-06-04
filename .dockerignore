@@ -1,0 +1,15 @@
+.git/
+.DS_Store
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.ty/
+.venv/
+node_modules/
+
+.env
+.env.*
+*.pem
+*.key
+*.crt
+credentials.json

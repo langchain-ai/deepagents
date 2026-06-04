@@ -8,7 +8,8 @@ WhatsApp session plus Talon state are stored in a Docker volume.
 
 ```bash
 cp .env.example .env
-# Fill AGENT_MODEL provider credentials, then run:
+# Fill AGENT_MODEL provider credentials, then build once and run:
+docker compose build
 docker compose up
 ```
 
@@ -23,6 +24,10 @@ transcribed locally with NVIDIA Parakeet through Transformers before reaching
 the agent. The first voice message can be slow because the ASR model is
 downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when
 running on a GPU-enabled host.
+
+The repository is bind-mounted into the container, so Python and bridge source
+edits do not require an image rebuild. Rebuild only after changing the
+Dockerfile, system packages, Node dependencies, or Talon Python dependencies.
 
 ## Local Run Without Docker
 

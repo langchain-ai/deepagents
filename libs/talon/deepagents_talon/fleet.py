@@ -13,6 +13,7 @@ from fleet_deepagents_export import StaticSkillsLoader, load_agent_components
 
 if TYPE_CHECKING:
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
+    from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
@@ -26,8 +27,8 @@ class FleetAgentComponents:
         system_prompt: System prompt from Fleet `AGENTS.md`.
         tools: Resolved Fleet MCP tools.
         subagents: Fleet subagent specs.
-        interrupt_on: Fleet human-in-the-loop config. Talon records this for
-            the follow-up approval workflow but does not enable it yet.
+        interrupt_on: Fleet human-in-the-loop config passed to the Deep Agents
+            graph so Talon can surface tool approval over its channels.
         skills: Skill source paths for `create_deep_agent`.
         middleware: Middleware required by Fleet-loaded components.
     """
@@ -36,7 +37,7 @@ class FleetAgentComponents:
     system_prompt: str
     tools: tuple[BaseTool | Callable[..., object], ...]
     subagents: tuple[SubAgent | CompiledSubAgent | AsyncSubAgent, ...]
-    interrupt_on: Mapping[str, object] | None
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None
     skills: tuple[str, ...] = ()
     middleware: tuple[AgentMiddleware[Any, Any, Any], ...] = ()
 
@@ -82,7 +83,10 @@ def _coerce_components(raw: object) -> FleetAgentComponents:
         "tuple[SubAgent | CompiledSubAgent | AsyncSubAgent, ...]",
         _optional_sequence(data.get("subagents"), "subagents"),
     )
-    interrupt_on = _optional_mapping(data.get("interrupt_on"), "interrupt_on")
+    interrupt_on = cast(
+        "Mapping[str, bool | InterruptOnConfig] | None",
+        _optional_mapping(data.get("interrupt_on"), "interrupt_on"),
+    )
     return FleetAgentComponents(
         model=model,
         system_prompt=system_prompt,

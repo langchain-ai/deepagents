@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -59,6 +59,27 @@ class ChannelMedia:
     caption: str | None = None
 
 
+ToolApprovalDecision = Literal["approve", "reject"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolApprovalRequest:
+    """Tool approval request surfaced to a channel operator.
+
+    Args:
+        conversation_id: Conversation whose run is waiting for approval.
+        interrupt_id: LangGraph interrupt identifier to resume.
+        action_requests: Tool calls awaiting one approve/reject decision.
+    """
+
+    conversation_id: str
+    interrupt_id: str
+    action_requests: Sequence[Mapping[str, object]]
+
+
+ToolApprovalHandler = Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
+
+
 @dataclass(frozen=True, slots=True)
 class AgentRequest:
     """Agent invocation request from a channel or scheduler.
@@ -67,11 +88,19 @@ class AgentRequest:
         conversation_id: Conversation whose turns must be serialized.
         text: User or scheduler prompt passed to the agent.
         metadata: Runtime context supplied by the triggering component.
+        approval_handler: Optional callback used by runtimes that surface
+            tool approval interrupts over the originating channel.
     """
 
     conversation_id: str
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    approval_handler: ToolApprovalHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)

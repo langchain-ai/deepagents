@@ -16,14 +16,22 @@ from deepagents.backends import LocalShellBackend
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from deepagents_code.tools import fetch_url, web_search
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
-from deepagents_talon.interfaces import AgentRequest, AgentResult
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ToolApprovalDecision,
+    ToolApprovalHandler,
+    ToolApprovalRequest,
+)
 
 if TYPE_CHECKING:
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
+    from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -34,6 +42,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_RECURSION_LIMIT = 150
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
+DEFAULT_MAX_APPROVAL_ROUNDS = 50
 DEFAULT_WORKSPACE = "/workspace"
 ModelContent = str | list[dict[str, object]]
 
@@ -72,6 +81,12 @@ _CONTINUATION_NUDGE = (
 _FORCE_SUMMARY_PROMPT = (
     "You ran out of actions. Provide a concise summary of everything you have "
     "accomplished so far. Do not call any more tools."
+)
+_CRON_AUTO_DENY_MESSAGE = (
+    "Tool approval is unavailable for scheduled runs; skipped the gated tool call."
+)
+_CHANNEL_AUTO_DENY_MESSAGE = (
+    "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
@@ -118,6 +133,8 @@ class DeepAgentRuntime:
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
         middleware: Optional middleware to pass through to `create_deep_agent`.
+        interrupt_on: Optional human-in-the-loop tool approval configuration
+            to pass through to `create_deep_agent`.
         memory: Optional explicit memory file paths. When omitted, paths are
             loaded from manifest metadata, memory path environment vars, or an
             assistant-local memory file.
@@ -142,6 +159,7 @@ class DeepAgentRuntime:
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
         middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
+        interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None,
         memory: Sequence[str] | None = None,
         checkpointer: Checkpointer | None = None,
         include_web_tools: bool = True,
@@ -170,6 +188,7 @@ class DeepAgentRuntime:
         self.backend = backend if backend is not None else _default_backend(env)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
+        self.interrupt_on = dict(interrupt_on) if interrupt_on is not None else None
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
@@ -190,6 +209,7 @@ class DeepAgentRuntime:
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=list(self.middleware),
+            interrupt_on=self.interrupt_on,
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
@@ -237,9 +257,9 @@ class DeepAgentRuntime:
         return tools
 
     async def _invoke_until_text(self, request: AgentRequest) -> str:
-        state = await self._invoke_with_retries(
+        state = await self._invoke_until_unblocked(
             _request_model_content(request),
-            request.conversation_id,
+            request,
         )
         text = _last_text(state)
         if text:
@@ -252,21 +272,30 @@ class DeepAgentRuntime:
                 attempt + 1,
                 self.max_continuations,
             )
-            state = await self._invoke_with_retries(
+            state = await self._invoke_until_unblocked(
                 _CONTINUATION_NUDGE,
-                request.conversation_id,
+                request,
             )
             text = _last_text(state)
             if text:
                 return text
 
-        state = await self._invoke_with_retries(
+        state = await self._invoke_until_unblocked(
             _FORCE_SUMMARY_PROMPT,
-            request.conversation_id,
+            request,
         )
         return _last_text(state)
 
     async def _invoke_with_retries(self, content: ModelContent, conversation_id: str) -> object:
+        return await self._invoke_payload_with_retries(
+            {"messages": [{"role": "user", "content": content}]},
+            conversation_id,
+        )
+
+    async def _resume_with_retries(self, command: Command, conversation_id: str) -> object:
+        return await self._invoke_payload_with_retries(command, conversation_id)
+
+    async def _invoke_payload_with_retries(self, payload: object, conversation_id: str) -> object:
         ainvoke = getattr(self._graph, "ainvoke", None)
         if not callable(ainvoke):
             msg = "Deep Agents graph does not expose async invocation"
@@ -280,10 +309,7 @@ class DeepAgentRuntime:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                return await invoke(
-                    {"messages": [{"role": "user", "content": content}]},
-                    config=config,
-                )
+                return await invoke(payload, config=config)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -302,6 +328,50 @@ class DeepAgentRuntime:
             raise last_exc
         msg = "agent invocation retry loop exited unexpectedly"
         raise RuntimeError(msg)
+
+    async def _invoke_until_unblocked(
+        self,
+        content: ModelContent,
+        request: AgentRequest,
+    ) -> object:
+        state = await self._invoke_with_retries(content, request.conversation_id)
+        for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
+            interrupts = _interrupts_from_state(state)
+            if not interrupts:
+                return state
+            resume = await self._build_approval_resume(request, interrupts)
+            state = await self._resume_with_retries(resume, request.conversation_id)
+        msg = "agent hit tool approval interrupt limit"
+        raise RuntimeError(msg)
+
+    async def _build_approval_resume(
+        self,
+        request: AgentRequest,
+        interrupts: Sequence[object],
+    ) -> Command:
+        payload: dict[str, dict[str, list[dict[str, str]]]] = {}
+        for interrupt in interrupts:
+            interrupt_id = _interrupt_id(interrupt)
+            if interrupt_id is None:
+                logger.warning("Received tool approval interrupt without an id")
+                continue
+            action_requests = _action_requests_from_interrupt(interrupt)
+            decision, reject_message = await _approval_decision(
+                request,
+                interrupt_id,
+                action_requests,
+            )
+            payload[interrupt_id] = {
+                "decisions": _decision_payload(
+                    decision,
+                    count=max(len(action_requests), 1),
+                    reject_message=reject_message,
+                )
+            }
+        if not payload:
+            msg = "agent returned approval interrupts without resumable ids"
+            raise RuntimeError(msg)
+        return Command(resume=payload)
 
     def _resolve_system_prompt(self) -> str | None:
         if self.system_prompt is not None:
@@ -347,6 +417,92 @@ class DeepAgentRuntime:
             paths.append(str(self.assistant_dir / "memory" / "AGENTS.md"))
         prepared = [_prepare_memory_path(path) for path in paths]
         return [path for path in prepared if path is not None] or None
+
+
+def _interrupts_from_state(state: object) -> tuple[object, ...]:
+    if not isinstance(state, Mapping):
+        return ()
+    data = cast("Mapping[str, object]", state)
+    interrupts = data.get("__interrupt__")
+    if not isinstance(interrupts, Sequence) or isinstance(interrupts, (str, bytes, bytearray)):
+        return ()
+    return tuple(interrupts)
+
+
+def _interrupt_id(interrupt: object) -> str | None:
+    value = getattr(interrupt, "id", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _action_requests_from_interrupt(interrupt: object) -> tuple[Mapping[str, object], ...]:
+    value = getattr(interrupt, "value", None)
+    if not isinstance(value, Mapping):
+        logger.warning("Received malformed tool approval interrupt: missing value mapping")
+        return ()
+    data = cast("Mapping[str, object]", value)
+    requests = data.get("action_requests")
+    if not isinstance(requests, Sequence) or isinstance(requests, (str, bytes, bytearray)):
+        logger.warning("Received malformed tool approval interrupt: missing action_requests")
+        return ()
+
+    parsed: list[Mapping[str, object]] = []
+    for item in requests:
+        if isinstance(item, Mapping):
+            parsed.append(cast("Mapping[str, object]", item))
+        else:
+            logger.warning("Ignoring malformed tool approval action request: %r", item)
+    return tuple(parsed)
+
+
+async def _approval_decision(
+    request: AgentRequest,
+    interrupt_id: str,
+    action_requests: Sequence[Mapping[str, object]],
+) -> tuple[ToolApprovalDecision, str | None]:
+    if request.metadata.get("trigger") == "cron":
+        logger.warning(
+            "Auto-denying %d tool approval request(s) for cron conversation %s",
+            len(action_requests),
+            request.conversation_id,
+        )
+        return "reject", _CRON_AUTO_DENY_MESSAGE
+
+    handler = _approval_handler_from_request(request)
+    if handler is None:
+        logger.warning(
+            "Auto-denying %d tool approval request(s) for conversation %s without approval handler",
+            len(action_requests),
+            request.conversation_id,
+        )
+        return "reject", _CHANNEL_AUTO_DENY_MESSAGE
+
+    decision = await handler(
+        ToolApprovalRequest(
+            conversation_id=request.conversation_id,
+            interrupt_id=interrupt_id,
+            action_requests=tuple(action_requests),
+        )
+    )
+    if decision == "approve":
+        return "approve", None
+    return "reject", "Denied by operator."
+
+
+def _approval_handler_from_request(request: AgentRequest) -> ToolApprovalHandler | None:
+    return request.approval_handler
+
+
+def _decision_payload(
+    decision: ToolApprovalDecision,
+    *,
+    count: int,
+    reject_message: str | None,
+) -> list[dict[str, str]]:
+    if decision == "approve":
+        return [{"type": "approve"} for _ in range(count)]
+    if reject_message:
+        return [{"type": "reject", "message": reject_message} for _ in range(count)]
+    return [{"type": "reject"} for _ in range(count)]
 
 
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:

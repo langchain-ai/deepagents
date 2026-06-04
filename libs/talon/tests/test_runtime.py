@@ -8,11 +8,16 @@ from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_talon.cron import CronJobStore
-from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    ToolApprovalDecision,
+    ToolApprovalRequest,
+)
 from deepagents_talon.runtime import DeepAgentRuntime, _is_retryable
 
 if TYPE_CHECKING:
     import pytest
+    from langgraph.types import Command
 
 
 class InvokableTool(Protocol):
@@ -50,6 +55,39 @@ class CronCallingGraph:
     ) -> dict[str, Any]:
         result = self.create_job.invoke({"prompt": "later", "schedule": "in 5m"})
         return {"messages": [SimpleNamespace(content=result["id"])]}
+
+
+class InterruptingGraph:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, dict[str, Any]]] = []
+        self.executed = False
+
+    async def ainvoke(self, payload: object, config: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((payload, config))
+        if len(self.calls) == 1:
+            return {
+                "messages": [SimpleNamespace(content="")],
+                "__interrupt__": [
+                    SimpleNamespace(
+                        id="interrupt-1",
+                        value={
+                            "action_requests": [
+                                {
+                                    "name": "dangerous_tool",
+                                    "args": {"path": "/secret"},
+                                }
+                            ],
+                            "review_configs": [],
+                        },
+                    )
+                ],
+            }
+
+        resume = getattr(payload, "resume", {})
+        decision = resume["interrupt-1"]["decisions"][0]
+        self.executed = decision["type"] == "approve"
+        content = "approved" if self.executed else "denied"
+        return {"messages": [SimpleNamespace(content=content)]}
 
 
 class StatusError(Exception):
@@ -174,6 +212,31 @@ async def test_runtime_passes_middleware_to_create_deep_agent(
     await runtime.start()
 
     assert captured["middleware"] == [middleware]
+
+
+async def test_runtime_passes_interrupt_on_to_create_deep_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    interrupt_on = {"custom_tool": True}
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        interrupt_on=interrupt_on,
+    )
+
+    await runtime.start()
+
+    assert captured["interrupt_on"] == interrupt_on
 
 
 async def test_runtime_uses_configured_workspace_for_default_backend(
@@ -322,6 +385,97 @@ async def test_cron_tools_use_current_request_origin(
     assert job.origin.channel == "whatsapp"
     assert job.origin.message_id == "msg-1"
     assert any(_tool_name(tool) == "create_job" for tool in captured["tools"])
+
+
+async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
+    graph = InterruptingGraph()
+    approvals: list[ToolApprovalRequest] = []
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def approve(request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approvals.append(request)
+        return "approve"
+
+    result = await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="run",
+            approval_handler=approve,
+        )
+    )
+
+    assert result.text == "approved"
+    assert graph.executed is True
+    assert approvals[0].conversation_id == "chat"
+    assert approvals[0].interrupt_id == "interrupt-1"
+    assert approvals[0].action_requests[0]["name"] == "dangerous_tool"
+
+
+async def test_runtime_rejects_tool_interrupt_without_running_tool() -> None:
+    graph = InterruptingGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def reject(_request: ToolApprovalRequest) -> ToolApprovalDecision:
+        return "reject"
+
+    result = await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="run",
+            approval_handler=reject,
+        )
+    )
+
+    resume = cast("Command", graph.calls[1][0]).resume
+    assert result.text == "denied"
+    assert graph.executed is False
+    assert resume["interrupt-1"]["decisions"] == [
+        {"type": "reject", "message": "Denied by operator."}
+    ]
+
+
+async def test_runtime_auto_rejects_cron_tool_interrupt() -> None:
+    graph = InterruptingGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    result = await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="run",
+            metadata={"trigger": "cron"},
+        )
+    )
+
+    resume = cast("Command", graph.calls[1][0]).resume
+    auto_reject_message = (
+        "Tool approval is unavailable for scheduled runs; skipped the gated tool call."
+    )
+    assert result.text == "denied"
+    assert graph.executed is False
+    assert resume["interrupt-1"]["decisions"] == [
+        {
+            "type": "reject",
+            "message": auto_reject_message,
+        }
+    ]
 
 
 def test_is_retryable_matches_known_transient_errors() -> None:

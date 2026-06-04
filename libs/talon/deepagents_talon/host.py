@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
@@ -19,6 +21,8 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     CronScheduler,
+    ToolApprovalDecision,
+    ToolApprovalRequest,
 )
 from deepagents_talon.media import (
     MarkdownMediaRef,
@@ -42,6 +46,14 @@ SignalHandler = Callable[[int, FrameType | None], object] | int | None
 logger = logging.getLogger(__name__)
 
 _STOP_COMMAND = "/stop"
+_APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
+_DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
+
+
+@dataclass(slots=True)
+class _PendingToolApproval:
+    future: asyncio.Future[ToolApprovalDecision]
+    sender_id: str | None
 
 
 class TalonHost:
@@ -72,6 +84,7 @@ class TalonHost:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
+        self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -145,6 +158,11 @@ class TalonHost:
             await self._cancel_conversation(channel, message.conversation_id)
             return
 
+        pending = self._pending_tool_approvals.get(message.conversation_id)
+        if pending is not None:
+            await self._handle_tool_approval_reply(channel, message, pending)
+            return
+
         task = asyncio.create_task(
             self._run_agent_turn(channel, message),
             name=f"talon:{message.conversation_id}",
@@ -173,6 +191,11 @@ class TalonHost:
             conversation_id=message.conversation_id,
             text=message.text,
             metadata=metadata,
+            approval_handler=lambda approval: self._request_tool_approval(
+                channel,
+                approval,
+                sender_id=message.sender_id,
+            ),
         )
         await self._deliver_agent_result(channel, message.conversation_id, result)
 
@@ -219,6 +242,8 @@ class TalonHost:
         conversation_id: str,
         text: str,
         metadata: dict[str, object],
+        approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
+        | None = None,
     ) -> AgentResult:
         lock = self._locks[conversation_id]
         async with lock:
@@ -238,6 +263,7 @@ class TalonHost:
                             conversation_id=conversation_id,
                             text=text,
                             metadata=metadata,
+                            approval_handler=approval_handler,
                         ),
                     )
             except asyncio.CancelledError:
@@ -289,6 +315,55 @@ class TalonHost:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._conversation_tasks.clear()
+        for pending in self._pending_tool_approvals.values():
+            if not pending.future.done():
+                pending.future.cancel()
+        self._pending_tool_approvals.clear()
+
+    async def _request_tool_approval(
+        self,
+        channel: ChannelAdapter,
+        approval: ToolApprovalRequest,
+        *,
+        sender_id: str | None,
+    ) -> ToolApprovalDecision:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[ToolApprovalDecision] = loop.create_future()
+        pending = _PendingToolApproval(future=future, sender_id=sender_id)
+        self._pending_tool_approvals[approval.conversation_id] = pending
+        try:
+            await channel.send_message(
+                approval.conversation_id,
+                _format_tool_approval_prompt(approval),
+            )
+            return await future
+        finally:
+            if self._pending_tool_approvals.get(approval.conversation_id) is pending:
+                del self._pending_tool_approvals[approval.conversation_id]
+
+    async def _handle_tool_approval_reply(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        pending: _PendingToolApproval,
+    ) -> None:
+        if pending.sender_id is not None and message.sender_id != pending.sender_id:
+            await channel.send_message(
+                message.conversation_id,
+                "Only the operator who started this run can approve or deny it.",
+            )
+            return
+
+        decision = _parse_tool_approval_reply(message.text)
+        if decision is None:
+            await channel.send_message(
+                message.conversation_id,
+                "Reply `approve` to run the tool call or `deny` to skip it.",
+            )
+            return
+
+        if not pending.future.done():
+            pending.future.set_result(decision)
 
     async def _deliver_agent_result(
         self,
@@ -451,3 +526,37 @@ async def _channel_provider(channel: ChannelAdapter) -> str | None:
     except Exception:  # noqa: BLE001
         logger.warning("Could not resolve channel provider for agent metadata", exc_info=True)
         return None
+
+
+def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
+    lines = ["Tool approval required."]
+    for index, action in enumerate(approval.action_requests, start=1):
+        name = action.get("name")
+        tool_name = name if isinstance(name, str) and name else "unknown"
+        lines.append(f"{index}. `{tool_name}`")
+        args = action.get("args")
+        if isinstance(args, dict) and args:
+            lines.append(f"Args: `{_json_preview(args)}`")
+        elif args not in (None, {}, []):
+            lines.append(f"Args: `{args}`")
+    lines.append("Reply `approve` to run or `deny` to skip.")
+    return "\n".join(lines)
+
+
+def _json_preview(value: object) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:
+    normalized = text.strip().lower().strip(".! ")
+    if not normalized:
+        return None
+    first = normalized.split(maxsplit=1)[0]
+    if first in _APPROVE_REPLIES:
+        return "approve"
+    if first in _DENY_REPLIES:
+        return "reject"
+    return None

@@ -12,6 +12,7 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     ChannelStatus,
+    ToolApprovalRequest,
 )
 
 if TYPE_CHECKING:
@@ -96,6 +97,31 @@ class MediaAgent(BlockingAgent):
     async def invoke(self, request: AgentRequest) -> AgentResult:
         del request
         return AgentResult(text=f"Here is the image.\n\n![chart]({self.image})")
+
+
+class ApprovalAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.approvals: list[ToolApprovalRequest] = []
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        if request.approval_handler is None:
+            msg = "approval handler was missing"
+            raise TypeError(msg)
+        approval = ToolApprovalRequest(
+            conversation_id=request.conversation_id,
+            interrupt_id="interrupt-1",
+            action_requests=(
+                {
+                    "name": "dangerous_tool",
+                    "args": {"path": "/secret"},
+                },
+            ),
+        )
+        self.approvals.append(approval)
+        decision = await request.approval_handler(approval)
+        return AgentResult(text=f"decision:{decision}")
 
 
 def _config(tmp_path: Path) -> TalonConfig:
@@ -204,6 +230,72 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "look"}
     assert content[1]["type"] == "image_url"
+
+
+async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="approve", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert len(agent.requests) == 1
+    assert agent.approvals[0].action_requests[0]["name"] == "dangerous_tool"
+    assert "Tool approval required." in channel.sent[0][1]
+    assert "`dangerous_tool`" in channel.sent[0][1]
+    assert '{"path": "/secret"}' in channel.sent[0][1]
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="approve", sender_id="other"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="maybe", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 3)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 4)
+    await host.stop()
+
+    assert len(agent.requests) == 1
+    assert channel.sent[1] == (
+        "chat",
+        "Only the operator who started this run can approve or deny it.",
+    )
+    assert channel.sent[2] == (
+        "chat",
+        "Reply `approve` to run the tool call or `deny` to skip it.",
+    )
+    assert channel.sent[3] == ("chat", "decision:reject")
 
 
 async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> None:

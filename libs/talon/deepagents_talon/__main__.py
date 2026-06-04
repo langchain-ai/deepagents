@@ -103,6 +103,7 @@ async def _agent_runtime(
             subagents=components.subagents,
             skills=components.skills,
             middleware=components.middleware,
+            interrupt_on=components.interrupt_on,
             cron_store=cron_store,
             env=env,
         )

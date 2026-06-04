@@ -21,6 +21,9 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     ChannelStatus,
     CronScheduler,
+    ToolApprovalDecision,
+    ToolApprovalHandler,
+    ToolApprovalRequest,
 )
 from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
 from deepagents_talon.speech import (
@@ -53,6 +56,9 @@ __all__ = [
     "PersistentCronScheduler",
     "TalonConfig",
     "TalonHost",
+    "ToolApprovalDecision",
+    "ToolApprovalHandler",
+    "ToolApprovalRequest",
     "VoiceTranscriber",
     "__version__",
 ]

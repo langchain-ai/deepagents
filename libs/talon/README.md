@@ -25,6 +25,8 @@ checking host lifecycle and channel wiring without provider credentials.
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 creates restrictive state directories for the materialized agent manifest,
 channel sessions, and cron jobs.
+The default local execution workspace is `/workspace`; set
+`DEEPAGENTS_TALON_WORKSPACE` to use a different directory.
 
 ## WhatsApp
 

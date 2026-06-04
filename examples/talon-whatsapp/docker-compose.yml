@@ -8,19 +8,16 @@ services:
     env_file:
       - .env
     environment:
-      DEEPAGENTS_TALON_HOME: /state
-      DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR: /state/whatsapp-session
+      DEEPAGENTS_TALON_HOME: /workspace/.deepagents
+      DEEPAGENTS_TALON_WORKSPACE: /workspace
+      DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR: /workspace/.deepagents/whatsapp-session
       DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED:-true}
       DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE:-cpu}
     volumes:
-      - ../..:/workspace
-      - talon-state:/state
+      - ${HOME}/agent-workspace:/workspace
     command: >
       bash -c "
-      mkdir -p /state/$${AGENT_ASSISTANT_ID}/agent &&
-      cp /workspace/examples/talon-whatsapp/AGENTS.md /state/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
+      mkdir -p /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent &&
+      cp /opt/deepagents-talon/AGENTS.md /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
       /opt/deepagents-talon-venv/bin/deepagents-talon --whatsapp
       "
-
-volumes:
-  talon-state:

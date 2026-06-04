@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_RECURSION_LIMIT = 150
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
+DEFAULT_WORKSPACE = "/workspace"
 ModelContent = str | list[dict[str, object]]
 
 _CONTINUATION_NUDGE = (
@@ -130,7 +131,7 @@ class DeepAgentRuntime:
         self.system_prompt = system_prompt
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self.backend = backend if backend is not None else _default_backend()
+        self.backend = backend if backend is not None else _default_backend(env)
         self.skills = tuple(skills) if skills is not None else None
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
@@ -309,8 +310,10 @@ class DeepAgentRuntime:
         return [path for path in prepared if path is not None] or None
 
 
-def _default_backend() -> LocalShellBackend:
-    return LocalShellBackend(virtual_mode=False, inherit_env=True)
+def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
+    values = os.environ if env is None else env
+    root = values.get("DEEPAGENTS_TALON_WORKSPACE", DEFAULT_WORKSPACE)
+    return LocalShellBackend(root_dir=root, virtual_mode=False, inherit_env=True)
 
 
 def _resolve_model_from_env(model: str, env: Mapping[str, str]) -> str | BaseChatModel:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -94,6 +95,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()
+    assert captured["backend"].cwd == Path("/workspace")
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert {
@@ -105,6 +107,31 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
         "remove_job",
         "custom_tool",
     } <= tool_names
+
+
+async def test_runtime_uses_configured_workspace_for_default_backend(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_WORKSPACE": str(tmp_path)},
+    )
+
+    await runtime.start()
+
+    assert captured["backend"].cwd == tmp_path.resolve()
 
 
 async def test_runtime_passes_openai_base_url_to_model(

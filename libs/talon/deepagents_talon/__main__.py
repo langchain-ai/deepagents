@@ -7,7 +7,6 @@ import asyncio
 import importlib
 import logging
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
@@ -15,7 +14,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.host import TalonHost
-from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths, write_mcp_server_config
+from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
 from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
 from deepagents_talon.speech import build_voice_transcriber
 
@@ -87,20 +86,6 @@ def _add_mcp_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     login.add_argument("server", help="Server name from mcpServers")
     login.add_argument("--mcp-config", dest="config_path", default=None)
 
-    add = mcp_sub.add_parser("add", help="Add an MCP server to a Talon config file")
-    add.add_argument("name", help="Server name to add")
-    add.add_argument("--mcp-config", dest="config_path", default=None)
-    add.add_argument("--transport", choices=["stdio", "sse", "http"], default=None)
-    add.add_argument("--url", default=None, help="Remote MCP server URL")
-    add.add_argument("--command", dest="server_command", default=None, help="Stdio server command")
-    add.add_argument("--arg", action="append", default=[], help="Command argument for stdio")
-    add.add_argument("--header", action="append", default=[], help="Header as Name=Value")
-    add.add_argument("--env", action="append", default=[], help="Environment entry as Name=Value")
-    add.add_argument("--allow", action="append", default=[], help="Tool name or glob to allow")
-    add.add_argument("--disable", action="append", default=[], help="Tool name or glob to disable")
-    add.add_argument("--oauth", action="store_true", help="Mark remote server as OAuth-backed")
-    add.add_argument("--overwrite", action="store_true", help="Replace an existing server entry")
-
 
 async def _agent_runtime(
     config: TalonConfig,
@@ -127,29 +112,10 @@ async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int
     if args.mcp_command == "config":
         print_mcp_config_paths(config)
         return 0
-    if args.mcp_command == "add":
-        return _run_mcp_add(args, config)
     if args.mcp_command == "login":
         return await _run_mcp_login(args)
-    print("Specify an MCP command: config, add, or login", file=sys.stderr)  # noqa: T201
+    print("Specify an MCP command: config or login", file=sys.stderr)  # noqa: T201
     return 2
-
-
-def _run_mcp_add(args: argparse.Namespace, config: TalonConfig) -> int:
-    try:
-        path = _mcp_config_write_path(args.config_path, config)
-        server = _server_config_from_args(args)
-        write_mcp_server_config(
-            path=path,
-            name=args.name,
-            server=server,
-            overwrite=args.overwrite,
-        )
-    except (FileExistsError, ValueError) as exc:
-        print(f"MCP add failed: {exc}", file=sys.stderr)  # noqa: T201
-        return 1
-    print(f"Added MCP server {args.name!r} to {path}")  # noqa: T201
-    return 0
 
 
 async def _run_mcp_login(args: argparse.Namespace) -> int:
@@ -163,62 +129,6 @@ async def _run_mcp_login(args: argparse.Namespace) -> int:
         return 1
     run_mcp_login = module.run_mcp_login
     return await run_mcp_login(server=args.server, config_path=args.config_path)
-
-
-def _server_config_from_args(args: argparse.Namespace) -> dict[str, object]:
-    if args.allow and args.disable:
-        msg = "--allow and --disable are mutually exclusive"
-        raise ValueError(msg)
-
-    transport = args.transport or ("http" if args.url else "stdio")
-    server: dict[str, object] = {"type": transport}
-    if transport in {"http", "sse"}:
-        if not args.url:
-            msg = "--url is required for remote MCP servers"
-            raise ValueError(msg)
-        server["url"] = args.url
-        if args.oauth:
-            server["auth"] = "oauth"
-    else:
-        if not args.server_command:
-            msg = "--command is required for stdio MCP servers"
-            raise ValueError(msg)
-        server["command"] = args.server_command
-        if args.arg:
-            server["args"] = args.arg
-
-    _add_optional_server_fields(server, args)
-    return server
-
-
-def _add_optional_server_fields(server: dict[str, object], args: argparse.Namespace) -> None:
-    headers = _pairs(args.header, "--header")
-    if headers:
-        server["headers"] = headers
-    env = _pairs(args.env, "--env")
-    if env:
-        server["env"] = env
-    if args.allow:
-        server["allowedTools"] = args.allow
-    if args.disable:
-        server["disabledTools"] = args.disable
-
-
-def _pairs(values: Sequence[str], label: str) -> dict[str, str]:
-    pairs: dict[str, str] = {}
-    for value in values:
-        key, separator, item = value.partition("=")
-        if not separator or not key:
-            msg = f"{label} values must use Name=Value"
-            raise ValueError(msg)
-        pairs[key] = item
-    return pairs
-
-
-def _mcp_config_write_path(config_path: str | None, config: TalonConfig) -> Path:
-    if config_path is not None:
-        return Path(config_path).expanduser()
-    return config.manifest_dir / "tools.json"
 
 
 async def _run_once(host: TalonHost) -> None:

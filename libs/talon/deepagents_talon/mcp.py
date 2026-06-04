@@ -16,7 +16,6 @@ from deepagents_code.mcp_tools import (
     load_mcp_config,
     load_mcp_config_from_dict,
     merge_mcp_configs,
-    write_mcp_server_config as write_code_mcp_server_config,
 )
 
 if TYPE_CHECKING:
@@ -29,8 +28,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MCP_CONFIG_ENV_KEYS = ("DEEPAGENTS_TALON_MCP_CONFIG", "MCP_CONFIG")
-
-JsonObject = dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,35 +57,6 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
         config.manifest_dir / "tools.json",
     ]
     return [path for path in paths if _is_file(path)]
-
-
-def write_mcp_server_config(
-    *,
-    path: Path,
-    name: str,
-    server: JsonObject,
-    overwrite: bool = False,
-) -> None:
-    """Add one MCP server to a JSON config file.
-
-    Args:
-        path: Config file to create or update.
-        name: Server name under `mcpServers`.
-        server: Server configuration.
-        overwrite: Whether an existing server entry may be replaced.
-
-    Raises:
-        MCPConfigError: If the file cannot be read or parsed for update.
-        FileExistsError: If `name` already exists and `overwrite` is `False`.
-        TypeError: If config fields have wrong types.
-        ValueError: If the resulting config is missing required fields.
-    """
-    write_code_mcp_server_config(
-        path=path,
-        name=name,
-        server=server,
-        overwrite=overwrite,
-    )
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:
@@ -142,6 +110,7 @@ def print_mcp_config_paths(config: TalonConfig) -> None:
     print(  # noqa: T201
         "Override with DEEPAGENTS_TALON_MCP_CONFIG or MCP_CONFIG as a path or JSON object.",
     )
+    print("Edit <assistant-home>/agent/tools.json directly to add Talon MCP servers.")  # noqa: T201
 
 
 def _load_config(config: TalonConfig) -> dict[str, Any] | None:

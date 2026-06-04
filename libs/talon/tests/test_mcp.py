@@ -4,18 +4,14 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-import pytest
-
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.mcp import (
-    load_mcp_tools,
-    load_mcp_tools_from_config,
-    write_mcp_server_config,
-)
+from deepagents_talon.mcp import load_mcp_tools, load_mcp_tools_from_config
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 
 @dataclass(frozen=True)
@@ -70,37 +66,6 @@ async def test_load_mcp_tools_from_config_delegates_to_code_loader(
     assert seen[0]["mcpServers"]["files"]["allowedTools"] == ["read", "search"]
     assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
     assert len(result.servers[0].tools) == 3
-
-
-def test_write_mcp_server_config_creates_config(tmp_path: Path) -> None:
-    path = tmp_path / "tools.json"
-
-    write_mcp_server_config(
-        path=path,
-        name="linear",
-        server={
-            "type": "http",
-            "url": "https://mcp.example/mcp",
-            "headers": {"Authorization": "Bearer ${LINEAR_TOKEN}"},
-        },
-    )
-
-    data = json.loads(path.read_text())
-    assert data["mcpServers"]["linear"]["url"] == "https://mcp.example/mcp"
-
-
-def test_write_mcp_server_config_rejects_both_filters(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="cannot set both"):
-        write_mcp_server_config(
-            path=tmp_path / "tools.json",
-            name="bad",
-            server={
-                "type": "stdio",
-                "command": "server",
-                "allowedTools": ["read"],
-                "disabledTools": ["write"],
-            },
-        )
 
 
 async def test_load_mcp_tools_reads_manifest_and_env_headers(

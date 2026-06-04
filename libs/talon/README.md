@@ -95,6 +95,26 @@ LANGSMITH_PROJECT=deepagents-talon
 When enabled, Talon wraps each agent run in a LangSmith tracing context with
 assistant id, conversation id, trigger metadata, and source message metadata.
 
+## MCP Tools
+
+Talon discovers MCP servers from `~/.deepagents/.mcp.json` and
+`~/.deepagents/<assistant_id>/agent/tools.json`. Add Talon-local servers by
+editing `tools.json` directly:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.example/mcp"
+    }
+  }
+}
+```
+
+Run `deepagents-talon mcp config` to print the resolved discovery paths, and
+`deepagents-talon mcp login <server>` for OAuth-backed servers.
+
 ## Cron Observability
 
 Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.

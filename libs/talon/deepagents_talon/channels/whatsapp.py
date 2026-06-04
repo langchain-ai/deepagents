@@ -1,0 +1,472 @@
+"""WhatsApp channel adapter backed by a loopback Node bridge."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import shlex
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from importlib.resources import files
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+from deepagents_talon.channels.base import (
+    ChannelExposure,
+    ExposureMode,
+    chunk_text,
+    format_markdown_for_channel,
+    validate_media,
+)
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from deepagents_talon.config import TalonConfig
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_BRIDGE_HOST = "127.0.0.1"
+DEFAULT_BRIDGE_PORT = 3000
+DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
+_FAILED_HEALTH_RESTART_THRESHOLD = 3
+
+
+class WhatsAppBridgeError(RuntimeError):
+    """Raised when the WhatsApp bridge reports or causes a transport error."""
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppChannelConfig:
+    """Configuration for the WhatsApp channel adapter.
+
+    Args:
+        session_dir: Directory for bridge authentication and Chromium profile state.
+        host: Loopback host where the bridge listens.
+        port: Loopback port where the bridge listens.
+        exposure: Inbound trigger policy.
+        bridge_command: Optional command used to start the Node bridge subprocess.
+        poll_interval_seconds: Interval for draining inbound bridge messages.
+        health_interval_seconds: Interval for bridge health checks.
+        request_timeout_seconds: Per-request timeout for loopback bridge calls.
+    """
+
+    session_dir: Path
+    host: str = DEFAULT_BRIDGE_HOST
+    port: int = DEFAULT_BRIDGE_PORT
+    exposure: ChannelExposure = field(default_factory=ChannelExposure)
+    bridge_command: tuple[str, ...] | None = None
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def from_talon_config(cls, config: TalonConfig) -> WhatsAppChannelConfig:
+        """Build WhatsApp channel configuration from Talon environment values.
+
+        Args:
+            config: Talon process configuration.
+
+        Returns:
+            WhatsApp channel configuration.
+
+        Raises:
+            ValueError: If exposure or port environment values are invalid.
+        """
+        env = config.env
+        host = env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_HOST", DEFAULT_BRIDGE_HOST)
+        port = _parse_int(env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_PORT"), DEFAULT_BRIDGE_PORT)
+        session = Path(
+            env.get("DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR", str(config.channel_dir / "whatsapp")),
+        )
+        command = _bridge_command(env)
+        return cls(
+            session_dir=session,
+            host=host,
+            port=port,
+            exposure=_exposure_from_env(env),
+            bridge_command=command,
+            poll_interval_seconds=_parse_float(
+                env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
+                DEFAULT_POLL_INTERVAL_SECONDS,
+            ),
+            health_interval_seconds=_parse_float(
+                env.get("DEEPAGENTS_TALON_WHATSAPP_HEALTH_SECONDS"),
+                DEFAULT_HEALTH_INTERVAL_SECONDS,
+            ),
+            request_timeout_seconds=_parse_float(
+                env.get("DEEPAGENTS_TALON_WHATSAPP_REQUEST_TIMEOUT_SECONDS"),
+                DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            ),
+        )
+
+    @property
+    def base_url(self) -> str:
+        """Loopback bridge base URL."""
+        return f"http://{self.host}:{self.port}"
+
+
+class BridgeTransport:
+    """Small JSON HTTP client for the loopback bridge."""
+
+    def __init__(self, *, base_url: str, timeout: float) -> None:
+        """Initialize the transport.
+
+        Args:
+            base_url: Bridge base URL.
+            timeout: Request timeout in seconds.
+        """
+        self.base_url = _validate_loopback_url(base_url.rstrip("/"))
+        self.timeout = timeout
+
+    async def get(self, path: str) -> object:
+        """Send a GET request and decode JSON.
+
+        Args:
+            path: Absolute bridge endpoint path.
+
+        Returns:
+            JSON-decoded response body.
+        """
+        return await asyncio.to_thread(self._request, "GET", path, None)
+
+    async def post(self, path: str, payload: Mapping[str, object]) -> object:
+        """Send a POST request with a JSON body and decode JSON.
+
+        Args:
+            path: Absolute bridge endpoint path.
+            payload: JSON-serializable request body.
+
+        Returns:
+            JSON-decoded response body.
+        """
+        return await asyncio.to_thread(self._request, "POST", path, payload)
+
+    def _request(self, method: str, path: str, payload: Mapping[str, object] | None) -> object:
+        body = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(  # noqa: S310  # base URL is validated as HTTP loopback.
+            f"{self.base_url}{path}",
+            data=body,
+            method=method,
+            headers={"content-type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(  # noqa: S310  # bridge transport is loopback-only.
+                request,
+                timeout=self.timeout,
+            ) as response:
+                return json.loads(response.read().decode())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            msg = f"WhatsApp bridge request failed: {method} {path}"
+            raise WhatsAppBridgeError(msg) from error
+
+
+class WhatsAppChannel:
+    """Channel adapter for WhatsApp via a local Node bridge."""
+
+    def __init__(
+        self,
+        config: WhatsAppChannelConfig,
+        *,
+        transport: BridgeTransport | None = None,
+    ) -> None:
+        """Initialize the WhatsApp channel without starting it.
+
+        Args:
+            config: WhatsApp channel configuration.
+            transport: Optional test transport implementing the bridge API.
+        """
+        self.config = config
+        self._transport = transport or BridgeTransport(
+            base_url=config.base_url,
+            timeout=config.request_timeout_seconds,
+        )
+        self._handler: MessageHandler | None = None
+        self._process: asyncio.subprocess.Process | None = None
+        self._poll: asyncio.Task[None] | None = None
+        self._health: asyncio.Task[None] | None = None
+        self._stopped = asyncio.Event()
+        self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
+        self._failed_health_checks = 0
+
+    def set_message_handler(self, handler: MessageHandler) -> None:
+        """Register the host callback for inbound messages.
+
+        Args:
+            handler: Coroutine callback invoked for accepted inbound messages.
+        """
+        self._handler = handler
+
+    async def start(self) -> None:
+        """Start the bridge subprocess and background polling tasks."""
+        self.config.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.config.session_dir.chmod(0o700)
+        self._stopped.clear()
+        await self._start_bridge()
+        self._poll = asyncio.create_task(self._poll_messages(), name="talon:whatsapp:poll")
+        self._health = asyncio.create_task(self._watch_health(), name="talon:whatsapp:health")
+
+    async def stop(self) -> None:
+        """Stop polling tasks and terminate the bridge subprocess."""
+        self._stopped.set()
+        tasks = [task for task in (self._poll, self._health) if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._poll = None
+        self._health = None
+        await self._stop_bridge()
+        self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
+
+    async def send_message(self, conversation_id: str, text: str) -> None:
+        """Send chunked, formatted text to a WhatsApp chat.
+
+        Args:
+            conversation_id: WhatsApp chat id.
+            text: Message content to send.
+        """
+        for chunk in chunk_text(format_markdown_for_channel(text)):
+            await self._post_result("/send", {"chat_id": conversation_id, "text": chunk})
+
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+        """Send validated image or video media to a WhatsApp chat.
+
+        Args:
+            conversation_id: WhatsApp chat id.
+            media: Media payload to send.
+        """
+        checked = validate_media(media)
+        payload: dict[str, object] = {
+            "chat_id": conversation_id,
+            "path": str(checked.path),
+            "mediaType": checked.media_type,
+        }
+        if checked.caption is not None:
+            payload["caption"] = checked.caption
+        await self._post_result("/send-media", payload)
+
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+        """Edit a previously sent WhatsApp message.
+
+        Args:
+            conversation_id: Ignored because the bridge edits by message id.
+            message_id: Bridge message id.
+            text: Replacement content.
+        """
+        del conversation_id
+        await self._post_result(
+            "/edit",
+            {"message_id": message_id, "content": format_markdown_for_channel(text)},
+        )
+
+    async def status(self) -> ChannelStatus:
+        """Report the most recent bridge connection status."""
+        return self._status
+
+    async def _start_bridge(self) -> None:
+        if self.config.bridge_command is None or self._process is not None:
+            return
+        env = {
+            **os.environ,
+            "WHATSAPP_BRIDGE_HOST": self.config.host,
+            "WHATSAPP_BRIDGE_PORT": str(self.config.port),
+            "WHATSAPP_SESSION_DIR": str(self.config.session_dir),
+        }
+        self._process = await asyncio.create_subprocess_exec(
+            *self.config.bridge_command,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def _stop_bridge(self) -> None:
+        if self._process is None:
+            return
+        self._process.terminate()
+        try:
+            await asyncio.wait_for(self._process.wait(), timeout=5)
+        except TimeoutError:
+            self._process.kill()
+            await self._process.wait()
+        self._process = None
+
+    async def _restart_bridge(self) -> None:
+        logger.warning("Restarting WhatsApp bridge after failed health checks")
+        await self._stop_bridge()
+        await self._start_bridge()
+        self._failed_health_checks = 0
+
+    async def _poll_messages(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                payload = await self._transport.get("/messages")
+                for message in _parse_messages(payload):
+                    if self.config.exposure.allows(message):
+                        await self._dispatch(message)
+            except WhatsAppBridgeError:
+                logger.exception("Failed to poll WhatsApp bridge messages")
+            await asyncio.sleep(self.config.poll_interval_seconds)
+
+    async def _watch_health(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                payload = await self._transport.get("/health")
+                self._status = _parse_status(payload)
+                self._failed_health_checks = 0
+            except WhatsAppBridgeError:
+                self._failed_health_checks += 1
+                self._status = ChannelStatus(
+                    provider="whatsapp",
+                    connected=False,
+                    detail="disconnected",
+                )
+                if self._failed_health_checks >= _FAILED_HEALTH_RESTART_THRESHOLD:
+                    await self._restart_bridge()
+            await asyncio.sleep(self.config.health_interval_seconds)
+
+    async def _dispatch(self, message: ChannelMessage) -> None:
+        if self._handler is None:
+            logger.warning("Dropping WhatsApp message because no handler is registered")
+            return
+        await self._handler(message)
+
+    async def _post_result(self, path: str, payload: Mapping[str, object]) -> object:
+        response = await self._transport.post(path, payload)
+        if isinstance(response, dict):
+            result = cast("Mapping[str, object]", response)
+            if result.get("success") is not False:
+                return response
+            msg = str(result.get("error") or "WhatsApp bridge returned an error")
+            raise WhatsAppBridgeError(msg)
+        return response
+
+
+def bridge_script_path() -> Path:
+    """Return the packaged Node bridge script path."""
+    return Path(str(files("deepagents_talon.channels.whatsapp_bridge").joinpath("bridge.js")))
+
+
+def _validate_loopback_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        msg = "WhatsApp bridge URL must use HTTP loopback"
+        raise WhatsAppBridgeError(msg)
+    return value
+
+
+def _parse_messages(payload: object) -> list[ChannelMessage]:
+    if not isinstance(payload, list):
+        msg = "WhatsApp bridge /messages response must be a list"
+        raise WhatsAppBridgeError(msg)
+    return [_parse_message(item) for item in payload]
+
+
+def _parse_message(payload: object) -> ChannelMessage:
+    if not isinstance(payload, dict):
+        msg = "WhatsApp bridge message must be an object"
+        raise WhatsAppBridgeError(msg)
+    values = cast("Mapping[str, object]", payload)
+    return ChannelMessage(
+        conversation_id=_required_str(values, "chat_id"),
+        text=str(values.get("text") or ""),
+        sender_id=_optional_str(values.get("user_id")),
+        message_id=_optional_str(values.get("message_id")),
+        metadata={
+            "provider": "whatsapp",
+            "message_type": values.get("message_type"),
+            "chat_name": values.get("chat_name"),
+            "chat_type": values.get("chat_type"),
+            "user_name": values.get("user_name"),
+            "media_urls": values.get("media_urls") or [],
+            "media_types": values.get("media_types") or [],
+            "raw_message": values.get("raw_message") or {},
+            "from_self": bool(values.get("from_self")),
+        },
+    )
+
+
+def _parse_status(payload: object) -> ChannelStatus:
+    if not isinstance(payload, dict):
+        msg = "WhatsApp bridge /health response must be an object"
+        raise WhatsAppBridgeError(msg)
+    values = cast("Mapping[str, object]", payload)
+    detail = _required_str(values, "status")
+    return ChannelStatus(
+        provider="whatsapp",
+        connected=detail == "connected",
+        detail=detail,
+    )
+
+
+def _required_str(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        msg = f"WhatsApp bridge payload missing string field: {key}"
+        raise WhatsAppBridgeError(msg)
+    return value
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
+    mode = _exposure_mode(env.get("DEEPAGENTS_TALON_WHATSAPP_EXPOSURE", ExposureMode.SELF.value))
+    conversations = _split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS", ""))
+    mentions = tuple(_split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS", "")))
+    return ChannelExposure(
+        mode=mode,
+        operator_id=env.get("DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID"),
+        conversations=frozenset(conversations),
+        mention_patterns=mentions,
+    )
+
+
+def _exposure_mode(value: str) -> ExposureMode:
+    try:
+        return ExposureMode(value)
+    except ValueError as error:
+        modes = ", ".join(mode.value for mode in ExposureMode)
+        msg = f"invalid WhatsApp exposure mode {value!r}; expected one of: {modes}"
+        raise ValueError(msg) from error
+
+
+def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:
+    value = env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_COMMAND")
+    if value:
+        return tuple(shlex.split(value))
+    if env.get("DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE", "").lower() in {"1", "true", "yes"}:
+        return ("node", str(bridge_script_path()))
+    return None
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as error:
+        msg = f"expected integer value, got {value!r}"
+        raise ValueError(msg) from error
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as error:
+        msg = f"expected float value, got {value!r}"
+        raise ValueError(msg) from error

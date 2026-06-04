@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_talon.__main__ import _agent_runtime
 from deepagents_talon.config import TalonConfig
@@ -14,6 +16,10 @@ if TYPE_CHECKING:
     import pytest
 
 
+class PassthroughMiddleware(AgentMiddleware):
+    """Middleware stub for runtime wiring assertions."""
+
+
 def fleet_tool() -> str:
     """Fleet tool stub."""
     return "fleet"
@@ -22,6 +28,16 @@ def fleet_tool() -> str:
 def local_tool() -> str:
     """Local MCP tool stub."""
     return "local"
+
+
+def _skill_content(name: str, description: str) -> str:
+    return f"""---
+name: {name}
+description: {description}
+---
+
+# {name}
+"""
 
 
 async def test_load_fleet_agent_components_coerces_public_loader_payload(
@@ -64,6 +80,66 @@ async def test_load_fleet_agent_components_coerces_public_loader_payload(
     assert "LANGSMITH_TENANT_ID" not in os.environ
 
 
+async def test_load_fleet_agent_components_adds_static_skills_loader(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet_dir = tmp_path / "fleet"
+    fleet_skill = fleet_dir / "skills" / "fleet-skill"
+    fleet_skill.mkdir(parents=True)
+    (fleet_skill / "SKILL.md").write_text(
+        _skill_content("fleet-skill", "Fleet skill description"),
+        encoding="utf-8",
+    )
+    operator_dir = tmp_path / "operator-skills"
+    operator_skill = operator_dir / "operator-skill"
+    operator_skill.mkdir(parents=True)
+    (operator_skill / "SKILL.md").write_text(
+        _skill_content("operator-skill", "Operator skill description"),
+        encoding="utf-8",
+    )
+
+    async def fake_load_agent_components(path):
+        assert path == fleet_dir
+        return {
+            "model": "fleet:model",
+            "system_prompt": "fleet prompt",
+            "tools": [],
+            "subagents": [],
+            "interrupt_on": None,
+        }
+
+    monkeypatch.setattr(
+        "deepagents_talon.fleet.load_agent_components",
+        fake_load_agent_components,
+    )
+
+    components = await load_fleet_agent_components(
+        fleet_dir,
+        env={"DEEPAGENTS_TALON_SKILLS_DIRS": str(operator_dir)},
+    )
+
+    assert components.skills == (str(fleet_dir / "skills"), str(operator_dir))
+    assert len(components.middleware) == 1
+
+    loader = cast("Any", components.middleware[0])
+    update = loader.before_agent({"skills_metadata": []}, object())
+    assert update is not None
+    assert set(update["files"]) == {
+        str(fleet_dir / "skills" / "fleet-skill" / "SKILL.md"),
+        str(operator_dir / "operator-skill" / "SKILL.md"),
+    }
+    assert {skill["name"] for skill in update["skills_metadata"]} == {
+        "fleet-skill",
+        "operator-skill",
+    }
+
+    files_only = loader.before_agent({"skills_metadata": [{"name": "already-loaded"}]}, object())
+    assert files_only is not None
+    assert "files" in files_only
+    assert "skills_metadata" not in files_only
+
+
 async def test_agent_runtime_loads_fleet_components(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -76,6 +152,7 @@ async def test_agent_runtime_loads_fleet_components(
         "system_prompt": "Research carefully.",
     }
     seen: dict[str, Any] = {}
+    middleware = PassthroughMiddleware()
 
     async def fake_load_fleet(
         path,
@@ -88,8 +165,10 @@ async def test_agent_runtime_loads_fleet_components(
             model="fleet:model",
             system_prompt="fleet prompt",
             tools=(fleet_tool,),
-            subagents=(subagent,),
+            subagents=(cast("Any", subagent),),
             interrupt_on={"fleet_tool": True},
+            skills=("/fleet/skills",),
+            middleware=(middleware,),
         )
 
     async def fail_load_mcp(_config):
@@ -117,6 +196,8 @@ async def test_agent_runtime_loads_fleet_components(
     assert runtime.system_prompt == "fleet prompt"
     assert runtime.tools == (fleet_tool,)
     assert runtime.subagents == (subagent,)
+    assert runtime.skills == ("/fleet/skills",)
+    assert runtime.middleware == (middleware,)
     assert runtime.assistant_dir is None
     assert seen["path"] == fleet_dir
     assert seen["env"]["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
@@ -172,7 +253,7 @@ async def test_agent_runtime_keeps_non_fleet_local_mcp_path(
         raise AssertionError(msg)
 
     async def fake_load_mcp(_config) -> MCPTools:
-        return MCPTools(tools=(local_tool,), servers=())
+        return MCPTools(tools=(cast("Any", local_tool),), servers=())
 
     monkeypatch.setattr("deepagents_talon.__main__.load_fleet_agent_components", fail_load_fleet)
     monkeypatch.setattr("deepagents_talon.__main__.load_mcp_tools", fake_load_mcp)

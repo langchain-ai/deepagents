@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from deepagents.backends import LocalShellBackend
+from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import AgentRequest
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
 class InvokableTool(Protocol):
     def invoke(self, payload: dict[str, object]) -> dict[str, object]:
         """Invoke a tool with a structured payload."""
+
+
+class PassthroughMiddleware(AgentMiddleware):
+    """Middleware stub for runtime wiring assertions."""
 
 
 class RecordingGraph:
@@ -135,7 +140,7 @@ async def test_runtime_wires_subagents(
 
     runtime = DeepAgentRuntime(
         model="test:model",
-        subagents=subagents,
+        subagents=cast("Any", subagents),
         include_web_tools=False,
         skills=(),
         memory=(),
@@ -144,6 +149,31 @@ async def test_runtime_wires_subagents(
     await runtime.start()
 
     assert captured["subagents"] == subagents
+
+
+async def test_runtime_passes_middleware_to_create_deep_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    middleware = PassthroughMiddleware()
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        middleware=(middleware,),
+    )
+
+    await runtime.start()
+
+    assert captured["middleware"] == [middleware]
 
 
 async def test_runtime_uses_configured_workspace_for_default_backend(

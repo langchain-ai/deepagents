@@ -9,7 +9,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -24,6 +24,7 @@ from deepagents_talon.interfaces import AgentRequest, AgentResult
 if TYPE_CHECKING:
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
+    from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
     from langgraph.types import Checkpointer
@@ -116,6 +117,7 @@ class DeepAgentRuntime:
         backend: Filesystem/execution backend. Defaults to local shell execution.
         skills: Optional explicit skill source paths. When omitted, sources are
             loaded from `assistant_dir/skills` and skill directory environment vars.
+        middleware: Optional middleware to pass through to `create_deep_agent`.
         memory: Optional explicit memory file paths. When omitted, paths are
             loaded from manifest metadata, memory path environment vars, or an
             assistant-local memory file.
@@ -139,6 +141,7 @@ class DeepAgentRuntime:
         cron_store: CronJobStore | None = None,
         backend: BackendProtocol | None = None,
         skills: Sequence[str] | None = None,
+        middleware: Sequence[AgentMiddleware[Any, Any, Any]] = (),
         memory: Sequence[str] | None = None,
         checkpointer: Checkpointer | None = None,
         include_web_tools: bool = True,
@@ -166,6 +169,7 @@ class DeepAgentRuntime:
         self.cron_store = cron_store
         self.backend = backend if backend is not None else _default_backend(env)
         self.skills = tuple(skills) if skills is not None else None
+        self.middleware = tuple(middleware)
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
@@ -185,6 +189,7 @@ class DeepAgentRuntime:
             subagents=list(self.subagents) if self.subagents is not None else None,
             backend=self.backend,
             skills=self._resolve_skills(),
+            middleware=list(self.middleware),
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )

@@ -5,15 +5,15 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
-from fleet_deepagents_export import load_agent_components
+from fleet_deepagents_export import StaticSkillsLoader, load_agent_components
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
+    from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
 
 
@@ -28,6 +28,8 @@ class FleetAgentComponents:
         subagents: Fleet subagent specs.
         interrupt_on: Fleet human-in-the-loop config. Talon records this for
             the follow-up approval workflow but does not enable it yet.
+        skills: Skill source paths for `create_deep_agent`.
+        middleware: Middleware required by Fleet-loaded components.
     """
 
     model: str
@@ -35,6 +37,8 @@ class FleetAgentComponents:
     tools: tuple[BaseTool | Callable[..., object], ...]
     subagents: tuple[SubAgent | CompiledSubAgent | AsyncSubAgent, ...]
     interrupt_on: Mapping[str, object] | None
+    skills: tuple[str, ...] = ()
+    middleware: tuple[AgentMiddleware[Any, Any, Any], ...] = ()
 
 
 async def load_fleet_agent_components(
@@ -58,7 +62,8 @@ async def load_fleet_agent_components(
     """
     with _patched_environ(env):
         raw = await load_agent_components(fleet_dir)
-    return _coerce_components(raw)
+    components = _coerce_components(raw)
+    return _with_static_skills_loader(components, fleet_dir=fleet_dir, env=env)
 
 
 def _coerce_components(raw: object) -> FleetAgentComponents:
@@ -85,6 +90,50 @@ def _coerce_components(raw: object) -> FleetAgentComponents:
         subagents=subagents,
         interrupt_on=interrupt_on,
     )
+
+
+def _with_static_skills_loader(
+    components: FleetAgentComponents,
+    *,
+    fleet_dir: Path,
+    env: Mapping[str, str] | None,
+) -> FleetAgentComponents:
+    loader = StaticSkillsLoader(_static_skill_sources(fleet_dir, env=env))
+    if not loader.skill_paths:
+        return components
+    return replace(
+        components,
+        skills=tuple(loader.skill_paths),
+        middleware=(loader,),
+    )
+
+
+def _static_skill_sources(
+    fleet_dir: Path,
+    *,
+    env: Mapping[str, str] | None,
+) -> list[tuple[Path, str]]:
+    sources: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+    _append_skill_source(sources, seen, fleet_dir / "skills")
+    values = os.environ if env is None else env
+    for raw in _split_path_env(
+        values.get("DEEPAGENTS_TALON_SKILLS_DIRS") or values.get("SKILLS_DIRS"),
+    ):
+        _append_skill_source(sources, seen, Path(raw).expanduser())
+    return sources
+
+
+def _append_skill_source(
+    sources: list[tuple[Path, str]],
+    seen: set[str],
+    path: Path,
+) -> None:
+    marker = str(path)
+    if marker in seen:
+        return
+    seen.add(marker)
+    sources.append((path, marker))
 
 
 def _required_str(data: Mapping[str, object], key: str) -> str:
@@ -118,6 +167,13 @@ def _optional_mapping(value: object, key: str) -> Mapping[str, object] | None:
             raise TypeError(msg)
         result[raw_key] = raw_value
     return result
+
+
+def _split_path_env(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    separator = ";" if ";" in raw else os.pathsep
+    return [str(Path(part).expanduser()) for part in raw.split(separator) if part.strip()]
 
 
 @contextmanager

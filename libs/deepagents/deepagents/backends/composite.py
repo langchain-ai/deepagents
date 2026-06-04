@@ -39,7 +39,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.state import StateBackend
 
-_DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}' (its backend does not implement delete)."
+_DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}'."
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:

@@ -1808,9 +1808,13 @@ def apply_stored_credentials(provider: str) -> bool:
         return False
     if not stored:
         return False
+    # Reconcile the endpoint first: it resolves env-var names (which can touch
+    # the config) and so is the only step that might raise. Doing it before the
+    # key write means the key is never left applied while an inherited gateway
+    # URL stays uncleared — the key and endpoint move together.
+    _apply_stored_base_url(provider, stored_base_url)
     if os.environ.get(env_var) != stored:
         os.environ[env_var] = stored
-    _apply_stored_base_url(provider, stored_base_url)
     return True
 
 
@@ -2069,6 +2073,18 @@ class ModelConfig:
             keys resolve. This also surfaces the value `apply_stored_credentials`
             bridged in from a `/auth` credential, and the gateway-provisioned
             URL in the default (no-override) case.
+        3. The endpoint stored with a `/auth` credential. This is the source
+            for providers that have no base-URL env var (e.g. an OpenAI-
+            compatible router like LiteLLM or OpenRouter): step 2 has no name to
+            read, so the stored endpoint is taken directly. It then reaches the
+            SDK as the `base_url` constructor kwarg via `_get_provider_kwargs`,
+            the same path a `config.toml` literal uses. For providers that *do*
+            have an env var, the stored endpoint already arrives via step 2
+            (it was bridged onto the env var), so this step is a redundant — and
+            consistent — fallback.
+
+        A corrupt credential store is treated as "no stored endpoint" rather than
+        propagating, so endpoint resolution never newly raises.
 
         Args:
             provider_name: The provider to get base URL for.
@@ -2083,7 +2099,13 @@ class ModelConfig:
         env_var = (provider.get("base_url_env") if provider else None) or (
             _canonical_base_url_env(provider_name)
         )
-        return resolve_env_var(env_var) if env_var else None
+        resolved = resolve_env_var(env_var) if env_var else None
+        if resolved:
+            return resolved
+        try:
+            return auth_store.get_stored_base_url(provider_name)
+        except RuntimeError:
+            return None
 
     def get_api_key_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's API key.

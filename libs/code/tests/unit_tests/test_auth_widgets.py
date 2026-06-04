@@ -91,6 +91,67 @@ class TestAuthPromptScreen:
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
 
+    async def test_base_url_round_trips_on_submit(self) -> None:
+        """A base URL typed alongside the key is persisted as the pair."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            app.screen.query_one("#auth-prompt-base-url", Input).value = (
+                "  https://proxy.example/v1  "
+            )
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("openai") == "sk-key"
+        # Whitespace is stripped before storage.
+        assert auth_store.get_stored_base_url("openai") == "https://proxy.example/v1"
+
+    async def test_submit_from_base_url_field_saves_pair(self) -> None:
+        """Enter in the base-URL field saves the pair, not just the key field.
+
+        `on_input_submitted` reads both inputs regardless of which one fired, so
+        submitting from either field must persist the same key + endpoint.
+        """
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
+            base_url_field.value = "https://proxy.example/v1"
+            base_url_field.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("openai") == "sk-key"
+        assert auth_store.get_stored_base_url("openai") == "https://proxy.example/v1"
+
+    async def test_blank_base_url_field_stores_no_endpoint(self) -> None:
+        """A whitespace-only base URL stores nothing (uses the provider default)."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            app.screen.query_one("#auth-prompt-base-url", Input).value = "   "
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("openai") is None
+
+    async def test_existing_base_url_prefills_field(self) -> None:
+        """Reopening the prompt pre-fills the stored endpoint for editing."""
+        auth_store.set_stored_key("openai", "k", base_url="https://stored.example/v1")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert base_url_field.value == "https://stored.example/v1"
+
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""
         app = _AuthHostApp()

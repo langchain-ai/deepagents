@@ -1533,6 +1533,34 @@ api_key_env = "TOGETHER_API_KEY"
         assert kwargs["api_key"] == "together-key"
         assert "base_url" not in kwargs
 
+    def test_stored_auth_base_url_reaches_kwargs_without_env_var(
+        self, tmp_path: Path
+    ) -> None:
+        """A `/auth` endpoint reaches the `base_url` kwarg for a non-mapped provider.
+
+        `together` has an API-key env var but no base-URL env var, so the stored
+        endpoint resolves only through `get_base_url`'s store fallback. This is
+        the end-to-end path that makes a saved base URL actually take effect
+        rather than being silently dropped.
+        """
+        from deepagents_code import auth_store
+
+        state_dir = tmp_path / ".state"
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(model_config, "DEFAULT_STATE_DIR", state_dir),
+            patch.dict("os.environ", {"TOGETHER_API_KEY": "tk"}, clear=True),
+        ):
+            clear_caches()
+            auth_store.set_stored_key(
+                "together", "tk", base_url="https://proxy.example/v1"
+            )
+            kwargs = _get_provider_kwargs("together")
+
+        assert kwargs["base_url"] == "https://proxy.example/v1"
+
     def test_prefixed_env_var_beats_canonical(self, tmp_path: Path) -> None:
         """DEEPAGENTS_CODE_ prefixed var overrides canonical in provider kwargs."""
         config_path = tmp_path / "config.toml"

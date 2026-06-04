@@ -1068,6 +1068,70 @@ models = ["m1"]
 
         assert config.get_base_url("myco") == "https://myco.example/v1"
 
+    def test_falls_back_to_stored_base_url_for_provider_without_env_var(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A `/auth` endpoint resolves for a provider with no base-URL env var.
+
+        OpenAI-compatible routers (LiteLLM, OpenRouter, …) have an API-key env
+        var but no base-URL env var, so steps 1-2 find nothing. The stored
+        endpoint must still resolve here so it reaches the model as a kwarg —
+        otherwise a value the user saved in `/auth` is silently ignored.
+        """
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key(
+            "litellm", "k", base_url="https://proxy.example/v1"
+        )
+        config = ModelConfig()
+
+        assert config.get_base_url("litellm") == "https://proxy.example/v1"
+
+    def test_config_literal_wins_over_stored_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        """A `config.toml` literal still wins over the stored endpoint."""
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key(
+            "litellm", "k", base_url="https://stored.example/v1"
+        )
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.litellm]
+base_url = "https://config.example/v1"
+models = ["m1"]
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_base_url("litellm") == "https://config.example/v1"
+
+    def test_blank_stored_base_url_yields_none(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A stored key with no endpoint leaves `get_base_url` at the default."""
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key("litellm", "k")
+        config = ModelConfig()
+
+        assert config.get_base_url("litellm") is None
+
+    def test_corrupt_store_does_not_raise(
+        self,
+        fake_state_dir: Path,
+    ) -> None:
+        """A corrupt credential store resolves to None, never propagating."""
+        fake_state_dir.mkdir(parents=True, exist_ok=True)
+        (fake_state_dir / "auth.json").write_text("{ not valid json")
+        config = ModelConfig()
+
+        assert config.get_base_url("litellm") is None
+
 
 class TestGetDefaultBaseUrlEnv:
     """Tests for `get_default_base_url_env` — the var a blank save falls back to.

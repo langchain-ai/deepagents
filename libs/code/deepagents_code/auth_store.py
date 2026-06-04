@@ -62,7 +62,9 @@ class ApiKeyCredential(TypedDict):
     Stored only when the user supplied one in `/auth`. A key and its endpoint
     form a coherent pair — applying the key also applies (or, when this is
     absent, resets to the provider default) the base URL, so a personal key is
-    never sent to a gateway it doesn't belong to. Non-secret; may be logged.
+    never sent to a gateway it doesn't belong to. Not treated as a secret (it is
+    logged when malformed and surfaced in hints); avoid embedding credentials in
+    the URL.
     """
 
 
@@ -275,6 +277,14 @@ def _coerce_credential(raw: Any) -> StoredCredential | None:  # noqa: ANN401
         base_url = raw.get("base_url")
         if isinstance(base_url, str) and base_url:
             credential["base_url"] = base_url
+        elif base_url is not None:
+            # Present but not a usable string (e.g. a hand-edit left an int or
+            # an empty value). Dropping it silently would pair the key with the
+            # provider default — possibly the wrong endpoint — with no trace, so
+            # log it. `base_url` is non-secret, so logging the value is safe.
+            logger.warning(
+                "Ignoring malformed base_url for a stored credential: %r", base_url
+            )
         return credential
     # OAuth is reserved for a future PR — silently skip until the producer
     # path lands. `cred_type in {"oauth"}` falls through to None here.

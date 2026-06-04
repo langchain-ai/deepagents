@@ -89,6 +89,37 @@ class TestRoundTrip:
         assert auth_store.get_stored_base_url("openai") is None
         assert auth_store.get_stored_key("openai") == "k"
 
+    def test_malformed_base_url_is_dropped_and_logged(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string base_url is dropped, the key survives, and it's logged.
+
+        A hand-edit (or truncated write) leaving a non-string base_url must not
+        silently degrade the key to the provider default with no trace — the
+        drop is greppable so a wrong endpoint is diagnosable.
+        """
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credentials": {
+                        "openai": {
+                            "type": "api_key",
+                            "key": "k",
+                            "added_at": "",
+                            "base_url": 1234,
+                        }
+                    },
+                }
+            )
+        )
+        with caplog.at_level("WARNING", logger="deepagents_code.auth_store"):
+            assert auth_store.get_stored_base_url("openai") is None
+            assert auth_store.get_stored_key("openai") == "k"
+        assert any("malformed base_url" in r.getMessage() for r in caplog.records)
+
     def test_delete_returns_true_when_removed(self) -> None:
         """Deleting an existing entry returns `True` and clears the value."""
         auth_store.set_stored_key("openai", "k")

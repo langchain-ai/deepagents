@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-talon"
+version = "0.0.1"
+description = "Local runtime host for long-running Deep Agents channels and schedules"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["agents", "ai", "deepagents", "runtime", "channels", "scheduling"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "deepagents",
+]
+
+[project.scripts]
+deepagents-talon = "deepagents_talon.__main__:main"
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+
+[dependency-groups]
+test = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-socket>=0.7.0",
+    "pytest-timeout>=2.3.1,<3.0.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "ruff>=0.12.2,<0.16.0",
+    "ty>=0.0.1,<1.0.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
+[tool.ty.environment]
+python-version = "3.11"
+extra-paths = ["../deepagents"]
+
+[tool.ty.rules]
+division-by-zero = "error"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Conflicts with the formatter
+    "ISC001",  # Conflicts with the formatter
+]
+extend-safe-fixes = ["PLR6201"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_talon"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",
+    "ANN201",
+    "ANN202",
+    "D",
+    "PLR2004",
+    "S101",
+    "SLF001",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

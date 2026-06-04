@@ -38,6 +38,7 @@ jobs:
               "cli": "cli",
               "acp": "acp",
               "code": "dcode",
+              "talon": "talon",
               "evals": "evals",
               "harbor": "harbor",
               "daytona": "daytona",

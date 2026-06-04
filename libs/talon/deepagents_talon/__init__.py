@@ -23,9 +23,15 @@ from deepagents_talon.interfaces import (
     CronScheduler,
 )
 from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
-from deepagents_talon.speech import OpenAIVoiceTranscriber, VoiceTranscriber
+from deepagents_talon.speech import (
+    DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
+    LocalParakeetVoiceTranscriber,
+    OpenAIVoiceTranscriber,
+    VoiceTranscriber,
+)
 
 __all__ = [
+    "DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL",
     "AgentRequest",
     "AgentResult",
     "AgentRuntime",
@@ -42,6 +48,7 @@ __all__ = [
     "CronTools",
     "DeepAgentRuntime",
     "EchoAgentRuntime",
+    "LocalParakeetVoiceTranscriber",
     "OpenAIVoiceTranscriber",
     "PersistentCronScheduler",
     "TalonConfig",

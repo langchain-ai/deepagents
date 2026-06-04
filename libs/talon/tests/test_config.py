@@ -63,6 +63,20 @@ def test_from_env_keeps_openai_env(tmp_path: Path) -> None:
     assert config.env["OPENAI_BASE_URL"] == "https://openai-compatible.example.com/v1"
 
 
+def test_from_env_keeps_legacy_speech_env(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant-1",
+            "SPEECH_ENABLED": "true",
+            "SPEECH_DEVICE": "cuda",
+        },
+        base_home=tmp_path,
+    )
+
+    assert config.env["SPEECH_ENABLED"] == "true"
+    assert config.env["SPEECH_DEVICE"] == "cuda"
+
+
 @pytest.mark.parametrize("assistant_id", ["", "../bad", "bad/slash", "bad space"])
 def test_from_env_rejects_unsafe_assistant_id(tmp_path: Path, assistant_id: str) -> None:
     with pytest.raises(TalonConfigError):

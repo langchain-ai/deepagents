@@ -61,11 +61,6 @@ def web_search() -> str:
     return "searched"
 
 
-def http_request() -> str:
-    """HTTP request tool stub."""
-    return "requested"
-
-
 async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -83,7 +78,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
     monkeypatch.setattr(
         "deepagents_talon.runtime.build_web_tools",
-        lambda: [fetch_url, web_search, http_request],
+        lambda: [fetch_url, web_search],
     )
 
     runtime = DeepAgentRuntime(
@@ -106,7 +101,6 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     assert {
         "fetch_url",
         "web_search",
-        "http_request",
         "create_job",
         "list_jobs",
         "edit_job",

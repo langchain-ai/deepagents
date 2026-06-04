@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.interfaces import (
     AgentRequest,
+    AgentResult,
     AgentRuntime,
     ChannelAdapter,
     ChannelMessage,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from deepagents_talon.config import TalonConfig
+    from deepagents_talon.cron.jobs import CronJob
 
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
@@ -72,14 +74,14 @@ class TalonHost:
         self.config.ensure_home()
         await self.agent.start()
 
-        if self.scheduler is not None:
-            await self.scheduler.start()
-
         for channel in self.channels:
             channel.set_message_handler(
                 lambda message, current=channel: self.receive_message(current, message),
             )
             await channel.start()
+
+        if self.scheduler is not None:
+            await self.scheduler.start()
 
         self._stopped.clear()
         self._running = True
@@ -136,37 +138,86 @@ class TalonHost:
         await task
 
     async def _run_agent_turn(self, channel: ChannelAdapter, message: ChannelMessage) -> None:
-        lock = self._locks[message.conversation_id]
+        result = await self._invoke_agent(
+            conversation_id=message.conversation_id,
+            text=message.text,
+            metadata={
+                "sender_id": message.sender_id,
+                "message_id": message.message_id,
+                **message.metadata,
+            },
+        )
+        if result.text:
+            await channel.send_message(message.conversation_id, result.text)
+
+    async def run_scheduled_job(self, job: CronJob) -> str:
+        """Invoke the agent for one scheduled job.
+
+        Args:
+            job: Claimed cron job to run.
+
+        Returns:
+            Agent text output for scheduler delivery handling.
+        """
+        result = await self._invoke_agent(
+            conversation_id=job.origin.conversation_id,
+            text=job.prompt,
+            metadata={
+                "cron_job_id": job.id,
+                "cron_job_name": job.name,
+                "cron_origin_message_id": job.origin.message_id,
+                "trigger": "cron",
+            },
+        )
+        return result.text
+
+    async def deliver_scheduled_result(
+        self,
+        channel: ChannelAdapter,
+        job: CronJob,
+        text: str,
+    ) -> None:
+        """Deliver a scheduled job result to its origin conversation.
+
+        Args:
+            channel: Channel that should deliver the result.
+            job: Cron job that produced the result.
+            text: Message text to send.
+        """
+        await channel.send_message(job.origin.conversation_id, text)
+
+    async def _invoke_agent(
+        self,
+        *,
+        conversation_id: str,
+        text: str,
+        metadata: dict[str, object],
+    ) -> AgentResult:
+        lock = self._locks[conversation_id]
         async with lock:
             task = asyncio.current_task()
             if task is not None:
-                self._tasks[message.conversation_id] = task
+                self._tasks[conversation_id] = task
 
             try:
-                result = await self.agent.invoke(
+                return await self.agent.invoke(
                     AgentRequest(
-                        conversation_id=message.conversation_id,
-                        text=message.text,
-                        metadata={
-                            "sender_id": message.sender_id,
-                            "message_id": message.message_id,
-                            **message.metadata,
-                        },
+                        conversation_id=conversation_id,
+                        text=text,
+                        metadata=metadata,
                     ),
                 )
-                if result.text:
-                    await channel.send_message(message.conversation_id, result.text)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception(
                     "Unhandled agent error in conversation %s",
-                    message.conversation_id,
+                    conversation_id,
                 )
                 raise
             finally:
-                if self._tasks.get(message.conversation_id) is task:
-                    del self._tasks[message.conversation_id]
+                if self._tasks.get(conversation_id) is task:
+                    del self._tasks[conversation_id]
 
     async def _cancel_conversation(
         self,

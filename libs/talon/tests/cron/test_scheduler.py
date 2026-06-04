@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from deepagents_talon.cron import CronJob, CronJobStore, CronOrigin, CronSchedule
+from deepagents_talon.cron.scheduler import PersistentCronScheduler
+
+
+def _store(tmp_path) -> CronJobStore:
+    return CronJobStore(assistant_id="assistant", cron_dir=tmp_path / "cron")
+
+
+async def test_scheduler_runs_due_job_and_delivers_result(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    delivered: list[tuple[str, str]] = []
+
+    async def run_job(claimed: CronJob) -> str:
+        assert claimed.id == job.id
+        assert store.get_job(job.id).next_run_at is None
+        return "done"
+
+    async def deliver_result(claimed: CronJob, text: str) -> None:
+        delivered.append((claimed.origin.conversation_id, text))
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=run_job,
+        deliver_result=deliver_result,
+        now=lambda: now + timedelta(minutes=1),
+    )
+
+    await scheduler.tick_once()
+
+    updated = store.get_job(job.id)
+    assert updated is not None
+    assert updated.last_status == "ok"
+    assert updated.last_error is None
+    assert delivered == [("chat", "done")]
+
+
+async def test_scheduler_suppresses_silent_result(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="quiet heartbeat",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    delivered: list[str] = []
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=lambda _: _return("[SILENT] nothing changed"),
+        deliver_result=lambda _, text: _append(delivered, text),
+        now=lambda: now + timedelta(minutes=1),
+    )
+
+    await scheduler.tick_once()
+
+    assert delivered == []
+    assert store.list_jobs()[0].last_status == "ok"
+
+
+async def test_scheduler_records_error_after_claiming_job(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="fail",
+        schedule=CronSchedule.parse("every 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    async def run_job(_: CronJob) -> str:
+        msg = "model unavailable"
+        raise RuntimeError(msg)
+
+    scheduler = PersistentCronScheduler(
+        store=store,
+        run_job=run_job,
+        deliver_result=lambda _, text: _return(text),
+        now=lambda: now + timedelta(minutes=5),
+    )
+
+    await scheduler.tick_once()
+
+    updated = store.get_job(job.id)
+    assert updated is not None
+    assert updated.last_status == "error"
+    assert updated.last_error == "model unavailable"
+    assert updated.next_run_at == now + timedelta(minutes=10)
+
+
+async def _return(value: str) -> str:
+    return value
+
+
+async def _append(values: list[str], value: str) -> None:
+    values.append(value)

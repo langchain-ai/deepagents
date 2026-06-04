@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "deepagents",
+    "langchain-mcp-adapters>=0.2.2,<1.0.0",
 ]
 
 [project.scripts]

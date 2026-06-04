@@ -19,12 +19,14 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     CronScheduler,
 )
+from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
+    from deepagents_talon.speech import VoiceTranscriber
 
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
@@ -50,12 +52,14 @@ class TalonHost:
         agent: AgentRuntime,
         channels: Sequence[ChannelAdapter] = (),
         scheduler: CronScheduler | None = None,
+        voice_transcriber: VoiceTranscriber | None = None,
     ) -> None:
         """Initialize the host without starting managed components."""
         self.config = config
         self.agent = agent
         self.channels = tuple(channels)
         self.scheduler = scheduler
+        self.voice_transcriber = voice_transcriber
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._stopped = asyncio.Event()
@@ -127,6 +131,7 @@ class TalonHost:
             channel: Channel that delivered the message.
             message: Inbound message to process.
         """
+        message = await transcribe_voice_message(self.voice_transcriber, message)
         if message.text.strip() == _STOP_COMMAND:
             await self._cancel_conversation(channel, message.conversation_id)
             return

@@ -81,6 +81,11 @@ class BlockingAgent:
         return AgentResult(text=f"reply:{request.text}")
 
 
+class VoiceTranscriber:
+    async def transcribe(self, _message: ChannelMessage) -> str | None:
+        return "transcribed voice"
+
+
 def _config(tmp_path: Path) -> TalonConfig:
     return TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
 
@@ -166,6 +171,31 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     assert [request.text for request in agent.requests] == ["scheduled prompt"]
     assert agent.requests[0].metadata["trigger"] == "cron"
     assert channel.sent == [("chat", "reply:scheduled prompt")]
+
+
+async def test_host_transcribes_voice_before_agent(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[channel],
+        voice_transcriber=VoiceTranscriber(),
+    )
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="",
+            metadata={"media_type": "voice", "voice_path": "voice.ogg"},
+        ),
+    )
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["transcribed voice"]
+    assert agent.requests[0].metadata["voice_transcribed"] is True
 
 
 async def _wait_for_request(agent: BlockingAgent, text: str) -> None:

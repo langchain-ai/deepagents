@@ -1686,6 +1686,42 @@ class TestModalScreenCtrlDHandling:
             assert isinstance(app.screen, DeleteCredentialConfirmScreen)
             exit_mock.assert_not_called()
 
+    async def test_shift_tab_moves_focus_back_in_auth_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shift+Tab steps focus from the base-URL field back to the key field.
+
+        The app binds Shift+Tab (priority) to auto-approve toggling, so the
+        Screen's own ``app.focus_previous`` binding never fires. The prompt has
+        two inputs now, so the toggle handler must delegate backward navigation
+        instead of swallowing the key.
+        """
+        from deepagents_code.widgets.auth import AuthPromptScreen
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-input"
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-base-url"
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-input"
+
     async def test_ctrl_d_in_auth_confirm_arms_quit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

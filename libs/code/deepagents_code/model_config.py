@@ -428,6 +428,16 @@ class ProviderConfig(TypedDict, total=False):
     base_url: str
     """Custom base URL."""
 
+    base_url_env: str
+    """Name of the environment variable that holds this provider's base URL.
+
+    Parallel to `api_key_env`: lets a provider that is not one of the built-in
+    `PROVIDER_BASE_URL_ENV` entries participate in endpoint resolution and in
+    the key/endpoint pairing applied by `apply_stored_credentials` (so a stored
+    `/auth` override clears an inherited gateway URL). The static `base_url`
+    field still wins over this when both are set.
+    """
+
     # Level 2: arbitrary BaseChatModel classes
 
     class_path: str
@@ -515,6 +525,47 @@ time.
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
+
+PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
+    # langchain_openai reads OPENAI_API_BASE, then the openai SDK reads
+    # OPENAI_BASE_URL; langchain_anthropic reads ANTHROPIC_API_URL, then
+    # ANTHROPIC_BASE_URL. The google-genai SDK reads GOOGLE_GEMINI_BASE_URL
+    # (the lone name langchain_google_genai threads through HttpOptions).
+    "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
+    "google_genai": ("GOOGLE_GEMINI_BASE_URL",),
+    "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
+}
+"""Every base-URL env var a provider's SDK may read.
+
+Element `[0]` is the *canonical* name — the one we write a stored endpoint to,
+and the one `get_base_url` reads through `resolve_env_var` so `base_url` gets the
+same `DEEPAGENTS_CODE_*` > plain-var precedence as API keys. The remaining names
+are alternates the SDK might also honor; `apply_stored_credentials` clears them
+when applying or resetting an endpoint, so a stale value (e.g. an inherited
+gateway URL) can't leak through. Clearing every name is what lets the write path
+treat the canonical as authoritative regardless of which name the SDK prefers.
+
+The key and its endpoint are a coherent pair: a gateway key only works against
+the gateway URL, a provider-native key only against the provider's own endpoint,
+so both must resolve from the same source.
+"""
+
+
+def _canonical_base_url_env(provider: str) -> str | None:
+    """Return the canonical (written) base-URL env var name for a provider.
+
+    The canonical name is element `[0]` of the provider's `PROVIDER_BASE_URL_ENV`
+    tuple. Returns `None` for providers outside the built-in set.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Canonical env var name, or `None` if the provider has no built-in entry.
+    """
+    names = PROVIDER_BASE_URL_ENV.get(provider)
+    return names[0] if names else None
+
 
 IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
 """Providers that support ambient auth outside app env-var checks.
@@ -1663,18 +1714,82 @@ def get_credential_env_var(provider: str) -> str | None:
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def get_base_url_env_var(provider: str) -> str | None:
+    """Return the canonical base-URL env var name for a provider.
+
+    Checks the config file's `base_url_env` first (user override), then falls
+    back to the canonical name in the hardcoded `PROVIDER_BASE_URL_ENV` map.
+    Parallel to `get_credential_env_var`.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Environment variable name, or None if the provider has no base-URL env
+        var (config-declared or built-in).
+    """
+    config = ModelConfig.load()
+    config_env = config.get_base_url_env(provider)
+    if config_env:
+        return config_env
+    return _canonical_base_url_env(provider)
+
+
+def get_default_base_url_env(provider: str) -> str | None:
+    """Return the env var that supplies a provider's endpoint when none is stored.
+
+    Answers "what does leaving the `/auth` base-URL field blank fall back to?"
+    A blank save clears the *plain* endpoint env vars (so an inherited gateway
+    URL can't leak through — see `apply_stored_credentials`), so the only env
+    var that still supplies a value afterward is the `DEEPAGENTS_CODE_`-prefixed
+    one. The name is returned (not its value) for display next to the field, so
+    the user sees the knob rather than a long or sensitive URL.
+
+    Returns `None` when that variable holds no value — the endpoint then comes
+    from a `config.toml` literal or the provider SDK's own default, neither of
+    which is a single env var to name here.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        The `DEEPAGENTS_CODE_`-prefixed env var name still in effect after a
+        blank save, or `None`.
+    """
+    env_var = get_base_url_env_var(provider)
+    if not env_var:
+        return None
+    prefixed = f"{_ENV_PREFIX}{env_var}"
+    return prefixed if os.environ.get(prefixed) else None
+
+
 def apply_stored_credentials(provider: str) -> bool:
-    """Export this provider's stored API key into `os.environ` for SDK use.
+    """Export this provider's stored key *and endpoint* into `os.environ`.
 
     LangChain's chat-model factories read credentials from process env vars,
     so a stored key only takes effect once it's copied onto the env var name
     registered for that provider. This is a no-op when the provider has no
     env-var mapping (custom auth) or no stored credential.
 
-    The env var is overwritten whether or not it was already set, matching
+    The key env var is overwritten whether or not it was already set, matching
     the precedence rule documented on `resolve_provider_credential`: a
     credential the user typed in `/auth` is the most recent deliberate
     action and should take effect.
+
+    Because a key and its endpoint are a coherent pair (a gateway key only
+    works against the gateway URL; a provider-native key only against the
+    provider's own endpoint), the base URL is applied atomically with the key:
+
+    - A stored `base_url` is written to the provider's canonical base-URL env
+        var, and every *other* base-URL name the SDK reads is cleared so an
+        inherited gateway URL can't leak through an alternate variable.
+    - No stored `base_url` (the user left the field blank) clears *all* of the
+        provider's base-URL env vars, so the SDK falls back to the provider
+        default rather than an inherited gateway URL. This is what prevents a
+        personal key from being shipped to the gateway.
+
+    Only the unprefixed canonical names are written, so an explicit
+    `DEEPAGENTS_CODE_{VAR}` override still wins via `resolve_env_var`.
 
     Args:
         provider: Provider name.
@@ -1687,15 +1802,43 @@ def apply_stored_credentials(provider: str) -> bool:
         return False
     try:
         stored = auth_store.get_stored_key(provider)
+        stored_base_url = auth_store.get_stored_base_url(provider)
     except RuntimeError:
         logger.warning("Could not read stored credentials for provider %s", provider)
         return False
     if not stored:
         return False
-    if os.environ.get(env_var) == stored:
-        return True
-    os.environ[env_var] = stored
+    if os.environ.get(env_var) != stored:
+        os.environ[env_var] = stored
+    _apply_stored_base_url(provider, stored_base_url)
     return True
+
+
+def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
+    """Reconcile a provider's base-URL env vars with a `/auth` credential.
+
+    Writes `base_url` to the canonical name and clears the alternates, or
+    clears every name when `base_url` is `None` (reset to the provider
+    default). See `apply_stored_credentials` for the pairing rationale.
+
+    Args:
+        provider: Provider name.
+        base_url: The stored endpoint, or `None` to reset to the default.
+    """
+    canonical = get_base_url_env_var(provider)
+    # Clear every name the SDK might read: the built-in alternates plus any
+    # config-declared `base_url_env` (which extends pairing to providers
+    # outside the hardcoded set).
+    names = set(PROVIDER_BASE_URL_ENV.get(provider, ()))
+    if canonical:
+        names.add(canonical)
+    if not names:
+        return
+    for name in names:
+        if base_url and name == canonical:
+            os.environ[name] = base_url
+        else:
+            os.environ.pop(name, None)
 
 
 @dataclass(frozen=True)
@@ -1916,7 +2059,16 @@ class ModelConfig:
         return bool(resolve_env_var(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:
-        """Get custom base URL.
+        """Get the configured base URL for a provider.
+
+        Resolution order (first match wins):
+
+        1. `base_url` in the provider's `config.toml` section.
+        2. The provider's base-URL env var via `resolve_env_var`, so
+            `DEEPAGENTS_CODE_{VAR}` beats the plain `{VAR}` — mirroring how API
+            keys resolve. This also surfaces the value `apply_stored_credentials`
+            bridged in from a `/auth` credential, and the gateway-provisioned
+            URL in the default (no-override) case.
 
         Args:
             provider_name: The provider to get base URL for.
@@ -1925,7 +2077,13 @@ class ModelConfig:
             Base URL if configured, None otherwise.
         """
         provider = self.providers.get(provider_name)
-        return provider.get("base_url") if provider else None
+        config_url = provider.get("base_url") if provider else None
+        if config_url:
+            return config_url
+        env_var = (provider.get("base_url_env") if provider else None) or (
+            _canonical_base_url_env(provider_name)
+        )
+        return resolve_env_var(env_var) if env_var else None
 
     def get_api_key_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's API key.
@@ -1938,6 +2096,18 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         return provider.get("api_key_env") if provider else None
+
+    def get_base_url_env(self, provider_name: str) -> str | None:
+        """Get the environment variable name for a provider's base URL.
+
+        Args:
+            provider_name: The provider to get the base-URL env var for.
+
+        Returns:
+            Environment variable name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        return provider.get("base_url_env") if provider else None
 
     def get_class_path(self, provider_name: str) -> str | None:
         """Get the custom class path for a provider.

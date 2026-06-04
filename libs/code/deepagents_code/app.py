@@ -7629,7 +7629,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_code.widgets.agent_selector import AgentSelectorScreen
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_code.widgets.notification_center import (
             NotificationCenterScreen,
@@ -7651,7 +7651,10 @@ class DeepAgentsApp(App):
         ):
             self.screen.action_cursor_up()
             return
-        if isinstance(self.screen, NotificationSettingsScreen):
+        if isinstance(self.screen, (AuthPromptScreen, NotificationSettingsScreen)):
+            # These modals hold multiple focusable inputs; reuse shift+tab to
+            # step focus backward (the Screen's own app.focus_previous binding
+            # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
             return
         if isinstance(

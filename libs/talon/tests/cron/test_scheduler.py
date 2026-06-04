@@ -25,7 +25,9 @@ async def test_scheduler_runs_due_job_and_delivers_result(tmp_path) -> None:
 
     async def run_job(claimed: CronJob) -> str:
         assert claimed.id == job.id
-        assert store.get_job(job.id).next_run_at is None
+        claimed_job = store.get_job(job.id)
+        assert claimed_job is not None
+        assert claimed_job.next_run_at is None
         return "done"
 
     async def deliver_result(claimed: CronJob, text: str) -> None:
@@ -61,7 +63,7 @@ async def test_scheduler_logs_structured_lifecycle_events(tmp_path, caplog) -> N
     scheduler = PersistentCronScheduler(
         store=store,
         run_job=lambda _: _return("done"),
-        deliver_result=lambda _, text: _return(text),
+        deliver_result=_deliver_returned_text,
         now=lambda: now + timedelta(minutes=1),
     )
 
@@ -113,7 +115,7 @@ async def test_scheduler_records_error_after_claiming_job(tmp_path) -> None:
     scheduler = PersistentCronScheduler(
         store=store,
         run_job=run_job,
-        deliver_result=lambda _, text: _return(text),
+        deliver_result=_deliver_returned_text,
         now=lambda: now + timedelta(minutes=5),
     )
 
@@ -157,6 +159,10 @@ async def test_scheduler_records_delivery_error(tmp_path) -> None:
 
 async def _return(value: str) -> str:
     return value
+
+
+async def _deliver_returned_text(_: CronJob, text: str) -> None:
+    await _return(text)
 
 
 async def _append(values: list[str], value: str) -> None:

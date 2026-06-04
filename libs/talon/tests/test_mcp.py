@@ -24,7 +24,7 @@ class DummyTool:
 
 
 class DummyMCPClient:
-    connections: ClassVar[list[dict[str, object]]] = []
+    connections: ClassVar[list[dict[str, dict[str, object]]]] = []
 
     def __init__(self, *, connections: dict[str, dict[str, object]]) -> None:
         self.connections.append(connections)

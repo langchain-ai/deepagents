@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "deepagents",
+    "deepagents-code",
     "langchain-mcp-adapters>=0.2.2,<1.0.0",
 ]
 
@@ -60,10 +61,11 @@ artifacts = [
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+deepagents-code = { path = "../code", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../deepagents"]
+extra-paths = ["../deepagents", "../code"]
 
 [tool.ty.rules]
 division-by-zero = "error"
@@ -91,7 +93,7 @@ ban-relative-imports = "all"
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_talon"]
+known-first-party = ["deepagents_code", "deepagents_talon"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

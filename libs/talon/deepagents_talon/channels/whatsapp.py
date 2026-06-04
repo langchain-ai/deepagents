@@ -51,20 +51,26 @@ class WhatsAppChannelConfig:
 
     Args:
         session_dir: Directory for bridge authentication and Chromium profile state.
+        inbound_media_dir: Directory where the bridge stores downloaded inbound media.
         host: Loopback host where the bridge listens.
         port: Loopback port where the bridge listens.
         exposure: Inbound trigger policy.
         bridge_command: Optional command used to start the Node bridge subprocess.
+        chrome_path: Optional Chrome or Chromium executable path for Puppeteer.
+        web_version_cache_url: Optional pinned WhatsApp Web HTML cache URL.
         poll_interval_seconds: Interval for draining inbound bridge messages.
         health_interval_seconds: Interval for bridge health checks.
         request_timeout_seconds: Per-request timeout for loopback bridge calls.
     """
 
     session_dir: Path
+    inbound_media_dir: Path | None = None
     host: str = DEFAULT_BRIDGE_HOST
     port: int = DEFAULT_BRIDGE_PORT
     exposure: ChannelExposure = field(default_factory=ChannelExposure)
     bridge_command: tuple[str, ...] | None = None
+    chrome_path: str | None = None
+    web_version_cache_url: str | None = None
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -88,13 +94,22 @@ class WhatsAppChannelConfig:
         session = Path(
             env.get("DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR", str(config.channel_dir / "whatsapp")),
         )
+        inbound_media_dir = Path(
+            env.get(
+                "DEEPAGENTS_TALON_WHATSAPP_MEDIA_DIR",
+                str(config.inbound_media_dir / "whatsapp"),
+            ),
+        )
         command = _bridge_command(env)
         return cls(
             session_dir=session,
+            inbound_media_dir=inbound_media_dir,
             host=host,
             port=port,
             exposure=_exposure_from_env(env),
             bridge_command=command,
+            chrome_path=env.get("DEEPAGENTS_TALON_WHATSAPP_CHROME_PATH"),
+            web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
             poll_interval_seconds=_parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
@@ -210,6 +225,9 @@ class WhatsAppChannel:
         """Start the bridge subprocess and background polling tasks."""
         self.config.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config.session_dir.chmod(0o700)
+        if self.config.inbound_media_dir is not None:
+            self.config.inbound_media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.config.inbound_media_dir.chmod(0o700)
         self._stopped.clear()
         await self._start_bridge()
         self._poll = asyncio.create_task(self._poll_messages(), name="talon:whatsapp:poll")
@@ -248,25 +266,41 @@ class WhatsAppChannel:
         checked = validate_media(media)
         payload: dict[str, object] = {
             "chat_id": conversation_id,
+            "chatId": conversation_id,
             "path": str(checked.path),
+            "filePath": str(checked.path),
             "mediaType": checked.media_type,
         }
         if checked.caption is not None:
             payload["caption"] = checked.caption
         await self._post_result("/send-media", payload)
 
+    async def send_typing(self, conversation_id: str) -> None:
+        """Send a WhatsApp typing indicator when the bridge supports it.
+
+        Args:
+            conversation_id: WhatsApp chat id.
+        """
+        await self._post_result("/typing", {"chat_id": conversation_id, "chatId": conversation_id})
+
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
         """Edit a previously sent WhatsApp message.
 
         Args:
-            conversation_id: Ignored because the bridge edits by message id.
+            conversation_id: WhatsApp chat id.
             message_id: Bridge message id.
             text: Replacement content.
         """
-        del conversation_id
         await self._post_result(
             "/edit",
-            {"message_id": message_id, "content": format_markdown_for_channel(text)},
+            {
+                "chat_id": conversation_id,
+                "chatId": conversation_id,
+                "message_id": message_id,
+                "messageId": message_id,
+                "content": format_markdown_for_channel(text),
+                "message": format_markdown_for_channel(text),
+            },
         )
 
     async def status(self) -> ChannelStatus:
@@ -282,6 +316,12 @@ class WhatsAppChannel:
             "WHATSAPP_BRIDGE_PORT": str(self.config.port),
             "WHATSAPP_SESSION_DIR": str(self.config.session_dir),
         }
+        if self.config.inbound_media_dir is not None:
+            env["WHATSAPP_MEDIA_DIR"] = str(self.config.inbound_media_dir)
+        if self.config.chrome_path:
+            env["WHATSAPP_CHROME_PATH"] = self.config.chrome_path
+        if self.config.web_version_cache_url:
+            env["WHATSAPP_WEB_VERSION_CACHE_URL"] = self.config.web_version_cache_url
         self._process = await asyncio.create_subprocess_exec(
             *self.config.bridge_command,
             env=env,
@@ -376,21 +416,46 @@ def _parse_message(payload: object) -> ChannelMessage:
         msg = "WhatsApp bridge message must be an object"
         raise WhatsAppBridgeError(msg)
     values = cast("Mapping[str, object]", payload)
+    media_paths = _str_list(
+        values.get("media_paths")
+        or values.get("mediaPaths")
+        or values.get("mediaUrls")
+        or values.get("media_urls"),
+    )
+    media_mime_types = _str_list(
+        values.get("media_mime_types")
+        or values.get("mediaMimeTypes")
+        or values.get("mimeTypes")
+        or values.get("media_types"),
+    )
+    message_type = _optional_str(
+        values.get("message_type") or values.get("messageType") or values.get("mediaType"),
+    )
+    media_type = _optional_str(values.get("media_type") or values.get("mediaType")) or message_type
+    text = values.get("text")
+    if not isinstance(text, str):
+        text = values.get("body")
     return ChannelMessage(
-        conversation_id=_required_str(values, "chat_id"),
-        text=str(values.get("text") or ""),
-        sender_id=_optional_str(values.get("user_id")),
-        message_id=_optional_str(values.get("message_id")),
+        conversation_id=_required_str_any(values, ("chat_id", "chatId")),
+        text=text if isinstance(text, str) else "",
+        sender_id=_optional_str(values.get("user_id") or values.get("senderId")),
+        message_id=_optional_str(values.get("message_id") or values.get("messageId")),
         metadata={
             "provider": "whatsapp",
-            "message_type": values.get("message_type"),
-            "chat_name": values.get("chat_name"),
-            "chat_type": values.get("chat_type"),
-            "user_name": values.get("user_name"),
-            "media_urls": values.get("media_urls") or [],
-            "media_types": values.get("media_types") or [],
+            "message_type": message_type,
+            "media_type": media_type,
+            "chat_name": values.get("chat_name") or values.get("chatName"),
+            "chat_type": values.get("chat_type") or values.get("chatType"),
+            "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
+            "user_name": values.get("user_name") or values.get("senderName"),
+            "media_paths": media_paths,
+            "media_path": media_paths[0] if media_paths else None,
+            "media_mime_types": media_mime_types,
+            "media_types": media_mime_types,
+            "voice_path": media_paths[0] if media_paths and media_type == "voice" else None,
+            "has_media": bool(values.get("has_media") or values.get("hasMedia") or media_paths),
             "raw_message": values.get("raw_message") or {},
-            "from_self": bool(values.get("from_self")),
+            "from_self": bool(values.get("from_self") or values.get("fromSelf")),
         },
     )
 
@@ -416,8 +481,24 @@ def _required_str(payload: Mapping[str, object], key: str) -> str:
     return value
 
 
+def _required_str_any(payload: Mapping[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    names = ", ".join(keys)
+    msg = f"WhatsApp bridge payload missing string field: {names}"
+    raise WhatsAppBridgeError(msg)
+
+
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _str_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:

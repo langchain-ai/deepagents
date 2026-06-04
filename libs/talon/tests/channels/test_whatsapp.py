@@ -54,6 +54,7 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
     whatsapp = WhatsAppChannelConfig.from_talon_config(config)
 
     assert whatsapp.session_dir == tmp_path / "assistant" / "channels" / "whatsapp"
+    assert whatsapp.inbound_media_dir == tmp_path / "assistant" / "media" / "inbound" / "whatsapp"
     assert whatsapp.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,
         operator_id="operator",
@@ -119,7 +120,11 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
         transport=cast("BridgeTransport", transport),
     )
     received: list[ChannelMessage] = []
-    channel.set_message_handler(received.append)
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
 
     await channel.start()
     await asyncio.sleep(0)
@@ -127,6 +132,94 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
 
     assert [message.text for message in received] == ["allowed"]
     assert received[0].metadata["provider"] == "whatsapp"
+
+
+async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "self chat",
+                "chatId": "chat",
+                "senderId": "operator",
+                "messageId": "message-1",
+                "messageType": "chat",
+                "fromSelf": True,
+            },
+            {
+                "body": "other",
+                "chatId": "chat",
+                "senderId": "other",
+                "messageId": "message-2",
+                "messageType": "chat",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [message.text for message in received] == ["self chat"]
+    assert received[0].metadata["from_self"] is True
+
+
+async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
+    media = tmp_path / "voice.ogg"
+    media.write_bytes(b"voice")
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "",
+                "chatId": "chat@lid",
+                "chatIdFrom": "123@s.whatsapp.net",
+                "senderId": "operator",
+                "messageId": "message-1",
+                "messageType": "ptt",
+                "mediaType": "voice",
+                "mediaPaths": [str(media)],
+                "mediaMimeTypes": ["audio/ogg"],
+                "fromSelf": True,
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert received[0].conversation_id == "chat@lid"
+    assert received[0].metadata["chat_id_from"] == "123@s.whatsapp.net"
+    assert received[0].metadata["media_paths"] == [str(media)]
+    assert received[0].metadata["media_mime_types"] == ["audio/ogg"]
+    assert received[0].metadata["voice_path"] == str(media)
 
 
 async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
@@ -162,12 +255,24 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
             "/send-media",
             {
                 "chat_id": "chat",
+                "chatId": "chat",
                 "path": str(image),
+                "filePath": str(image),
                 "mediaType": "image",
                 "caption": "caption",
             },
         ),
-        ("/edit", {"message_id": "message", "content": "Updated"}),
+        (
+            "/edit",
+            {
+                "chat_id": "chat",
+                "chatId": "chat",
+                "message_id": "message",
+                "messageId": "message",
+                "content": "Updated",
+                "message": "Updated",
+            },
+        ),
     ]
 
 

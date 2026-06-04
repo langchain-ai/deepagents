@@ -59,7 +59,7 @@ def main() -> None:
     channels = _channels(config, enabled=args.whatsapp)
     host = TalonHost(
         config=config,
-        agent=asyncio.run(_agent_runtime(config)),
+        agent=asyncio.run(_agent_runtime(config, cron_store)),
         channels=channels,
         voice_transcriber=build_voice_transcriber(config),
     )
@@ -102,7 +102,10 @@ def _add_mcp_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     add.add_argument("--overwrite", action="store_true", help="Replace an existing server entry")
 
 
-async def _agent_runtime(config: TalonConfig) -> EchoAgentRuntime | DeepAgentRuntime:
+async def _agent_runtime(
+    config: TalonConfig,
+    cron_store: CronJobStore,
+) -> EchoAgentRuntime | DeepAgentRuntime:
     if config.model is None:
         return EchoAgentRuntime()
 
@@ -115,7 +118,8 @@ async def _agent_runtime(config: TalonConfig) -> EchoAgentRuntime | DeepAgentRun
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,
-        system_prompt=_system_prompt(config),
+        assistant_dir=config.manifest_dir,
+        cron_store=cron_store,
     )
 
 
@@ -215,16 +219,6 @@ def _mcp_config_write_path(config_path: str | None, config: TalonConfig) -> Path
     if config_path is not None:
         return Path(config_path).expanduser()
     return config.manifest_dir / "tools.json"
-
-
-def _system_prompt(config: TalonConfig) -> str | None:
-    path = config.manifest_dir / "AGENTS.md"
-    try:
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-    except OSError:
-        logger.warning("Could not read Talon system prompt from %s", path, exc_info=True)
-    return None
 
 
 async def _run_once(host: TalonHost) -> None:

@@ -127,8 +127,9 @@ with `0700` directories and `0600` cron files:
   directory, because automatic deletion would silently unpair the channel.
 - `media/inbound/` is reserved for downloaded inbound media. Files older than
   `DEEPAGENTS_TALON_INBOUND_MEDIA_RETENTION_HOURS`, default `24`, are deleted on
-  startup. The current WhatsApp bridge does not download inbound media; it only
-  queues message text and metadata.
+  startup. The WhatsApp bridge stores downloaded inbound media under the
+  assistant's inbound media directory and passes local paths plus MIME metadata
+  to the host.
 
 Conversation persistence is intentionally not durable yet. Runtime conversation
 state is in-memory unless a future backend explicitly adds thread persistence.

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -159,6 +160,7 @@ async def load_mcp_tools_from_config(data: JsonObject) -> MCPTools:
             infos.append(MCPServerInfo(name=name, transport=transport, error=str(exc)))
             continue
 
+        _enable_tool_error_outputs(server_tools)
         filtered = _apply_tool_filter(server_tools, name, server)
         tools.extend(filtered)
         infos.append(MCPServerInfo(name=name, transport=transport, tool_count=len(filtered)))
@@ -325,6 +327,12 @@ def _apply_tool_filter(
     if allowed is not None:
         return [tool for tool in tools if matches(tool)]
     return [tool for tool in tools if not matches(tool)]
+
+
+def _enable_tool_error_outputs(tools: Sequence[BaseTool]) -> None:
+    for item in tools:
+        with suppress(Exception):
+            item.handle_tool_error = True
 
 
 def _entry_matches_tool(entry: str, tool: str, prefix: str) -> bool:

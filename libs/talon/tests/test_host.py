@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
@@ -26,6 +25,7 @@ class RecordingChannel:
         self.started = False
         self.stopped = False
         self.sent: list[tuple[str, str]] = []
+        self.media: list[tuple[str, ChannelMedia]] = []
 
     async def start(self) -> None:
         self.started = True
@@ -40,6 +40,7 @@ class RecordingChannel:
         self.sent.append((conversation_id, text))
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+        self.media.append((conversation_id, media))
         self.sent.append((conversation_id, f"{media.media_type}:{media.path}"))
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
@@ -82,8 +83,19 @@ class BlockingAgent:
 
 
 class VoiceTranscriber:
-    async def transcribe(self, _message: ChannelMessage) -> str | None:
+    async def transcribe(self, message: ChannelMessage) -> str | None:
+        del message
         return "transcribed voice"
+
+
+class MediaAgent(BlockingAgent):
+    def __init__(self, image: Path) -> None:
+        super().__init__()
+        self.image = image
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        del request
+        return AgentResult(text=f"Here is the image.\n\n![chart]({self.image})")
 
 
 def _config(tmp_path: Path) -> TalonConfig:
@@ -114,19 +126,16 @@ async def test_host_serializes_messages_per_conversation(tmp_path: Path) -> None
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     await host.start()
 
-    first = asyncio.create_task(
-        host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block")),
-    )
-    await asyncio.sleep(0)
-    second = asyncio.create_task(
-        host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second")),
-    )
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
     await asyncio.sleep(0)
 
     assert [request.text for request in agent.requests] == ["block"]
 
     agent.released.set()
-    await asyncio.gather(first, second)
+    await _wait_for_request(agent, "second")
+    await _wait_for_sent_count(channel, 2)
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["block", "second"]
@@ -139,17 +148,62 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     await host.start()
 
-    running = asyncio.create_task(
-        host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block")),
-    )
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/stop"))
-    with contextlib.suppress(asyncio.CancelledError):
-        await running
     await host.stop()
 
     assert channel.sent == [("chat", "Stopped current run.")]
+
+
+async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    image = tmp_path / "result.png"
+    image.write_bytes(b"image")
+    agent = MediaAgent(image)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert channel.media == [
+        (
+            "chat",
+            ChannelMedia(path=image, media_type="image", caption="Here is the image."),
+        ),
+    ]
+
+
+async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    image = tmp_path / "inbound.png"
+    image.write_bytes(b"image-bytes")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="look",
+            metadata={
+                "media_type": "image",
+                "media_paths": [str(image)],
+                "media_mime_types": ["image/png"],
+            },
+        ),
+    )
+    await _wait_for_request(agent, "look")
+    await host.stop()
+
+    content = cast("list[dict[str, object]]", agent.requests[0].metadata["model_content"])
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "look"}
+    assert content[1]["type"] == "image_url"
 
 
 async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> None:
@@ -192,6 +246,7 @@ async def test_host_transcribes_voice_before_agent(tmp_path: Path) -> None:
             metadata={"media_type": "voice", "voice_path": "voice.ogg"},
         ),
     )
+    await _wait_for_request(agent, "transcribed voice")
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["transcribed voice"]
@@ -204,4 +259,13 @@ async def _wait_for_request(agent: BlockingAgent, text: str) -> None:
             return
         await asyncio.sleep(0)
     msg = f"agent did not receive request: {text}"
+    raise AssertionError(msg)
+
+
+async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
+    for _ in range(100):
+        if len(channel.sent) >= count:
+            return
+        await asyncio.sleep(0)
+    msg = f"channel sent {len(channel.sent)} message(s), expected {count}"
     raise AssertionError(msg)

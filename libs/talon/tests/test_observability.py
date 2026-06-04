@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import contextmanager
@@ -86,6 +87,7 @@ async def test_host_wraps_agent_run_in_langsmith_context(tmp_path, monkeypatch) 
         channel,
         ChannelMessage(conversation_id="chat", text="hello", sender_id="sender"),
     )
+    await _wait_for_sent_count(channel, 1)
     await host.stop()
 
     assert channel.sent == [("chat", "reply:hello")]
@@ -95,6 +97,7 @@ async def test_host_wraps_agent_run_in_langsmith_context(tmp_path, monkeypatch) 
             "tags": ["deepagents-talon", "assistant:assistant"],
             "metadata": {
                 "assistant_id": "assistant",
+                "channel": "test",
                 "conversation_id": "chat",
                 "sender_id": "sender",
                 "message_id": None,
@@ -112,3 +115,12 @@ def test_log_event_emits_json_payload(caplog) -> None:
 
     payload = caplog.messages[0].removeprefix("talon_event ")
     assert json.loads(payload) == {"event": "cron.tick", "due_count": 2}
+
+
+async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
+    for _ in range(100):
+        if len(channel.sent) >= count:
+            return
+        await asyncio.sleep(0)
+    msg = f"channel sent {len(channel.sent)} message(s), expected {count}"
+    raise AssertionError(msg)

@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
@@ -7,62 +8,360 @@ const qrcode = require("qrcode-terminal");
 
 const host = process.env.WHATSAPP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.WHATSAPP_BRIDGE_PORT || "3000");
-const sessionDir = process.env.WHATSAPP_SESSION_DIR || path.join(process.cwd(), ".whatsapp");
+const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(process.cwd(), ".whatsapp"));
+const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
+const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
+const webVersionCacheUrl =
+  process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
+  "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
+
+const MAX_CACHED_SENT_MESSAGES = 200;
+const SENT_BODY_TTL_MS = 5 * 60 * 1000;
 
 let status = "disconnected";
 let botId = null;
 const queue = [];
+const sentMessageIds = new Set();
+const sentMessages = new Map();
+const recentSentBodies = new Map();
+
+process.on("unhandledRejection", (reason) => {
+  const message = reason && reason.message ? reason.message : reason;
+  console.error("Unhandled rejection:", message);
+});
+
+fs.mkdirSync(sessionDir, { recursive: true });
+fs.mkdirSync(mediaDir, { recursive: true });
+cleanStaleLocks(sessionDir);
+
+const chromePath = process.env.CHROME_PATH || process.env.WHATSAPP_CHROME_PATH || findChrome();
+if (chromePath) {
+  console.log(`Using Chrome at: ${chromePath}`);
+} else {
+  console.log("No system Chrome found; using Puppeteer's bundled browser if available");
+}
+
+const puppeteer = {
+  headless: true,
+  args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+};
+if (chromePath) {
+  puppeteer.executablePath = chromePath;
+}
 
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: sessionDir,
   }),
-  puppeteer: {
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  puppeteer,
+  webVersionCache: {
+    type: "remote",
+    remotePath: webVersionCacheUrl,
   },
 });
 
 client.on("qr", (qr) => {
   status = "qr_pending";
+  console.log("Scan this QR code to pair WhatsApp:");
   qrcode.generate(qr, { small: true });
 });
 
 client.on("ready", () => {
   status = "connected";
   botId = client.info && client.info.wid ? client.info.wid._serialized : null;
+  console.log(`WhatsApp connected as ${botId || "unknown"}`);
 });
 
-client.on("disconnected", () => {
+client.on("disconnected", (reason) => {
   status = "disconnected";
+  console.log(`WhatsApp disconnected: ${reason || "unknown reason"}`);
 });
 
-client.on("auth_failure", () => {
+client.on("auth_failure", (message) => {
   status = "disconnected";
+  console.error(`WhatsApp auth failure: ${message || "unknown error"}`);
 });
 
-client.on("message", async (message) => {
-  const chat = await message.getChat();
-  const contact = await message.getContact();
-  queue.push({
+client.on("message_create", (message) => {
+  void enqueueMessage(message);
+});
+
+async function enqueueMessage(message) {
+  if (message.from === "status@broadcast") {
+    return;
+  }
+  if (message.fromMe && isBridgeSentMessage(message)) {
+    return;
+  }
+
+  const chat = await safeGetChat(message);
+  const contact = await safeGetContact(message);
+  const messageId = serializedId(message.id);
+  const chatId = serializedId(chat && chat.id) || (message.fromMe ? message.to : message.from);
+  if (!messageId || !chatId) {
+    console.error("Skipping WhatsApp message without a message id or chat id");
+    return;
+  }
+
+  const media = await downloadMessageMedia(message);
+  const mediaType = classifyMedia(message, media);
+  const senderId = message.author || (message.fromMe && botId ? botId : message.from);
+  const isGroup =
+    chat && typeof chat.isGroup === "boolean"
+      ? chat.isGroup
+      : typeof chatId === "string" && chatId.endsWith("@g.us");
+
+  const entry = {
     text: message.body || "",
-    message_type: message.type || "text",
-    chat_id: chat.id && chat.id._serialized ? chat.id._serialized : message.from,
-    chat_name: chat.name || null,
-    chat_type: chat.isGroup ? "group" : "direct",
-    user_id: contact.id && contact.id._serialized ? contact.id._serialized : null,
-    user_name: contact.pushname || contact.name || null,
-    message_id: message.id && message.id._serialized ? message.id._serialized : null,
-    media_urls: [],
-    media_types: message.hasMedia ? [message.type] : [],
+    body: message.body || "",
+    message_type: message.type || "chat",
+    messageType: message.type || "chat",
+    media_type: mediaType,
+    mediaType,
+    chat_id: chatId,
+    chatId,
+    chat_id_from: message.from,
+    chatIdFrom: message.from,
+    chat_name: (chat && chat.name) || chatId,
+    chatName: (chat && chat.name) || chatId,
+    chat_type: isGroup ? "group" : "direct",
+    chatType: isGroup ? "group" : "direct",
+    isGroup,
+    user_id: senderId || null,
+    senderId: senderId || null,
+    user_name:
+      (contact && (contact.pushname || contact.name || contact.shortName)) || senderId || null,
+    senderName:
+      (contact && (contact.pushname || contact.name || contact.shortName)) || senderId || null,
+    message_id: messageId,
+    messageId,
+    has_media: media.length > 0,
+    hasMedia: media.length > 0,
+    media_paths: media.map((item) => item.path),
+    mediaPaths: media.map((item) => item.path),
+    media_urls: media.map((item) => item.path),
+    mediaUrls: media.map((item) => item.path),
+    media_mime_types: media.map((item) => item.mimeType),
+    mediaMimeTypes: media.map((item) => item.mimeType),
+    media_types: media.map((item) => item.mimeType),
+    mediaTypes: media.map((item) => item.mimeType),
+    media_file_names: media.map((item) => item.fileName),
     from_self: Boolean(message.fromMe),
+    fromSelf: Boolean(message.fromMe),
+    mentionedIds: normalizeIds(message.mentionedIds || []),
+    botIds: botId ? [botId] : [],
+    quotedParticipant: await quotedParticipant(message),
     raw_message: {
       from: message.from,
       to: message.to,
       author: message.author || null,
       timestamp: message.timestamp || null,
     },
-  });
-});
+  };
+
+  console.log(`[bridge] Queued message ${messageId} for ${chatId}`);
+  queue.push(entry);
+}
+
+function cleanStaleLocks(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (_error) {
+    return;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      cleanStaleLocks(full);
+      continue;
+    }
+    if (/^Singleton(Lock|Socket|Cookie)$/.test(entry.name)) {
+      try {
+        fs.unlinkSync(full);
+      } catch (_error) {
+        // Best effort cleanup only.
+      }
+    }
+  }
+}
+
+function findChrome() {
+  const candidates =
+    process.platform === "darwin"
+      ? [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        ]
+      : process.platform === "win32"
+        ? [
+            process.env.PROGRAMFILES
+              ? path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe")
+              : null,
+            process.env["PROGRAMFILES(X86)"]
+              ? path.join(
+                  process.env["PROGRAMFILES(X86)"],
+                  "Google",
+                  "Chrome",
+                  "Application",
+                  "chrome.exe",
+                )
+              : null,
+          ]
+        : [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+          ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+async function safeGetChat(message) {
+  try {
+    return await message.getChat();
+  } catch (error) {
+    console.log(`[bridge] getChat failed (non-fatal): ${error.message || error}`);
+    return null;
+  }
+}
+
+async function safeGetContact(message) {
+  try {
+    return await message.getContact();
+  } catch (error) {
+    console.log(`[bridge] getContact failed (non-fatal): ${error.message || error}`);
+    return null;
+  }
+}
+
+async function quotedParticipant(message) {
+  if (!message.hasQuotedMsg) {
+    return null;
+  }
+  try {
+    const quoted = await message.getQuotedMessage();
+    return quoted.author || quoted.from || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function downloadMessageMedia(message) {
+  if (!message.hasMedia) {
+    return [];
+  }
+  try {
+    const media = await message.downloadMedia();
+    if (!media || !media.data) {
+      return [];
+    }
+    const messageId = serializedId(message.id) || String(Date.now());
+    const extension = mediaExtension(media.mimetype, message.type);
+    const fileName = `${Date.now()}_${messageId.replace(/[^A-Za-z0-9]/g, "_")}.${extension}`;
+    const filePath = path.join(mediaDir, fileName);
+    fs.writeFileSync(filePath, Buffer.from(media.data, "base64"), { mode: 0o600 });
+    return [
+      {
+        path: filePath,
+        mimeType: media.mimetype || "application/octet-stream",
+        fileName: media.filename || fileName,
+      },
+    ];
+  } catch (error) {
+    console.error("Media download failed:", error.message || error);
+    return [];
+  }
+}
+
+function classifyMedia(message, media) {
+  const rawType = String(message.type || "").toLowerCase();
+  const mimeType = media.length > 0 ? String(media[0].mimeType || "").toLowerCase() : "";
+  if (rawType === "ptt" || rawType === "audio" || mimeType.startsWith("audio/")) {
+    return "voice";
+  }
+  if (rawType === "image" || rawType === "sticker" || mimeType.startsWith("image/")) {
+    return "image";
+  }
+  if (rawType === "video" || mimeType.startsWith("video/")) {
+    return "video";
+  }
+  if (message.hasMedia) {
+    return "document";
+  }
+  return "text";
+}
+
+function mediaExtension(mimeType, messageType) {
+  const raw = String(mimeType || "").split(";", 1)[0];
+  const subtype = raw.includes("/") ? raw.split("/")[1] : "";
+  const cleaned = subtype.replace(/[^A-Za-z0-9]/g, "");
+  if (cleaned) {
+    return cleaned === "plain" ? "txt" : cleaned;
+  }
+  if (messageType === "ptt" || messageType === "audio") {
+    return "ogg";
+  }
+  return "bin";
+}
+
+function serializedId(value) {
+  return value && value._serialized ? value._serialized : null;
+}
+
+function normalizeIds(values) {
+  return values.map((value) => (typeof value === "object" ? value._serialized : value)).filter(Boolean);
+}
+
+function rememberSentMessage(message, body) {
+  const id = serializedId(message && message.id);
+  if (!id) {
+    return;
+  }
+  sentMessageIds.add(id);
+  sentMessages.set(id, message);
+  rememberSentBody(body);
+  if (sentMessages.size > MAX_CACHED_SENT_MESSAGES) {
+    const oldest = sentMessages.keys().next().value;
+    sentMessages.delete(oldest);
+  }
+}
+
+function rememberSentBody(body) {
+  if (!body) {
+    return;
+  }
+  const key = String(body);
+  recentSentBodies.set(key, (recentSentBodies.get(key) || 0) + 1);
+  setTimeout(() => {
+    const count = recentSentBodies.get(key) || 0;
+    if (count <= 1) {
+      recentSentBodies.delete(key);
+    } else {
+      recentSentBodies.set(key, count - 1);
+    }
+  }, SENT_BODY_TTL_MS).unref();
+}
+
+function isBridgeSentMessage(message) {
+  const id = serializedId(message.id);
+  if (id && sentMessageIds.has(id)) {
+    return true;
+  }
+  const body = message.body || "";
+  if (body && recentSentBodies.has(body)) {
+    return true;
+  }
+  return Boolean(body && body.startsWith(`*${botHeader}*`));
+}
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -106,40 +405,90 @@ async function handle(req, res) {
 
     if (req.method === "POST" && req.url === "/send") {
       const body = await readJson(req);
-      const sent = await client.sendMessage(body.chat_id, body.text || "", {
-        quotedMessageId: body.replyTo || undefined,
+      const chatId = body.chat_id || body.chatId;
+      const text = body.text || body.message || "";
+      if (!chatId || !text) {
+        sendJson(res, 400, { success: false, error: "chat_id and text required" });
+        return;
+      }
+      rememberSentBody(text);
+      const sent = await client.sendMessage(chatId, text, {
+        quotedMessageId: body.replyTo || body.reply_to || undefined,
       });
+      rememberSentMessage(sent, text);
+      const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
-        message_id: sent.id && sent.id._serialized ? sent.id._serialized : undefined,
+        message_id: messageId,
+        messageId,
       });
       return;
     }
 
     if (req.method === "POST" && req.url === "/send-media") {
       const body = await readJson(req);
-      const media = MessageMedia.fromFilePath(body.path);
-      const sent = await client.sendMessage(body.chat_id, media, {
-        caption: body.caption || undefined,
+      const chatId = body.chat_id || body.chatId;
+      const filePath = body.path || body.filePath;
+      if (!chatId || !filePath) {
+        sendJson(res, 400, { success: false, error: "chat_id and path required" });
+        return;
+      }
+      const media = MessageMedia.fromFilePath(filePath);
+      if (body.fileName || body.file_name) {
+        media.filename = body.fileName || body.file_name;
+      }
+      const caption = body.caption || undefined;
+      if (caption) {
+        rememberSentBody(caption);
+      }
+      const sent = await client.sendMessage(chatId, media, {
+        caption,
+        sendMediaAsDocument: body.mediaType === "document",
       });
+      rememberSentMessage(sent, caption || "");
+      const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
-        message_id: sent.id && sent.id._serialized ? sent.id._serialized : undefined,
+        message_id: messageId,
+        messageId,
       });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/typing") {
+      const body = await readJson(req);
+      const chatId = body.chat_id || body.chatId;
+      if (!chatId) {
+        sendJson(res, 400, { success: false, error: "chat_id required" });
+        return;
+      }
+      const chat = await client.getChatById(chatId);
+      await chat.sendStateTyping();
+      sendJson(res, 200, { success: true, ok: true });
       return;
     }
 
     if (req.method === "POST" && req.url === "/edit") {
       const body = await readJson(req);
-      const message = await client.getMessageById(body.message_id);
+      const messageId = body.message_id || body.messageId;
+      const content = body.content || body.message || "";
+      if (!messageId || !content) {
+        sendJson(res, 400, { success: false, error: "message_id and content required" });
+        return;
+      }
+      const message = sentMessages.get(messageId) || (await client.getMessageById(messageId));
       if (!message) {
         sendJson(res, 200, { success: false, error: "message not found" });
         return;
       }
-      const edited = await message.edit(body.content || "");
+      rememberSentBody(content);
+      const edited = await message.edit(content);
+      rememberSentMessage(edited, content);
+      const editedId = serializedId(edited.id) || messageId;
       sendJson(res, 200, {
         success: true,
-        message_id: edited.id && edited.id._serialized ? edited.id._serialized : undefined,
+        message_id: editedId,
+        messageId: editedId,
       });
       return;
     }
@@ -151,7 +500,7 @@ async function handle(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  handle(req, res);
+  void handle(req, res);
 });
 
 server.listen(port, host, () => {
@@ -162,6 +511,10 @@ client.initialize();
 
 process.on("SIGTERM", async () => {
   server.close();
-  await client.destroy();
+  try {
+    await client.destroy();
+  } catch (_error) {
+    // The process is already exiting.
+  }
   process.exit(0);
 });

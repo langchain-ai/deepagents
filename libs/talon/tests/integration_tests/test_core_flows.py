@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -92,6 +93,7 @@ async def test_inbound_channel_message_produces_reply(tmp_path) -> None:
 
     await host.start()
     await channel.receive("hello")
+    await _wait_for_sent_count(channel, 1)
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["hello"]
@@ -141,9 +143,19 @@ async def test_agent_can_create_job_that_later_runs(tmp_path) -> None:
 
     await host.start()
     await channel.receive("schedule it")
+    await _wait_for_sent_count(channel, 1)
     await scheduler.tick_once()
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["scheduled prompt"]
     assert channel.sent[0][1].startswith("scheduled:")
     assert channel.sent[1] == ("chat", "cron result")
+
+
+async def _wait_for_sent_count(channel: InMemoryChannel, count: int) -> None:
+    for _ in range(100):
+        if len(channel.sent) >= count:
+            return
+        await asyncio.sleep(0)
+    msg = f"channel sent {len(channel.sent)} message(s), expected {count}"
+    raise AssertionError(msg)

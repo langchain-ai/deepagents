@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.channels.base import (
+    MAX_TEXT_CHARS,
     ChannelExposure,
     ExposureMode,
     chunk_text,
@@ -37,6 +38,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_BRIDGE_START_TIMEOUT_SECONDS = 10.0
+DEFAULT_BOT_HEADER = "deepagents bot"
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
@@ -56,6 +58,8 @@ class WhatsAppChannelConfig:
         host: Loopback host where the bridge listens.
         port: Loopback port where the bridge listens.
         exposure: Inbound trigger policy.
+        bot_header: Header prepended to outbound messages so self-message chats
+            can distinguish bot replies from operator-authored messages.
         bridge_command: Optional command used to start the Node bridge subprocess.
         chrome_path: Optional Chrome or Chromium executable path for Puppeteer.
         web_version_cache_url: Optional pinned WhatsApp Web HTML cache URL.
@@ -69,6 +73,7 @@ class WhatsAppChannelConfig:
     host: str = DEFAULT_BRIDGE_HOST
     port: int = DEFAULT_BRIDGE_PORT
     exposure: ChannelExposure = field(default_factory=ChannelExposure)
+    bot_header: str = DEFAULT_BOT_HEADER
     bridge_command: tuple[str, ...] | None = None
     chrome_path: str | None = None
     web_version_cache_url: str | None = None
@@ -108,6 +113,7 @@ class WhatsAppChannelConfig:
             host=host,
             port=port,
             exposure=_exposure_from_env(env),
+            bot_header=env.get("DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER", DEFAULT_BOT_HEADER),
             bridge_command=command,
             chrome_path=env.get("DEEPAGENTS_TALON_WHATSAPP_CHROME_PATH"),
             web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
@@ -256,7 +262,7 @@ class WhatsAppChannel:
             conversation_id: WhatsApp chat id.
             text: Message content to send.
         """
-        for chunk in chunk_text(format_markdown_for_channel(text)):
+        for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
             await self._post_result("/send", {"chat_id": conversation_id, "text": chunk})
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
@@ -275,7 +281,11 @@ class WhatsAppChannel:
             "mediaType": checked.media_type,
         }
         if checked.caption is not None:
-            payload["caption"] = checked.caption
+            payload["caption"] = _with_bot_header(
+                checked.caption, bot_header=self.config.bot_header
+            )
+        else:
+            payload["caption"] = _bot_header(self.config.bot_header)
         await self._post_result("/send-media", payload)
 
     async def send_typing(self, conversation_id: str) -> None:
@@ -301,8 +311,8 @@ class WhatsAppChannel:
                 "chatId": conversation_id,
                 "message_id": message_id,
                 "messageId": message_id,
-                "content": format_markdown_for_channel(text),
-                "message": format_markdown_for_channel(text),
+                "content": _with_bot_header(text, bot_header=self.config.bot_header),
+                "message": _with_bot_header(text, bot_header=self.config.bot_header),
             },
         )
 
@@ -318,6 +328,7 @@ class WhatsAppChannel:
             "WHATSAPP_BRIDGE_HOST": self.config.host,
             "WHATSAPP_BRIDGE_PORT": str(self.config.port),
             "WHATSAPP_SESSION_DIR": str(self.config.session_dir),
+            "WHATSAPP_BOT_HEADER": self.config.bot_header,
         }
         if self.config.inbound_media_dir is not None:
             env["WHATSAPP_MEDIA_DIR"] = str(self.config.inbound_media_dir)
@@ -447,6 +458,24 @@ class WhatsAppChannel:
             msg = str(result.get("error") or "WhatsApp bridge returned an error")
             raise WhatsAppBridgeError(msg)
         return response
+
+
+def _bot_header(value: str) -> str:
+    return format_markdown_for_channel(f"**{value}**")
+
+
+def _with_bot_header(text: str, *, bot_header: str) -> str:
+    header = _bot_header(bot_header)
+    if not text:
+        return header
+    return f"{header}\n{format_markdown_for_channel(text)}"
+
+
+def _chunk_with_bot_header(text: str, *, bot_header: str) -> list[str]:
+    header = _bot_header(bot_header)
+    limit = MAX_TEXT_CHARS - len(header) - 1
+    chunks = chunk_text(format_markdown_for_channel(text), limit=limit)
+    return [f"{header}\n{chunk}" for chunk in chunks]
 
 
 def bridge_script_path() -> Path:

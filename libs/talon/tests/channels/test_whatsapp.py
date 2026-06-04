@@ -62,6 +62,7 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
             "DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS": "chat-1, chat-2",
             "DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS": "@agent *",
             "DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID": "operator",
+            "DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER": "test bot",
         },
         base_home=tmp_path,
     )
@@ -76,6 +77,7 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
         conversations=frozenset({"chat-1", "chat-2"}),
         mention_patterns=("@agent *",),
     )
+    assert whatsapp.bot_header == "test bot"
 
 
 def test_config_rejects_open_exposure_without_acknowledgement(tmp_path: Path) -> None:
@@ -246,9 +248,13 @@ async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
 
     await channel.send_message("chat", "**bold** " + ("x" * 4096))
 
-    assert transport.posts[0] == ("/send", {"chat_id": "chat", "text": "*bold*"})
+    assert transport.posts[0] == (
+        "/send",
+        {"chat_id": "chat", "text": "*deepagents bot*\n*bold*"},
+    )
     assert transport.posts[1][0] == "/send"
     assert len(cast("str", transport.posts[1][1]["text"])) <= 4096
+    assert cast("str", transport.posts[1][1]["text"]).startswith("*deepagents bot*\n")
 
 
 async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
@@ -274,7 +280,7 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
                 "path": str(image),
                 "filePath": str(image),
                 "mediaType": "image",
-                "caption": "caption",
+                "caption": "*deepagents bot*\ncaption",
             },
         ),
         (
@@ -284,8 +290,8 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
                 "chatId": "chat",
                 "message_id": "message",
                 "messageId": "message",
-                "content": "Updated",
-                "message": "Updated",
+                "content": "*deepagents bot*\nUpdated",
+                "message": "*deepagents bot*\nUpdated",
             },
         ),
     ]

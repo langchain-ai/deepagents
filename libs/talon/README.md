@@ -48,6 +48,9 @@ The bridge prints a QR code during pairing. By default, inbound exposure is
 `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=allowlist` with
 `DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS` or
 `DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS` to allow specific chats.
+Outbound WhatsApp messages include a `deepagents bot` header by default so
+self-message conversations clearly distinguish agent replies from operator
+messages. Set `DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER` to customize that label.
 
 `open` exposure allows arbitrary WhatsApp senders to trigger the agent while it
 runs with the operator's model credentials, channel credentials, MCP tool access,

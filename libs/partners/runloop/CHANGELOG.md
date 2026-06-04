@@ -2,6 +2,12 @@
 
 # Changelog
 
+## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.5...langchain-runloop==0.0.6) (2026-06-03)
+
+### Features
+
+* Add blueprint bootstrapping for Runloop sandboxes ([#3556](https://github.com/langchain-ai/deepagents/issues/3556)) ([13dafd8](https://github.com/langchain-ai/deepagents/commit/13dafd8823c4b530c8e096012733ad74cd501b59))
+
 ## [0.0.5](https://github.com/langchain-ai/deepagents/compare/langchain-runloop==0.0.4...langchain-runloop==0.0.5) (2026-05-12)
 
 ### Features

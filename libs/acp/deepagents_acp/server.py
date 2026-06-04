@@ -275,7 +275,7 @@ class AgentServerACP(ACPAgent):
         self,
         config_id: str,
         session_id: str,
-        value: str | bool,
+        value: str | bool,  # noqa: FBT001  # signature fixed by ACP protocol interface
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
         """Update a configuration option for the session.
@@ -964,7 +964,7 @@ class AgentServerACP(ACPAgent):
 
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
-    from dotenv import load_dotenv  # Lazy import for dev-only entry point
+    from dotenv import load_dotenv  # noqa: PLC0415  # lazy import for dev-only entry point
 
     load_dotenv()
 

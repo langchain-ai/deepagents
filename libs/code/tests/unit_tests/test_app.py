@@ -8508,6 +8508,77 @@ class TestFatalErrorRedaction:
         super_fatal.assert_called_once()
 
 
+class TestPrewarmDeferredImports:
+    """Prewarming is a cache optimization and must never crash the app.
+
+    When the installed package is replaced in place mid-session (e.g. a
+    concurrent `uv tool upgrade deepagents-code`), a not-yet-imported module
+    can be transiently absent on disk, so a deferred import raises
+    `ModuleNotFoundError`. The prewarm worker must swallow that — the module
+    cold-loads on first use instead — rather than surfacing a fatal traceback.
+    """
+
+    def test_prewarm_swallows_transient_missing_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A deferred import failing mid-prewarm must not propagate.
+
+        Simulates the in-place-upgrade race by pinning a deferred internal
+        module to `None` in `sys.modules`, which makes Python's import machinery
+        raise `ModuleNotFoundError` for it — the same class the production crash
+        raised, and exactly what a transiently missing file would produce.
+        """
+        import sys
+
+        # `None` in sys.modules makes `from ... import ...` raise
+        # `ModuleNotFoundError` ("...halted; None in sys.modules"), mirroring a
+        # module file that is momentarily gone during an in-place file swap.
+        monkeypatch.setitem(
+            sys.modules,
+            "deepagents_code.widgets.approval",
+            None,
+        )
+
+        # Sanity check: the underlying import sequence really does raise, so the
+        # guard in `_prewarm_deferred_imports` is what keeps the app alive.
+        with pytest.raises(ModuleNotFoundError):
+            DeepAgentsApp._load_deferred_modules()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            # Must not raise — the worker entry point swallows the failure.
+            DeepAgentsApp._prewarm_deferred_imports()
+
+        assert any(
+            "Import prewarm failed" in record.message for record in caplog.records
+        ), "expected a WARNING when a deferred import fails"
+
+    async def test_prewarm_worker_stays_green_on_missing_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The guard must keep the background worker out of `WorkerFailed`.
+
+        The production wiring runs `_prewarm_deferred_imports` inside a Textual
+        worker via `asyncio.to_thread` (`run_worker` defaults to
+        `exit_on_error=True`, so an uncaught worker exception is fatal). This
+        exercises that same offload path under the missing-module race and
+        asserts it completes normally, confirming the guard — not a downstream
+        catch in `_await_prewarm_imports` — is what prevents the crash.
+        """
+        import sys
+
+        monkeypatch.setitem(
+            sys.modules,
+            "deepagents_code.widgets.approval",
+            None,
+        )
+
+        # Must not raise: the worker body completes instead of failing.
+        await asyncio.to_thread(DeepAgentsApp._prewarm_deferred_imports)
+
+
 class TestPrewarmAwait:
     """`_start_server_background` must wait for the prewarm worker first.
 
@@ -9200,6 +9271,21 @@ from deepagents_code.command_registry import BypassTier  # noqa: E402
 class TestSetSpinnerTerminalProgress:
     """`_set_spinner` should drive the `OSC 9;4` terminal progress indicator."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Point the config path at an empty temp dir.
+
+        Without this, `_load_terminal_progress_preference` reads the developer's
+        real `~/.deepagents/config.toml` during `DeepAgentsApp.__init__`, so a
+        local `[ui].terminal_progress = false` would silently flip the
+        positive-path tests below to failing. Tests that need a specific config
+        write to and re-point at this same path.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+
     async def test_status_triggers_indeterminate_progress(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -9261,6 +9347,74 @@ class TestSetSpinnerTerminalProgress:
             await app._set_spinner(None)
             await pilot.pause()
 
+        assert "clear" in calls
+
+    async def test_config_opt_out_suppresses_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[ui].terminal_progress = false` should suppress progress escapes."""
+        from deepagents_code import terminal_escape
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = false\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-disabled")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert calls == []
+
+    async def test_config_opt_in_emits_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[ui].terminal_progress = true` should emit set and clear escapes."""
+        from deepagents_code import terminal_escape
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nterminal_progress = true\n", encoding="utf-8")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-enabled")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert "set" in calls
         assert "clear" in calls
 
     async def test_consecutive_set_spinner_calls_keep_emitting(

@@ -9,7 +9,12 @@ import ast
 import importlib.util
 from pathlib import Path
 
+from textual._time import get_time
 from textual._xterm_parser import XTermParser
+from textual.app import App, ComposeResult
+from textual.containers import Vertical
+from textual.geometry import Offset
+from textual.widgets import Markdown, Static
 
 from deepagents_code import _textual_patches  # triggers patch
 
@@ -20,6 +25,55 @@ def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
         (event.key, event.character)
         for event in parser._sequence_to_key_events(sequence, alt=alt)
     ]
+
+
+class SelectableTextApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Static("alpha beta gamma", id="msg")
+
+
+class SelectableMarkdownApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Markdown("alpha **beta** gamma", id="msg")
+
+
+class SelectableHistoryApp(App[None]):
+    def compose(self) -> ComposeResult:
+        with Vertical(id="history"):
+            yield Static("first message", id="first")
+            yield Static("second message", id="second")
+
+
+class TestPatchedWordSelection:
+    async def test_double_click_selects_word_not_entire_widget(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            await pilot.double_click("#msg", offset=(7, 0))
+
+            assert pilot.app.screen.get_selected_text() == "beta"
+
+    async def test_double_click_drag_expands_to_word_boundaries(self) -> None:
+        async with SelectableTextApp().run_test() as pilot:
+            widget = pilot.app.query_one("#msg", Static)
+            start = widget.content_region.offset + Offset(1, 0)
+            pilot.app._click_chain_last_offset = start
+            pilot.app._click_chain_last_time = get_time()
+
+            await pilot.mouse_down("#msg", offset=(1, 0))
+            await pilot.mouse_up("#msg", offset=(13, 0))
+
+            assert pilot.app.screen.get_selected_text() == "alpha beta gamma"
+
+    async def test_double_click_falls_back_for_non_text_renderable(self) -> None:
+        async with SelectableMarkdownApp().run_test() as pilot:
+            await pilot.double_click("#msg", offset=(7, 0))
+
+            assert pilot.app.screen.get_selected_text() is not None
+
+    async def test_triple_click_selects_clicked_widget_not_history(self) -> None:
+        async with SelectableHistoryApp().run_test() as pilot:
+            await pilot.triple_click("#second", offset=(1, 0))
+
+            assert pilot.app.screen.get_selected_text() == "second message"
 
 
 class TestPatchedSequenceToKeyEvents:

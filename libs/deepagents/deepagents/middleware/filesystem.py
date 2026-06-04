@@ -4,7 +4,6 @@
 import asyncio
 import concurrent.futures
 import contextvars
-import json
 import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -36,7 +35,7 @@ from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -529,14 +528,12 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
 
     `execute` runs on the host shell, so virtual paths (e.g. `/common/`) may not
     exist there. Instead of rewriting shell commands, provide the model with
-    virtual→host path mappings so it can generate correct commands directly.
+    virtual -> host path mappings so it can generate correct commands directly.
 
     Routes without a host path are marked as shell-inaccessible and should be
-    accessed through file tools instead.
-
-    Dynamic path values (route prefixes and host roots) are JSON-serialized
-    before being embedded, so newlines, quotes, or backticks in a configured
-    `root_dir` cannot break out of the prompt and inject model instructions.
+    accessed through file tools instead. A route exposes a host path only when
+    its backend is a virtual-mode `FilesystemBackend` (or subclass such as
+    `LocalShellBackend`); other backends (e.g. store-backed) have none.
 
     Returns an empty string if there are no routes to describe.
     """
@@ -546,9 +543,8 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     host_mappings: list[tuple[str, str]] = []
     no_host_routes: list[str] = []
     for route_prefix, route_backend in backend.sorted_routes:
-        host_root = getattr(route_backend, "cwd", None)
-        if host_root is not None and getattr(route_backend, "virtual_mode", False):
-            host_mappings.append((route_prefix, str(host_root)))
+        if isinstance(route_backend, FilesystemBackend) and route_backend.virtual_mode:
+            host_mappings.append((route_prefix, str(route_backend.cwd)))
         else:
             no_host_routes.append(route_prefix)
 
@@ -564,10 +560,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     ]
     if host_mappings:
         lines.append("")
-        lines.extend(f"- {json.dumps(prefix)} → use {json.dumps(host)} in shell commands" for prefix, host in host_mappings)
+        lines.extend(f"- {prefix} -> use {host} in shell commands" for prefix, host in host_mappings)
     if no_host_routes:
         lines.append("")
-        joined = ", ".join(json.dumps(prefix) for prefix in no_host_routes)
+        joined = ", ".join(no_host_routes)
         lines.append(
             f"These mounts have no host path and are NOT reachable from the shell — "
             f"use the file tools (read_file/write_file/edit_file/grep/glob) for them: {joined}"

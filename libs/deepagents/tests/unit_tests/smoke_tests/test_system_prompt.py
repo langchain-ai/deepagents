@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from deepagents.backends import FilesystemBackend, LocalShellBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.utils import create_file_data
 from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -93,6 +93,46 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
         _system_message_as_text(system_messages[0]),
         update_snapshots=update_snapshots,
     )
+
+
+def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    """Snapshot the materialized prompt when a route exposes a host shell path.
+
+    A `CompositeBackend` whose default supports execution and whose `/common/`
+    route is a virtual-mode `FilesystemBackend` should add a "Shell paths vs.
+    virtual paths" section mapping the virtual prefix to the route's host path
+    (issue #3050). The host path is machine-specific, so it is redacted to a
+    placeholder before snapshotting.
+    """
+    model = _smoke_model()
+    route = FilesystemBackend(root_dir=str(Path.cwd() / "common"), virtual_mode=True)
+    backend = CompositeBackend(
+        default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
+        routes={"/common/": route},
+    )
+    agent = create_deep_agent(model=model, backend=backend)
+
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_routed_backend_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
+
+    messages = history[0]["messages"]
+    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+    assert len(system_messages) >= 1
+
+    # Redact the machine-specific host root so the snapshot is reproducible.
+    text = _system_message_as_text(system_messages[0]).replace(str(route.cwd), "<ROUTE_HOST_ROOT>")
+
+    snapshot_path = snapshots_dir / "system_prompt_with_routed_backend.md"
+    _assert_snapshot(snapshot_path, text, update_snapshots=update_snapshots)
 
 
 def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_snapshots: bool) -> None:

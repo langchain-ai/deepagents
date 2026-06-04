@@ -19,6 +19,7 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     CronScheduler,
 )
+from deepagents_talon.observability import langsmith_trace_context
 from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
@@ -205,13 +206,19 @@ class TalonHost:
                 self._tasks[conversation_id] = task
 
             try:
-                return await self.agent.invoke(
-                    AgentRequest(
-                        conversation_id=conversation_id,
-                        text=text,
-                        metadata=metadata,
-                    ),
-                )
+                with langsmith_trace_context(
+                    self.config.env,
+                    assistant_id=self.config.assistant_id,
+                    conversation_id=conversation_id,
+                    metadata=metadata,
+                ):
+                    return await self.agent.invoke(
+                        AgentRequest(
+                            conversation_id=conversation_id,
+                            text=text,
+                            metadata=metadata,
+                        ),
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:

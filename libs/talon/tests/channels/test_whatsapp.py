@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 
+import pytest
+
 from deepagents_talon.channels.base import ChannelExposure, ExposureMode
 from deepagents_talon.channels.whatsapp import (
     BridgeTransport,
@@ -58,6 +60,34 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
         conversations=frozenset({"chat-1", "chat-2"}),
         mention_patterns=("@agent *",),
     )
+
+
+def test_config_rejects_open_exposure_without_acknowledgement(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_WHATSAPP_EXPOSURE": "open",
+        },
+        base_home=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="allow-arbitrary-senders"):
+        WhatsAppChannelConfig.from_talon_config(config)
+
+
+def test_config_accepts_open_exposure_with_acknowledgement(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_WHATSAPP_EXPOSURE": "open",
+            "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK": "allow-arbitrary-senders",
+        },
+        base_home=tmp_path,
+    )
+
+    whatsapp = WhatsAppChannelConfig.from_talon_config(config)
+
+    assert whatsapp.exposure.mode == ExposureMode.OPEN
 
 
 async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> None:

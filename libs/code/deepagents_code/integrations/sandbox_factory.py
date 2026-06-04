@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import importlib.util
+import json
 import logging
 import os
 import shlex
@@ -29,6 +30,69 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
+
+
+_SANDBOX_STATE_FILENAME = "sandboxes.json"
+"""Filename for persisted sandbox IDs under the app state directory."""
+
+_PERSISTENT_SANDBOX_PROVIDERS = frozenset({"daytona", "langsmith", "modal", "runloop"})
+"""Providers that support reconnecting to an existing sandbox by ID."""
+
+
+def _sandbox_state_path() -> Path:
+    """Return the path used for persistent sandbox IDs."""
+    from deepagents_code.model_config import DEFAULT_STATE_DIR
+
+    return DEFAULT_STATE_DIR / _SANDBOX_STATE_FILENAME
+
+
+def _sandbox_state_key(provider: str, snapshot_name: str | None) -> str:
+    """Return a stable state key for a sandbox selection."""
+    snapshot = snapshot_name or "default"
+    return f"{provider}:{snapshot}"
+
+
+def _read_sandbox_state() -> dict[str, str]:
+    """Read persisted sandbox IDs.
+
+    Returns:
+        Mapping of sandbox selection keys to sandbox IDs. Malformed or
+        inaccessible state is treated as empty so startup can continue.
+    """
+    path = _sandbox_state_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value) for key, value in raw.items() if isinstance(value, str)
+    }
+
+
+def _write_sandbox_state(state: dict[str, str]) -> None:
+    """Persist sandbox IDs best-effort."""
+    path = _sandbox_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(state, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.warning("Could not persist sandbox state to %s", path, exc_info=True)
+
+
+def _record_sandbox_id(
+    provider: str,
+    snapshot_name: str | None,
+    sandbox_id: str,
+) -> None:
+    """Record the sandbox ID used for a provider selection."""
+    state = _read_sandbox_state()
+    state[_sandbox_state_key(provider, snapshot_name)] = sandbox_id
+    _write_sandbox_state(state)
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -96,7 +160,9 @@ def create_sandbox(
     Args:
         provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
-        sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_id: Optional existing sandbox ID to reuse. When omitted, the
+            factory reconnects to the most recently created sandbox for this
+            provider/snapshot selection when one has been recorded.
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by `'langsmith'` (snapshot) and `'runloop'` (blueprint);
             must be `None` for other providers.
@@ -115,7 +181,8 @@ def create_sandbox(
             f"'runloop' (got provider={provider!r})"
         )
         raise ValueError(msg)
-    if snapshot_name is not None and sandbox_id is not None:
+    explicit_sandbox_id = sandbox_id
+    if snapshot_name is not None and explicit_sandbox_id is not None:
         msg = (
             "snapshot_name cannot be combined with sandbox_id; "
             "snapshots only apply when creating a fresh sandbox"
@@ -124,15 +191,20 @@ def create_sandbox(
 
     # Get provider instance
     provider_obj = _get_provider(provider)
+    persist_sandbox = provider in _PERSISTENT_SANDBOX_PROVIDERS
 
-    # Determine if we should cleanup (only cleanup if we created it)
-    should_cleanup = sandbox_id is None
+    if persist_sandbox and sandbox_id is None:
+        sandbox_id = _read_sandbox_state().get(
+            _sandbox_state_key(provider, snapshot_name)
+        )
+
     provider_kwargs: dict[str, str | None] = {}
-    if snapshot_name is not None:
+    if snapshot_name is not None and sandbox_id is None:
         provider_kwargs["snapshot"] = snapshot_name
 
     # Create or connect to sandbox
-    console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
+    action = "Reconnecting to" if sandbox_id else "Starting"
+    console.print(f"[yellow]{action} {provider} sandbox...[/yellow]")
     backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **provider_kwargs)
     glyphs = get_glyphs()
     console.print(
@@ -144,10 +216,18 @@ def create_sandbox(
     if setup_script_path:
         _run_sandbox_setup(backend, setup_script_path)
 
+    if persist_sandbox and (explicit_sandbox_id is not None or sandbox_id is None):
+        _record_sandbox_id(provider, snapshot_name, backend.id)
+
     try:
         yield backend
     finally:
-        if should_cleanup:
+        if persist_sandbox:
+            console.print(
+                f"[dim]{provider.capitalize()} sandbox {backend.id} left running "
+                "for reuse[/dim]"
+            )
+        else:
             try:
                 console.print(
                     f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]"
@@ -467,7 +547,7 @@ class _DaytonaProvider(SandboxProvider):
         """Get or create a Daytona sandbox.
 
         Args:
-            sandbox_id: Not supported yet — must be None.
+            sandbox_id: Optional existing sandbox ID to reuse.
             timeout: Seconds to wait for startup.
             **kwargs: Unused.
 
@@ -475,7 +555,6 @@ class _DaytonaProvider(SandboxProvider):
             `DaytonaSandbox` instance.
 
         Raises:
-            NotImplementedError: If `sandbox_id` is provided.
             RuntimeError: If the sandbox fails to start.
         """
         daytona_backend = _import_provider_module(
@@ -484,14 +563,10 @@ class _DaytonaProvider(SandboxProvider):
             package="langchain-daytona",
         )
 
+        sandbox = self._client.get(sandbox_id) if sandbox_id else self._client.create()
         if sandbox_id:
-            msg = (
-                "Connecting to existing Daytona sandbox by ID not yet supported. "
-                "Create a new sandbox by omitting sandbox_id parameter."
-            )
-            raise NotImplementedError(msg)
+            return daytona_backend.DaytonaSandbox(sandbox=sandbox)
 
-        sandbox = self._client.create()
         last_exc: Exception | None = None
         for _ in range(timeout // 2):
             try:

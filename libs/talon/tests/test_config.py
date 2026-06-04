@@ -30,6 +30,23 @@ def test_from_env_creates_assistant_home(tmp_path: Path) -> None:
     assert config.manifest_dir.stat().st_mode & 0o777 == 0o700
     assert config.cron_dir.stat().st_mode & 0o777 == 0o700
     assert config.channel_dir.stat().st_mode & 0o777 == 0o700
+    assert config.inbound_media_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_from_env_keeps_langsmith_env(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant-1",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_API_KEY": "key",
+            "LANGSMITH_PROJECT": "project",
+        },
+        base_home=tmp_path,
+    )
+
+    assert config.env["LANGSMITH_TRACING"] == "true"
+    assert config.env["LANGSMITH_API_KEY"] == "key"
+    assert config.env["LANGSMITH_PROJECT"] == "project"
 
 
 @pytest.mark.parametrize("assistant_id", ["", "../bad", "bad/slash", "bad space"])

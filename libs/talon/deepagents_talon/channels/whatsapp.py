@@ -37,6 +37,8 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
+OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
+OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 
 
 class WhatsAppBridgeError(RuntimeError):
@@ -420,6 +422,12 @@ def _optional_str(value: object) -> str | None:
 
 def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
     mode = _exposure_mode(env.get("DEEPAGENTS_TALON_WHATSAPP_EXPOSURE", ExposureMode.SELF.value))
+    if mode == ExposureMode.OPEN:
+        _require_open_acknowledgement(env)
+        logger.warning(
+            "WhatsApp open exposure enabled; arbitrary senders can trigger the agent with "
+            "operator credentials and local host access"
+        )
     conversations = _split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS", ""))
     mentions = tuple(_split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS", "")))
     return ChannelExposure(
@@ -437,6 +445,17 @@ def _exposure_mode(value: str) -> ExposureMode:
         modes = ", ".join(mode.value for mode in ExposureMode)
         msg = f"invalid WhatsApp exposure mode {value!r}; expected one of: {modes}"
         raise ValueError(msg) from error
+
+
+def _require_open_acknowledgement(env: Mapping[str, str]) -> None:
+    if env.get(OPEN_EXPOSURE_ACK_ENV) == OPEN_EXPOSURE_ACK_VALUE:
+        return
+    msg = (
+        "WhatsApp exposure mode 'open' allows arbitrary senders to trigger the agent with "
+        "operator credentials and local host access; set "
+        f"{OPEN_EXPOSURE_ACK_ENV}={OPEN_EXPOSURE_ACK_VALUE} to acknowledge this risk"
+    )
+    raise ValueError(msg)
 
 
 def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:

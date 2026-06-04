@@ -65,6 +65,38 @@ def test_recurring_job_advances_before_run_and_honors_repeat_cap(tmp_path) -> No
     assert second.repeat.completed == 2
 
 
+def test_store_prunes_only_expired_completed_jobs(tmp_path) -> None:
+    now = datetime(2026, 1, 31, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    expired = store.create_job(
+        prompt="old",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now - timedelta(days=40),
+    )
+    fresh = store.create_job(
+        prompt="fresh",
+        schedule=CronSchedule.parse("in 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now - timedelta(days=1),
+    )
+    active = store.create_job(
+        prompt="active",
+        schedule=CronSchedule.parse("every 1m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now - timedelta(days=40),
+    )
+    store.advance_next_run(expired.id, now=now - timedelta(days=39))
+    store.mark_job_run(expired.id, status="ok", now=now - timedelta(days=39))
+    store.advance_next_run(fresh.id, now=now)
+    store.mark_job_run(fresh.id, status="ok", now=now)
+
+    removed = store.prune_completed(retain_for=timedelta(days=30), now=now)
+
+    assert [job.id for job in removed] == [expired.id]
+    assert {job.id for job in store.list_jobs()} == {fresh.id, active.id}
+
+
 def test_tools_are_scoped_to_current_conversation(tmp_path) -> None:
     store = _store(tmp_path)
     current = CronOrigin(conversation_id="current", channel="whatsapp")

@@ -17,6 +17,7 @@ Examples:
     ```
 """
 
+import re
 from collections import defaultdict
 from typing import cast
 
@@ -536,6 +537,36 @@ class CompositeBackend(BackendProtocol):
             res.path = file_path
         return res
 
+    def _rewrite_route_paths(self, command: str) -> str:
+        """Rewrite virtual route paths in a shell command to host filesystem paths.
+
+        `execute` always runs on the default backend's shell. When a command
+        references a routed virtual path (for example, `/common/x.py`), that path
+        may not exist on the host filesystem. This rewrites matching route prefixes
+        to the routed backend's host root (`backend.cwd`).
+
+        Only standalone path matches are rewritten to avoid modifying URLs,
+        substrings, or other shell syntax. Backends without a host filesystem root
+        or not running in virtual mode are ignored.
+        """
+        # Check more specific routes before broader ones
+        # (e.g. /common/sub/ before /common/).
+        for route_prefix, backend in self.sorted_routes:
+            host_root = getattr(backend, "cwd", None)
+            if host_root is None or not getattr(backend, "virtual_mode", False):
+                continue
+            virtual = route_prefix.rstrip("/")
+            if not virtual:
+                continue
+            replacement = str(host_root)
+            # Match `virtual` only at a path-token boundary: preceded by start /
+            # whitespace / `= : ( ,` / quote, and followed by `/`, end, or a
+            # closing boundary. A function replacement avoids backreference
+            # interpretation of backslashes in Windows host paths.
+            pattern = rf"(?:(?<=^)|(?<=[\s=:(,'\"])){re.escape(virtual)}(?=/|$|[\s'\"):,])"
+            command = re.sub(pattern, lambda _m, r=replacement: r, command)
+        return command
+
     def execute(
         self,
         command: str,
@@ -544,8 +575,10 @@ class CompositeBackend(BackendProtocol):
     ) -> ExecuteResponse:
         """Execute a shell command via the default backend.
 
-        Unlike file operations, execution is not path-routable — it always
-        delegates to the default backend.
+        Execution is not path-routable — it always delegates to the default
+        backend. Before delegating, route virtual prefixes in the command are
+        translated to their host paths so route-relative paths resolve in the
+        shell (see `_rewrite_route_paths` and issue #3050).
 
         Args:
             command: Shell command to execute.
@@ -562,6 +595,7 @@ class CompositeBackend(BackendProtocol):
                 (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            command = self._rewrite_route_paths(command)
             if timeout is not None and execute_accepts_timeout(type(self.default)):
                 return self.default.execute(command, timeout=timeout)
             return self.default.execute(command)
@@ -587,6 +621,7 @@ class CompositeBackend(BackendProtocol):
         See `execute()` for detailed documentation on parameters and behavior.
         """
         if isinstance(self.default, SandboxBackendProtocol):
+            command = self._rewrite_route_paths(command)
             if timeout is not None and execute_accepts_timeout(type(self.default)):
                 return await self.default.aexecute(command, timeout=timeout)
             return await self.default.aexecute(command)

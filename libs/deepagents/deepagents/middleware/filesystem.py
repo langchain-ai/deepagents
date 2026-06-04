@@ -87,7 +87,21 @@ class FilesystemPermission:
 
     operations: list[FilesystemOperation]
     paths: list[str]
-    mode: Literal["allow", "deny"] = "allow"
+    mode: Literal["allow", "deny", "interrupt"] = "allow"
+    """Effect when a tool call matches this rule:
+
+    - ``"allow"`` (default): the call proceeds.
+    - ``"deny"``: the tool returns a permission-denied error.
+    - ``"interrupt"``: the call is paused for human approval via
+      [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
+
+      Best paired with patterns that have a literal leading anchor (e.g.,
+      ``/secrets/**``, ``/projects/*/secrets/**``). Bulk tools
+      (``ls``/``glob``/``grep``) fire the interrupt based on whether their
+      search subtree could overlap the rule's anchored prefix, so a fully
+      unanchored pattern (``/**/secrets``) collapses to ``/`` and
+      conservatively over-fires for any bulk call.
+    """
 
     def __post_init__(self) -> None:
         """Validate permission path patterns."""
@@ -108,7 +122,7 @@ def _check_fs_permission(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     path: str,
-) -> Literal["allow", "deny"]:
+) -> Literal["allow", "deny", "interrupt"]:
     for rule in rules:
         if operation not in rule.operations:
             continue
@@ -122,9 +136,17 @@ def _filter_paths_by_permission(
     operation: FilesystemOperation,
     paths: list[str],
 ) -> list[str]:
+    """Filter paths, removing only those denied by a rule.
+
+    Interrupt-mode paths pass through here: the interrupt fires at the HITL
+    stage *before* the tool runs (see `_build_interrupt_on_from_permissions`
+    and its scope-aware predicate), so by the time result-filtering runs the
+    user has already approved (or no rule matched). Filtering interrupt-mode
+    results out here would silently empty the listing the user just approved.
+    """
     if not rules:
         return paths
-    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
+    return [p for p in paths if _check_fs_permission(rules, operation, p) != "deny"]
 
 
 def _all_paths_scoped_to_routes(
@@ -151,8 +173,12 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[FileInfo]:
-    """Filter file-info entries according to filesystem permissions."""
-    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) == "allow"]
+    """Filter file-info entries, removing only those denied by a rule.
+
+    See `_filter_paths_by_permission` for why interrupt-mode entries
+    pass through.
+    """
+    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) != "deny"]
 
 
 def _filter_grep_matches_by_permission(
@@ -161,8 +187,12 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[GrepMatch]:
-    """Filter grep matches according to filesystem permissions."""
-    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
+    """Filter grep matches, removing only those denied by a rule.
+
+    See `_filter_paths_by_permission` for why interrupt-mode entries
+    pass through.
+    """
+    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
 def _format_grep_tool_result(
@@ -919,9 +949,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
+            # Empty files get a uniform warning regardless of encoding/type, so
+            # check before routing to avoid a degenerate empty content block for
+            # binary reads.
+            empty_msg = check_empty_content(content)
+            if empty_msg:
+                return ToolMessage(
+                    content=empty_msg,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    status="success",
+                )
+
             # Route on the backend-declared encoding first: `"base64"` means the
             # content is binary and must never be line-numbered as text, even
-            # when the extension is absent from `_EXTENSION_TO_FILE_TYPE` (#3657).
+            # when the extension is absent from `_EXTENSION_TO_FILE_TYPE`.
             # The extension map is only consulted to pick the multimodal block
             # type; unknown binary extensions fall back to the generic `"file"`.
             if encoding == "base64" or file_type != "text":
@@ -932,15 +974,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=tool_call_id,
                     additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
-                    status="success",
-                )
-
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return ToolMessage(
-                    content=empty_msg,
-                    name="read_file",
-                    tool_call_id=tool_call_id,
                     status="success",
                 )
 

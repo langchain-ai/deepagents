@@ -1295,6 +1295,66 @@ class TestFilesystemMiddleware:
         expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
         assert result.content[0]["mime_type"] == expected_mime
 
+    def test_read_file_empty_mapped_binary_returns_empty_content_warning(self):
+        """Empty reads of mapped binary extensions (e.g. .pdf) return the empty-file warning (#3664)."""
+
+        class EmptyPdfBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyPdfBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-pdf-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_empty_unmapped_binary_returns_empty_content_warning(self):
+        """Empty reads of unmapped binary extensions (e.g. .docx) return the empty-file warning (#3664)."""
+
+        class EmptyDocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyDocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-docx-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""
 

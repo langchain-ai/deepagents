@@ -21,7 +21,7 @@ Releases are managed via release-please, which:
 
 1. Analyzes commits made to `main`
 2. Creates/updates a release PR [(example)](https://github.com/langchain-ai/deepagents/pull/1956) with automated changelog and version bumps
-3. When said release PR is merged, creates both a GitHub and PyPI release
+3. When said release PR is merged, triggers the release workflow for that merge commit, which creates both a GitHub and PyPI release
 
 ## How It Works
 
@@ -163,12 +163,15 @@ Tracks the current version of each package. Automatically updated by release-ple
 
 ### Detection Mechanism
 
-The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects releases by checking two conditions on the merge commit:
+The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects merged release PRs by checking two conditions on the merge commit:
 
 1. The package's `CHANGELOG.md` was modified (e.g., `libs/cli/CHANGELOG.md` for the CLI)
 2. The commit message matches the `release(<component>): <version>` pattern
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
+
+> [!NOTE]
+> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
 
 ### Lockfile Updates
 

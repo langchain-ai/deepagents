@@ -2,6 +2,10 @@
 
 # Changelog
 
+## [0.0.5](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.4...langchain-modal==0.0.5) (2026-06-03)
+
+* Version bumps
+
 ## [0.0.4](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.3...langchain-modal==0.0.4) (2026-05-12)
 
 ### Features

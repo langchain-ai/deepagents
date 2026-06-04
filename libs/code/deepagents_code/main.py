@@ -919,7 +919,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Sandbox snapshot name to use or create (langsmith only)",
+        help="Snapshot (langsmith) or blueprint (runloop) name to use or create",
     )
 
     parser.add_argument(
@@ -1034,8 +1034,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    if args.sandbox_snapshot_name is not None and args.sandbox not in {
+        "langsmith",
+        "runloop",
+    }:
+        parser.error("--sandbox-snapshot-name requires --sandbox langsmith or runloop")
     return args
 
 
@@ -1073,8 +1076,7 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
-            (langsmith only).
+        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -1649,8 +1651,12 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer == "y":
-        if not debug_prompt:
-            trust_project_mcp(project_root, fingerprint)
+        if not debug_prompt and not trust_project_mcp(project_root, fingerprint):
+            prompt_console.print(
+                "[yellow]Approved for this session, but the decision could not be "
+                "saved — you'll be asked again next time.[/yellow]",
+                highlight=False,
+            )
         return True
     return False
 
@@ -2495,11 +2501,12 @@ def cli_main() -> None:
                         console.print()
                         release_age = format_release_age_parenthetical(latest)
                         installed_age = format_installed_age_suffix(cli_version)
-                        update_msg = Text("Update available: ", style="yellow bold")
-                        update_msg.append(f"v{latest}", style="yellow")
-                        update_msg.append(release_age, style="dim")
+                        update_msg = Text(
+                            f"Update available: v{latest}", style="yellow bold"
+                        )
                         update_msg.append(
-                            f". Currently installed: {cli_version}{installed_age}.",
+                            f"{release_age}. "
+                            f"Currently installed: {cli_version}{installed_age}.",
                             style="dim",
                         )
                         console.print(update_msg)

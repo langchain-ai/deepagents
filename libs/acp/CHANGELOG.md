@@ -2,6 +2,16 @@
 
 # Changelog
 
+## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.7...deepagents-acp==0.0.8) (2026-06-03)
+
+### Bug Fixes
+
+* Require `agent-client-protocol>=0.9.0` ([#3733](https://github.com/langchain-ai/deepagents/issues/3733)) ([376d981](https://github.com/langchain-ai/deepagents/commit/376d9816833ef02a00fd4f1c4ccdf625629c36a4))
+
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.6...deepagents-acp==0.0.7) (2026-06-03)
+
+* Bumping dependencies
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.5...deepagents-acp==0.0.6) (2026-04-18)
 
 ### Features

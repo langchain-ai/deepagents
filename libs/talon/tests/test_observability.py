@@ -117,6 +117,30 @@ def test_log_event_emits_json_payload(caplog) -> None:
     assert json.loads(payload) == {"event": "cron.tick", "due_count": 2}
 
 
+def test_log_event_redacts_secrets_and_url_credentials(caplog) -> None:
+    logger = logging.getLogger("deepagents_talon.tests")
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        log_event(
+            logger,
+            "secret.check",
+            conversation_id="chat-123",
+            endpoint="https://user:pass@example.com/mcp?api_key=secret-token",
+            headers={"Authorization": "Bearer raw-token"},
+        )
+
+    payload = json.loads(caplog.messages[0].removeprefix("talon_event "))
+    assert payload == {
+        "conversation_id": "[redacted]",
+        "endpoint": "https://example.com/mcp",
+        "event": "secret.check",
+        "headers": {"Authorization": "[redacted]"},
+    }
+    assert "secret-token" not in caplog.text
+    assert "raw-token" not in caplog.text
+    assert "chat-123" not in caplog.text
+
+
 async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
     for _ in range(100):
         if len(channel.sent) >= count:

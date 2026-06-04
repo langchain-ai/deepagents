@@ -605,7 +605,47 @@ async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     assert approvals[0].action_requests[0]["name"] == "dangerous_tool"
 
 
-async def test_runtime_rejects_tool_interrupt_without_running_tool() -> None:
+async def test_runtime_logs_tool_approval_without_argument_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = InterruptingGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
+        return "approve"
+
+    caplog.set_level("INFO", logger="deepagents_talon.runtime")
+
+    result = await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="run",
+            approval_handler=approve,
+        )
+    )
+
+    events = _talon_events(caplog)
+    interrupt = next(event for event in events if event["event"] == "tool_approval.interrupt")
+    resolved = next(event for event in events if event["event"] == "tool_approval.resolved")
+    assert result.text == "approved"
+    assert interrupt["action_names"] == ["dangerous_tool"]
+    assert interrupt["action_count"] == 1
+    assert interrupt["conversation_ref"] != "chat"
+    assert resolved["decision"] == "approved"
+    assert resolved["resolution"] == "operator"
+    assert "/secret" not in caplog.text
+    assert "chat" not in caplog.text
+
+
+async def test_runtime_rejects_tool_interrupt_without_running_tool(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     graph = InterruptingGraph()
     runtime = DeepAgentRuntime(
         model="test:model",
@@ -618,6 +658,8 @@ async def test_runtime_rejects_tool_interrupt_without_running_tool() -> None:
     async def reject(_request: ToolApprovalRequest) -> ToolApprovalDecision:
         return "reject"
 
+    caplog.set_level("INFO", logger="deepagents_talon.runtime")
+
     result = await runtime.invoke(
         AgentRequest(
             conversation_id="chat",
@@ -626,12 +668,20 @@ async def test_runtime_rejects_tool_interrupt_without_running_tool() -> None:
         )
     )
 
-    resume = cast("Command", graph.calls[1][0]).resume
+    resume = cast(
+        "dict[str, dict[str, list[dict[str, str]]]]",
+        cast("Command", graph.calls[1][0]).resume,
+    )
     assert result.text == "denied"
     assert graph.executed is False
     assert resume["interrupt-1"]["decisions"] == [
         {"type": "reject", "message": "Denied by operator."}
     ]
+    resolved = next(
+        event for event in _talon_events(caplog) if event["event"] == "tool_approval.resolved"
+    )
+    assert resolved["decision"] == "denied"
+    assert resolved["resolution"] == "operator"
 
 
 async def test_runtime_auto_rejects_cron_tool_interrupt() -> None:
@@ -652,7 +702,10 @@ async def test_runtime_auto_rejects_cron_tool_interrupt() -> None:
         )
     )
 
-    resume = cast("Command", graph.calls[1][0]).resume
+    resume = cast(
+        "dict[str, dict[str, list[dict[str, str]]]]",
+        cast("Command", graph.calls[1][0]).resume,
+    )
     auto_reject_message = (
         "Tool approval is unavailable for scheduled runs; skipped the gated tool call."
     )
@@ -706,3 +759,11 @@ def _tool_name(tool: object) -> str:
         return function_name
     msg = f"tool has no name: {tool!r}"
     raise AssertionError(msg)
+
+
+def _talon_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    return [
+        json.loads(message.removeprefix("talon_event "))
+        for message in caplog.messages
+        if message.startswith("talon_event ")
+    ]

@@ -28,6 +28,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.observability import log_event, stable_log_ref
 
 if TYPE_CHECKING:
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
@@ -205,6 +206,15 @@ class RuntimeAgentComponents:
     skills: Sequence[str] | None = None
     middleware: Sequence[AgentMiddleware[Any, Any, Any]] = ()
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ApprovalAuditContext:
+    interrupt_id: str
+    conversation_ref: str
+    trigger: str
+    action_count: int
+    action_names: tuple[str, ...]
 
 
 class DeepAgentRuntime:
@@ -522,7 +532,7 @@ class DeepAgentRuntime:
                 logger.warning("Received tool approval interrupt without an id")
                 continue
             action_requests = _action_requests_from_interrupt(interrupt)
-            decision, reject_message = await _approval_decision(
+            decision, reject_message, _resolution = await _approval_decision(
                 request,
                 interrupt_id,
                 action_requests,
@@ -624,23 +634,28 @@ async def _approval_decision(
     request: AgentRequest,
     interrupt_id: str,
     action_requests: Sequence[Mapping[str, object]],
-) -> tuple[ToolApprovalDecision, str | None]:
+) -> tuple[ToolApprovalDecision, str | None, str]:
+    audit = _approval_audit_context(request, interrupt_id, action_requests)
+    _log_approval_interrupt(audit)
+
     if request.metadata.get("trigger") == "cron":
         logger.warning(
             "Auto-denying %d tool approval request(s) for cron conversation %s",
             len(action_requests),
-            request.conversation_id,
+            audit.conversation_ref,
         )
-        return "reject", _CRON_AUTO_DENY_MESSAGE
+        _log_approval_resolution(audit, decision="reject", resolution="cron_auto_deny")
+        return "reject", _CRON_AUTO_DENY_MESSAGE, "cron_auto_deny"
 
     handler = _approval_handler_from_request(request)
     if handler is None:
         logger.warning(
             "Auto-denying %d tool approval request(s) for conversation %s without approval handler",
             len(action_requests),
-            request.conversation_id,
+            audit.conversation_ref,
         )
-        return "reject", _CHANNEL_AUTO_DENY_MESSAGE
+        _log_approval_resolution(audit, decision="reject", resolution="channel_auto_deny")
+        return "reject", _CHANNEL_AUTO_DENY_MESSAGE, "channel_auto_deny"
 
     decision = await handler(
         ToolApprovalRequest(
@@ -650,8 +665,67 @@ async def _approval_decision(
         )
     )
     if decision == "approve":
-        return "approve", None
-    return "reject", "Denied by operator."
+        _log_approval_resolution(audit, decision="approve", resolution="operator")
+        return "approve", None, "operator"
+    _log_approval_resolution(audit, decision="reject", resolution="operator")
+    return "reject", "Denied by operator.", "operator"
+
+
+def _approval_audit_context(
+    request: AgentRequest,
+    interrupt_id: str,
+    action_requests: Sequence[Mapping[str, object]],
+) -> _ApprovalAuditContext:
+    trigger = request.metadata.get("trigger")
+    trigger_name = trigger if isinstance(trigger, str) and trigger else "channel"
+    return _ApprovalAuditContext(
+        interrupt_id=interrupt_id,
+        conversation_ref=stable_log_ref(request.conversation_id),
+        trigger=trigger_name,
+        action_count=len(action_requests),
+        action_names=_approval_action_names(action_requests),
+    )
+
+
+def _log_approval_interrupt(audit: _ApprovalAuditContext) -> None:
+    log_event(
+        logger,
+        "tool_approval.interrupt",
+        action_count=audit.action_count,
+        action_names=audit.action_names,
+        conversation_ref=audit.conversation_ref,
+        interrupt_id=audit.interrupt_id,
+        trigger=audit.trigger,
+    )
+
+
+def _log_approval_resolution(
+    audit: _ApprovalAuditContext,
+    *,
+    decision: ToolApprovalDecision,
+    resolution: str,
+) -> None:
+    log_event(
+        logger,
+        "tool_approval.resolved",
+        action_count=audit.action_count,
+        action_names=audit.action_names,
+        conversation_ref=audit.conversation_ref,
+        decision="approved" if decision == "approve" else "denied",
+        interrupt_id=audit.interrupt_id,
+        resolution=resolution,
+        trigger=audit.trigger,
+    )
+
+
+def _approval_action_names(
+    action_requests: Sequence[Mapping[str, object]],
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for action in action_requests:
+        name = action.get("name")
+        names.append(name if isinstance(name, str) and name else "unknown")
+    return tuple(names)
 
 
 def _approval_handler_from_request(request: AgentRequest) -> ToolApprovalHandler | None:

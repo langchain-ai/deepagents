@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlsplit
 
 from fleet_deepagents_export import StaticSkillsLoader, load_agent_components
+
+from deepagents_talon.observability import log_event
 
 if TYPE_CHECKING:
     from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.tools import BaseTool
+
+logger = logging.getLogger(__name__)
+_KNOWN_FLEET_AUTH_PATHS = frozenset({"builtin", "headers", "oauth"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +72,9 @@ async def load_fleet_agent_components(
     with _patched_environ(env):
         raw = await load_agent_components(fleet_dir)
     components = _coerce_components(raw)
-    return _with_static_skills_loader(components, fleet_dir=fleet_dir, env=env)
+    components = _with_static_skills_loader(components, fleet_dir=fleet_dir, env=env)
+    _log_fleet_mcp_surface(fleet_dir, components, env=env)
+    return components
 
 
 def _coerce_components(raw: object) -> FleetAgentComponents:
@@ -178,6 +188,212 @@ def _split_path_env(raw: str | None) -> list[str]:
         return []
     separator = ";" if ";" in raw else os.pathsep
     return [str(Path(part).expanduser()) for part in raw.split(separator) if part.strip()]
+
+
+@dataclass(frozen=True, slots=True)
+class _FleetToolEntry:
+    name: str
+    server_url: str
+    auth_path: str
+    scope: str
+
+
+def _log_fleet_mcp_surface(
+    fleet_dir: Path,
+    components: FleetAgentComponents,
+    *,
+    env: Mapping[str, str] | None,
+) -> None:
+    entries = _load_fleet_tool_entries(fleet_dir, env=env)
+    records = _fleet_mcp_records(entries, components, env=env)
+    log_event(
+        logger,
+        "fleet.mcp_surface",
+        server_count=len(records),
+        servers=records,
+    )
+
+
+def _load_fleet_tool_entries(
+    fleet_dir: Path,
+    *,
+    env: Mapping[str, str] | None,
+) -> list[_FleetToolEntry]:
+    entries: list[_FleetToolEntry] = []
+    _extend_fleet_tool_entries(entries, fleet_dir / "tools.json", scope="root", env=env)
+
+    subagents_dir = fleet_dir / "subagents"
+    try:
+        subagent_dirs = sorted(path for path in subagents_dir.iterdir() if path.is_dir())
+    except OSError:
+        return entries
+
+    for subagent_dir in subagent_dirs:
+        _extend_fleet_tool_entries(
+            entries,
+            subagent_dir / "tools.json",
+            scope=f"subagent:{subagent_dir.name}",
+            env=env,
+        )
+    return entries
+
+
+def _extend_fleet_tool_entries(
+    entries: list[_FleetToolEntry],
+    path: Path,
+    *,
+    scope: str,
+    env: Mapping[str, str] | None,
+) -> None:
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("Could not read Fleet MCP tool entries for startup logging")
+        return
+    if not isinstance(data, Mapping):
+        return
+
+    raw_tools = data.get("tools")
+    if not isinstance(raw_tools, Sequence) or isinstance(raw_tools, (str, bytes, bytearray)):
+        return
+
+    for raw_tool in raw_tools:
+        if not isinstance(raw_tool, Mapping):
+            continue
+        tool = cast("Mapping[str, object]", raw_tool)
+        name = tool.get("name")
+        server_url = tool.get("mcp_server_url")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(server_url, str) or not server_url:
+            continue
+        entries.append(
+            _FleetToolEntry(
+                name=name,
+                server_url=server_url,
+                auth_path=_fleet_auth_path(tool, server_url, env=env),
+                scope=scope,
+            )
+        )
+
+
+def _fleet_auth_path(
+    tool: Mapping[str, object],
+    server_url: str,
+    *,
+    env: Mapping[str, str] | None,
+) -> str:
+    raw_auth = tool.get("auth_type") or tool.get("auth")
+    if isinstance(raw_auth, str) and raw_auth in _KNOWN_FLEET_AUTH_PATHS:
+        return raw_auth
+    if _is_builtin_fleet_server(server_url, env=env):
+        return "builtin"
+    if "headers" in tool:
+        return "headers"
+    return "unknown"
+
+
+def _fleet_mcp_records(
+    entries: Sequence[_FleetToolEntry],
+    components: FleetAgentComponents,
+    *,
+    env: Mapping[str, str] | None,
+) -> list[dict[str, object]]:
+    loaded_tool_names = _component_tool_names(components)
+    grouped: dict[str, list[_FleetToolEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(_normalize_url(entry.server_url), []).append(entry)
+
+    records: list[dict[str, object]] = []
+    for group in grouped.values():
+        requested_tools = sorted({entry.name for entry in group})
+        loaded_tools = [name for name in requested_tools if name in loaded_tool_names]
+        auth_paths = sorted({entry.auth_path for entry in group})
+        auth_path = auth_paths[0] if len(auth_paths) == 1 else "mixed"
+        status = "loaded" if loaded_tools else "skipped"
+        record: dict[str, object] = {
+            "auth_path": auth_path,
+            "endpoint": _fleet_log_endpoint(group[0].server_url, auth_path, env=env),
+            "loaded_tool_count": len(loaded_tools),
+            "loaded_tools": loaded_tools,
+            "requested_tool_count": len(requested_tools),
+            "requested_tools": requested_tools,
+            "scopes": sorted({entry.scope for entry in group}),
+            "status": status,
+        }
+        if status == "skipped":
+            record["skip_reason"] = (
+                "no requested tools loaded; server may be unresolved, "
+                "unauthenticated, or missing requested tools"
+            )
+        records.append(record)
+    return sorted(records, key=lambda record: str(record["endpoint"]))
+
+
+def _component_tool_names(components: FleetAgentComponents) -> set[str]:
+    names: set[str] = set()
+    names.update(_tool_names(components.tools))
+    for subagent in components.subagents:
+        names.update(_tool_names(_subagent_tools(subagent)))
+    return names
+
+
+def _subagent_tools(subagent: object) -> Sequence[object]:
+    if isinstance(subagent, Mapping):
+        tools = cast("Mapping[str, object]", subagent).get("tools")
+    else:
+        tools = getattr(subagent, "tools", None)
+    if isinstance(tools, Sequence) and not isinstance(tools, (str, bytes, bytearray)):
+        return tools
+    return ()
+
+
+def _tool_names(tools: Sequence[object]) -> set[str]:
+    names: set[str] = set()
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if not isinstance(name, str):
+            name = getattr(tool, "__name__", None)
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _fleet_log_endpoint(
+    server_url: str,
+    auth_path: str,
+    *,
+    env: Mapping[str, str] | None,
+) -> str:
+    if auth_path != "builtin":
+        return server_url
+    values = os.environ if env is None else env
+    return values.get("BUILTIN_MCP_URL") or server_url
+
+
+def _is_builtin_fleet_server(
+    server_url: str,
+    *,
+    env: Mapping[str, str] | None,
+) -> bool:
+    values = os.environ if env is None else env
+    builtin = values.get("BUILTIN_MCP_URL")
+    if not builtin:
+        return False
+    return _url_host(server_url) == _url_host(builtin)
+
+
+def _url_host(value: str) -> str | None:
+    try:
+        return urlsplit(value).hostname
+    except ValueError:
+        return None
+
+
+def _normalize_url(value: str) -> str:
+    return value.rstrip("/").lower()
 
 
 @contextmanager

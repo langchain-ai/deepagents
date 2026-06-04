@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.types import AgentMiddleware
@@ -138,6 +141,87 @@ async def test_load_fleet_agent_components_adds_static_skills_loader(
     assert files_only is not None
     assert "files" in files_only
     assert "skills_metadata" not in files_only
+
+
+async def test_load_fleet_agent_components_logs_mcp_surface(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet_dir = tmp_path / "fleet"
+    fleet_dir.mkdir()
+    (fleet_dir / "tools.json").write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "name": "search",
+                        "mcp_server_url": "https://builtin.example/catalog?token=raw-secret",
+                        "auth_type": "builtin",
+                    },
+                    {
+                        "name": "missing",
+                        "mcp_server_url": "https://missing.example/mcp?token=missing-secret",
+                        "auth_type": "headers",
+                        "headers": {"Authorization": "Bearer header-secret"},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    subagent_dir = fleet_dir / "subagents" / "researcher"
+    subagent_dir.mkdir(parents=True)
+    (subagent_dir / "tools.json").write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "name": "calendar",
+                        "mcp_server_url": "https://calendar.example/mcp?token=oauth-secret",
+                        "auth_type": "oauth",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_load_agent_components(path):
+        assert path == fleet_dir
+        return {
+            "model": "fleet:model",
+            "system_prompt": "fleet prompt",
+            "tools": [SimpleNamespace(name="search")],
+            "subagents": [{"tools": [SimpleNamespace(name="calendar")]}],
+            "interrupt_on": None,
+        }
+
+    monkeypatch.setattr(
+        "deepagents_talon.fleet.load_agent_components",
+        fake_load_agent_components,
+    )
+
+    with caplog.at_level(logging.INFO, logger="deepagents_talon.fleet"):
+        await load_fleet_agent_components(
+            fleet_dir,
+            env={"BUILTIN_MCP_URL": "https://builtin.example/mcp?api_key=builtin-secret"},
+        )
+
+    event = _talon_events(caplog, event="fleet.mcp_surface")[0]
+    assert event["server_count"] == 3
+    server_payload = cast("list[dict[str, object]]", event["servers"])
+    servers = {cast("str", server["auth_path"]): server for server in server_payload}
+    assert servers["builtin"]["endpoint"] == "https://builtin.example/mcp"
+    assert servers["builtin"]["status"] == "loaded"
+    assert servers["builtin"]["loaded_tools"] == ["search"]
+    assert servers["oauth"]["endpoint"] == "https://calendar.example/mcp"
+    assert servers["oauth"]["status"] == "loaded"
+    assert servers["oauth"]["scopes"] == ["subagent:researcher"]
+    assert servers["headers"]["endpoint"] == "https://missing.example/mcp"
+    assert servers["headers"]["status"] == "skipped"
+    assert servers["headers"]["requested_tools"] == ["missing"]
+    assert "secret" not in caplog.text
 
 
 async def test_agent_runtime_loads_fleet_components(
@@ -282,3 +366,18 @@ async def test_agent_runtime_keeps_non_fleet_local_mcp_path(
     assert runtime.model == "local:model"
     assert runtime.tools == (local_tool,)
     assert runtime.assistant_dir == config.manifest_dir
+
+
+def _talon_events(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    event: str,
+) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for message in caplog.messages:
+        if not message.startswith("talon_event "):
+            continue
+        payload = json.loads(message.removeprefix("talon_event "))
+        if payload.get("event") == event:
+            events.append(payload)
+    return events

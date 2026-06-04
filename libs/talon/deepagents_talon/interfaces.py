@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +42,21 @@ class ChannelStatus:
     provider: str
     connected: bool
     detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelMedia:
+    """Outbound media delivered through a channel adapter.
+
+    Args:
+        path: Local file path visible to the channel adapter.
+        media_type: Channel-level media category.
+        caption: Optional text sent with the media payload.
+    """
+
+    path: Path
+    media_type: Literal["image", "video"]
+    caption: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +113,14 @@ class ChannelAdapter(Protocol):
         Args:
             conversation_id: Channel-specific conversation identifier.
             text: Message content to send.
+        """
+
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+        """Send media to a conversation.
+
+        Args:
+            conversation_id: Channel-specific conversation identifier.
+            media: Media payload to deliver.
         """
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:

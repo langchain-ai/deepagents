@@ -50,6 +50,13 @@ test = [
 [tool.uv]
 package = true
 
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_talon"]
+artifacts = [
+    "deepagents_talon/channels/whatsapp_bridge/bridge.js",
+    "deepagents_talon/channels/whatsapp_bridge/package.json",
+]
+
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 

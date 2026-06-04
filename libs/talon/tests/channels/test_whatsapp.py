@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import asyncio
+from typing import TYPE_CHECKING, cast
+
+from deepagents_talon.channels.base import ChannelExposure, ExposureMode
+from deepagents_talon.channels.whatsapp import (
+    BridgeTransport,
+    WhatsAppChannel,
+    WhatsAppChannelConfig,
+    bridge_script_path,
+)
+from deepagents_talon.config import TalonConfig
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+class RecordingTransport:
+    def __init__(self, messages: list[dict[str, object]] | None = None) -> None:
+        self.messages = messages or []
+        self.posts: list[tuple[str, dict[str, object]]] = []
+
+    async def get(self, path: str) -> object:
+        if path == "/messages":
+            messages = self.messages
+            self.messages = []
+            return messages
+        if path == "/health":
+            return {"status": "connected", "botId": "bot"}
+        msg = f"unexpected get path: {path}"
+        raise AssertionError(msg)
+
+    async def post(self, path: str, payload: dict[str, object]) -> object:
+        self.posts.append((path, payload))
+        return {"success": True, "message_id": "sent"}
+
+
+def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_WHATSAPP_EXPOSURE": "allowlist",
+            "DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS": "chat-1, chat-2",
+            "DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS": "@agent *",
+            "DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID": "operator",
+        },
+        base_home=tmp_path,
+    )
+
+    whatsapp = WhatsAppChannelConfig.from_talon_config(config)
+
+    assert whatsapp.session_dir == tmp_path / "assistant" / "channels" / "whatsapp"
+    assert whatsapp.exposure == ChannelExposure(
+        mode=ExposureMode.ALLOWLIST,
+        operator_id="operator",
+        conversations=frozenset({"chat-1", "chat-2"}),
+        mention_patterns=("@agent *",),
+    )
+
+
+async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "text": "allowed",
+                "chat_id": "chat",
+                "user_id": "operator",
+                "message_id": "message-1",
+                "message_type": "chat",
+            },
+            {
+                "text": "blocked",
+                "chat_id": "chat",
+                "user_id": "other",
+                "message_id": "message-2",
+                "message_type": "chat",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_id="operator"),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+    channel.set_message_handler(received.append)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [message.text for message in received] == ["allowed"]
+    assert received[0].metadata["provider"] == "whatsapp"
+
+
+async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
+    transport = RecordingTransport()
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("BridgeTransport", transport),
+    )
+
+    await channel.send_message("chat", "**bold** " + ("x" * 4096))
+
+    assert transport.posts[0] == ("/send", {"chat_id": "chat", "text": "*bold*"})
+    assert transport.posts[1][0] == "/send"
+    assert len(cast("str", transport.posts[1][1]["text"])) <= 4096
+
+
+async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
+    transport = RecordingTransport()
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("BridgeTransport", transport),
+    )
+
+    await channel.send_media(
+        "chat", ChannelMedia(path=image, media_type="image", caption="caption")
+    )
+    await channel.edit_message("chat", "message", "# Updated")
+
+    assert transport.posts == [
+        (
+            "/send-media",
+            {
+                "chat_id": "chat",
+                "path": str(image),
+                "mediaType": "image",
+                "caption": "caption",
+            },
+        ),
+        ("/edit", {"message_id": "message", "content": "Updated"}),
+    ]
+
+
+def test_bridge_script_is_packaged() -> None:
+    assert bridge_script_path().name == "bridge.js"
+    assert bridge_script_path().is_file()

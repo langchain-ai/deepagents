@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, ChannelStatus
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ChannelMedia,
+    ChannelMessage,
+    ChannelStatus,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -31,6 +37,9 @@ class RecordingChannel:
 
     async def send_message(self, conversation_id: str, text: str) -> None:
         self.sent.append((conversation_id, text))
+
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+        self.sent.append((conversation_id, f"{media.media_type}:{media.path}"))
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
         self.sent.append((conversation_id, f"{message_id}:{text}"))

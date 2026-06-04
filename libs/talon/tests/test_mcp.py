@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from pathlib import Path
+from typing import TYPE_CHECKING, TypeAlias
 
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.mcp import load_mcp_tools, load_mcp_tools_from_config
+from deepagents_talon.mcp import load_mcp_tools
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
 
 
@@ -22,7 +21,8 @@ class DummyTool:
 FakeCodeLoaderResult: TypeAlias = tuple[list[DummyTool], None, list[CodeMCPServerInfo]]
 
 
-async def _fake_code_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
+def _fake_code_loader(path: str) -> FakeCodeLoaderResult:
+    data = json.loads(Path(path).read_text())
     tools = [
         DummyTool("files_read"),
         DummyTool("files_write"),
@@ -40,49 +40,21 @@ async def _fake_code_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
     return tools, None, infos
 
 
-async def test_load_mcp_tools_from_config_delegates_to_code_loader(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[dict[str, Any]] = []
-
-    async def fake_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
-        seen.append(data)
-        return await _fake_code_loader(data)
-
-    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools_from_config", fake_loader)
-
-    result = await load_mcp_tools_from_config(
-        {
-            "mcpServers": {
-                "files": {
-                    "type": "stdio",
-                    "command": "server",
-                    "allowedTools": ["read", "search"],
-                },
-            },
-        },
-    )
-
-    assert seen[0]["mcpServers"]["files"]["allowedTools"] == ["read", "search"]
-    assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert len(result.servers[0].tools) == 3
-
-
-async def test_load_mcp_tools_reads_manifest_and_env_headers(
+async def test_load_mcp_tools_reads_manifest_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[dict[str, Any]] = []
+    seen: list[Path] = []
 
-    async def fake_loader(data: dict[str, Any]) -> FakeCodeLoaderResult:
-        seen.append(data)
-        return await _fake_code_loader(data)
+    async def fake_loader(path: str) -> FakeCodeLoaderResult:
+        seen.append(Path(path))
+        return _fake_code_loader(path)
 
-    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools_from_config", fake_loader)
-    monkeypatch.setenv("TOKEN", "secret")
+    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     config.ensure_home()
-    (config.manifest_dir / "tools.json").write_text(
+    tools_path = config.manifest_dir / "tools.json"
+    tools_path.write_text(
         json.dumps(
             {
                 "mcpServers": {
@@ -99,6 +71,54 @@ async def test_load_mcp_tools_reads_manifest_and_env_headers(
     result = await load_mcp_tools(config)
 
     assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert seen[0]["mcpServers"]["remote"]["headers"] == {
-        "Authorization": "Bearer ${TOKEN}",
-    }
+    assert seen == [tools_path]
+
+
+async def test_load_mcp_tools_prefers_env_config_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+
+    async def fake_loader(path: str) -> FakeCodeLoaderResult:
+        seen.append(Path(path))
+        return _fake_code_loader(path)
+
+    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
+    env_path = tmp_path / "custom-tools.json"
+    env_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "custom": {
+                        "type": "stdio",
+                        "command": "server",
+                    },
+                },
+            },
+        ),
+    )
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "test",
+            "DEEPAGENTS_TALON_MCP_CONFIG": str(env_path),
+        },
+        base_home=tmp_path,
+    )
+    config.ensure_home()
+    (config.manifest_dir / "tools.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "manifest": {
+                        "type": "stdio",
+                        "command": "server",
+                    },
+                },
+            },
+        ),
+    )
+
+    await load_mcp_tools(config)
+
+    assert seen == [env_path]

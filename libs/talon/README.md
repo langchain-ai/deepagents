@@ -97,9 +97,11 @@ assistant id, conversation id, trigger metadata, and source message metadata.
 
 ## MCP Tools
 
-Talon discovers MCP servers from `~/.deepagents/.mcp.json` and
-`~/.deepagents/<assistant_id>/agent/tools.json`. Add Talon-local servers by
-editing `tools.json` directly:
+Talon loads MCP servers from one config file. It checks
+`DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then
+`~/.deepagents/<assistant_id>/agent/tools.json`, then
+`~/.deepagents/.mcp.json`. Add Talon-local servers by editing `tools.json`
+directly:
 
 ```json
 {
@@ -112,7 +114,7 @@ editing `tools.json` directly:
 }
 ```
 
-Run `deepagents-talon mcp config` to print the resolved discovery paths, and
+Run `deepagents-talon mcp config` to print the resolved config paths, and
 `deepagents-talon mcp login <server>` for OAuth-backed servers.
 
 ## Cron Observability

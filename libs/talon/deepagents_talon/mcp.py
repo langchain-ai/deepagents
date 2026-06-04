@@ -7,15 +7,12 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from deepagents_code.mcp_tools import (
     MCPConfigError,
     MCPServerInfo,
-    get_mcp_tools_from_config,
-    load_mcp_config,
-    load_mcp_config_from_dict,
-    merge_mcp_configs,
+    get_mcp_tools,
 )
 
 if TYPE_CHECKING:
@@ -44,7 +41,7 @@ class MCPTools:
 
 
 def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
-    """Return existing MCP config files in Talon precedence order.
+    """Return existing MCP config files in Talon fallback order.
 
     Args:
         config: Talon runtime configuration.
@@ -71,22 +68,14 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     Raises:
         MCPConfigError: If a selected config source is malformed.
     """
-    data = _load_config(config)
-    if data is None:
+    path = _select_mcp_config_path(config)
+    if path is None:
         return MCPTools(tools=(), servers=())
-    return await load_mcp_tools_from_config(data)
-
-
-async def load_mcp_tools_from_config(data: Mapping[str, Any]) -> MCPTools:
-    """Load MCP tools from a parsed config object.
-
-    Args:
-        data: MCP configuration with an `mcpServers` object.
-
-    Returns:
-        Loaded tools and status for each configured server.
-    """
-    tools, manager, infos = await get_mcp_tools_from_config(data)
+    try:
+        tools, manager, infos = await get_mcp_tools(str(path))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        msg = str(exc)
+        raise MCPConfigError(msg) from exc
     if manager is not None:
         logger.debug("Loaded MCP tools with a persistent session manager: %r", manager)
     return MCPTools(tools=tuple(tools), servers=tuple(infos))
@@ -108,24 +97,21 @@ def print_mcp_config_paths(config: TalonConfig) -> None:
         marker = "found" if _is_file(path) else "missing"
         print(f"  [{marker:>7}]  {label:<{width}}  {path}")  # noqa: T201
     print(  # noqa: T201
-        "Override with DEEPAGENTS_TALON_MCP_CONFIG or MCP_CONFIG as a path or JSON object.",
+        "Override with DEEPAGENTS_TALON_MCP_CONFIG or MCP_CONFIG as a config file path.",
     )
+    print("The highest-precedence existing path is loaded; configs are not merged.")  # noqa: T201
     print("Edit <assistant-home>/agent/tools.json directly to add Talon MCP servers.")  # noqa: T201
 
 
-def _load_config(config: TalonConfig) -> dict[str, Any] | None:
+def _select_mcp_config_path(config: TalonConfig) -> Path | None:
     env_value = _first_env_value(config.env)
     if env_value:
-        return _load_env_config(env_value)
+        return Path(env_value).expanduser()
 
-    configs = [load_mcp_config(str(path)) for path in discover_mcp_config_paths(config)]
-    if not configs:
-        return None
-    try:
-        return load_mcp_config_from_dict(merge_mcp_configs(configs))
-    except (TypeError, ValueError) as exc:
-        msg = str(exc)
-        raise MCPConfigError(msg) from exc
+    paths = discover_mcp_config_paths(config)
+    if paths:
+        return paths[-1]
+    return None
 
 
 def _first_env_value(env: Mapping[str, str]) -> str | None:
@@ -134,21 +120,6 @@ def _first_env_value(env: Mapping[str, str]) -> str | None:
         if value:
             return value
     return None
-
-
-def _load_env_config(value: str) -> dict[str, Any]:
-    stripped = value.strip()
-    try:
-        if stripped.startswith("{"):
-            data = json.loads(stripped)
-            if not isinstance(data, dict):
-                msg = "MCP_CONFIG must contain a JSON object"
-                raise MCPConfigError(msg)
-            return load_mcp_config_from_dict(data, source="MCP_CONFIG")
-        return load_mcp_config(str(Path(stripped).expanduser()))
-    except (json.JSONDecodeError, TypeError, ValueError, OSError) as exc:
-        msg = str(exc)
-        raise MCPConfigError(msg) from exc
 
 
 def _is_file(path: Path) -> bool:

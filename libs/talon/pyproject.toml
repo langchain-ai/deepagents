@@ -23,7 +23,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "deepagents>=0.6.7",
+    # `fleet-deepagents-export` 0.0.x imports private `deepagents` 0.6 symbols
+    # from `deepagents.middleware.skills` and `deepagents.backends.utils`.
+    # Keep Talon on the 0.6 line until the library moves to public APIs.
+    "deepagents>=0.6.7,<0.7.0",
     "deepagents-code",
     "fleet-deepagents-export>=0.0.1,<1.0.0",
     "langchain-mcp-adapters>=0.2.2,<1.0.0",

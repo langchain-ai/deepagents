@@ -10,13 +10,16 @@ its dataclass defaults from them — so a default is defined in exactly one plac
 (`Settings.from_environment`) and by the `config` CLI command, so introspection
 can never drift from what the app actually reads. Resolution precedence mirrors
 the loaders: a `DEEPAGENTS_CODE_`-prefixed env var beats the canonical name,
-env beats `config.toml`, and the typed default is the final fallback. Malformed
-values are logged and fall back rather than raising, so a bad config never
-blocks startup.
+env beats `config.toml`, and the typed default is the final fallback. A
+malformed numeric/list/PTC value or a wrong-typed TOML value is logged and
+falls back rather than raising, so a bad config never blocks startup
+(unrecognized boolean env values follow `is_env_truthy` and resolve to the
+default without a warning).
 
 Structured, user-defined config — `[models.providers.*]`, `[themes.*]`,
-`[threads].columns` — is *not* a flat option and is parsed by dedicated typed
-loaders elsewhere; the manifest only references those sections for discovery.
+`[threads].columns`, `[warnings].suppress` — is *not* a flat scalar option and
+is parsed by dedicated typed loaders elsewhere; the manifest only references
+those sections for discovery.
 
 Import discipline: the module top level stays stdlib + `_env_vars` only (both
 light) so it is safe to import from `config.py` at class-definition time without
@@ -59,8 +62,9 @@ INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
-    The first five kinds are resolved generically by `resolve_scalar`. The
-    `*_DELEGATE` kinds defer to a bespoke parser (their semantics — colon-split
+    All kinds flow through `resolve_scalar`; the first five are coerced inline
+    by `_coerce_env`/`_coerce_toml`. The `*_DELEGATE` kinds defer to a bespoke
+    parser (their semantics — colon-split
     Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
     do not compress into a generic coercion). `STRUCTURED` marks user-defined
     tables that the scalar resolver only passes through for display.
@@ -168,7 +172,14 @@ def load_config_toml() -> dict[str, Any]:
     except FileNotFoundError:
         return {}
     except (OSError, tomllib.TOMLDecodeError):
-        logger.warning("Could not read config from %s", DEFAULT_CONFIG_PATH)
+        # `exc_info=True` preserves the TOML line/column (or permission cause):
+        # a corrupt file makes every option fall back to its default, so the
+        # log must say *why*, not just that the read failed.
+        logger.warning(
+            "Could not read config from %s; using defaults for all options",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
         return {}
 
 
@@ -284,15 +295,23 @@ def resolve_scalar(
 
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
-        `default`. Malformed env/TOML values are logged and skipped so the next
-        layer (or the typed default) applies.
+        `default`. A malformed `int`/`float`/list/PTC value, or any TOML value
+        of the wrong type, is logged and skipped so the next layer (or the
+        typed default) applies; unrecognized boolean env values resolve to the
+        default per `is_env_truthy` semantics. An empty env value is treated as
+        unset (mirroring `resolve_env_var`), so it falls through to
+        `config.toml`/`default` rather than counting as set.
     """
     if option.env_var:
         from deepagents_code.model_config import resolved_env_var_name
 
         name = resolved_env_var_name(option.env_var)
-        if name in os.environ:
-            value = _coerce_env(option, os.environ[name], name)
+        # An empty string counts as unset, matching `resolve_env_var`: this
+        # keeps `config show`/`get` aligned with what the runtime reads (and
+        # lets a prefixed empty var suppress a canonical one).
+        raw = os.environ.get(name)
+        if raw:
+            value = _coerce_env(option, raw, name)
             if value is not _INVALID:
                 return value, f"env ({name})"
 
@@ -750,7 +769,9 @@ def get_config_options() -> tuple[ConfigOption, ...]:
     """Return every option, credentials-first then by domain group.
 
     Cached: provider credentials are generated once from `PROVIDER_API_KEY_ENV`
-    on first call (which lazily imports `model_config`).
+    on first call (which lazily imports `model_config`). The cache assumes that
+    registry is an immutable module constant; a test that monkeypatches it must
+    call `get_config_options.cache_clear()` (and `_options_by_key.cache_clear()`).
     """
     return _credential_options() + _STATIC_OPTIONS
 

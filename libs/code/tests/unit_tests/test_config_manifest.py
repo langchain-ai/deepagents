@@ -136,6 +136,26 @@ def test_interpreter_defaults_match_settings() -> None:
         assert getattr(settings, opt.settings_field) == opt.default
 
 
+def test_every_settings_field_names_a_real_settings_attribute() -> None:
+    """Catch a typo'd `settings_field` on any option, not just interpreter ones.
+
+    `settings_field` is a free-form string with no compile-time link to the
+    `Settings` dataclass, so a misspelling would only surface at runtime
+    `getattr`. This locks the mapping across the whole catalog.
+    """
+    from dataclasses import fields
+
+    from deepagents_code.config import Settings
+
+    valid = {f.name for f in fields(Settings)}
+    bad = {
+        opt.key: opt.settings_field
+        for opt in get_config_options()
+        if opt.settings_field is not None and opt.settings_field not in valid
+    }
+    assert not bad, f"options reference unknown Settings fields: {bad}"
+
+
 # --- Resolution -------------------------------------------------------------
 
 
@@ -148,6 +168,39 @@ def test_resolve_prefers_prefixed_env(monkeypatch) -> None:
     value, source = resolve_scalar(opt, toml_data={})
     assert source == "env (DEEPAGENTS_CODE_OPENAI_API_KEY)"
     assert value == "prefixed"
+
+
+def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> None:
+    """An empty (prefixed) env var is unset for `config show`, as the app sees it.
+
+    The runtime `resolve_env_var` returns `None` for an empty prefixed var (and
+    a prefixed empty suppresses the canonical). `resolve_scalar` must agree, or
+    `config show` would report a credential as "set" that the app treats as
+    unset — the exact drift this feature exists to prevent.
+    """
+    from deepagents_code.model_config import resolve_env_var
+
+    opt = get_option("credentials.openai")
+    assert opt is not None
+    monkeypatch.setenv("OPENAI_API_KEY", "canonical")
+    monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "")
+
+    value, source = resolve_scalar(opt, toml_data={})
+    assert resolve_env_var("OPENAI_API_KEY") is None
+    assert source == "default"
+    assert value is None
+
+
+def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
+    """The `config show` aggregate (separate path from `get`) never leaks a secret."""
+    import json
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-secret")
+    args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(args) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert any(r["key"] == "credentials.anthropic" and r["set"] for r in rows)
+    assert all(r["value"] is None for r in rows if r["secret"])
 
 
 def test_resolve_int_falls_back_to_toml_then_default() -> None:

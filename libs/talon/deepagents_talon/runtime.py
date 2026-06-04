@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
@@ -48,6 +49,7 @@ _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/
 ModelContent = str | list[dict[str, object]]
 
 _BAD_REQUEST_STATUS_CODE = 400
+_AUTH_STATUS_CODES = frozenset({401, 403})
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
 _BACKEND_ENV_ALLOWED_KEYS = frozenset(
     {
@@ -124,6 +126,21 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "temporarily unavailable",
     "temporary failure",
 )
+_AUTH_MESSAGE_MARKERS = (
+    "401 unauthorized",
+    "403 forbidden",
+    "http 401",
+    "http 403",
+    "invalid_token",
+    "invalid token",
+    "oauth token",
+    "status 401",
+    "status 403",
+    "status_code=401",
+    "status_code=403",
+    "token expired",
+    "unauthorized",
+)
 
 _CONTINUATION_NUDGE = (
     "Your action budget was exhausted mid-task. Continue working and complete the task. "
@@ -167,6 +184,29 @@ class EchoAgentRuntime:
         return AgentResult(text=request.text)
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeAgentComponents:
+    """Runtime components used when rebuilding a `DeepAgentRuntime` graph.
+
+    Args:
+        model: Chat model identifier for `create_deep_agent`.
+        tools: Runtime tools exposed to the agent.
+        system_prompt: Optional system prompt.
+        subagents: Optional subagent specs available to the main agent.
+        skills: Optional explicit skill source paths.
+        middleware: Optional middleware to pass through to `create_deep_agent`.
+        interrupt_on: Optional human-in-the-loop tool approval configuration.
+    """
+
+    model: str
+    tools: Sequence[BaseTool | Callable[..., object]] = ()
+    system_prompt: str | None = None
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None
+    skills: Sequence[str] | None = None
+    middleware: Sequence[AgentMiddleware[Any, Any, Any]] = ()
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None
+
+
 class DeepAgentRuntime:
     """Deep Agents-backed runtime for Talon.
 
@@ -196,6 +236,9 @@ class DeepAgentRuntime:
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
+        reload_agent_components: Optional callback used after an MCP
+            authorization failure to refresh credentials, rebuild tools, and
+            retry the failed invocation once.
     """
 
     def __init__(  # noqa: PLR0913  # runtime construction mirrors graph wiring knobs
@@ -218,6 +261,7 @@ class DeepAgentRuntime:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
         env: Mapping[str, str] | None = None,
+        reload_agent_components: Callable[[], Awaitable[RuntimeAgentComponents]] | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
         if recursion_limit <= 0:
@@ -247,6 +291,8 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self.env = dict(os.environ if env is None else env)
+        self.reload_agent_components = reload_agent_components
+        self._reload_lock = asyncio.Lock()
         self._graph: object | None = None
 
     async def start(self) -> None:
@@ -264,6 +310,23 @@ class DeepAgentRuntime:
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
+
+    async def reload(self, components: RuntimeAgentComponents) -> None:
+        """Rebuild the graph with refreshed runtime components.
+
+        Args:
+            components: Components to apply before graph construction.
+        """
+        self.model = components.model
+        self.tools = tuple(components.tools)
+        self.system_prompt = components.system_prompt
+        self.subagents = tuple(components.subagents) if components.subagents is not None else None
+        self.skills = tuple(components.skills) if components.skills is not None else None
+        self.middleware = tuple(components.middleware)
+        self.interrupt_on = (
+            dict(components.interrupt_on) if components.interrupt_on is not None else None
+        )
+        await self.start()
 
     async def stop(self) -> None:
         """Release runtime resources."""
@@ -347,23 +410,38 @@ class DeepAgentRuntime:
         return await self._invoke_payload_with_retries(command, conversation_id)
 
     async def _invoke_payload_with_retries(self, payload: object, conversation_id: str) -> object:
-        ainvoke = getattr(self._graph, "ainvoke", None)
-        if not callable(ainvoke):
-            msg = "Deep Agents graph does not expose async invocation"
-            raise TypeError(msg)
-
-        invoke = cast("Callable[..., Awaitable[object]]", ainvoke)
+        invoke = self._graph_invoke()
         config = {
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
         }
         last_exc: Exception | None = None
+        refreshed_auth = False
         for attempt in range(self.max_retries):
             try:
                 return await invoke(payload, config=config)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if self.reload_agent_components is not None and _is_auth_failure(exc):
+                    if refreshed_auth:
+                        logger.warning(
+                            "Fleet MCP authorization failed after credential reload "
+                            "for conversation %s; returning structured tool error",
+                            conversation_id,
+                        )
+                        return _structured_auth_failure_state(exc)
+
+                    refreshed_auth = True
+                    reloaded = await self._reload_after_auth_failure(
+                        conversation_id,
+                        status_code=_status_code(exc),
+                    )
+                    if not reloaded:
+                        return _structured_auth_failure_state(exc)
+                    invoke = self._graph_invoke()
+                    continue
+
                 if not _is_retryable(exc) or attempt + 1 >= self.max_retries:
                     raise
                 last_exc = exc
@@ -379,6 +457,43 @@ class DeepAgentRuntime:
             raise last_exc
         msg = "agent invocation retry loop exited unexpectedly"
         raise RuntimeError(msg)
+
+    def _graph_invoke(self) -> Callable[..., Awaitable[object]]:
+        ainvoke = getattr(self._graph, "ainvoke", None)
+        if not callable(ainvoke):
+            msg = "Deep Agents graph does not expose async invocation"
+            raise TypeError(msg)
+        return cast("Callable[..., Awaitable[object]]", ainvoke)
+
+    async def _reload_after_auth_failure(
+        self,
+        conversation_id: str,
+        *,
+        status_code: int | None,
+    ) -> bool:
+        async with self._reload_lock:
+            reload_agent_components = self.reload_agent_components
+            if reload_agent_components is None:
+                return False
+
+            logger.info(
+                "Refreshing Fleet MCP credentials after authorization failure in conversation %s%s",
+                conversation_id,
+                f" (status {status_code})" if status_code is not None else "",
+            )
+            try:
+                components = await reload_agent_components()
+                await self.reload(components)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001  # return sanitized error for loader-specific failures.
+                logger.warning(
+                    "Fleet MCP credential reload failed for conversation %s; "
+                    "returning structured tool error",
+                    conversation_id,
+                )
+                return False
+            return True
 
     async def _invoke_until_unblocked(
         self,
@@ -690,12 +805,50 @@ def _is_retryable(exc: Exception) -> bool:
         return True
 
     text = str(exc).lower()
-    status_code = getattr(exc, "status_code", None)
+    status_code = _status_code(exc)
     if status_code in _RETRYABLE_STATUS_CODES:
         return True
     if status_code == _BAD_REQUEST_STATUS_CODE:
         return _contains_marker(text, _RETRYABLE_BAD_REQUEST_MARKERS)
     return _contains_marker(text, _RETRYABLE_MESSAGE_MARKERS)
+
+
+def _is_auth_failure(exc: BaseException) -> bool:
+    if _status_code(exc) in _AUTH_STATUS_CODES:
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_auth_failure(item) for item in exc.exceptions)
+    return _contains_marker(str(exc).lower(), _AUTH_MESSAGE_MARKERS)
+
+
+def _status_code(exc: BaseException) -> int | None:
+    for source in (exc, getattr(exc, "response", None)):
+        if source is None:
+            continue
+        for attr in ("status_code", "status"):
+            value = getattr(source, attr, None)
+            if isinstance(value, int):
+                return value
+    if isinstance(exc, BaseExceptionGroup):
+        for item in exc.exceptions:
+            value = _status_code(item)
+            if value is not None:
+                return value
+    return None
+
+
+def _structured_auth_failure_state(exc: BaseException) -> dict[str, list[dict[str, object]]]:
+    error: dict[str, object] = {
+        "error": "mcp_auth_failed",
+        "message": (
+            "Fleet MCP tool authorization failed after refreshing OAuth credentials. "
+            "Run the Fleet pre-authorization step, then retry."
+        ),
+    }
+    status_code = _status_code(exc)
+    if status_code is not None:
+        error["status_code"] = status_code
+    return {"messages": [{"content": json.dumps(error, sort_keys=True)}]}
 
 
 def _contains_marker(text: str, markers: Sequence[str]) -> bool:
@@ -709,7 +862,11 @@ def _last_text(state: object) -> str:
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
         return ""
-    content = getattr(messages[-1], "content", "")
+    last = messages[-1]
+    if isinstance(last, Mapping):
+        content = cast("Mapping[str, object]", last).get("content", "")
+    else:
+        content = getattr(last, "content", "")
     if isinstance(content, str):
         return content
     if isinstance(content, list):

@@ -50,6 +50,23 @@ when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and
 `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest
 directory and Talon's plain MCP config discovery.
 
+OAuth-backed Fleet MCP tools must be authorized once from an interactive shell
+before starting a headless host. Run the host in `--once` mode with the same
+Fleet directory and LangSmith environment you will use in production, complete
+the browser authorization if prompted, then start the long-running host:
+
+```bash
+DEEPAGENTS_TALON_FLEET_DIR=./fleet \
+AGENT_ASSISTANT_ID=fleet-local \
+uv run deepagents-talon --once
+```
+
+During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as
+an expired OAuth credential signal. It reloads the Fleet components once, which
+re-mints tokens and rebuilds MCP connections, then retries the failed graph
+invocation once. If authorization still fails, Talon returns a structured
+`mcp_auth_failed` error instead of looping.
+
 ## WhatsApp
 
 The WhatsApp channel uses a local Node bridge packaged with this library. The

@@ -159,7 +159,7 @@ async def test_agent_runtime_loads_fleet_components(
         *,
         env,
     ) -> FleetAgentComponents:
-        seen["path"] = path
+        seen.setdefault("paths", []).append(path)
         seen["env"] = env
         return FleetAgentComponents(
             model="fleet:model",
@@ -199,8 +199,16 @@ async def test_agent_runtime_loads_fleet_components(
     assert runtime.skills == ("/fleet/skills",)
     assert runtime.middleware == (middleware,)
     assert runtime.assistant_dir is None
-    assert seen["path"] == fleet_dir
+    assert seen["paths"] == [fleet_dir]
     assert seen["env"]["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
+    assert runtime.reload_agent_components is not None
+
+    refreshed = await runtime.reload_agent_components()
+
+    assert refreshed.model == "fleet:model"
+    assert refreshed.tools == (fleet_tool,)
+    assert refreshed.middleware == (middleware,)
+    assert seen["paths"] == [fleet_dir, fleet_dir]
 
 
 async def test_agent_runtime_allows_fleet_model_override(

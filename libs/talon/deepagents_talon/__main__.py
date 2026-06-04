@@ -14,10 +14,10 @@ from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelC
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
-from deepagents_talon.fleet import load_fleet_agent_components
+from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
-from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
+from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime, RuntimeAgentComponents
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -95,17 +95,25 @@ async def _agent_runtime(
 ) -> EchoAgentRuntime | DeepAgentRuntime:
     env = _runtime_env(config)
     if config.fleet_dir is not None:
-        components = await load_fleet_agent_components(config.fleet_dir, env=env)
+        fleet_dir = config.fleet_dir
+        components = await load_fleet_agent_components(fleet_dir, env=env)
+        runtime_components = _runtime_components_from_fleet(config, components)
+
+        async def reload_fleet_components() -> RuntimeAgentComponents:
+            refreshed = await load_fleet_agent_components(fleet_dir, env=env)
+            return _runtime_components_from_fleet(config, refreshed)
+
         return DeepAgentRuntime(
-            model=config.model or components.model,
-            tools=components.tools,
-            system_prompt=components.system_prompt,
-            subagents=components.subagents,
-            skills=components.skills,
-            middleware=components.middleware,
-            interrupt_on=components.interrupt_on,
+            model=runtime_components.model,
+            tools=runtime_components.tools,
+            system_prompt=runtime_components.system_prompt,
+            subagents=runtime_components.subagents,
+            skills=runtime_components.skills,
+            middleware=runtime_components.middleware,
+            interrupt_on=runtime_components.interrupt_on,
             cron_store=cron_store,
             env=env,
+            reload_agent_components=reload_fleet_components,
         )
 
     if config.model is None:
@@ -123,6 +131,21 @@ async def _agent_runtime(
         assistant_dir=config.manifest_dir,
         cron_store=cron_store,
         env=env,
+    )
+
+
+def _runtime_components_from_fleet(
+    config: TalonConfig,
+    components: FleetAgentComponents,
+) -> RuntimeAgentComponents:
+    return RuntimeAgentComponents(
+        model=config.model or components.model,
+        tools=components.tools,
+        system_prompt=components.system_prompt,
+        subagents=components.subagents,
+        skills=components.skills,
+        middleware=components.middleware,
+        interrupt_on=components.interrupt_on,
     )
 
 

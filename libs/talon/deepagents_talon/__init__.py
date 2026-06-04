@@ -25,7 +25,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
-from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
+from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime, RuntimeAgentComponents
 from deepagents_talon.speech import (
     DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
     LocalParakeetVoiceTranscriber,
@@ -54,6 +54,7 @@ __all__ = [
     "LocalParakeetVoiceTranscriber",
     "OpenAIVoiceTranscriber",
     "PersistentCronScheduler",
+    "RuntimeAgentComponents",
     "TalonConfig",
     "TalonHost",
     "ToolApprovalDecision",

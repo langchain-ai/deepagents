@@ -203,9 +203,16 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            # A routed backend may store keys two ways: absolute (full route-prefixed,
+            # e.g. "/memory/skills/foo" — what a StoreBackend used directly holds) or
+            # mount-relative (route prefix stripped to "/foo" — what CompositeBackend writes).
+            # Try the path as-is first: a backend holding absolute keys answers with correct
+            # full paths, so treat any hit as authoritative.
             absolute = self._coerce_ls_result(backend.ls(path))
             if not absolute.error and absolute.entries:
                 return absolute
+            # Fall back to the route-relative layout. Don't merge with absolute-path
+            # results: re-prefixing those would reintroduce the double-prefix bug.
             relative = self._coerce_ls_result(backend.ls(backend_path))
             if relative.error:
                 return relative
@@ -241,6 +248,11 @@ class CompositeBackend(BackendProtocol):
             path=path,
         )
         if route_prefix is not None:
+            # See ls() for the full rationale. Absolute keys (full route-prefixed) list
+            # correctly via the path as-is and are authoritative; an empty probe falls back
+            # to the mount-relative layout, re-adding the prefix that CompositeBackend strips
+            # on write. The two layouts aren't merged because re-prefixing absolute keys would
+            # double the route prefix.
             absolute = self._coerce_ls_result(await backend.als(path))
             if not absolute.error and absolute.entries:
                 return absolute

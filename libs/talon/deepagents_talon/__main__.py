@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import importlib
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelC
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
+from deepagents_talon.fleet import load_fleet_agent_components
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
 from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
@@ -91,6 +93,18 @@ async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore,
 ) -> EchoAgentRuntime | DeepAgentRuntime:
+    env = _runtime_env(config)
+    if config.fleet_dir is not None:
+        components = await load_fleet_agent_components(config.fleet_dir, env=env)
+        return DeepAgentRuntime(
+            model=config.model or components.model,
+            tools=components.tools,
+            system_prompt=components.system_prompt,
+            subagents=components.subagents,
+            cron_store=cron_store,
+            env=env,
+        )
+
     if config.model is None:
         return EchoAgentRuntime()
 
@@ -105,6 +119,7 @@ async def _agent_runtime(
         tools=mcp.tools,
         assistant_dir=config.manifest_dir,
         cron_store=cron_store,
+        env=env,
     )
 
 
@@ -144,6 +159,12 @@ def _channels(config: TalonConfig, *, enabled: bool) -> tuple[ChannelAdapter, ..
     }:
         return ()
     return (WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)),)
+
+
+def _runtime_env(config: TalonConfig) -> dict[str, str]:
+    values = dict(os.environ)
+    values.update(config.env)
+    return values
 
 
 async def _deliver_cron_result(

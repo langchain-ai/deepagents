@@ -28,6 +28,28 @@ channel sessions, and cron jobs.
 The default local execution workspace is `/workspace`; set
 `DEEPAGENTS_TALON_WORKSPACE` to use a different directory.
 
+## Fleet Exports
+
+Talon can host an operator-unzipped LangSmith Fleet export through the
+`fleet-deepagents-export` library:
+
+```bash
+unzip path/to/fleet-export.zip -d ./fleet
+
+DEEPAGENTS_TALON_FLEET_DIR=./fleet \
+AGENT_ASSISTANT_ID=fleet-local \
+uv run deepagents-talon --once
+```
+
+In Fleet mode, Talon uses the model from `fleet/config.json` unless
+`DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP
+registry references through LangSmith, so provide the required
+`LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and
+when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and
+`HOST_LANGCHAIN_API_URL`. Locally-authored agents without
+`DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest
+directory and Talon's plain MCP config discovery.
+
 ## WhatsApp
 
 The WhatsApp channel uses a local Node bridge packaged with this library. The

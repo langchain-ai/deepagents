@@ -22,6 +22,7 @@ from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import AgentRequest, AgentResult
 
 if TYPE_CHECKING:
+    from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -107,6 +108,7 @@ class DeepAgentRuntime:
         tools: Runtime tools exposed to the agent in addition to web and cron tools.
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
+        subagents: Optional subagent specs available to the main agent.
         assistant_dir: Materialized assistant directory containing `AGENTS.md`,
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
@@ -132,6 +134,7 @@ class DeepAgentRuntime:
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
         system_prompt: str | None = None,
+        subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
         backend: BackendProtocol | None = None,
@@ -158,6 +161,7 @@ class DeepAgentRuntime:
         self.model = model
         self.tools = tuple(tools)
         self.system_prompt = system_prompt
+        self.subagents = tuple(subagents) if subagents is not None else None
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.backend = backend if backend is not None else _default_backend(env)
@@ -178,6 +182,7 @@ class DeepAgentRuntime:
             model=_resolve_model_from_env(self.model, self.env),
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
+            subagents=list(self.subagents) if self.subagents is not None else None,
             backend=self.backend,
             skills=self._resolve_skills(),
             memory=self._resolve_memory(),

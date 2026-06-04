@@ -115,6 +115,37 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     } <= tool_names
 
 
+async def test_runtime_wires_subagents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    subagents = [
+        {
+            "name": "researcher",
+            "description": "Research tasks",
+            "system_prompt": "Research carefully.",
+        },
+    ]
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        subagents=subagents,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == subagents
+
+
 async def test_runtime_uses_configured_workspace_for_default_backend(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

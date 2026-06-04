@@ -77,6 +77,31 @@ def test_from_env_keeps_legacy_speech_env(tmp_path: Path) -> None:
     assert config.env["SPEECH_DEVICE"] == "cuda"
 
 
+def test_from_env_reads_fleet_dir_and_keeps_fleet_env(tmp_path: Path) -> None:
+    fleet_dir = tmp_path / "fleet"
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant-1",
+            "DEEPAGENTS_TALON_FLEET_DIR": str(fleet_dir),
+            "LANGSMITH_TENANT_ID": "tenant",
+            "LANGSMITH_ORGANIZATION_ID": "org",
+            "LANGSMITH_USER_ID": "user",
+            "BUILTIN_MCP_URL": "https://tools.example/mcp",
+            "LANGSMITH_HOST_URL": "https://langsmith.example/api",
+            "HOST_LANGCHAIN_API_URL": "https://langsmith.example/api-host",
+        },
+        base_home=tmp_path,
+    )
+
+    assert config.fleet_dir == fleet_dir
+    assert config.env["LANGSMITH_TENANT_ID"] == "tenant"
+    assert config.env["LANGSMITH_ORGANIZATION_ID"] == "org"
+    assert config.env["LANGSMITH_USER_ID"] == "user"
+    assert config.env["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
+    assert config.env["LANGSMITH_HOST_URL"] == "https://langsmith.example/api"
+    assert config.env["HOST_LANGCHAIN_API_URL"] == "https://langsmith.example/api-host"
+
+
 @pytest.mark.parametrize("assistant_id", ["", ".", "..", "../bad", "bad/slash", "bad space"])
 def test_from_env_rejects_unsafe_assistant_id(tmp_path: Path, assistant_id: str) -> None:
     with pytest.raises(TalonConfigError):

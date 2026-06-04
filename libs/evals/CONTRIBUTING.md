@@ -403,6 +403,7 @@ export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING=true          # Required: Enable LangSmith tracing
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
 # export DAYTONA_API_KEY="..."  # Optional: Only if using --env daytona
+# export E2B_API_KEY="..."      # Optional: Only if using --env e2b
 ```
 
 ### Running benchmarks
@@ -415,6 +416,10 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
 # Run via Daytona (10 concurrent trials)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+
+# Run via E2B (10 concurrent trials)
+uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env e2b
 ```
 
 ### Available environments
@@ -423,6 +428,7 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 
 - `docker` - Local Docker containers (good for testing)
 - `daytona` - Daytona cloud sandboxes (requires `DAYTONA_API_KEY`)
+- `e2b` - E2B cloud sandboxes (requires `E2B_API_KEY`)
 - `modal` - Modal cloud compute
 - `runloop` - Runloop sandboxes
 
@@ -430,6 +436,7 @@ Makefile shortcuts are available for common workflows:
 
 - `make run-terminal-bench-docker` - Run on Docker (sequential)
 - `make run-terminal-bench-daytona` - Run on Daytona (40 concurrent)
+- `make run-terminal-bench-e2b` - Run on E2B (10 concurrent)
 - `make run-terminal-bench-modal` - Run on Modal (4 concurrent)
 - `make run-terminal-bench-runloop` - Run on Runloop (10 concurrent)
 

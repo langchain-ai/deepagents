@@ -173,8 +173,8 @@ class ServerConfig:
     """
 
     sandbox_type: str | None = None
-    """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
-    host. `'none'` is normalized to `None` in `__post_init__`."""
+    """Sandbox backend identifier (e.g. `'daytona'` or `'e2b'`); `None` runs
+    tools on the host. `'none'` is normalized to `None` in `__post_init__`."""
 
     sandbox_id: str | None = None
     """Existing sandbox ID to attach to; `None` creates a fresh sandbox."""

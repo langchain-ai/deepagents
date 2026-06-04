@@ -1,7 +1,7 @@
 # Harbor evaluation workflow for Deep Agents
 #
 # Runs terminal-bench evaluations via Harbor with configurable sandbox
-# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# environments (Docker, Daytona, E2B, LangSmith, Modal, Runloop).
 # Models are selected via dropdown or comma-separated override.
 #
 # Required secrets (vary by sandbox + model provider):
@@ -19,6 +19,7 @@
 #   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY         — needed for OpenRouter-hosted models
 #   DAYTONA_API_KEY            — needed for Daytona sandbox
+#   E2B_API_KEY                — needed for E2B sandbox
 #   MODAL_TOKEN_ID             — needed for Modal sandbox
 #   MODAL_TOKEN_SECRET         — needed for Modal sandbox
 #   RUNLOOP_API_KEY            — needed for Runloop sandbox
@@ -123,6 +124,7 @@ on:
         options:
           - docker
           - daytona
+          - e2b
           - langsmith
           - modal
           - runloop
@@ -238,6 +240,7 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -268,6 +271,9 @@ jobs:
               ;; # No additional credentials needed
             daytona)
               [ -z "$DAYTONA_API_KEY" ] && missing+=("DAYTONA_API_KEY")
+              ;;
+            e2b)
+              [ -z "$E2B_API_KEY" ] && missing+=("E2B_API_KEY")
               ;;
             langsmith)
               ;; # LANGSMITH_API_KEY already checked above

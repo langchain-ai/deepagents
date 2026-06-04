@@ -900,13 +900,21 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
+        choices=[
+            "none",
+            "agentcore",
+            "modal",
+            "daytona",
+            "e2b",
+            "runloop",
+            "langsmith",
+        ],
         default="none",
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution "
             "(default: none - local only; langsmith is included, "
-            "agentcore/modal/daytona/runloop require downloading extras)"
+            "agentcore/modal/daytona/e2b/runloop require downloading extras)"
         ),
     )
 
@@ -992,7 +1000,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--install",
         metavar="EXTRA",
-        help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+        help="Install an optional extra (e.g. quickjs, daytona, e2b), then exit",
     )
     parser.add_argument(
         "--yes",
@@ -1071,7 +1079,8 @@ async def run_textual_cli_async(
         assistant_id: Agent identifier for memory storage
         auto_approve: Whether to auto-approve tool usage
         sandbox_type: Type of sandbox
-            ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
+            ("none", "agentcore", "modal", "runloop", "daytona", "e2b",
+            "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_snapshot_name: Optional sandbox snapshot name to use or create
             (langsmith only).

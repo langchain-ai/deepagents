@@ -21,7 +21,7 @@ regenerate after editing the registry.
 | `/feedback` |  | Submit a bug report or feature request |
 | `/force-clear` |  | Interrupt active work, clear chat, and start new thread |
 | `/help` |  | Show help |
-| `/install` |  | Install an optional extra (e.g. quickjs, daytona, fireworks) |
+| `/install` |  | Install an optional extra (e.g. quickjs, daytona, e2b) |
 | `/mcp` |  | Show MCP servers; `/mcp login <server>` to authenticate, `/mcp reconnect` to load deferred logins, F2 in the viewer to disable/enable a server |
 | `/model` |  | Switch or configure model (--model-params, --default) |
 | `/notifications` |  | Configure startup warning preferences |

@@ -19,6 +19,7 @@ Usage:
     python ralph_mode.py "Create a CLI tool" --work-dir ./my-project
     python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
     python ralph_mode.py "Build an app" --sandbox modal
+    python ralph_mode.py "Build an app" --sandbox e2b
     python ralph_mode.py "Build an app" --sandbox modal --sandbox-id my-sandbox
     python ralph_mode.py "Build an app" --shell-allow-list recommended
     python ralph_mode.py "Build an app" --no-stream
@@ -75,7 +76,7 @@ async def ralph(
             to auto-detection from environment API keys
             (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`).
         model_params: Additional model parameters (e.g. `{"temperature": 0.5}`).
-        sandbox_type: Sandbox provider (`"none"`, `"agentcore"`, `"modal"`, `"daytona"`, etc.).
+        sandbox_type: Sandbox provider (`"none"`, `"agentcore"`, `"modal"`, `"daytona"`, `"e2b"`, etc.).
         sandbox_id: Existing sandbox instance ID to reuse.
         sandbox_setup: Path to a setup script to run inside the sandbox.
         stream: Whether to stream model output.
@@ -167,6 +168,7 @@ Examples:
   python ralph_mode.py "Create a CLI tool" --model claude-sonnet-4-6
   python ralph_mode.py "Build a web app" --work-dir ./my-project
   python ralph_mode.py "Build an app" --sandbox modal
+  python ralph_mode.py "Build an app" --sandbox e2b
   python ralph_mode.py "Build an app" --shell-allow-list recommended
   python ralph_mode.py "Build an app" --model-params '{"temperature": 0.5}'
         """,
@@ -190,7 +192,7 @@ Examples:
     parser.add_argument(
         "--sandbox",
         default="none",
-        help="Sandbox provider (e.g., agentcore, modal, daytona). Default: none",
+        help="Sandbox provider (e.g., agentcore, modal, daytona, e2b). Default: none",
     )
     parser.add_argument(
         "--sandbox-id",

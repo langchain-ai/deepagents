@@ -1048,6 +1048,7 @@ _COMMAND_URLS: dict[str, str] = {
 _SANDBOX_DISPLAY_NAMES: dict[str, str] = {
     "agentcore": "AgentCore",
     "daytona": "Daytona",
+    "e2b": "E2B",
     "langsmith": "LangSmith",
     "modal": "Modal",
     "runloop": "Runloop",

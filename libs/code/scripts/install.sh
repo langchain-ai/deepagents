@@ -6,7 +6,7 @@
 #
 # Environment variables:
 #   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona"
+#                             "ollama,groq", or "daytona,e2b"
 #                             (see pyproject.toml for available extras)
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
@@ -200,7 +200,7 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
   if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
-    log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
+    log_error "DEEPAGENTS_CODE_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona,e2b'"
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"

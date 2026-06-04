@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-e2b run-terminal-bench-runloop evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -56,6 +56,10 @@ run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
 run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona $(AGENT_KWARG)
+
+run-terminal-bench-e2b: ## Run terminal-bench on E2B (10 concurrent)
+	@mkdir -p jobs/terminal-bench
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env e2b $(AGENT_KWARG)
 
 run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 	@mkdir -p jobs/terminal-bench

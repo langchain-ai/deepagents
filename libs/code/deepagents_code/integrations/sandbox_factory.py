@@ -73,6 +73,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 _PROVIDER_TO_WORKING_DIR = {
     "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
+    "e2b": "/home/user",
     "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
     "modal": "/workspace",
     "runloop": "/home/user",
@@ -94,8 +95,8 @@ def create_sandbox(
     provider abstraction.
 
     Args:
-        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'e2b'`,
+            `'langsmith'`, `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Currently only honored by the `'langsmith'` provider; must be
@@ -179,8 +180,8 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'e2b'`,
+            `'langsmith'`, `'modal'`, `'runloop'`)
 
     Returns:
         Default working directory path as string
@@ -710,6 +711,81 @@ class _RunloopProvider(SandboxProvider):
         self._client.devboxes.shutdown(id=sandbox_id)
 
 
+class _E2BProvider(SandboxProvider):
+    """E2B sandbox provider — lifecycle management for E2B sandboxes."""
+
+    def __init__(self) -> None:
+        self._e2b = _import_provider_module(
+            "e2b",
+            provider="e2b",
+            package="langchain-e2b",
+        )
+
+        from deepagents_code.model_config import resolve_env_var
+
+        api_key = resolve_env_var("E2B_API_KEY")
+        if not api_key:
+            msg = (
+                "No E2B API key found. Set E2B_API_KEY or DEEPAGENTS_CODE_E2B_API_KEY."
+            )
+            raise ValueError(msg)
+        self._api_key = api_key
+        self._template = resolve_env_var("E2B_TEMPLATE")
+        timeout_value = resolve_env_var("E2B_SANDBOX_TIMEOUT")
+        self._sandbox_timeout = int(timeout_value) if timeout_value else 60 * 30
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,  # noqa: ARG002  # E2B create/connect return a usable sandbox.
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Get or create an E2B sandbox.
+
+        Args:
+            sandbox_id: Existing sandbox ID, or None to create.
+            timeout: Unused compatibility argument for the provider interface.
+            **kwargs: Unused.
+
+        Returns:
+            `E2BSandbox` instance.
+
+        Raises:
+            RuntimeError: If the sandbox fails to connect or start.
+            SandboxNotFoundError: If `sandbox_id` does not exist.
+        """
+        e2b_backend = _import_provider_module(
+            "langchain_e2b",
+            provider="e2b",
+            package="langchain-e2b",
+        )
+
+        if sandbox_id:
+            try:
+                sandbox = self._e2b.Sandbox.connect(
+                    sandbox_id,
+                    api_key=self._api_key,
+                )
+            except Exception as exc:
+                if type(exc).__name__ == "SandboxNotFoundException":
+                    raise SandboxNotFoundError(sandbox_id) from exc
+                msg = f"Failed to connect to existing E2B sandbox '{sandbox_id}': {exc}"
+                raise RuntimeError(msg) from exc
+        else:
+            sandbox = self._e2b.Sandbox.create(
+                timeout=self._sandbox_timeout,
+                api_key=self._api_key,
+                **({"template": self._template} if self._template else {}),
+            )
+
+        return e2b_backend.E2BSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Kill an E2B sandbox by id."""
+        self._e2b.Sandbox.kill(sandbox_id, api_key=self._api_key)
+
+
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -841,8 +917,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'e2b'`,
+            `'langsmith'`, `'modal'`, `'runloop'`)
 
     Returns:
         `SandboxProvider` instance
@@ -854,6 +930,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return _AgentCoreProvider()
     if provider_name == "daytona":
         return _DaytonaProvider()
+    if provider_name == "e2b":
+        return _E2BProvider()
     if provider_name == "langsmith":
         return _LangSmithProvider()
     if provider_name == "modal":
@@ -890,6 +968,7 @@ def verify_sandbox_deps(provider: str) -> None:
     backend_modules: dict[str, tuple[str, str]] = {
         "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
         "daytona": ("langchain_daytona", "daytona"),
+        "e2b": ("langchain_e2b", "e2b"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),
     }

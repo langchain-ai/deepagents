@@ -58,11 +58,13 @@
     "deepagents-code": "dcode",
     "deps": "dependencies",
     "docs": "documentation",
+    "e2b": "e2b",
     "evals": "evals",
     "examples": "examples",
     "harbor": "harbor",
     "infra": "infra",
     "langchain-daytona": "daytona",
+    "langchain-e2b": "e2b",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
     "langchain-runloop": "runloop",
@@ -107,6 +109,11 @@
     {
       "label": "daytona",
       "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "e2b",
+      "prefix": "libs/partners/e2b/",
       "skipExcludedFiles": true
     },
     {

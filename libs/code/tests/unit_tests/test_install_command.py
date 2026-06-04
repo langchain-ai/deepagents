@@ -31,6 +31,7 @@ async def test_install_slash_usage_when_no_extra() -> None:
         assert "Available extras:" in rendered
         assert "quickjs" in rendered
         assert "daytona" in rendered
+        assert "e2b" in rendered
         assert "openai" in rendered
 
 

@@ -958,8 +958,8 @@ async def run_non_interactive(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
-        sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
-            `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+        sandbox_type: Type of sandbox (`'none'`, `'agentcore'`, `'daytona'`,
+            `'e2b'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_snapshot_name: Optional sandbox snapshot name to use or create
             (langsmith only).

@@ -1,7 +1,7 @@
 """Test sandbox integrations with upload/download functionality.
 
-This module tests sandbox backends (RunLoop, Daytona, Modal, LangSmith) with
-support for optional sandbox reuse to reduce test execution time.
+This module tests sandbox backends (RunLoop, Daytona, E2B, Modal, LangSmith)
+with support for optional sandbox reuse to reduce test execution time.
 
 Set `REUSE_SANDBOX=1` environment variable to reuse sandboxes across tests
 within a class. Otherwise, a fresh sandbox is created for each test method.
@@ -310,6 +310,20 @@ class TestDaytonaIntegration(BaseSandboxIntegrationTest):
     def sandbox(self) -> Iterator[BaseSandbox]:
         """Provide a Daytona sandbox instance."""
         with create_sandbox("daytona") as sandbox:
+            yield sandbox
+
+
+@pytest.mark.skipif(
+    not os.environ.get("E2B_API_KEY"),
+    reason="E2B credentials not configured",
+)
+class TestE2BIntegration(BaseSandboxIntegrationTest):
+    """Test E2B backend integration."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
+        """Provide an E2B sandbox instance."""
+        with create_sandbox("e2b") as sandbox:
             yield sandbox
 
 

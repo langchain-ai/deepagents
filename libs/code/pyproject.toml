@@ -109,10 +109,11 @@ all-providers = [
 # Sandbox providers
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.2"]
 daytona = ["langchain-daytona>=0.0.5"]
+e2b = ["langchain-e2b>=0.0.1"]
 modal = ["langchain-modal>=0.0.3"]
 runloop = ["langchain-runloop>=0.0.4"]
 all-sandboxes = [
-    "deepagents-code[agentcore,daytona,modal,runloop]",
+    "deepagents-code[agentcore,daytona,e2b,modal,runloop]",
 ]
 
 # Standalone integrations (not part of any composite extra)
@@ -169,6 +170,7 @@ include = [
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-e2b = { path = "../partners/e2b", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
@@ -178,6 +180,7 @@ python-version = "3.11"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",
+    "../partners/e2b",
     "../partners/modal",
     "../partners/quickjs",
     "../partners/runloop",

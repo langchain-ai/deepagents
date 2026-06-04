@@ -8943,6 +8943,9 @@ class TestSandboxSubTitle:
         app2 = DeepAgentsApp(server_kwargs={"sandbox_type": "agentcore"})
         assert app2.sub_title == "Sandbox: AgentCore"
 
+        app3 = DeepAgentsApp(server_kwargs={"sandbox_type": "e2b"})
+        assert app3.sub_title == "Sandbox: E2B"
+
     async def test_explicit_sub_title_overrides_sandbox(self) -> None:
         """An explicitly passed sub_title is not overwritten by sandbox info."""
         app = DeepAgentsApp(sub_title="custom", server_kwargs={"sandbox_type": "modal"})

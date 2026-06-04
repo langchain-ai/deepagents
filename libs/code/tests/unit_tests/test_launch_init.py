@@ -171,6 +171,11 @@ class TestLaunchDependenciesScreen:
             missing=(),
         ),
         ExtraDependencyStatus(
+            name="e2b",
+            installed=(),
+            missing=("langchain-e2b",),
+        ),
+        ExtraDependencyStatus(
             name="runloop",
             installed=(),
             missing=("langchain-runloop",),
@@ -194,7 +199,7 @@ class TestLaunchDependenciesScreen:
         assert "Sandboxes: daytona" in content
         assert "Available to add" in content
         assert "Model providers: bedrock" in content
-        assert "Sandboxes: runloop" in content
+        assert "Sandboxes: e2b, runloop" in content
         assert "Esc skip setup" in content
 
     async def test_enter_continues(self) -> None:

@@ -41,6 +41,7 @@ jobs:
               "evals": "evals",
               "harbor": "harbor",
               "daytona": "daytona",
+              "e2b": "e2b",
               "modal": "modal",
               "quickjs": "quickjs",
               "runloop": "runloop",

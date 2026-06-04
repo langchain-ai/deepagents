@@ -951,7 +951,7 @@ def install_extra_command(extra: str) -> str:
     specified. Single-quoting the bracket form keeps zsh from globbing it.
 
     Args:
-        extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'fireworks'`).
+        extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'e2b'`).
             Validated internally against PEP 508 grammar before interpolation
             into the shell command.
 

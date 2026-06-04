@@ -14,12 +14,14 @@ from deepagents_code.integrations.sandbox_factory import (
     get_default_working_dir,
     verify_sandbox_deps,
 )
+from deepagents_code.integrations.sandbox_provider import SandboxNotFoundError
 
 
 @pytest.mark.parametrize(
     ("provider", "package"),
     [
         ("daytona", "langchain-daytona"),
+        ("e2b", "langchain-e2b"),
         ("modal", "langchain-modal"),
         ("runloop", "langchain-runloop"),
     ],
@@ -297,11 +299,173 @@ def test_agentcore_delete_untracked_session() -> None:
     provider.delete(sandbox_id="nonexistent")  # should not raise
 
 
+def test_e2b_raises_on_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """E2B should raise a helpful error without credentials."""
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_E2B_API_KEY", raising=False)
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._import_provider_module",
+            return_value=MagicMock(),
+        ),
+        pytest.raises(ValueError, match="No E2B API key found"),
+    ):
+        _get_provider("e2b")
+
+
+def test_e2b_get_or_create_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Successful E2B creation should wrap the created sandbox directly."""
+    monkeypatch.setenv("E2B_API_KEY", "fake-key")
+    monkeypatch.delenv("E2B_TEMPLATE", raising=False)
+    monkeypatch.setenv("E2B_SANDBOX_TIMEOUT", "7200")
+
+    sandbox = MagicMock()
+    e2b_module = MagicMock()
+    e2b_module.Sandbox.create.return_value = sandbox
+    e2b_backend = MagicMock()
+    backend = MagicMock(id="sbx-e2b")
+    e2b_backend.E2BSandbox.return_value = backend
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if module_name == "e2b":
+            return e2b_module
+        return e2b_backend
+
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        side_effect=fake_import,
+    ):
+        provider = _get_provider("e2b")
+        result = provider.get_or_create(timeout=2)
+
+    e2b_module.Sandbox.create.assert_called_once_with(
+        timeout=7200,
+        api_key="fake-key",
+    )
+    sandbox.commands.run.assert_not_called()
+    e2b_backend.E2BSandbox.assert_called_once_with(sandbox=sandbox)
+    assert result is backend
+
+
+def test_e2b_get_or_create_passes_template_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2B should pass `E2B_TEMPLATE` only when explicitly configured."""
+    monkeypatch.setenv("E2B_API_KEY", "fake-key")
+    monkeypatch.setenv("E2B_TEMPLATE", "custom-template")
+
+    sandbox = MagicMock()
+    e2b_module = MagicMock()
+    e2b_module.Sandbox.create.return_value = sandbox
+    e2b_backend = MagicMock()
+    backend = MagicMock(id="sbx-e2b")
+    e2b_backend.E2BSandbox.return_value = backend
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if module_name == "e2b":
+            return e2b_module
+        return e2b_backend
+
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        side_effect=fake_import,
+    ):
+        provider = _get_provider("e2b")
+        result = provider.get_or_create(timeout=2)
+
+    e2b_module.Sandbox.create.assert_called_once_with(
+        template="custom-template",
+        timeout=60 * 30,
+        api_key="fake-key",
+    )
+    assert result is backend
+
+
+def test_e2b_get_or_create_connects_existing_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2B should reconnect by sandbox ID when provided."""
+    monkeypatch.setenv("E2B_API_KEY", "fake-key")
+
+    sandbox = MagicMock()
+    e2b_module = MagicMock()
+    e2b_module.Sandbox.connect.return_value = sandbox
+    e2b_backend = MagicMock()
+    backend = MagicMock(id="sbx-existing")
+    e2b_backend.E2BSandbox.return_value = backend
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if module_name == "e2b":
+            return e2b_module
+        return e2b_backend
+
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        side_effect=fake_import,
+    ):
+        provider = _get_provider("e2b")
+        result = provider.get_or_create(sandbox_id="sbx-existing", timeout=2)
+
+    e2b_module.Sandbox.connect.assert_called_once_with(
+        "sbx-existing",
+        api_key="fake-key",
+    )
+    e2b_module.Sandbox.create.assert_not_called()
+    e2b_backend.E2BSandbox.assert_called_once_with(sandbox=sandbox)
+    assert result is backend
+
+
+def test_e2b_connect_not_found_raises_sandbox_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2B sandbox-not-found errors should normalize to SandboxNotFoundError."""
+    monkeypatch.setenv("E2B_API_KEY", "fake-key")
+
+    e2b_module = MagicMock()
+    sandbox_not_found = type("SandboxNotFoundException", (Exception,), {})
+    e2b_module.Sandbox.connect.side_effect = sandbox_not_found("missing")
+    e2b_backend = MagicMock()
+
+    def fake_import(module_name: str, **_: object) -> MagicMock:
+        if module_name == "e2b":
+            return e2b_module
+        return e2b_backend
+
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        side_effect=fake_import,
+    ):
+        provider = _get_provider("e2b")
+
+        with pytest.raises(SandboxNotFoundError, match="sbx-missing"):
+            provider.get_or_create(sandbox_id="sbx-missing")
+
+
+def test_e2b_delete_kills_sandbox_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delete() should delegate to the E2B SDK classmethod."""
+    monkeypatch.setenv("E2B_API_KEY", "fake-key")
+    e2b_module = MagicMock()
+
+    with patch(
+        "deepagents_code.integrations.sandbox_factory._import_provider_module",
+        return_value=e2b_module,
+    ):
+        provider = _get_provider("e2b")
+
+    provider.delete(sandbox_id="sbx-e2b")
+
+    e2b_module.Sandbox.kill.assert_called_once_with(
+        "sbx-e2b",
+        api_key="fake-key",
+    )
+
+
 @pytest.mark.parametrize(
     ("provider", "expected"),
     [
         ("agentcore", "/tmp"),
         ("daytona", "/home/daytona"),
+        ("e2b", "/home/user"),
         ("langsmith", "/root"),
         ("modal", "/workspace"),
         ("runloop", "/home/user"),
@@ -320,6 +484,7 @@ class TestVerifySandboxDeps:
         [
             ("agentcore", "langchain_agentcore_codeinterpreter"),
             ("daytona", "langchain_daytona"),
+            ("e2b", "langchain_e2b"),
             ("modal", "langchain_modal"),
             ("runloop", "langchain_runloop"),
         ],
@@ -346,7 +511,7 @@ class TestVerifySandboxDeps:
 
     @pytest.mark.parametrize(
         "provider",
-        ["agentcore", "daytona", "modal", "runloop"],
+        ["agentcore", "daytona", "e2b", "modal", "runloop"],
     )
     def test_passes_when_backend_installed(self, provider: str) -> None:
         """Should not raise when the backend module is found."""

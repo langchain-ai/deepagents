@@ -5,8 +5,8 @@
 #   curl -LsSf https://langch.in/gh-da-cli | bash
 #
 # Environment variables:
-#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                        "ollama,groq", or "daytona"
+#   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "extra-name",
+#                        or "extra-one,extra-two"
 #                        (see pyproject.toml for available extras)
 #   DEEPAGENTS_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_SKIP_OPTIONAL — set to 1 to skip optional tool checks
@@ -194,7 +194,7 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="${EXTRAS#[}"
   EXTRAS="${EXTRAS%]}"
   if [[ ! "$EXTRAS" =~ ^[-a-zA-Z0-9,]+$ ]]; then
-    log_error "DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'anthropic,groq' or 'daytona'"
+    log_error "DEEPAGENTS_EXTRAS must be comma-separated extra names, e.g. 'extra-one,extra-two'"
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"

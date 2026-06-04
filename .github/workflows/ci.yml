@@ -39,6 +39,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
+      e2b: ${{ steps.filter.outputs.e2b }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
@@ -91,6 +92,12 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            e2b:
+              - 'libs/partners/e2b/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -158,6 +165,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-e2b:
+    name: "🧹 Lint e2b"
+    needs: changes
+    if: needs.changes.outputs.e2b == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/e2b"
       python-version: "3.11"
 
   lint-modal:
@@ -236,6 +252,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-e2b:
+    name: "🧪 Test e2b"
+    needs: changes
+    if: needs.changes.outputs.e2b == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/e2b"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -328,6 +354,7 @@ jobs:
       - lint-code
       - lint-evals
       - lint-daytona
+      - lint-e2b
       - lint-modal
       - lint-runloop
       - lint-quickjs
@@ -336,6 +363,7 @@ jobs:
       - test-code
       - test-evals
       - test-daytona
+      - test-e2b
       - test-modal
       - test-runloop
       - test-quickjs

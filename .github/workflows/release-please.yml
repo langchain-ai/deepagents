@@ -59,6 +59,7 @@ jobs:
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
+      e2b-release: ${{ steps.check-releases.outputs.e2b-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
@@ -76,7 +77,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs
+      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-e2b, langchain-modal, langchain-runloop, langchain-quickjs
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
@@ -185,6 +186,13 @@ jobs:
             echo "Daytona release detected: $COMMIT_MSG"
           else
             echo "daytona-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/e2b/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-e2b\):"; then
+            echo "e2b-release=true" >> "$GITHUB_OUTPUT"
+            echo "E2B release detected: $COMMIT_MSG"
+          else
+            echo "e2b-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
@@ -344,6 +352,7 @@ jobs:
       needs.release-please.outputs.acp-release == 'true' ||
       needs.release-please.outputs.code-release == 'true' ||
       needs.release-please.outputs.daytona-release == 'true' ||
+      needs.release-please.outputs.e2b-release == 'true' ||
       needs.release-please.outputs.modal-release == 'true' ||
       needs.release-please.outputs.runloop-release == 'true' ||
       needs.release-please.outputs.quickjs-release == 'true'
@@ -361,6 +370,7 @@ jobs:
       ACP_RELEASE: ${{ needs.release-please.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.release-please.outputs.code-release }}
       DAYTONA_RELEASE: ${{ needs.release-please.outputs.daytona-release }}
+      E2B_RELEASE: ${{ needs.release-please.outputs.e2b-release }}
       MODAL_RELEASE: ${{ needs.release-please.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.release-please.outputs.runloop-release }}
       QUICKJS_RELEASE: ${{ needs.release-please.outputs.quickjs-release }}
@@ -431,6 +441,7 @@ jobs:
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
+          E2B_RELEASE="${E2B_RELEASE:-false}";         assert_bool E2B_RELEASE     "$E2B_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
@@ -459,6 +470,7 @@ jobs:
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
+          if [ "$E2B_RELEASE" = "true" ];     then dispatch langchain-e2b;       fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi

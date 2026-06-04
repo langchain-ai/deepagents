@@ -11,6 +11,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
+| `langchain-e2b` | `libs/partners/e2b` | `langchain-e2b` | [`langchain-e2b`](https://pypi.org/project/langchain-e2b/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
 | `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
@@ -153,6 +154,7 @@ Tracks the current version of each package. Automatically updated by release-ple
   "libs/deepagents": "0.5.1",
   "libs/acp": "0.0.5",
   "libs/partners/daytona": "0.0.5",
+  "libs/partners/e2b": "0.0.1",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
   "libs/partners/quickjs": "0.0.1"

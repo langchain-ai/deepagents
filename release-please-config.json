@@ -115,6 +115,18 @@
       ],
       "changelog-path": "CHANGELOG.md"
     },
+    "libs/partners/e2b": {
+      "release-type": "python",
+      "package-name": "langchain-e2b",
+      "component": "langchain-e2b",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_e2b/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
     "libs/partners/modal": {
       "release-type": "python",
       "package-name": "langchain-modal",

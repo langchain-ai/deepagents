@@ -20,6 +20,7 @@ on:
           - libs/deepagents
           - libs/cli
           - libs/partners/daytona
+          - libs/partners/e2b
           - libs/partners/modal
           - libs/partners/runloop
       working-directory-override:
@@ -40,6 +41,7 @@ env:
     ["libs/deepagents",
     "libs/cli",
     "libs/partners/daytona",
+    "libs/partners/e2b",
     "libs/partners/modal",
     "libs/partners/runloop"]
 
@@ -114,6 +116,7 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # sandboxes
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}

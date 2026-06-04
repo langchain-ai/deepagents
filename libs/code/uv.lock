@@ -1088,6 +1088,7 @@ all-providers = [
 all-sandboxes = [
     { name = "langchain-agentcore-codeinterpreter" },
     { name = "langchain-daytona" },
+    { name = "langchain-e2b" },
     { name = "langchain-modal" },
     { name = "langchain-runloop" },
 ]
@@ -1108,6 +1109,9 @@ daytona = [
 ]
 deepseek = [
     { name = "langchain-deepseek" },
+]
+e2b = [
+    { name = "langchain-e2b" },
 ]
 fireworks = [
     { name = "langchain-fireworks" },
@@ -1190,7 +1194,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.4" },
-    { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
+    { name = "deepagents-code", extras = ["agentcore", "daytona", "e2b", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.3.2,<2.0.0" },
@@ -1202,6 +1206,7 @@ requires-dist = [
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.5.1,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.0.1,<2.0.0" },
+    { name = "langchain-e2b", marker = "extra == 'e2b'", editable = "../partners/e2b" },
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.3.1,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.2.2,<5.0.0" },
@@ -1244,7 +1249,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.10.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "all-sandboxes", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "e2b", "modal", "runloop", "all-sandboxes", "quickjs"]
 
 [package.metadata.requires-dev]
 test = [
@@ -1289,6 +1294,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dockerfile-parse"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/df/929ee0b5d2c8bd8d713c45e71b94ab57c7e11e322130724d54f469b2cd48/dockerfile-parse-2.0.1.tar.gz", hash = "sha256:3184ccdc513221983e503ac00e1aa504a2aa8f84e5de673c46b0b6eee99ec7bc", size = 24556, upload-time = "2023-07-18T13:36:07.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/6c/79cd5bc1b880d8c1a9a5550aa8dacd57353fa3bb2457227e1fb47383eb49/dockerfile_parse-2.0.1-py2.py3-none-any.whl", hash = "sha256:bdffd126d2eb26acf1066acb54cb2e336682e1d72b974a40894fac76a4df17f6", size = 14845, upload-time = "2023-07-18T13:36:06.052Z" },
+]
+
+[[package]]
 name = "docstring-parser"
 version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1304,6 +1318,28 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ae/b6/03bb70946330e88ffec97aefd3ea75ba575cb2e762061e0e62a213befee8/docutils-0.22.4.tar.gz", hash = "sha256:4db53b1fde9abecbb74d91230d32ab626d94f6badfc575d6db9194a49df29968", size = 2291750, upload-time = "2025-12-18T19:00:26.443Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl", hash = "sha256:d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de", size = 633196, upload-time = "2025-12-18T19:00:18.077Z" },
+]
+
+[[package]]
+name = "e2b"
+version = "2.25.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "dockerfile-parse" },
+    { name = "h2" },
+    { name = "httpcore" },
+    { name = "httpx" },
+    { name = "packaging" },
+    { name = "protobuf" },
+    { name = "python-dateutil" },
+    { name = "rich" },
+    { name = "typing-extensions" },
+    { name = "wcmatch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/07/97604da2a7b7db68b970bab60d1bbffa436e73492c000d1889daf6283cf6/e2b-2.25.1.tar.gz", hash = "sha256:b87f8da3bbcce613e1bef9a90c46ef042a053f3f311b5ab45fcff5bdf1b1b425", size = 163032, upload-time = "2026-05-29T23:45:55.756Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/d5/d04b038ffb56ff6ba76cf6c2438908336aa58a5eb405b2fa191d398106c5/e2b-2.25.1-py3-none-any.whl", hash = "sha256:5ea5d1766082c1db504f86ebe17abe8b6a07f33d8addfb1a7778fae4a9549891", size = 309607, upload-time = "2026-05-29T23:45:54.327Z" },
 ]
 
 [[package]]
@@ -2736,6 +2772,34 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4e/c4/de579ea21e22777959f214af165761c6cd101248222bcc0886d020d67185/langchain_deepseek-1.0.1.tar.gz", hash = "sha256:e7a0238f2c14e928e1562641b2df639c19cdf867287a7f2293ffb1372daf83ae", size = 147216, upload-time = "2025-11-13T16:29:13.445Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cd/dd/a803dfbf64273232f3fc82f859487331abb717671bbcdf266fd80de6ef78/langchain_deepseek-1.0.1-py3-none-any.whl", hash = "sha256:0a9862f335f1873370bb0fe1928ac19b8b9292b014ef5412da462ded8bb82c5a", size = 8325, upload-time = "2025-11-13T16:29:12.385Z" },
+]
+
+[[package]]
+name = "langchain-e2b"
+version = "0.0.1"
+source = { editable = "../partners/e2b" }
+dependencies = [
+    { name = "deepagents" },
+    { name = "e2b" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deepagents", editable = "../deepagents" },
+    { name = "e2b", specifier = ">=2.25.1,<3.0.0" },
+]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "langchain-tests", specifier = ">=1.1.6" },
+    { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-cov" },
+    { name = "pytest-socket" },
+    { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = ">=0.13.1,<0.16.0" },
+    { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
 
 [[package]]

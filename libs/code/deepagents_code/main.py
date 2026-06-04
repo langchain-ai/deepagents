@@ -1036,7 +1036,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-id",
         metavar="ID",
-        help="Existing sandbox ID to reuse instead of creating one",
+        help="Existing sandbox ID to reuse (skips creation and cleanup)",
     )
 
     parser.add_argument(
@@ -1268,6 +1268,7 @@ async def run_textual_cli_async(
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
     # (~560ms) is deferred to a background worker.
+
     defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()

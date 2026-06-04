@@ -215,18 +215,6 @@ class ServerConfig:
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
             raise ValueError(msg)
-        if self.sandbox_type is None and self.sandbox_id is not None:
-            msg = "sandbox_id requires sandbox_type"
-            raise ValueError(msg)
-        if self.sandbox_type is None and self.sandbox_snapshot_name is not None:
-            msg = "sandbox_snapshot_name requires sandbox_type"
-            raise ValueError(msg)
-        if self.sandbox_type is None and self.sandbox_setup is not None:
-            msg = "sandbox_setup requires sandbox_type"
-            raise ValueError(msg)
-        if self.sandbox_id is not None and self.sandbox_snapshot_name is not None:
-            msg = "sandbox_snapshot_name cannot be combined with sandbox_id"
-            raise ValueError(msg)
 
     # ------------------------------------------------------------------
     # Serialization

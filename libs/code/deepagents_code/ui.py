@@ -113,7 +113,7 @@ def show_help() -> None:
         " require downloading extras"
     )
     console.print(
-        "  --sandbox-id ID            Reuse existing sandbox instead of creating one"
+        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
     )
     console.print("  --sandbox-snapshot-name NAME")
     console.print(

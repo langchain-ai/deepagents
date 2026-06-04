@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langgraph.runtime import Runtime
 
-from deepagents.backends import CompositeBackend
-
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
@@ -1469,9 +1467,7 @@ class TestCreateCliAgentProjectContext:
         assert str(project_agent_skills_dir) in source_paths
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
-            user_subagents_dir=tmp_path / "subagents",
             project_agents_dir=project_agents_dir,
-            project_subagents_dir=project_root / ".deepagents" / "subagents",
         )
 
     def test_project_context_drives_project_agents_md_paths(
@@ -1657,56 +1653,6 @@ class TestCreateCliAgentProjectContext:
             )
 
         assert mock_filesystem.call_args_list[0].kwargs["root_dir"] == user_cwd
-
-    def test_local_mode_uses_single_backend_surface(self, tmp_path: Path) -> None:
-        """Local file and artifact operations should use the same backend."""
-        user_cwd = tmp_path / "project"
-        user_cwd.mkdir()
-
-        agent_dir = tmp_path / "agent"
-        agent_dir.mkdir()
-        user_skills_dir = tmp_path / "skills"
-        user_skills_dir.mkdir()
-
-        mock_settings = Mock()
-        mock_settings.ensure_agent_dir.return_value = agent_dir
-        mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
-        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
-        mock_settings.get_project_agent_md_path.return_value = []
-        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
-        mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
-        mock_settings.project_root = None
-
-        mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
-
-        fake_model = _make_fake_chat_model()
-        with (
-            patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
-            patch("deepagents._models.init_chat_model", return_value=fake_model),
-        ):
-            _, backend = create_cli_agent(
-                model="fake-model",
-                assistant_id="test",
-                enable_memory=False,
-                enable_skills=False,
-                enable_shell=False,
-                cwd=user_cwd,
-            )
-
-        assert isinstance(backend, CompositeBackend)
-        assert backend.routes == {}
 
 
 class TestMiddlewareStackConformance:

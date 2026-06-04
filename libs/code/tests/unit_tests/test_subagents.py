@@ -391,21 +391,6 @@ class TestListSubagents:
         assert result[0]["description"] == "Project version"
         assert result[0]["source"] == "project"
 
-    def test_list_user_subagents_alias(self, tmp_path: Path) -> None:
-        """Test loading Fleet-style subagents directory."""
-        user_subagents_dir = tmp_path / "subagents"
-        folder = user_subagents_dir / "researcher"
-        folder.mkdir(parents=True)
-        (folder / "AGENTS.md").write_text(
-            make_subagent_content("researcher", "Research assistant")
-        )
-
-        result = list_subagents(user_subagents_dir=user_subagents_dir)
-
-        assert len(result) == 1
-        assert result[0]["name"] == "researcher"
-        assert result[0]["source"] == "user"
-
     def test_list_empty_directories(self, tmp_path: Path) -> None:
         """Test listing from empty directories."""
         user_dir = tmp_path / "user_agents"

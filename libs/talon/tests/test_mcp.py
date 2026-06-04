@@ -9,7 +9,6 @@ import pytest
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
-    MCPConfigError,
     load_mcp_tools,
     load_mcp_tools_from_config,
     write_mcp_server_config,
@@ -70,7 +69,7 @@ async def test_load_mcp_tools_from_config_delegates_to_code_loader(
 
     assert seen[0]["mcpServers"]["files"]["allowedTools"] == ["read", "search"]
     assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert result.servers[0].tool_count == 3
+    assert len(result.servers[0].tools) == 3
 
 
 def test_write_mcp_server_config_creates_config(tmp_path: Path) -> None:
@@ -91,7 +90,7 @@ def test_write_mcp_server_config_creates_config(tmp_path: Path) -> None:
 
 
 def test_write_mcp_server_config_rejects_both_filters(tmp_path: Path) -> None:
-    with pytest.raises(MCPConfigError):
+    with pytest.raises(ValueError, match="cannot set both"):
         write_mcp_server_config(
             path=tmp_path / "tools.json",
             name="bad",

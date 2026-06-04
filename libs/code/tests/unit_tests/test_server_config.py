@@ -185,32 +185,6 @@ class TestServerConfigPostInit:
         config = ServerConfig(sandbox_type=None)
         assert config.sandbox_type is None
 
-    def test_sandbox_id_requires_sandbox_type(self) -> None:
-        with pytest.raises(ValueError, match="sandbox_id requires sandbox_type"):
-            ServerConfig(sandbox_id="sb-123")
-
-    def test_sandbox_snapshot_requires_sandbox_type(self) -> None:
-        with pytest.raises(
-            ValueError,
-            match="sandbox_snapshot_name requires sandbox_type",
-        ):
-            ServerConfig(sandbox_snapshot_name="custom-snap")
-
-    def test_sandbox_setup_requires_sandbox_type(self) -> None:
-        with pytest.raises(ValueError, match="sandbox_setup requires sandbox_type"):
-            ServerConfig(sandbox_setup="/tmp/setup.sh")
-
-    def test_sandbox_snapshot_rejects_sandbox_id(self) -> None:
-        with pytest.raises(
-            ValueError,
-            match="sandbox_snapshot_name cannot be combined with sandbox_id",
-        ):
-            ServerConfig(
-                sandbox_type="langsmith",
-                sandbox_id="sb-123",
-                sandbox_snapshot_name="custom-snap",
-            )
-
 
 # ------------------------------------------------------------------
 # ServerConfig round-trip edge cases

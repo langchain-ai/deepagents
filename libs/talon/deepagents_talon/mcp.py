@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents_code.mcp_tools import (
-    MCPConfigError as CodeMCPConfigError,
-    MCPServerInfo as CodeMCPServerInfo,
+    MCPConfigError,
+    MCPServerInfo,
     get_mcp_tools_from_config,
     load_mcp_config,
     load_mcp_config_from_dict,
     merge_mcp_configs,
+    write_mcp_server_config as write_code_mcp_server_config,
 )
 
 if TYPE_CHECKING:
@@ -30,27 +31,6 @@ logger = logging.getLogger(__name__)
 _MCP_CONFIG_ENV_KEYS = ("DEEPAGENTS_TALON_MCP_CONFIG", "MCP_CONFIG")
 
 JsonObject = dict[str, object]
-
-
-class MCPConfigError(CodeMCPConfigError):
-    """Raised when an MCP configuration is invalid."""
-
-
-@dataclass(frozen=True, slots=True)
-class MCPServerInfo:
-    """Load status for one MCP server.
-
-    Args:
-        name: Server name from `mcpServers`.
-        transport: Canonical transport name.
-        tool_count: Number of tools loaded after filtering.
-        error: Error message when loading failed.
-    """
-
-    name: str
-    transport: str
-    tool_count: int = 0
-    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,22 +78,17 @@ def write_mcp_server_config(
         overwrite: Whether an existing server entry may be replaced.
 
     Raises:
-        MCPConfigError: If the server name or config is invalid.
+        MCPConfigError: If the file cannot be read or parsed for update.
         FileExistsError: If `name` already exists and `overwrite` is `False`.
+        TypeError: If config fields have wrong types.
+        ValueError: If the resulting config is missing required fields.
     """
-    data = _load_config_for_update(path) if path.exists() else {"mcpServers": {}}
-    servers = data["mcpServers"]
-    if name in servers and not overwrite:
-        msg = f"MCP server {name!r} already exists in {path}"
-        raise FileExistsError(msg)
-
-    servers[name] = dict(server)
-    _validate_config_for_talon(data, source=str(path))
-
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, sort_keys=True)
-        file.write("\n")
+    write_code_mcp_server_config(
+        path=path,
+        name=name,
+        server=server,
+        overwrite=overwrite,
+    )
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:
@@ -143,14 +118,10 @@ async def load_mcp_tools_from_config(data: Mapping[str, Any]) -> MCPTools:
     Returns:
         Loaded tools and status for each configured server.
     """
-    try:
-        tools, manager, infos = await get_mcp_tools_from_config(data)
-    except (TypeError, ValueError, RuntimeError) as exc:
-        msg = str(exc)
-        raise MCPConfigError(msg) from exc
+    tools, manager, infos = await get_mcp_tools_from_config(data)
     if manager is not None:
         logger.debug("Loaded MCP tools with a persistent session manager: %r", manager)
-    return MCPTools(tools=tuple(tools), servers=tuple(_server_info(info) for info in infos))
+    return MCPTools(tools=tuple(tools), servers=tuple(infos))
 
 
 def print_mcp_config_paths(config: TalonConfig) -> None:
@@ -209,48 +180,6 @@ def _load_env_config(value: str) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError, OSError) as exc:
         msg = str(exc)
         raise MCPConfigError(msg) from exc
-
-
-def _load_config_for_update(path: Path) -> dict[str, Any]:
-    try:
-        with path.expanduser().open(encoding="utf-8") as file:
-            data = json.load(file)
-    except json.JSONDecodeError as exc:
-        msg = f"Invalid MCP config JSON in {path}: {exc.msg}"
-        raise MCPConfigError(msg) from exc
-    except OSError as exc:
-        msg = f"Could not read MCP config {path}: {exc}"
-        raise MCPConfigError(msg) from exc
-
-    if not isinstance(data, dict):
-        msg = f"{path} must contain a JSON object"
-        raise MCPConfigError(msg)
-
-    servers = data.get("mcpServers")
-    if servers is None:
-        data["mcpServers"] = {}
-    elif not isinstance(servers, dict):
-        msg = f"{path} 'mcpServers' field must be a dictionary"
-        raise MCPConfigError(msg)
-    return data
-
-
-def _validate_config_for_talon(data: Mapping[str, Any], *, source: str) -> None:
-    try:
-        load_mcp_config_from_dict(data, source=source)
-    except (TypeError, ValueError) as exc:
-        msg = str(exc)
-        raise MCPConfigError(msg) from exc
-
-
-def _server_info(info: CodeMCPServerInfo) -> MCPServerInfo:
-    error = info.error if info.status != "ok" else None
-    return MCPServerInfo(
-        name=info.name,
-        transport=info.transport,
-        tool_count=len(info.tools),
-        error=error,
-    )
 
 
 def _is_file(path: Path) -> bool:

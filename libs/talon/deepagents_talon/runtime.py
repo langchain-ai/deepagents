@@ -17,9 +17,9 @@ from deepagents.profiles.provider.provider_profiles import apply_provider_profil
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents_code.tools import fetch_url, web_search
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import AgentRequest, AgentResult
-from deepagents_talon.tools import build_web_tools
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -189,7 +189,7 @@ class DeepAgentRuntime:
     def _build_tools(self) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = []
         if self.include_web_tools:
-            tools.extend(build_web_tools())
+            tools.extend([fetch_url, web_search])
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())

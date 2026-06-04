@@ -37,6 +37,7 @@ from deepagents_code.mcp_tools import (
     load_mcp_config_lenient,
     merge_mcp_configs,
     resolve_and_load_mcp_tools,
+    write_mcp_server_config,
 )
 from deepagents_code.project_utils import ProjectContext
 
@@ -184,6 +185,45 @@ class TestLoadMCPConfig:
 
         with pytest.raises(ValueError, match="command"):
             await get_mcp_tools_from_config({"mcpServers": {"fs": {"args": []}}})
+
+    def test_write_mcp_server_config_creates_config(self, tmp_path: Path) -> None:
+        """The shared writer validates and persists one server entry."""
+        path = tmp_path / "tools.json"
+
+        write_mcp_server_config(
+            path=path,
+            name="linear",
+            server={"type": "http", "url": "https://mcp.example/mcp"},
+        )
+
+        data = json.loads(path.read_text())
+        assert data == {
+            "mcpServers": {
+                "linear": {
+                    "type": "http",
+                    "url": "https://mcp.example/mcp",
+                },
+            },
+        }
+
+    def test_write_mcp_server_config_rejects_existing_server(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Existing server entries are preserved unless overwrite is explicit."""
+        path = tmp_path / "tools.json"
+        write_mcp_server_config(
+            path=path,
+            name="local",
+            server={"type": "stdio", "command": "server"},
+        )
+
+        with pytest.raises(FileExistsError, match="already exists"):
+            write_mcp_server_config(
+                path=path,
+                name="local",
+                server={"type": "stdio", "command": "other"},
+            )
 
     def test_load_config_auth_oauth_http_ok(
         self,

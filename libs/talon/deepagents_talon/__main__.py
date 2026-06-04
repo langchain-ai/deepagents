@@ -114,7 +114,7 @@ async def _agent_runtime(
         if server.error is not None:
             logger.warning("MCP server %s failed: %s", server.name, server.error)
         else:
-            logger.info("MCP server %s loaded %d tool(s)", server.name, server.tool_count)
+            logger.info("MCP server %s loaded %d tool(s)", server.name, len(server.tools))
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,

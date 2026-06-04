@@ -146,9 +146,7 @@ def _load_subagents_from_dir(
 def list_subagents(
     *,
     user_agents_dir: Path | None = None,
-    user_subagents_dir: Path | None = None,
     project_agents_dir: Path | None = None,
-    project_subagents_dir: Path | None = None,
 ) -> list[SubagentMetadata]:
     """List subagents from user and/or project directories.
 
@@ -157,10 +155,7 @@ def list_subagents(
 
     Args:
         user_agents_dir: Path to user-level agents directory.
-        user_subagents_dir: Path to user-level Fleet-style subagents directory.
         project_agents_dir: Path to project-level agents directory.
-        project_subagents_dir: Path to project-level Fleet-style subagents
-            directory.
 
     Returns:
         List of subagent metadata, with project subagents taking precedence.
@@ -170,13 +165,9 @@ def list_subagents(
     # Load user subagents first (lower priority)
     if user_agents_dir is not None:
         all_subagents.update(_load_subagents_from_dir(user_agents_dir, "user"))
-    if user_subagents_dir is not None:
-        all_subagents.update(_load_subagents_from_dir(user_subagents_dir, "user"))
 
     # Load project subagents second (override user)
     if project_agents_dir is not None:
         all_subagents.update(_load_subagents_from_dir(project_agents_dir, "project"))
-    if project_subagents_dir is not None:
-        all_subagents.update(_load_subagents_from_dir(project_subagents_dir, "project"))
 
     return list(all_subagents.values())

@@ -696,6 +696,69 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     return load_mcp_config_from_dict(config, source="MCP config")
 
 
+def write_mcp_server_config(
+    *,
+    path: Path,
+    name: str,
+    server: Mapping[str, Any],
+    overwrite: bool = False,
+) -> None:
+    """Add one MCP server entry to a JSON config file.
+
+    Args:
+        path: Config file to create or update.
+        name: Server name under `mcpServers`.
+        server: Server configuration.
+        overwrite: Whether an existing server entry may be replaced.
+
+    Raises:
+        MCPConfigError: If the file cannot be read or parsed for update.
+        FileExistsError: If `name` already exists and `overwrite` is `False`.
+        TypeError: If config fields have wrong types.
+        ValueError: If the resulting config is missing required fields.
+    """  # noqa: DOC502 - surfaced via `_load_mcp_config_for_update` / `load_mcp_config_from_dict`
+    data = _load_mcp_config_for_update(path)
+    servers = data["mcpServers"]
+    if name in servers and not overwrite:
+        msg = f"MCP server {name!r} already exists in {path}"
+        raise FileExistsError(msg)
+
+    servers[name] = copy.deepcopy(dict(server))
+    load_mcp_config_from_dict(data, source=str(path))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+        file.write("\n")
+
+
+def _load_mcp_config_for_update(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"mcpServers": {}}
+
+    try:
+        with path.expanduser().open(encoding="utf-8") as file:
+            data = json.load(file)
+    except json.JSONDecodeError as exc:
+        msg = f"Invalid MCP config JSON in {path}: {exc.msg}"
+        raise MCPConfigError(msg) from exc
+    except OSError as exc:
+        msg = f"Could not read MCP config {path}: {exc}"
+        raise MCPConfigError(msg) from exc
+
+    if not isinstance(data, dict):
+        msg = f"{path} must contain a JSON object"
+        raise MCPConfigError(msg)
+
+    servers = data.get("mcpServers")
+    if servers is None:
+        data["mcpServers"] = {}
+    elif not isinstance(servers, dict):
+        msg = f"{path} 'mcpServers' field must be a dictionary"
+        raise MCPConfigError(msg)
+    return data
+
+
 def _resolve_project_config_base(project_context: ProjectContext | None) -> Path:
     """Resolve the base directory for project-level MCP configuration lookup.
 

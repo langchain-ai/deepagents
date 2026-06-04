@@ -30,4 +30,4 @@ RUN mkdir -p /opt/whatsapp-bridge && \
 
 RUN cd libs/talon && uv sync --frozen --extra speech
 
-CMD ["deepagents-talon", "--whatsapp"]
+CMD ["/opt/deepagents-talon-venv/bin/deepagents-talon", "--whatsapp"]

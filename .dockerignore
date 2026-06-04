@@ -6,6 +6,10 @@ __pycache__/
 .ty/
 .venv/
 node_modules/
+.coverage
+*.mp4
+
+examples/whatsapp-channel/
 
 .env
 .env.*

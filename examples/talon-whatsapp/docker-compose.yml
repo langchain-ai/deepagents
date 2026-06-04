@@ -16,10 +16,10 @@ services:
       - ../..:/workspace
       - talon-state:/state
     command: >
-      bash -lc "
+      bash -c "
       mkdir -p /state/$${AGENT_ASSISTANT_ID}/agent &&
       cp /workspace/examples/talon-whatsapp/AGENTS.md /state/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
-      deepagents-talon --whatsapp
+      /opt/deepagents-talon-venv/bin/deepagents-talon --whatsapp
       "
 
 volumes:

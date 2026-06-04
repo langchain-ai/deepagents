@@ -37,6 +37,7 @@ jobs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
+      talon: ${{ steps.filter.outputs.talon }}
       evals: ${{ steps.filter.outputs.evals }}
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
@@ -83,6 +84,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/workflows/_benchmark.yml'
+              - '.github/actions/**'
+            talon:
+              - 'libs/talon/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
@@ -148,6 +156,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
+      python-version: "3.11"
+
+  lint-talon:
+    name: "🧹 Lint talon"
+    needs: changes
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/talon"
       python-version: "3.11"
 
   lint-evals:
@@ -233,6 +250,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-talon:
+    name: "🧪 Test deepagents-talon"
+    needs: changes
+    if: needs.changes.outputs.talon == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/talon"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -353,6 +380,7 @@ jobs:
       - lint-deepagents
       - lint-cli
       - lint-code
+      - lint-talon
       - lint-evals
       - lint-acp
       - lint-daytona
@@ -362,6 +390,7 @@ jobs:
       - test-deepagents
       - test-cli
       - test-code
+      - test-talon
       - test-evals
       - test-acp
       - test-daytona

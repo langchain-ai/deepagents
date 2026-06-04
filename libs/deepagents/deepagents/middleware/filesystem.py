@@ -523,6 +523,59 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
+def _route_host_path_prompt(backend: BackendProtocol) -> str:
+    """Build a prompt section mapping virtual route prefixes to host shell paths.
+
+    `execute` runs on the default backend's host shell, so a routed virtual path
+    (for example `/common/`) does not exist there and shell commands referencing
+    it fail (issue #3050). Rather than rewriting commands — which can't be done
+    correctly for arbitrary shell (quoting, `$VAR`/`$(...)` expansion, here-docs,
+    `cd`, dynamically built paths) — we tell the model the host path to use, so it
+    forms the correct command itself.
+
+    Routes backed by a host filesystem (those exposing a `cwd` and running in
+    virtual mode) get an explicit virtual→host mapping. Routes with no host path
+    (for example store-backed mounts) are listed as shell-inaccessible so the
+    model uses the file tools for them instead.
+
+    Returns an empty string when there is nothing to describe (no composite
+    backend, or no routes).
+    """
+    if not isinstance(backend, CompositeBackend):
+        return ""
+
+    host_mappings: list[tuple[str, str]] = []
+    no_host_routes: list[str] = []
+    for route_prefix, route_backend in backend.sorted_routes:
+        host_root = getattr(route_backend, "cwd", None)
+        if host_root is not None and getattr(route_backend, "virtual_mode", False):
+            host_mappings.append((route_prefix, str(host_root)))
+        else:
+            no_host_routes.append(route_prefix)
+
+    if not host_mappings and not no_host_routes:
+        return ""
+
+    lines = [
+        "## Shell paths vs. virtual paths",
+        "",
+        "The `execute` shell runs on the host filesystem. Some paths you see from "
+        "the file tools are virtual mounts that do NOT exist in the shell. When "
+        "running shell commands, use the host path instead of the virtual path.",
+    ]
+    if host_mappings:
+        lines.append("")
+        lines.extend(f"- `{prefix}` → use `{host}` in shell commands" for prefix, host in host_mappings)
+    if no_host_routes:
+        lines.append("")
+        joined = ", ".join(f"`{prefix}`" for prefix in no_host_routes)
+        lines.append(
+            f"These mounts have no host path and are NOT reachable from the shell — "
+            f"use the file tools (read_file/write_file/edit_file/grep/glob) for them: {joined}"
+        )
+    return "\n".join(lines)
+
+
 def supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
 
@@ -1699,6 +1752,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 
@@ -1764,6 +1820,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 

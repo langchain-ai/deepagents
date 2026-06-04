@@ -7,7 +7,6 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
     SandboxBackendProtocol,
@@ -1404,89 +1403,3 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
-
-
-class TestCompositeExecutePathRewrite:
-    """`execute` translates route virtual prefixes to host paths (issue #3050).
-
-    `execute` is not path-routable, so a command referencing a route's virtual
-    path (e.g. `python /common/x.py`) must have that prefix rewritten to the
-    route backend's host root before the shell runs, or the path won't exist.
-    """
-
-    def _composite(self, tmp_path: Path) -> tuple[CompositeBackend, str]:
-        """Composite with a command-echoing default and a `/common/` route."""
-        common = tmp_path / "common"
-        common.mkdir()
-        route = FilesystemBackend(root_dir=str(common), virtual_mode=True)
-        default = MockSandboxBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",))
-        comp = CompositeBackend(default=default, routes={"/common/": route})
-        return comp, str(route.cwd)  # route.cwd is the resolved host root
-
-    def test_rewrites_route_prefix(self, tmp_path: Path) -> None:
-        comp, host = self._composite(tmp_path)
-        out = comp.execute("python /common/skills/x.py").output
-        assert out == f"Executed: python {host}/skills/x.py"
-
-    def test_rewrites_exact_prefix(self, tmp_path: Path) -> None:
-        comp, host = self._composite(tmp_path)
-        assert comp.execute("ls /common").output == f"Executed: ls {host}"
-        assert comp.execute("ls /common/").output == f"Executed: ls {host}/"
-
-    def test_preserves_operators_and_redirection(self, tmp_path: Path) -> None:
-        comp, host = self._composite(tmp_path)
-        out = comp.execute("cat /common/a.txt | grep x > /tmp/out").output
-        assert out == f"Executed: cat {host}/a.txt | grep x > /tmp/out"
-
-    def test_leaves_urls_and_substrings_untouched(self, tmp_path: Path) -> None:
-        comp, _ = self._composite(tmp_path)
-        for cmd in ("curl http://host/common/y", "ls /commonX/y", "echo abc/common/def"):
-            assert comp.execute(cmd).output == f"Executed: {cmd}"
-
-    def test_skips_non_virtual_route(self, tmp_path: Path) -> None:
-        # A non-virtual route's prefix does not map to its root_dir, so skip it.
-        route = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        comp = CompositeBackend(
-            default=MockSandboxBackend(store=InMemoryStore(), namespace=lambda _rt: ("d",)),
-            routes={"/common/": route},
-        )
-        assert comp.execute("cat /common/a.txt").output == "Executed: cat /common/a.txt"
-
-    def test_skips_route_without_host_root(self, tmp_path: Path) -> None:
-        # A StoreBackend route has no host filesystem path -> nothing to rewrite.
-        comp = CompositeBackend(
-            default=MockSandboxBackend(store=InMemoryStore(), namespace=lambda _rt: ("d",)),
-            routes={"/mem/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("m",))},
-        )
-        assert comp.execute("cat /mem/a.txt").output == "Executed: cat /mem/a.txt"
-
-    def test_longest_prefix_wins(self, tmp_path: Path) -> None:
-        outer = FilesystemBackend(root_dir=str(tmp_path / "outer"), virtual_mode=True)
-        inner = FilesystemBackend(root_dir=str(tmp_path / "inner"), virtual_mode=True)
-        comp = CompositeBackend(
-            default=MockSandboxBackend(store=InMemoryStore(), namespace=lambda _rt: ("d",)),
-            routes={"/common/": outer, "/common/sub/": inner},
-        )
-        out = comp.execute("cat /common/sub/a.txt").output
-        assert out == f"Executed: cat {inner.cwd}/a.txt"
-
-    async def test_aexecute_rewrites_route_prefix(self, tmp_path: Path) -> None:
-        comp, host = self._composite(tmp_path)
-        out = (await comp.aexecute("python /common/skills/x.py")).output
-        assert out == f"Executed: python {host}/skills/x.py"
-
-    def test_end_to_end_local_shell_resolves_route_path(self, tmp_path: Path) -> None:
-        # Real shell: a route virtual path resolves to its host file.
-        common = tmp_path / "common"
-        common.mkdir()
-        (common / "hello.txt").write_text("HELLO_FROM_COMMON")
-        spec = tmp_path / "spec"
-        spec.mkdir()
-
-        comp = CompositeBackend(
-            default=LocalShellBackend(root_dir=str(spec), virtual_mode=True, inherit_env=True),
-            routes={"/common/": FilesystemBackend(root_dir=str(common), virtual_mode=True)},
-        )
-        result = comp.execute("cat /common/hello.txt")
-        assert result.exit_code == 0
-        assert "HELLO_FROM_COMMON" in result.output

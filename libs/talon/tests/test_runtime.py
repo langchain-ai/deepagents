@@ -13,7 +13,11 @@ from deepagents_talon.interfaces import (
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
-from deepagents_talon.runtime import DeepAgentRuntime, _is_retryable
+from deepagents_talon.runtime import (
+    _SAFE_BACKEND_PATH,
+    DeepAgentRuntime,
+    _is_retryable,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -262,6 +266,83 @@ async def test_runtime_uses_configured_workspace_for_default_backend(
     await runtime.start()
 
     assert captured["backend"].cwd == tmp_path.resolve()
+
+
+def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Path) -> None:
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={
+            "DEEPAGENTS_TALON_WORKSPACE": str(tmp_path),
+            "LANGSMITH_API_KEY": "langsmith-key",
+            "LANGSMITH_TENANT_ID": "tenant",
+            "LANGSMITH_ORGANIZATION_ID": "org",
+            "LANGSMITH_USER_ID": "user",
+            "LANGCHAIN_API_KEY": "legacy-langsmith-key",
+            "OPENAI_API_KEY": "openai-key",
+            "ANTHROPIC_API_KEY": "anthropic-key",
+            "FLEET_OAUTH_ACCESS_TOKEN": "oauth-token",
+            "MCP_BEARER_TOKEN": "bearer-token",
+            "AWS_SECRET_ACCESS_KEY": "aws-secret",
+            "AWS_SESSION_TOKEN": "aws-session",
+        },
+    )
+    backend = cast("LocalShellBackend", runtime.backend)
+
+    result = backend.execute(
+        "printf '<%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s>' "
+        '"$LANGSMITH_API_KEY" '
+        '"$LANGSMITH_TENANT_ID" '
+        '"$LANGSMITH_ORGANIZATION_ID" '
+        '"$LANGSMITH_USER_ID" '
+        '"$LANGCHAIN_API_KEY" '
+        '"$OPENAI_API_KEY" '
+        '"$ANTHROPIC_API_KEY" '
+        '"$FLEET_OAUTH_ACCESS_TOKEN" '
+        '"$MCP_BEARER_TOKEN" '
+        '"$AWS_SECRET_ACCESS_KEY" '
+        '"$AWS_SESSION_TOKEN" '
+        '"$DEEPAGENTS_TALON_WORKSPACE"'
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "<><><><><><><><><><><><>"
+
+
+def test_runtime_default_backend_hardens_shell_env(tmp_path: Path) -> None:
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={
+            "DEEPAGENTS_TALON_WORKSPACE": str(tmp_path),
+            "PATH": str(tmp_path / "evil-bin"),
+            "LD_PRELOAD": str(tmp_path / "libevil.so"),
+            "PYTHONPATH": str(tmp_path / "evil-python"),
+            "HOME": str(tmp_path / "home"),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C",
+        },
+    )
+    backend = cast("LocalShellBackend", runtime.backend)
+
+    result = backend.execute(
+        'printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s" '
+        '"$PATH" "$LD_PRELOAD" "$PYTHONPATH" "$HOME" "$LANG" "$LC_ALL"'
+    )
+
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        _SAFE_BACKEND_PATH,
+        "",
+        "",
+        str(tmp_path / "home"),
+        "C.UTF-8",
+        "C",
+    ]
 
 
 async def test_runtime_passes_openai_base_url_to_model(

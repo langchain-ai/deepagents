@@ -44,10 +44,61 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 DEFAULT_WORKSPACE = "/workspace"
+_SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
 _BAD_REQUEST_STATUS_CODE = 400
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
+_BACKEND_ENV_ALLOWED_KEYS = frozenset(
+    {
+        "CI",
+        "CLICOLOR",
+        "CLICOLOR_FORCE",
+        "COLORTERM",
+        "FORCE_COLOR",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "NO_COLOR",
+        "SHELL",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "XDG_STATE_HOME",
+    }
+)
+_BACKEND_ENV_ALLOWED_PREFIXES = ("LC_",)
+_BACKEND_ENV_HIJACK_KEYS = frozenset(
+    {
+        "BASH_ENV",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "ENV",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "ZDOTDIR",
+    }
+)
+_BACKEND_ENV_SECRET_MARKERS = (
+    "APIKEY",
+    "API_KEY",
+    "AUTHORIZATION",
+    "BEARER",
+    "CREDENTIAL",
+    "OAUTH",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+)
 _RETRYABLE_BAD_REQUEST_MARKERS = (
     "failed to parse",
     "tool_call",
@@ -508,7 +559,34 @@ def _decision_payload(
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
     values = os.environ if env is None else env
     root = values.get("DEEPAGENTS_TALON_WORKSPACE", DEFAULT_WORKSPACE)
-    return LocalShellBackend(root_dir=root, virtual_mode=False, inherit_env=True)
+    return LocalShellBackend(
+        root_dir=root,
+        virtual_mode=False,
+        env=_backend_child_env(values),
+        inherit_env=False,
+    )
+
+
+def _backend_child_env(env: Mapping[str, str]) -> dict[str, str]:
+    values = {
+        key: value
+        for key, value in env.items()
+        if _is_allowed_backend_env_key(key) and not _is_scrubbed_backend_env_key(key)
+    }
+    values["PATH"] = _SAFE_BACKEND_PATH
+    return values
+
+
+def _is_allowed_backend_env_key(key: str) -> bool:
+    return key in _BACKEND_ENV_ALLOWED_KEYS or key.startswith(_BACKEND_ENV_ALLOWED_PREFIXES)
+
+
+def _is_scrubbed_backend_env_key(key: str) -> bool:
+    return (
+        key in _BACKEND_ENV_HIJACK_KEYS
+        or key.startswith(("LANGSMITH_", "LANGCHAIN_"))
+        or any(marker in key for marker in _BACKEND_ENV_SECRET_MARKERS)
+    )
 
 
 def _resolve_model_from_env(model: str, env: Mapping[str, str]) -> str | BaseChatModel:

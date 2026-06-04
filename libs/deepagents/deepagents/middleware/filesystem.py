@@ -4,6 +4,7 @@
 import asyncio
 import concurrent.futures
 import contextvars
+import json
 import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -533,6 +534,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     Routes without a host path are marked as shell-inaccessible and should be
     accessed through file tools instead.
 
+    Dynamic path values (route prefixes and host roots) are JSON-serialized
+    before being embedded, so newlines, quotes, or backticks in a configured
+    `root_dir` cannot break out of the prompt and inject model instructions.
+
     Returns an empty string if there are no routes to describe.
     """
     if not isinstance(backend, CompositeBackend):
@@ -559,10 +564,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     ]
     if host_mappings:
         lines.append("")
-        lines.extend(f"- `{prefix}` → use `{host}` in shell commands" for prefix, host in host_mappings)
+        lines.extend(f"- {json.dumps(prefix)} → use {json.dumps(host)} in shell commands" for prefix, host in host_mappings)
     if no_host_routes:
         lines.append("")
-        joined = ", ".join(f"`{prefix}`" for prefix in no_host_routes)
+        joined = ", ".join(json.dumps(prefix) for prefix in no_host_routes)
         lines.append(
             f"These mounts have no host path and are NOT reachable from the shell — "
             f"use the file tools (read_file/write_file/edit_file/grep/glob) for them: {joined}"

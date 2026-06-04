@@ -575,6 +575,41 @@ class CronJobStore:
             self._write_jobs(result)
         return updated
 
+    def prune_completed(
+        self,
+        *,
+        retain_for: timedelta,
+        now: datetime | None = None,
+    ) -> list[CronJob]:
+        """Delete completed jobs older than the retention window.
+
+        Args:
+            retain_for: Duration to keep disabled jobs after completion.
+            now: Current timestamp override for deterministic tests.
+
+        Returns:
+            Removed job records.
+
+        Raises:
+            CronJobError: If `retain_for` is negative.
+        """
+        if retain_for < timedelta(0):
+            msg = "cron retention window cannot be negative"
+            raise CronJobError(msg)
+
+        cutoff = _coerce_utc(now) - retain_for
+        kept: list[CronJob] = []
+        removed: list[CronJob] = []
+        for job in self.list_jobs():
+            reference = job.last_run_at or job.created_at
+            if not job.enabled and job.next_run_at is None and reference <= cutoff:
+                removed.append(job)
+            else:
+                kept.append(job)
+        if removed:
+            self._write_jobs(kept)
+        return removed
+
     def _read_jobs(self) -> list[CronJob]:
         self._ensure_store()
         if not self.path.exists():

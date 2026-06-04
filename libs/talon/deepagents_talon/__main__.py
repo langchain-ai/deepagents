@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
+from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths, write_mcp_server_config
 from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
@@ -50,6 +51,11 @@ def main() -> None:
     if args.command == "mcp":
         sys.exit(asyncio.run(_run_mcp_command(args, config)))
 
+    cron_factory = CronJobStore
+    cron_store = cron_factory(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+    config.ensure_home()
+    cleanup_sensitive_state(config=config, cron_store=cron_store)
+
     channels = _channels(config, enabled=args.whatsapp)
     host = TalonHost(
         config=config,
@@ -59,7 +65,7 @@ def main() -> None:
     )
     if channels:
         host.scheduler = PersistentCronScheduler(
-            store=CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir),
+            store=cron_store,
             run_job=host.run_scheduled_job,
             deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
         )

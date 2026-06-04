@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +15,20 @@ from deepagents_code.integrations.sandbox_factory import (
     get_default_working_dir,
     verify_sandbox_deps,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sandbox_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep sandbox ID persistence out of the user's real state directory."""
+    from deepagents_code import model_config
+
+    monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -62,7 +77,7 @@ def test_create_sandbox_passes_langsmith_snapshot_name() -> None:
         sandbox_id=None,
         snapshot="custom-snap",
     )
-    provider.delete.assert_called_once_with(sandbox_id="sandbox-1")
+    provider.delete.assert_not_called()
 
 
 def test_create_sandbox_passes_runloop_snapshot_name() -> None:
@@ -84,7 +99,45 @@ def test_create_sandbox_passes_runloop_snapshot_name() -> None:
         sandbox_id=None,
         snapshot="custom-blueprint",
     )
-    provider.delete.assert_called_once_with(sandbox_id="sandbox-1")
+    provider.delete.assert_not_called()
+
+
+def test_create_sandbox_reuses_persisted_sandbox_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new sandbox ID should be recorded and reused on later runs."""
+    from deepagents_code import model_config
+
+    monkeypatch.setattr(model_config, "DEFAULT_STATE_DIR", tmp_path)
+    first_backend = MagicMock(id="sandbox-1")
+    second_backend = MagicMock(id="sandbox-1")
+    provider = MagicMock()
+    provider.get_or_create.side_effect = [first_backend, second_backend]
+
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._get_provider",
+            return_value=provider,
+        ),
+        create_sandbox("modal") as result,
+    ):
+        assert result is first_backend
+
+    with (
+        patch(
+            "deepagents_code.integrations.sandbox_factory._get_provider",
+            return_value=provider,
+        ),
+        create_sandbox("modal") as result,
+    ):
+        assert result is second_backend
+
+    assert provider.get_or_create.call_args_list[0].kwargs == {"sandbox_id": None}
+    assert provider.get_or_create.call_args_list[1].kwargs == {
+        "sandbox_id": "sandbox-1"
+    }
+    provider.delete.assert_not_called()
 
 
 def test_runloop_provider_delegates_to_langchain_runloop(

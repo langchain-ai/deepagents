@@ -289,6 +289,14 @@ class TestSubcommandHelpFlags:
             must_not_contain="Start interactive thread",
         )
 
+    def test_agents_import_help(self) -> None:
+        """Running `deepagents agents import -h` should show import-specific help."""
+        self._run_help(
+            ["deepagents", "agents", "import", "-h"],
+            must_contain="--backend",
+            must_not_contain="Start interactive thread",
+        )
+
     def test_threads_list_help(self) -> None:
         """Running `deepagents threads list -h` should show threads list help."""
         self._run_help(
@@ -779,3 +787,28 @@ class TestJsonArg:
         assert args.command == "skills"
         assert args.skills_command == "list"
         assert args.output_format == "json"
+
+    def test_agents_import_parses(self) -> None:
+        """Verify `agents import` parses source, agent, backend, and force."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "agents",
+                "import",
+                "./fleet-agent",
+                "--agent",
+                "researcher",
+                "--backend",
+                "modal",
+                "--force",
+            ],
+        ):
+            args = parse_args()
+        assert args.command == "agents"
+        assert args.agents_command == "import"
+        assert args.source == "./fleet-agent"
+        assert args.agent == "researcher"
+        assert args.backend == "modal"
+        assert args.force is True

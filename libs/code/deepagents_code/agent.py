@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -691,6 +690,84 @@ def reset_agent(
     console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
 
 
+def import_agent_manifest(
+    source: str,
+    agent_name: str,
+    *,
+    backend_type: str = "local",
+    force: bool = False,
+    output_format: OutputFormat = "text",
+) -> None:
+    """Import a Fleet-style manifest into a local agent directory.
+
+    Args:
+        source: Fleet agent id, local manifest directory, or JSON payload path.
+        agent_name: Local agent identifier to create.
+        backend_type: Operator-selected local backend type. Hosted Fleet
+            backend policy fields are not carried across.
+        force: Replace an existing local agent directory.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If the manifest cannot be imported.
+    """
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.agent_manifest import (
+        AgentManifestError,
+        fetch_fleet_agent_manifest,
+        load_agent_manifest,
+        materialize_agent_manifest,
+    )
+
+    source_path = Path(source).expanduser()
+    try:
+        manifest = (
+            load_agent_manifest(source_path)
+            if source_path.exists()
+            else fetch_fleet_agent_manifest(source)
+        )
+        result = materialize_agent_manifest(
+            manifest,
+            settings.get_agent_dir(agent_name),
+            agent_name=agent_name,
+            backend_type=backend_type,
+            force=force,
+        )
+    except AgentManifestError as exc:
+        console.print(f"[bold red]Error:[/bold red] {escape_markup(str(exc))}")
+        raise SystemExit(1) from exc
+
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json(
+            "import",
+            {
+                "agent": result.agent_name,
+                "path": str(result.path),
+                "backend": result.backend_type,
+                "dropped_fields": list(result.dropped_fields),
+            },
+        )
+        return
+
+    console.print(
+        f"[green]Imported agent[/green] [bold]{escape_markup(agent_name)}[/bold]"
+    )
+    console.print(f"  Path: {escape_markup(str(result.path))}", style=theme.MUTED)
+    console.print(f"  Backend: {escape_markup(result.backend_type)}", style=theme.MUTED)
+    if result.dropped_fields:
+        dropped = ", ".join(escape_markup(field) for field in result.dropped_fields)
+        console.print(f"[yellow]Dropped unsupported Fleet fields:[/yellow] {dropped}")
+        console.print(
+            "[dim]Tool authentication that relied on a dropped field must be "
+            "reconfigured locally.[/dim]",
+            style=theme.MUTED,
+        )
+    console.print()
+
+
 MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
 """Matches the `### Model Identity` section in the system prompt, up to the
 next heading or end of string."""
@@ -1294,10 +1371,16 @@ def create_cli_agent(
             )
 
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
+    user_subagents_dir = user_agents_dir.parent / "subagents"
     project_agents_dir = (
         project_context.project_agents_dir()
         if project_context is not None
         else settings.get_project_agents_dir()
+    )
+    project_subagents_dir = (
+        project_agents_dir.parent / "subagents"
+        if project_agents_dir is not None
+        else None
     )
 
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
@@ -1315,7 +1398,9 @@ def create_cli_agent(
 
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
+        user_subagents_dir=user_subagents_dir,
         project_agents_dir=project_agents_dir,
+        project_subagents_dir=project_subagents_dir,
     ):
         # Treat a falsy spec (`None` or `""`) as "no explicit model" so an empty
         # `model:` in subagent frontmatter inherits the runtime model rather than
@@ -1527,32 +1612,10 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
 
-    # Set up composite backend with routing
-    # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
-    # the working directory. For sandbox backends, no special routing is needed.
-    if sandbox is None:
-        # Local mode: Route large results to a unique temp directory
-        large_results_backend = FilesystemBackend(
-            root_dir=tempfile.mkdtemp(prefix="deepagents_large_results_"),
-            virtual_mode=True,
-        )
-        conversation_history_backend = FilesystemBackend(
-            root_dir=tempfile.mkdtemp(prefix="deepagents_conversation_history_"),
-            virtual_mode=True,
-        )
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes={
-                "/large_tool_results/": large_results_backend,
-                "/conversation_history/": conversation_history_backend,
-            },
-        )
-    else:
-        # Sandbox mode: No special routing needed
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes={},
-        )
+    # Keep exactly one execution/filesystem surface. Tool artifacts and
+    # conversation offloads live on the selected backend instead of routing to
+    # host-local temp backends.
+    composite_backend = CompositeBackend(default=backend, routes={})
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from deepagents_talon.cron.jobs import CronJob, CronJobStore
+from deepagents_talon.observability import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,9 @@ class PersistentCronScheduler:
     async def tick_once(self) -> None:
         """Run all jobs due at the current clock value once."""
         current = self.now()
-        for job in self.store.due_jobs(now=current):
+        jobs = self.store.due_jobs(now=current)
+        log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
+        for job in jobs:
             await self._run_due_job(job, current)
 
     async def _ticker(self) -> None:
@@ -88,10 +91,25 @@ class PersistentCronScheduler:
         if claimed is None:
             return
 
+        log_event(
+            logger,
+            "cron.dispatch",
+            job_id=claimed.id,
+            job_name=claimed.name,
+            conversation_id=claimed.origin.conversation_id,
+            next_run_at=None if claimed.next_run_at is None else claimed.next_run_at.isoformat(),
+        )
         try:
             text = await self.run_job(claimed)
         except Exception as exc:
             logger.exception("Cron job %s failed", claimed.id)
+            log_event(
+                logger,
+                "cron.failure",
+                job_id=claimed.id,
+                job_name=claimed.name,
+                error=str(exc),
+            )
             self.store.mark_job_run(
                 claimed.id,
                 status="error",
@@ -101,10 +119,48 @@ class PersistentCronScheduler:
             return
 
         self.store.mark_job_run(claimed.id, status="ok", error=None, now=self.now())
+        log_event(
+            logger,
+            "cron.success",
+            job_id=claimed.id,
+            job_name=claimed.name,
+            silent=_is_silent(text),
+            has_delivery=bool(text and not _is_silent(text)),
+        )
         if _is_silent(text):
+            log_event(
+                logger,
+                "cron.delivery_suppressed",
+                job_id=claimed.id,
+                job_name=claimed.name,
+            )
             return
         if text:
-            await self.deliver_result(claimed, text)
+            try:
+                await self.deliver_result(claimed, text)
+            except Exception as exc:
+                logger.exception("Cron job %s delivery failed", claimed.id)
+                log_event(
+                    logger,
+                    "cron.delivery_failure",
+                    job_id=claimed.id,
+                    job_name=claimed.name,
+                    error=str(exc),
+                )
+                self.store.mark_job_run(
+                    claimed.id,
+                    status="error",
+                    error=f"delivery failed: {exc}",
+                    now=self.now(),
+                )
+                return
+            log_event(
+                logger,
+                "cron.delivery",
+                job_id=claimed.id,
+                job_name=claimed.name,
+                conversation_id=claimed.origin.conversation_id,
+            )
 
 
 def _is_silent(text: str) -> bool:

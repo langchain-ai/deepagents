@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 _ASSISTANT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ENV_PREFIX = "DEEPAGENTS_TALON_"
-_RUNTIME_ENV_PREFIXES = (_ENV_PREFIX, "AGENT_")
+_RUNTIME_ENV_PREFIXES = (_ENV_PREFIX, "AGENT_", "LANGSMITH_")
 
 
 class TalonConfigError(ValueError):
@@ -88,7 +88,7 @@ class TalonConfig:
         """
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
-        for child in (self.manifest_dir, self.cron_dir, self.channel_dir):
+        for child in (self.manifest_dir, self.cron_dir, self.channel_dir, self.inbound_media_dir):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         return self.home
@@ -107,6 +107,11 @@ class TalonConfig:
     def channel_dir(self) -> Path:
         """Directory reserved for channel session state."""
         return self.home / "channels"
+
+    @property
+    def inbound_media_dir(self) -> Path:
+        """Directory reserved for downloaded inbound channel media."""
+        return self.home / "media" / "inbound"
 
 
 def _first_present(

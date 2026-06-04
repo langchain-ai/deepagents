@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import Self, cast
 
 import pytest
 
@@ -16,9 +18,6 @@ from deepagents_talon.channels.whatsapp import (
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class RecordingTransport:
@@ -54,6 +53,17 @@ class DelayedHealthTransport:
         return {"status": "qr_pending", "botId": None}
 
 
+class JsonResponse:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps({"success": True}).encode()
+
+
 def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {
@@ -78,6 +88,43 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
         mention_patterns=("@agent *",),
     )
     assert whatsapp.bot_header == "test bot"
+
+
+def test_config_from_talon_env_accepts_explicit_bridge_token(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN": "test-token",
+        },
+        base_home=tmp_path,
+    )
+
+    whatsapp = WhatsAppChannelConfig.from_talon_config(config)
+
+    assert whatsapp.bridge_token == "test-token"  # noqa: S105  # inert test token
+
+
+def test_bridge_transport_sends_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return JsonResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = BridgeTransport(
+        base_url="http://127.0.0.1:3000",
+        timeout=2,
+        token="test-token",  # noqa: S106  # inert test token
+    )
+
+    result = transport._request("GET", "/health", None)
+
+    request = cast("object", captured["request"])
+    assert result == {"success": True}
+    assert captured["timeout"] == 2
+    assert request.get_header("Authorization") == "Bearer test-token"
 
 
 def test_config_rejects_open_exposure_without_acknowledgement(tmp_path: Path) -> None:
@@ -339,8 +386,9 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
     transport = RecordingTransport()
     image = tmp_path / "image.png"
     image.write_bytes(b"image")
+    media_dir = tmp_path / "bridge-media"
     channel = WhatsAppChannel(
-        WhatsAppChannelConfig(session_dir=tmp_path),
+        WhatsAppChannelConfig(session_dir=tmp_path, inbound_media_dir=media_dir),
         transport=cast("BridgeTransport", transport),
     )
 
@@ -349,14 +397,17 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
     )
     await channel.edit_message("chat", "message", "# Updated")
 
+    staged = Path(cast("str", transport.posts[0][1]["path"]))
+    assert staged.parent == media_dir
+    assert await asyncio.to_thread(staged.read_bytes) == b"image"
     assert transport.posts == [
         (
             "/send-media",
             {
                 "chat_id": "chat",
                 "chatId": "chat",
-                "path": str(image),
-                "filePath": str(image),
+                "path": str(staged),
+                "filePath": str(staged),
                 "mediaType": "image",
                 "caption": "*deepagents bot*\ncaption",
             },

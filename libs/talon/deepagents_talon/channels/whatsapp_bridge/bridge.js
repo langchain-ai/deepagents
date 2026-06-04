@@ -11,6 +11,9 @@ const port = Number(process.env.WHATSAPP_BRIDGE_PORT || "3000");
 const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(process.cwd(), ".whatsapp"));
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
 const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
+const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
+const rawMaxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES || String(64 * 1024 * 1024));
+const maxMediaBytes = Number.isFinite(rawMaxMediaBytes) && rawMaxMediaBytes > 0 ? rawMaxMediaBytes : 64 * 1024 * 1024;
 const webVersionCacheUrl =
   process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
@@ -29,6 +32,11 @@ process.on("unhandledRejection", (reason) => {
   const message = reason && reason.message ? reason.message : reason;
   console.error("Unhandled rejection:", message);
 });
+
+if (!bridgeToken) {
+  console.error("WHATSAPP_BRIDGE_TOKEN is required");
+  process.exit(1);
+}
 
 fs.mkdirSync(sessionDir, { recursive: true });
 fs.mkdirSync(mediaDir, { recursive: true });
@@ -276,6 +284,13 @@ async function downloadMessageMedia(message) {
     const extension = mediaExtension(media.mimetype, message.type);
     const fileName = `${Date.now()}_${messageId.replace(/[^A-Za-z0-9]/g, "_")}.${extension}`;
     const filePath = path.join(mediaDir, fileName);
+    const size = decodedBase64Size(media.data);
+    if (size > maxMediaBytes) {
+      console.log(
+        `[bridge] Skipping oversized media ${messageId}: ${size} bytes exceeds ${maxMediaBytes}`,
+      );
+      return [];
+    }
     fs.writeFileSync(filePath, Buffer.from(media.data, "base64"), { mode: 0o600 });
     return [
       {
@@ -327,6 +342,12 @@ function mediaExtension(mimeType, messageType) {
     return "ogg";
   }
   return "bin";
+}
+
+function decodedBase64Size(value) {
+  const data = String(value || "");
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
 }
 
 function serializedId(value) {
@@ -415,8 +436,29 @@ function sendJson(res, code, body) {
   res.end(data);
 }
 
+function isAuthorized(req) {
+  return req.headers.authorization === `Bearer ${bridgeToken}`;
+}
+
+function containedMediaPath(value) {
+  if (typeof value !== "string" || !value) {
+    return null;
+  }
+  const resolved = path.resolve(value);
+  const root = path.resolve(mediaDir);
+  if (resolved === root || !resolved.startsWith(root + path.sep)) {
+    return null;
+  }
+  return resolved;
+}
+
 async function handle(req, res) {
   try {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { success: false, error: "unauthorized" });
+      return;
+    }
+
     if (req.method === "GET" && req.url === "/health") {
       sendJson(res, 200, { status, botId });
       return;
@@ -457,7 +499,12 @@ async function handle(req, res) {
         sendJson(res, 400, { success: false, error: "chat_id and path required" });
         return;
       }
-      const media = MessageMedia.fromFilePath(filePath);
+      const safePath = containedMediaPath(filePath);
+      if (!safePath) {
+        sendJson(res, 400, { success: false, error: "media path is not allowed" });
+        return;
+      }
+      const media = MessageMedia.fromFilePath(safePath);
       if (body.fileName || body.file_name) {
         media.filename = body.fileName || body.file_name;
       }

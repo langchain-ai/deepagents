@@ -126,7 +126,11 @@ def _first_present(
 
 
 def _validate_assistant_id(assistant_id: str | None) -> None:
-    if not assistant_id or not _ASSISTANT_ID_PATTERN.fullmatch(assistant_id):
+    if (
+        not assistant_id
+        or assistant_id in {".", ".."}
+        or not _ASSISTANT_ID_PATTERN.fullmatch(assistant_id)
+    ):
         msg = (
             "assistant id must be 1-128 characters and contain only letters, numbers, "
             "underscore, hyphen, or dot"

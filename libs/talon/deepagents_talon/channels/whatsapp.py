@@ -6,7 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import shlex
+import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +41,7 @@ DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_BRIDGE_START_TIMEOUT_SECONDS = 10.0
 DEFAULT_BOT_HEADER = "deepagents bot"
+DEFAULT_BRIDGE_TOKEN_BYTES = 32
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
@@ -63,6 +66,7 @@ class WhatsAppChannelConfig:
         bridge_command: Optional command used to start the Node bridge subprocess.
         chrome_path: Optional Chrome or Chromium executable path for Puppeteer.
         web_version_cache_url: Optional pinned WhatsApp Web HTML cache URL.
+        bridge_token: Bearer token shared with the loopback bridge process.
         poll_interval_seconds: Interval for draining inbound bridge messages.
         health_interval_seconds: Interval for bridge health checks.
         request_timeout_seconds: Per-request timeout for loopback bridge calls.
@@ -77,6 +81,10 @@ class WhatsAppChannelConfig:
     bridge_command: tuple[str, ...] | None = None
     chrome_path: str | None = None
     web_version_cache_url: str | None = None
+    bridge_token: str = field(
+        default_factory=lambda: secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
+        repr=False,
+    )
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -117,6 +125,8 @@ class WhatsAppChannelConfig:
             bridge_command=command,
             chrome_path=env.get("DEEPAGENTS_TALON_WHATSAPP_CHROME_PATH"),
             web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
+            bridge_token=env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN")
+            or secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
             poll_interval_seconds=_parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
@@ -140,15 +150,17 @@ class WhatsAppChannelConfig:
 class BridgeTransport:
     """Small JSON HTTP client for the loopback bridge."""
 
-    def __init__(self, *, base_url: str, timeout: float) -> None:
+    def __init__(self, *, base_url: str, timeout: float, token: str | None = None) -> None:
         """Initialize the transport.
 
         Args:
             base_url: Bridge base URL.
             timeout: Request timeout in seconds.
+            token: Optional bearer token for bridge authentication.
         """
         self.base_url = _validate_loopback_url(base_url.rstrip("/"))
         self.timeout = timeout
+        self.token = token
 
     async def get(self, path: str) -> object:
         """Send a GET request and decode JSON.
@@ -175,11 +187,14 @@ class BridgeTransport:
 
     def _request(self, method: str, path: str, payload: Mapping[str, object] | None) -> object:
         body = None if payload is None else json.dumps(payload).encode()
+        headers = {"content-type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(  # noqa: S310  # base URL is validated as HTTP loopback.
             f"{self.base_url}{path}",
             data=body,
             method=method,
-            headers={"content-type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(  # noqa: S310  # bridge transport is loopback-only.
@@ -211,6 +226,7 @@ class WhatsAppChannel:
         self._transport = transport or BridgeTransport(
             base_url=config.base_url,
             timeout=config.request_timeout_seconds,
+            token=config.bridge_token,
         )
         self._handler: MessageHandler | None = None
         self._process: asyncio.subprocess.Process | None = None
@@ -234,9 +250,9 @@ class WhatsAppChannel:
         """Start the bridge subprocess and background polling tasks."""
         self.config.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config.session_dir.chmod(0o700)
-        if self.config.inbound_media_dir is not None:
-            self.config.inbound_media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            self.config.inbound_media_dir.chmod(0o700)
+        media_dir = _bridge_media_dir(self.config)
+        media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        media_dir.chmod(0o700)
         self._stopped.clear()
         await self._start_bridge()
         self._poll = asyncio.create_task(self._poll_messages(), name="talon:whatsapp:poll")
@@ -273,11 +289,12 @@ class WhatsAppChannel:
             media: Media payload to send.
         """
         checked = validate_media(media)
+        staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
         payload: dict[str, object] = {
             "chat_id": conversation_id,
             "chatId": conversation_id,
-            "path": str(checked.path),
-            "filePath": str(checked.path),
+            "path": str(staged),
+            "filePath": str(staged),
             "mediaType": checked.media_type,
         }
         if checked.caption is not None:
@@ -329,9 +346,9 @@ class WhatsAppChannel:
             "WHATSAPP_BRIDGE_PORT": str(self.config.port),
             "WHATSAPP_SESSION_DIR": str(self.config.session_dir),
             "WHATSAPP_BOT_HEADER": self.config.bot_header,
+            "WHATSAPP_BRIDGE_TOKEN": self.config.bridge_token,
+            "WHATSAPP_MEDIA_DIR": str(_bridge_media_dir(self.config)),
         }
-        if self.config.inbound_media_dir is not None:
-            env["WHATSAPP_MEDIA_DIR"] = str(self.config.inbound_media_dir)
         if self.config.chrome_path:
             env["WHATSAPP_CHROME_PATH"] = self.config.chrome_path
         if self.config.web_version_cache_url:
@@ -487,6 +504,23 @@ def _chunk_with_bot_header(text: str, *, bot_header: str) -> list[str]:
 def bridge_script_path() -> Path:
     """Return the packaged Node bridge script path."""
     return Path(str(files("deepagents_talon.channels.whatsapp_bridge").joinpath("bridge.js")))
+
+
+def _bridge_media_dir(config: WhatsAppChannelConfig) -> Path:
+    return config.inbound_media_dir or config.session_dir.parent / "media"
+
+
+def _stage_bridge_media(path: Path, config: WhatsAppChannelConfig) -> Path:
+    media_dir = _bridge_media_dir(config).expanduser().resolve()
+    source = path.expanduser().resolve()
+    if source.is_relative_to(media_dir):
+        return source
+
+    media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination = media_dir / f"outbound_{secrets.token_hex(12)}{source.suffix}"
+    shutil.copyfile(source, destination)
+    destination.chmod(0o600)
+    return destination
 
 
 def _validate_loopback_url(value: str) -> str:

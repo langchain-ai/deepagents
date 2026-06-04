@@ -5,6 +5,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -144,6 +145,27 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     await host.stop()
 
     assert channel.sent == [("chat", "Stopped current run.")]
+
+
+async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = store.create_job(
+        prompt="scheduled prompt",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    await host.start()
+
+    text = await host.run_scheduled_job(job)
+    await host.deliver_scheduled_result(channel, job, text)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["scheduled prompt"]
+    assert agent.requests[0].metadata["trigger"] == "cron"
+    assert channel.sent == [("chat", "reply:scheduled prompt")]
 
 
 async def _wait_for_request(agent: BlockingAgent, text: str) -> None:

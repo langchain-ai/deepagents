@@ -9,10 +9,14 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.host import TalonHost
 from deepagents_talon.runtime import EchoAgentRuntime
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import ChannelAdapter
 
 
@@ -34,11 +38,18 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
     config = TalonConfig.from_env()
+    channels = _channels(config, enabled=args.whatsapp)
     host = TalonHost(
         config=config,
         agent=EchoAgentRuntime(),
-        channels=_channels(config, enabled=args.whatsapp),
+        channels=channels,
     )
+    if channels:
+        host.scheduler = PersistentCronScheduler(
+            store=CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir),
+            run_job=host.run_scheduled_job,
+            deliver_result=lambda job, text: _deliver_cron_result(host, channels, job, text),
+        )
 
     if args.once:
         asyncio.run(_run_once(host))
@@ -60,6 +71,18 @@ def _channels(config: TalonConfig, *, enabled: bool) -> tuple[ChannelAdapter, ..
     }:
         return ()
     return (WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)),)
+
+
+async def _deliver_cron_result(
+    host: TalonHost,
+    channels: Sequence[ChannelAdapter],
+    job: CronJob,
+    text: str,
+) -> None:
+    for channel in channels:
+        if job.origin.channel is None or (await channel.status()).provider == job.origin.channel:
+            await host.deliver_scheduled_result(channel, job, text)
+            return
 
 
 if __name__ == "__main__":

@@ -35,6 +35,34 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_WORKSPACE = "/workspace"
 ModelContent = str | list[dict[str, object]]
 
+_BAD_REQUEST_STATUS_CODE = 400
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
+_RETRYABLE_BAD_REQUEST_MARKERS = (
+    "failed to parse",
+    "tool_call",
+    "tool call",
+    "context length",
+    "context window",
+    "context limit",
+    "maximum context",
+    "max context",
+    "input too long",
+    "request too large",
+)
+_RETRYABLE_MESSAGE_MARKERS = (
+    *_RETRYABLE_BAD_REQUEST_MARKERS,
+    "connection aborted",
+    "connection closed",
+    "connection lost",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "read timeout",
+    "timed out",
+    "temporarily unavailable",
+    "temporary failure",
+)
+
 _CONTINUATION_NUDGE = (
     "Your action budget was exhausted mid-task. Continue working and complete the task. "
     "If you have already finished, provide your final answer now."
@@ -93,7 +121,8 @@ class DeepAgentRuntime:
             checkpointing so turns in the same conversation share chat history.
         include_web_tools: Whether to include fetch/search/request tools.
         recursion_limit: Per-invocation graph recursion limit.
-        max_retries: Retries for transient parse, context, and connection errors.
+        max_retries: Retries for transient provider, parse, context-limit, and
+            transport errors.
         max_continuations: Number of continuation nudges after empty responses.
     """
 
@@ -413,17 +442,20 @@ def _prepare_memory_path(raw: str) -> str | None:
 
 
 def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+
     text = str(exc).lower()
     status_code = getattr(exc, "status_code", None)
-    return (
-        status_code in {400, 408, 409, 413, 429, 500, 502, 503, 504}
-        or "failed to parse" in text
-        or "tool_call" in text
-        or "context" in text
-        or "connection" in text
-        or "timeout" in text
-        or "temporarily" in text
-    )
+    if status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    if status_code == _BAD_REQUEST_STATUS_CODE:
+        return _contains_marker(text, _RETRYABLE_BAD_REQUEST_MARKERS)
+    return _contains_marker(text, _RETRYABLE_MESSAGE_MARKERS)
+
+
+def _contains_marker(text: str, markers: Sequence[str]) -> bool:
+    return any(marker in text for marker in markers)
 
 
 def _last_text(state: object) -> str:

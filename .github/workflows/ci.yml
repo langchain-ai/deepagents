@@ -88,6 +88,7 @@ jobs:
             talon:
               - 'libs/talon/**'
               - 'libs/deepagents/**'
+              - 'libs/code/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'

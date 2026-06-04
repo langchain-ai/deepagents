@@ -8,7 +8,7 @@ from deepagents.backends import LocalShellBackend
 
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import AgentRequest
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.runtime import DeepAgentRuntime, _is_retryable
 
 if TYPE_CHECKING:
     import pytest
@@ -45,6 +45,12 @@ class CronCallingGraph:
     ) -> dict[str, Any]:
         result = self.create_job.invoke({"prompt": "later", "schedule": "in 5m"})
         return {"messages": [SimpleNamespace(content=result["id"])]}
+
+
+class StatusError(Exception):
+    def __init__(self, status_code: int, message: str = "request failed") -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def custom_tool() -> str:
@@ -255,6 +261,37 @@ async def test_cron_tools_use_current_request_origin(
     assert job.origin.channel == "whatsapp"
     assert job.origin.message_id == "msg-1"
     assert any(_tool_name(tool) == "create_job" for tool in captured["tools"])
+
+
+def test_is_retryable_matches_known_transient_errors() -> None:
+    errors = [
+        StatusError(408),
+        StatusError(429),
+        StatusError(503),
+        StatusError(400, "maximum context length exceeded"),
+        RuntimeError("failed to parse model response"),
+        RuntimeError("invalid tool_call payload"),
+        ConnectionError("connection reset by peer"),
+        TimeoutError("operation timed out"),
+        RuntimeError("service temporarily unavailable"),
+    ]
+
+    for error in errors:
+        assert _is_retryable(error)
+
+
+def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
+    errors = [
+        StatusError(400, "invalid request: unknown field"),
+        StatusError(404, "not found"),
+        RuntimeError("invalid context manager"),
+        RuntimeError("missing context variable"),
+        RuntimeError("invalid connection setting"),
+        ValueError("timeout must be positive"),
+    ]
+
+    for error in errors:
+        assert not _is_retryable(error)
 
 
 def _tool_name(tool: object) -> str:

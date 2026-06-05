@@ -16,10 +16,11 @@ falls back rather than raising, so a bad config never blocks startup
 (unrecognized boolean env values follow `is_env_truthy` and resolve to the
 default without a warning).
 
-Structured, user-defined config — `[models.providers.*]`, `[themes.*]`,
-`[threads].columns`, `[warnings].suppress` — is *not* a flat scalar option and
-is parsed by dedicated typed loaders elsewhere; the manifest only references
-those sections for discovery.
+Structured, user-defined config is *not* a flat scalar option and is parsed by
+dedicated typed loaders elsewhere. The manifest references `[threads].columns`
+and `[warnings].suppress` as `STRUCTURED` options for discovery; other tables
+such as `[models.providers.*]` and `[themes.*]` are handled entirely by their
+own loaders and the manifest does not enumerate them at all.
 
 Import discipline: the module top level stays stdlib + `_env_vars` only (both
 light) so it is safe to import from `config.py` at class-definition time without
@@ -35,7 +36,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import is_env_truthy
@@ -55,7 +56,7 @@ INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
+INTERPRETER_PTC_DEFAULT: str | bool | tuple[str, ...] = False
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 
@@ -99,6 +100,24 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.STRUCTURED: "table",
 }
 
+if _KIND_TYPE_LABEL.keys() != set(OptionKind):
+    # Fail at import (and in the test suite) rather than KeyError-ing from
+    # `ConfigOption.type` only when an unlabeled kind happens to be rendered.
+    msg = "_KIND_TYPE_LABEL is missing an OptionKind entry"
+    raise RuntimeError(msg)
+
+
+# Python types accepted for a `ConfigOption.default` of each scalar kind,
+# enforced by `ConfigOption.__post_init__`. Delegate kinds accept their parser's
+# output shape and are validated by those parsers, so they are omitted here.
+_KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
+    OptionKind.BOOL: (bool,),
+    OptionKind.BOOL_PRESENCE: (bool,),
+    OptionKind.INT: (int,),
+    OptionKind.FLOAT: (int, float),
+    OptionKind.STR: (str,),
+}
+
 
 @dataclass(frozen=True)
 class ConfigOption:
@@ -133,6 +152,47 @@ class ConfigOption:
     cli_flag: str | None = None
     secret: bool = False
     settings_field: str | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a `default` that contradicts `kind` at construction time.
+
+        The manifest is a hand-edited literal table with `default: Any`, so a
+        mistyped default (an `INT` option defaulting to a `str`) or a mutable
+        one would otherwise slip through to runtime — a wrong-typed default
+        feeds `Settings` unchecked, and a mutable default is shared by reference
+        through the `get_config_options` `lru_cache` and returned verbatim by
+        `resolve_scalar`. Catching it here fails the import (and the test suite).
+
+        Raises:
+            TypeError: When `default` is mutable, a `STRUCTURED` option declares
+                a default, or a scalar option's default has the wrong type.
+        """
+        default = self.default
+        if default is None:
+            return
+        if isinstance(default, (list, dict, set)):
+            msg = (
+                f"{self.key}: mutable default {default!r} is unsafe under the "
+                "shared lru_cache; use an immutable value (e.g. a tuple)"
+            )
+            raise TypeError(msg)
+        if self.kind is OptionKind.STRUCTURED:
+            msg = f"{self.key}: STRUCTURED options must not declare a default"
+            raise TypeError(msg)
+        expected = _KIND_DEFAULT_TYPES.get(self.kind)
+        if expected is None:
+            # Delegate kinds validate their own (immutable) default shapes.
+            return
+        # `bool` is an `int` subclass; an INT/FLOAT default must not be a bool.
+        if not isinstance(default, expected) or (
+            self.kind in {OptionKind.INT, OptionKind.FLOAT}
+            and isinstance(default, bool)
+        ):
+            msg = (
+                f"{self.key}: default {default!r} is not valid for kind "
+                f"{self.kind.value}"
+            )
+            raise TypeError(msg)
 
     @property
     def type(self) -> str:
@@ -233,9 +293,17 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
     if kind is OptionKind.SKILLS_DIRS_DELEGATE:
         from deepagents_code.config import _parse_extra_skills_dirs
 
-        return _parse_extra_skills_dirs(raw, None)
-    # PTC has no env var; STRUCTURED is not env-backed.
-    return raw
+        try:
+            return _parse_extra_skills_dirs(raw, None)
+        except (ValueError, RuntimeError):
+            # `Path.expanduser()` raises on an unresolvable `~user`, `.resolve()`
+            # on a NUL byte; fall back rather than crash resolution/startup.
+            logger.warning("Ignoring %s (could not resolve a path)", name)
+            return _INVALID
+    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
+        # PTC has no env var; STRUCTURED is not env-backed. Returned verbatim.
+        return raw
+    assert_never(kind)
 
 
 def _coerce_toml(option: ConfigOption, raw: object) -> object:
@@ -263,7 +331,15 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs
 
-            return _parse_extra_skills_dirs(None, raw)
+            try:
+                return _parse_extra_skills_dirs(None, raw)
+            except (ValueError, RuntimeError):
+                # Unresolvable `~user` / NUL byte in a path string: fall back
+                # rather than crash resolution.
+                logger.warning(
+                    "Ignoring %s in config.toml (could not resolve a path)", label
+                )
+                return _INVALID
     elif kind is OptionKind.PTC_DELEGATE:
         from deepagents_code.config import _parse_interpreter_ptc
 
@@ -275,8 +351,11 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
-    else:  # SHELL_LIST_DELEGATE is env-only and never read from TOML.
+    elif kind is OptionKind.SHELL_LIST_DELEGATE:
+        # Env-only; never read from TOML, so passed through untouched.
         return raw
+    # Any other (future) kind falls through to the warning below, so a missing
+    # branch logs and falls back rather than passing a raw value through.
 
     logger.warning(
         "Ignoring %s=%r in config.toml (expected %s)", label, raw, option.type

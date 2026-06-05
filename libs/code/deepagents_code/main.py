@@ -487,7 +487,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, and `mcp` commands when no
+    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
     subcommand was given.
 
     Args:

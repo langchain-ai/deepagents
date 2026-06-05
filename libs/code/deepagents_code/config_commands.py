@@ -195,6 +195,8 @@ def _run_show(output_format: OutputFormat) -> int:
         )
         return 0
 
+    from rich.markup import escape
+
     from deepagents_code.config import console
     from deepagents_code.config_manifest import iter_groups
 
@@ -205,8 +207,10 @@ def _run_show(output_format: OutputFormat) -> int:
             if opt.group != group:
                 continue
             display = _display_value(opt, is_set=is_set, value=value)
+            # `display` is a resolved env/TOML value and may contain Rich
+            # markup (e.g. `[/]`); escape it so a value can't break rendering.
             console.print(
-                f"  {opt.key:<34} {display:<22} [dim]{source}[/dim]",
+                f"  {opt.key:<34} {escape(display):<22} [dim]{source}[/dim]",
                 highlight=False,
             )
         console.print()
@@ -298,10 +302,15 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
         )
         return 0
 
+    from rich.markup import escape
+
     from deepagents_code.config import console
 
     display = _display_value(option, is_set=is_set, value=value)
-    console.print(f"{option.key} = {display}  [dim]({source})[/dim]", highlight=False)
+    # `display` may carry Rich markup from a user value; escape before render.
+    console.print(
+        f"{option.key} = {escape(display)}  [dim]({source})[/dim]", highlight=False
+    )
     return 0
 
 

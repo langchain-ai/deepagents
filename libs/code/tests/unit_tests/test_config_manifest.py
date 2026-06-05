@@ -282,3 +282,239 @@ def test_config_registered_in_help_specs() -> None:
 
     assert _HELP_SPECS.get("config") == ("config_command", "show_config_help")
     assert callable(ui.show_config_help)
+
+
+# --- ConfigOption validation ------------------------------------------------
+
+
+def test_config_option_rejects_type_mismatched_default() -> None:
+    """A default whose type contradicts `kind` fails at construction."""
+    import pytest
+
+    with pytest.raises(TypeError, match="not valid for kind int"):
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default="5")
+
+
+def test_config_option_rejects_bool_default_for_int() -> None:
+    """`bool` is an `int` subclass but must not pass as an INT/FLOAT default."""
+    import pytest
+
+    with pytest.raises(TypeError, match="not valid for kind int"):
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default=True)
+
+
+def test_config_option_rejects_mutable_default() -> None:
+    """A mutable default would be shared by reference through the lru_cache."""
+    import pytest
+
+    with pytest.raises(TypeError, match="mutable default"):
+        ConfigOption(
+            key="x", group="g", summary="s", kind=OptionKind.STR, default=["a"]
+        )
+
+
+def test_config_option_rejects_default_on_structured() -> None:
+    """STRUCTURED options are display-only pass-throughs and take no default."""
+    import pytest
+
+    with pytest.raises(TypeError, match="must not declare a default"):
+        ConfigOption(
+            key="x", group="g", summary="s", kind=OptionKind.STRUCTURED, default="x"
+        )
+
+
+# --- Coercion matrix --------------------------------------------------------
+
+
+def test_resolve_bool_presence_enables_on_any_value(monkeypatch) -> None:
+    """BOOL_PRESENCE treats any non-empty value as set, including '0'.
+
+    This is the one branch whose semantics differ from BOOL, where '0' is
+    falsy; here `bool(raw)` makes a literal '0' enable the flag.
+    """
+    opt = get_option("debug.notifications")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL_PRESENCE
+    monkeypatch.setenv(opt.env_var, "0")
+    assert resolve_scalar(opt, toml_data={})[0] is True
+    monkeypatch.setenv(opt.env_var, "")
+    # An empty value is unset (see resolve_scalar), so it falls back to default.
+    assert resolve_scalar(opt, toml_data={}) == (False, "default")
+
+
+def test_resolve_malformed_int_env_falls_back_with_warning(monkeypatch, caplog) -> None:
+    """A non-numeric env value for an INT option logs and falls back.
+
+    Interpreter options are TOML-only, so the int env-coercion branch is
+    exercised through a synthetic option with an env var.
+    """
+    import logging
+
+    int_opt = ConfigOption(
+        key="t.int",
+        group="g",
+        summary="s",
+        kind=OptionKind.INT,
+        default=7,
+        env_var="DEEPAGENTS_CODE_TEST_INT",
+    )
+    monkeypatch.setenv("DEEPAGENTS_CODE_TEST_INT", "not-a-number")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(int_opt, toml_data={})
+    assert (value, source) == (7, "default")
+    assert any("TEST_INT" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_toml_int_rejects_bool() -> None:
+    """A TOML boolean must not coerce to an INT (bool is an int subclass)."""
+    opt = get_option("interpreter.memory_limit_mb")
+    assert opt is not None
+    assert resolve_scalar(
+        opt, toml_data={"interpreter": {"memory_limit_mb": True}}
+    ) == (64, "default")
+
+
+def test_resolve_toml_float_rejects_bool() -> None:
+    """A TOML boolean must not coerce to a FLOAT."""
+    opt = get_option("interpreter.timeout_seconds")
+    assert opt is not None
+    assert resolve_scalar(
+        opt, toml_data={"interpreter": {"timeout_seconds": True}}
+    ) == (5.0, "default")
+
+
+def test_resolve_structured_passes_value_through() -> None:
+    """STRUCTURED options return the raw table verbatim for display."""
+    opt = get_option("threads.columns")
+    assert opt is not None
+    assert opt.kind is OptionKind.STRUCTURED
+    table = {"created": True, "updated": False}
+    assert resolve_scalar(opt, toml_data={"threads": {"columns": table}}) == (
+        table,
+        "config.toml",
+    )
+
+
+def test_resolve_malformed_skills_dir_env_falls_back(monkeypatch, caplog) -> None:
+    """An unresolvable skills-dir env path logs and falls back, never raising."""
+    import logging
+
+    opt = get_option("skills.extra_allowed_dirs")
+    assert opt is not None
+    # `~nobodyuser_xyz` cannot resolve to a home directory; `expanduser` raises
+    # RuntimeError, which the resolver must catch.
+    monkeypatch.setenv(opt.env_var, "~nobodyuser_xyz/skills")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (None, "default")
+    assert any("could not resolve" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_malformed_skills_dir_toml_falls_back(caplog) -> None:
+    """An unresolvable skills-dir in config.toml logs and falls back."""
+    import logging
+
+    opt = get_option("skills.extra_allowed_dirs")
+    assert opt is not None
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(
+            opt,
+            toml_data={"skills": {"extra_allowed_dirs": ["~nobodyuser_xyz/skills"]}},
+        )
+    assert (value, source) == (None, "default")
+    assert any("could not resolve" in r.getMessage() for r in caplog.records)
+
+
+# --- load_config_toml -------------------------------------------------------
+
+
+def test_load_config_toml_absent_returns_empty(monkeypatch, tmp_path) -> None:
+    """An absent config file is not an error: returns {} silently."""
+    from deepagents_code import config_manifest, model_config
+
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "missing.toml")
+    assert config_manifest.load_config_toml() == {}
+
+
+def test_load_config_toml_corrupt_returns_empty_with_warning(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    """A corrupt config file logs a warning and falls back to {}."""
+    import logging
+
+    from deepagents_code import config_manifest, model_config
+
+    bad = tmp_path / "config.toml"
+    bad.write_text("this is = not valid = toml ][")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", bad)
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert config_manifest.load_config_toml() == {}
+    assert any("Could not read config" in r.getMessage() for r in caplog.records)
+
+
+def test_load_config_toml_valid_parses(monkeypatch, tmp_path) -> None:
+    """A valid config file is parsed into a mapping."""
+    from deepagents_code import config_manifest, model_config
+
+    good = tmp_path / "config.toml"
+    good.write_text("[interpreter]\nmemory_limit_mb = 128\n")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", good)
+    assert config_manifest.load_config_toml() == {
+        "interpreter": {"memory_limit_mb": 128}
+    }
+
+
+# --- Display rendering ------------------------------------------------------
+
+
+def test_display_value_unset_renders_placeholder() -> None:
+    """A non-secret option with no value renders the unset placeholder."""
+    opt = ConfigOption(key="x", group="g", summary="s", kind=OptionKind.STR)
+    assert _display_value(opt, is_set=False, value=None) == "(unset)"
+
+
+def test_display_value_truncates_long_values() -> None:
+    """A long value is truncated to 60 chars with a trailing ellipsis."""
+    opt = ConfigOption(key="x", group="g", summary="s", kind=OptionKind.STR)
+    rendered = _display_value(opt, is_set=True, value="a" * 100)
+    assert len(rendered) == 60
+    assert rendered.endswith("\N{HORIZONTAL ELLIPSIS}")
+
+
+def test_config_show_text_survives_markup_in_value(monkeypatch) -> None:
+    """A value containing Rich close-tag markup must not crash text rendering."""
+    monkeypatch.setenv(
+        _env_vars.EXTERNAL_EVENT_SOCKET_PATH,
+        "/tmp/sock[/]oops",
+    )
+    args = argparse.Namespace(config_command="show", output_format="text")
+    assert run_config_command(args) == 0
+
+
+# --- Command smoke (text paths) ---------------------------------------------
+
+
+def test_run_show_text_returns_zero() -> None:
+    """The default (text) `config show` rendering path runs without error."""
+    args = argparse.Namespace(config_command="show", output_format="text")
+    assert run_config_command(args) == 0
+
+
+def test_run_list_text_returns_zero() -> None:
+    """The default (text) `config list` rendering path runs without error."""
+    args = argparse.Namespace(config_command="list", output_format="text")
+    assert run_config_command(args) == 0
+
+
+def test_run_get_text_returns_zero() -> None:
+    """The default (text) `config get` rendering path runs without error."""
+    args = argparse.Namespace(
+        config_command="get", key="interpreter.memory_limit_mb", output_format="text"
+    )
+    assert run_config_command(args) == 0
+
+
+def test_run_path_text_returns_zero() -> None:
+    """The `config path` rendering path runs without error."""
+    args = argparse.Namespace(config_command="path", output_format="text")
+    assert run_config_command(args) == 0

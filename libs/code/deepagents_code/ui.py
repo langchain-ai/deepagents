@@ -83,6 +83,7 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
+    console.print("  dcode config <show|list|get|path>         Inspect configuration")
     console.print(
         "  dcode update                              Check for and install updates"
     )
@@ -513,9 +514,9 @@ def show_mcp_config_help() -> None:
 def show_config_help() -> None:
     """Show help information for the `config` subcommand.
 
-    Invoked via the `-h` argparse action or directly from `cli_main` when no
-    config subcommand is given. Kept import-light so it stays on the startup
-    fast path.
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_config_command` when no config subcommand is given. Kept import-light
+    so it stays on the startup fast path.
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)

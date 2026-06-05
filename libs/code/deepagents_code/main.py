@@ -780,6 +780,16 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
+    from deepagents_code.ui import non_negative_int, positive_int
+
+    parser.add_argument(
+        "--max-retries",
+        type=non_negative_int,
+        default=None,
+        metavar="N",
+        help="Override max retries for transient model errors.",
+    )
+
     parser.add_argument(
         "--profile-override",
         metavar="JSON",
@@ -854,8 +864,6 @@ def parse_args() -> argparse.Namespace:
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
-
-    from deepagents_code.ui import positive_int
 
     parser.add_argument(
         "--max-turns",
@@ -1778,6 +1786,12 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        max_retries = getattr(args, "max_retries", None)
+        if max_retries is not None:
+            if model_params is None:
+                model_params = {}
+            model_params["max_retries"] = max_retries
 
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)

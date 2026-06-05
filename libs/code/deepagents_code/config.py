@@ -983,6 +983,110 @@ def _resolve_interpreter_kwargs(
     return kwargs
 
 
+def _read_config_toml_retries() -> dict[str, Any] | None:
+    """Read `[retries]` from `~/.deepagents/config.toml`.
+
+    Returns:
+        Mapping of retry setting names to raw values, or `None` if absent.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read retries config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    section = data.get("retries")
+    if isinstance(section, dict):
+        return section
+    return None
+
+
+def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
+    """Validate a TOML retry count.
+
+    Args:
+        raw: Value loaded from TOML.
+        source: Human-readable config path for warnings.
+
+    Returns:
+        The retry count, or `None` when invalid.
+    """
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    logger.warning("Ignoring %s=%r in config.toml (expected int >= 0)", source, raw)
+    return None
+
+
+def _resolve_retry_kwargs(
+    section: dict[str, Any] | None,
+    provider: str,
+) -> dict[str, Any]:
+    """Return `{retry_param_name: value}` for `provider`, or `{}`."""
+    if not section:
+        return {}
+
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    if retry_param is None:
+        logger.warning(
+            "Ignoring [retries] config for provider %r; provider does not support "
+            "a registered retry parameter",
+            provider,
+        )
+        return {}
+
+    for key, value in section.items():
+        if key == "max_retries" or isinstance(value, dict):
+            continue
+        logger.warning("Ignoring [retries].%s=%r in config.toml", key, value)
+
+    resolved: int | None = None
+    if "max_retries" in section:
+        resolved = _coerce_max_retries(
+            section["max_retries"], source="[retries].max_retries"
+        )
+
+    provider_section = section.get(provider)
+    if provider_section is not None and not isinstance(provider_section, dict):
+        logger.warning(
+            "Ignoring [retries].%s=%r in config.toml (expected table)",
+            provider,
+            provider_section,
+        )
+    elif provider_section:
+        for key, value in provider_section.items():
+            if key != "max_retries":
+                logger.warning(
+                    "Ignoring [retries.%s].%s=%r in config.toml",
+                    provider,
+                    key,
+                    value,
+                )
+        if "max_retries" in provider_section:
+            provider_value = _coerce_max_retries(
+                provider_section["max_retries"],
+                source=f"[retries.{provider}].max_retries",
+            )
+            if provider_value is not None:
+                resolved = provider_value
+
+    if resolved is None:
+        return {}
+    return {retry_param: resolved}
+
+
 def _read_config_toml_skills_dirs() -> list[str] | None:
     """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
 
@@ -2327,6 +2431,11 @@ def _get_provider_kwargs(
                         headers["Authorization"] = f"Bearer {optional_key}"
                         client_kwargs["headers"] = headers
                         result["client_kwargs"] = client_kwargs
+
+    retry_section = _read_config_toml_retries()
+    retry_kwargs = _resolve_retry_kwargs(retry_section, provider)
+    for key, value in retry_kwargs.items():
+        result.setdefault(key, value)
 
     return result
 

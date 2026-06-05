@@ -18,6 +18,8 @@ from deepagents_code.config import (
     _create_model_from_class,
     _create_model_via_init,
     _get_provider_kwargs,
+    _read_config_toml_retries,
+    _resolve_retry_kwargs,
     build_langsmith_thread_url,
     create_model,
     detect_mode_prefix,
@@ -897,6 +899,115 @@ class TestModelResultApplyToSettings:
             assert settings.model_unsupported_modalities == expected
         finally:
             settings.model_unsupported_modalities = original
+
+
+class TestRetriesConfig:
+    """Tests for `[retries]` config.toml support."""
+
+    def test_read_retries_returns_none_when_section_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing `[retries]` returns `None`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        """Missing config file returns `None`."""
+        config_path = tmp_path / "config.toml"
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_when_unreadable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unreadable config returns `None` with a warning."""
+        config_path = tmp_path / "config.toml"
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(Path, "open", side_effect=PermissionError("denied")),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() is None
+
+        assert "Could not read retries config" in caplog.text
+
+    def test_resolve_retry_kwargs_global(self) -> None:
+        """Global retry config applies to supported providers."""
+        assert _resolve_retry_kwargs({"max_retries": 2}, "fireworks") == {
+            "max_retries": 2
+        }
+
+    def test_resolve_retry_kwargs_provider_override_wins(self) -> None:
+        """Provider retry config beats the global value."""
+        section = {"max_retries": 2, "fireworks": {"max_retries": 3}}
+        assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 3}
+
+    def test_resolve_retry_kwargs_provider_only(self) -> None:
+        """Provider retry config works without a global value."""
+        assert _resolve_retry_kwargs(
+            {"fireworks": {"max_retries": 3}}, "fireworks"
+        ) == {"max_retries": 3}
+
+    @pytest.mark.parametrize("value", [-1, 1.5, True, False, "3"])
+    def test_resolve_retry_kwargs_invalid_values_warn(
+        self, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invalid retry values are ignored with a warning."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs({"max_retries": value}, "fireworks") == {}
+
+        assert "Ignoring [retries].max_retries" in caplog.text
+
+    def test_resolve_retry_kwargs_unknown_provider_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unsupported providers do not receive retry kwargs."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs({"max_retries": 2}, "google_genai") == {}
+
+        assert "does not support a registered retry parameter" in caplog.text
+
+    def test_resolve_retry_kwargs_unknown_keys_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown retry keys are ignored with warnings."""
+        section = {"max_retries": 2, "fireworks": {"other": 4}, "other": 5}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+
+        assert "Ignoring [retries].other" in caplog.text
+        assert "Ignoring [retries.fireworks].other" in caplog.text
+
+    def test_get_provider_kwargs_includes_retries(self, tmp_path: Path) -> None:
+        """Provider kwargs include retries from `[retries]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.fireworks]\nmax_retries = 3\n")
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 3
+
+    def test_get_provider_kwargs_params_beat_retries(self, tmp_path: Path) -> None:
+        """Provider params keep precedence over `[retries]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[models.providers.fireworks.params]
+max_retries = 5
+
+[retries.fireworks]
+max_retries = 3
+"""
+        )
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 5
 
 
 class TestCreateModelProfileOverrides:

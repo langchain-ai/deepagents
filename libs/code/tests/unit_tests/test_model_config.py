@@ -13,6 +13,7 @@ import pytest
 from deepagents_code import model_config
 from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
+    RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
     ModelConfigError,
@@ -54,6 +55,19 @@ def _clear_model_caches() -> Iterator[None]:
     clear_caches()
     yield
     clear_caches()
+
+
+class TestRetryParamByProvider:
+    """Tests for retry-parameter registry drift."""
+
+    def test_all_retry_providers_have_api_key_env(self) -> None:
+        """Every retry-enabled provider is a known provider."""
+        assert set(RETRY_PARAM_BY_PROVIDER) <= set(PROVIDER_API_KEY_ENV)
+
+    def test_contains_expected_retry_params(self) -> None:
+        """Major retry-enabled providers use `max_retries`."""
+        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
 class TestModelSpec:

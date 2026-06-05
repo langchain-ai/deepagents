@@ -526,6 +526,18 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
+    "anthropic": "max_retries",
+    "azure_openai": "max_retries",
+    "fireworks": "max_retries",
+    "groq": "max_retries",
+    "mistralai": "max_retries",
+    "openai": "max_retries",
+    "openrouter": "max_retries",
+    "xai": "max_retries",
+}
+"""Providers whose chat model constructors accept a retry-count kwarg."""
+
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain
     # integration and underlying SDK may read, canonical name first. Names were

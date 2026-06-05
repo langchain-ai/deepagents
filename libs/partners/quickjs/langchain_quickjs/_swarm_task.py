@@ -14,6 +14,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,9 @@ class SwarmSubAgent:
 
     model: str | BaseChatModel | None = None
     """Model override for this subagent. Falls back to the tool's `default_model`."""
+
+    middleware: Sequence[AgentMiddleware] = field(default_factory=list)
+    """Middleware applied to this subagent's agent loop."""
 
 
 def _validate_response_schema(schema: dict[str, Any]) -> None:
@@ -175,11 +181,13 @@ class _AgentSpec:
         system_prompt: str,
         tools: list[BaseTool],
         name: str,
+        middleware: Sequence[AgentMiddleware] = (),
     ) -> None:
         self.model = model
         self.system_prompt = system_prompt
         self.tools = tools
         self.name = name
+        self.middleware = middleware
 
 
 class _CompiledAgent:
@@ -208,6 +216,7 @@ async def _invoke_agent(
                 system_prompt=entry.spec.system_prompt,
                 tools=entry.spec.tools,
                 name=entry.spec.name,
+                middleware=list(entry.spec.middleware),
                 response_format=response_schema,
             ),
         )
@@ -282,17 +291,20 @@ def create_swarm_task_tool(
 
     for sub in subs:
         model = sub.model if sub.model is not None else default_model
+        middleware = list(sub.middleware)
         spec = _AgentSpec(
             model=model,
             system_prompt=sub.system_prompt,
             tools=sub.tools,
             name=sub.name,
+            middleware=middleware,
         )
         agent = create_agent(
             model=model,
             system_prompt=sub.system_prompt,
             tools=sub.tools,
             name=sub.name,
+            middleware=middleware,
         )
         compiled[sub.name] = _CompiledAgent(agent=agent, spec=spec)
 

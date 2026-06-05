@@ -111,9 +111,13 @@ def test_display_value_redacts_secrets() -> None:
 
 def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
     """Non-secret credential identifiers still use configured-state language."""
-    option = get_option("credentials.google_vertexai")
-    assert option is not None
-    assert option.secret is False
+    option = ConfigOption(
+        key="credentials.example",
+        group="Credentials",
+        summary="",
+        kind=OptionKind.STR,
+        secret=False,
+    )
     assert _display_value(option, is_set=False, value=None) == "not configured"
 
 
@@ -124,6 +128,7 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
         group="Credentials",
         summary="",
         kind=OptionKind.STR,
+        secret=True,
         dependency_module="langchain_missing_provider",
         install_extra="missing-provider",
     )
@@ -132,7 +137,11 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
         lambda name: None if name == "langchain_missing_provider" else object(),
     )
     assert _missing_extra_hint(option) is True
-    assert _source_label(option, "default") == "default [missing extra]"
+    assert (
+        _display_value(option, is_set=True, value="sk-secret")
+        == "configured, unavailable"
+    )
+    assert _source_label("default") == "default"
 
 
 def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
@@ -155,7 +164,7 @@ def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
         "auto (using Unicode glyphs)",
         "auto (using ASCII glyphs)",
     }
-    assert _source_label(option, "default") == "default"
+    assert _source_label("default") == "default"
 
 
 # --- Single-source defaults -------------------------------------------------

@@ -148,32 +148,44 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
         `configured`/`not configured` for credential options, otherwise the value
             as text.
     """
-    if option.group == "Credentials" and value is None:
-        return "not configured"
-    if option.secret:
-        return "configured" if is_set else "not configured"
+    if option.group == "Credentials":
+        if value is None:
+            return _with_availability(option, "not configured")
+        if option.secret:
+            status = "configured" if is_set else "not configured"
+            return _with_availability(option, status)
     if value is None:
         return "(unset)"
     if option.key == "display.charset" and value == "auto":
         return _charset_display_value()
     text = str(value)
+    if option.group == "Credentials":
+        text = _with_availability(option, text)
     max_len = 60
     if len(text) > max_len:
         return text[: max_len - 1] + "\N{HORIZONTAL ELLIPSIS}"
     return text
 
 
-def _source_label(option: ConfigOption, source: str) -> str:
+def _source_label(source: str) -> str:
     """Render the source column for human output.
 
     Returns:
-        Source label with compact diagnostic hints for unavailable provider
-        integrations.
+        Source label for the value's origin.
     """
-    label = source
+    return source
+
+
+def _with_availability(option: ConfigOption, text: str) -> str:
+    """Append provider availability to a credential display value when needed.
+
+    Returns:
+        Display text with `, unavailable` appended when the provider integration
+        package is missing.
+    """
     if _missing_extra_hint(option):
-        label = f"{label} [missing extra]"
-    return label
+        return f"{text}, unavailable"
+    return text
 
 
 def _charset_display_value() -> str:
@@ -242,7 +254,7 @@ def _run_show(output_format: OutputFormat) -> int:
             if opt.group != group:
                 continue
             display = _display_value(opt, is_set=is_set, value=value)
-            source_label = _source_label(opt, source)
+            source_label = _source_label(source)
             # `display` and `source_label` may contain Rich markup from env/TOML
             # or terminal metadata; escape them so values can't break rendering.
             display_text = escape(display)
@@ -345,7 +357,7 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
     from deepagents_code.config import console
 
     display = _display_value(option, is_set=is_set, value=value)
-    source_label = _source_label(option, source)
+    source_label = _source_label(source)
     console.print(
         f"{option.key} = {escape(display)}  [dim]({escape(source_label)})[/dim]",
         highlight=False,

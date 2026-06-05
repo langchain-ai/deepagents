@@ -1686,6 +1686,42 @@ class TestModalScreenCtrlDHandling:
             assert isinstance(app.screen, DeleteCredentialConfirmScreen)
             exit_mock.assert_not_called()
 
+    async def test_shift_tab_moves_focus_back_in_auth_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shift+Tab steps focus from the base-URL field back to the key field.
+
+        The app binds Shift+Tab (priority) to auto-approve toggling, so the
+        Screen's own ``app.focus_previous`` binding never fires. The prompt has
+        two inputs now, so the toggle handler must delegate backward navigation
+        instead of swallowing the key.
+        """
+        from deepagents_code.widgets.auth import AuthPromptScreen
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-input"
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-base-url"
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "auth-prompt-input"
+
     async def test_ctrl_d_in_auth_confirm_arms_quit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -5900,9 +5936,15 @@ class TestDeferredActions:
                 provider="custom_provider",
                 package="langchain-custom_provider",
             )
-            with patch(
-                "deepagents_code.extras_info.extra_for_package",
-                return_value=None,
+            with (
+                patch(
+                    "deepagents_code.extras_info.extra_for_package",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.extras_info.installed_extra_names",
+                    return_value=set(),
+                ),
             ):
                 app.on_deep_agents_app_server_start_failed(
                     DeepAgentsApp.ServerStartFailed(error=error)
@@ -5918,7 +5960,53 @@ class TestDeferredActions:
             )
             assert "/model custom_provider:<model>" in rendered
 
-    async def test_retry_startup_clears_missing_package_slot(self) -> None:
+    async def test_server_failure_unknown_package_introspection_failure_manual(
+        self,
+    ) -> None:
+        """Unreadable extras metadata degrades the hint to a manual instruction.
+
+        Exercises the `ExtrasIntrospectionError` arm so a corrupted-metadata
+        environment still surfaces an actionable hint rather than crashing the
+        failure-rendering path.
+        """
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "custom_provider:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'custom_provider'.",
+                provider="custom_provider",
+                package="langchain-custom_provider",
+            )
+            with (
+                patch(
+                    "deepagents_code.extras_info.extra_for_package",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.extras_info.installed_extra_names",
+                    side_effect=ExtrasIntrospectionError("metadata unreadable"),
+                ),
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert (
+                "install the `langchain-custom_provider` package manually" in rendered
+            )
+            assert "uv tool install" not in rendered
+            assert "/model custom_provider:<model>" in rendered
         """`_retry_startup_with_model` must clear the package recovery slot.
 
         Mirrors the credentials-slot reset directly above it. A regression
@@ -7872,6 +7960,24 @@ class TestNotificationCenterIntegration:
         assert entry is not None
         assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
 
+    async def test_update_check_skips_editable_install(self) -> None:
+        """Editable installs skip update detection and never queue the modal."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("deepagents_code.update_check.is_update_available") as available,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates()
+                await pilot.pause()
+
+        available.assert_not_called()
+        assert app._notice_registry.get("update:available") is None
+        assert app._update_available == (False, None)
+        assert not app._update_modal_pending.is_set()
+
     async def test_update_check_auto_opens_dedicated_modal(self) -> None:
         """A detected update auto-opens the dedicated update modal after first paint."""
         from deepagents_code.widgets.update_available import UpdateAvailableScreen
@@ -7879,6 +7985,10 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 
         with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=(True, "9.9.9"),
@@ -7928,6 +8038,10 @@ class TestNotificationCenterIntegration:
         app._notify_actionable = capture_notify_actionable  # type: ignore[method-assign]
 
         with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=(True, "9.9.9"),

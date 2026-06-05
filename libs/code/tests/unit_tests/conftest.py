@@ -63,6 +63,28 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent provider base-URL env vars from leaking into tests.
+
+    A developer machine provisioned with the LangSmith gateway exports
+    `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`, which `get_base_url` now reads as
+    a fallback. Clear them (and the `DEEPAGENTS_CODE_` overrides) so base-URL
+    tests are deterministic. Tests that need a value set it explicitly.
+    """
+    for key in (
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+        "DEEPAGENTS_CODE_OPENAI_BASE_URL",
+        "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+        "DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local debug onboarding env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_ONBOARDING", raising=False)

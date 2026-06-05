@@ -36,6 +36,12 @@ on:
         required: false
         default: ""
         type: string
+      pytest_k:
+        description: "pytest -k expression to select a subset of tests. Empty = no
+          filter. Validated against a strict allowlist before use."
+        required: false
+        default: ""
+        type: string
       analyze_failures:
         description: "Run the LLM failure-analysis step after evals."
         required: false
@@ -194,6 +200,21 @@ jobs:
             flags+=(--eval-tier "$tier")
           done
           printf 'PYTEST_ADDOPTS=%s %s\n' "${PYTEST_ADDOPTS}" "${flags[*]}" >> "$GITHUB_ENV"
+
+      - name: "🔎 Apply test filter (-k)"
+        if: inputs.pytest_k != ''
+        env:
+          PYTEST_K: ${{ inputs.pytest_k }}
+        run: |
+          # -k expressions for these evals use only test/param identifiers, the
+          # boolean keywords, spaces and parentheses. Reject anything with shell
+          # metacharacters before embedding it (single-quoted) in PYTEST_ADDOPTS,
+          # which pytest parses with shlex.
+          if ! printf '%s' "$PYTEST_K" | grep -qE '^[A-Za-z0-9_ ()]+$'; then
+            echo "::error::Unsafe pytest_k value: ${PYTEST_K}. Allowed chars: letters, digits, underscore, space, parentheses."
+            exit 1
+          fi
+          printf "PYTEST_ADDOPTS=%s -k '%s'\n" "${PYTEST_ADDOPTS}" "${PYTEST_K}" >> "$GITHUB_ENV"
 
       - name: "🔒 Apply OpenRouter provider pin"
         if: inputs.openrouter_provider != '' && inputs.provider == 'openrouter'

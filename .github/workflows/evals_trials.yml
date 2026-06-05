@@ -92,6 +92,13 @@ on:
         required: false
         default: ""
         type: string
+      pytest_k:
+        description: "pytest -k expression to select a subset of tests (e.g. rerun
+          only specific failing tests). Allowed chars: letters, digits,
+          underscore, space, parentheses. Empty = run the full (filtered) suite."
+        required: false
+        default: ""
+        type: string
       analyze_failures:
         description: "Run the LLM failure-analysis step after each trial."
         required: false
@@ -479,6 +486,7 @@ jobs:
       eval_categories: ${{ needs.prep.outputs.eval_categories }}
       eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ needs.prep.outputs.eval_tiers }}
+      pytest_k: ${{ inputs.pytest_k }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ needs.prep.outputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}

@@ -528,10 +528,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
 
     `execute` runs on the host shell, so virtual paths (e.g. `/common/`) may not
     exist there. Instead of rewriting shell commands, provide the model with
-    virtual -> host path mappings so it can generate correct commands directly.
+    host path mappings so it can generate correct commands directly.
 
-    Routes without a host path are marked as shell-inaccessible and should be
-    accessed through file tools instead. A route exposes a host path only when
+    Routes without a host path mapping are marked as shell-inaccessible and should
+    be accessed through file tools instead. A route exposes a host path only when
     its backend is a virtual-mode `FilesystemBackend` (or subclass such as
     `LocalShellBackend`); other backends (e.g. store-backed) have none.
 
@@ -554,20 +554,24 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     lines = [
         "## Shell paths vs. virtual paths",
         "",
-        "The `execute` shell runs on the host filesystem. Some paths you see from "
-        "the file tools are virtual mounts that do NOT exist in the shell. When "
-        "running shell commands, use the host path instead of the virtual path.",
+        "The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.",
+        "",
+        "Some paths returned by the file tools are virtual mounts:",
+        "",
+        "- If a virtual mount has a host path mapping, use the mapped host path when running shell commands.",
+        "- If a virtual mount does not have a host path mapping, it is not accessible "
+        "from the shell. Use the file tools listed above to interact with those files.",
+        "",
+        "Do not assume that a path returned by a file tool can be used directly in a shell command.",
     ]
     if host_mappings:
         lines.append("")
-        lines.extend(f"- {prefix} -> use {host} in shell commands" for prefix, host in host_mappings)
+        lines.append("Host path mappings:")
+        lines.extend(f"- {prefix} -> {host}" for prefix, host in host_mappings)
     if no_host_routes:
         lines.append("")
-        joined = ", ".join(no_host_routes)
-        lines.append(
-            f"These mounts have no host path and are NOT reachable from the shell — "
-            f"use the file tools (read_file/write_file/edit_file/grep/glob) for them: {joined}"
-        )
+        lines.append("Virtual mounts without a host path mapping (not accessible from the shell):")
+        lines.extend(f"- {prefix}" for prefix in no_host_routes)
     return "\n".join(lines)
 
 

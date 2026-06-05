@@ -38,8 +38,8 @@ def test_maps_virtual_route_to_host_path(tmp_path: Path) -> None:
     prompt = _route_host_path_prompt(comp)
 
     assert "## Shell paths vs. virtual paths" in prompt
-    # The model is told to use the resolved host path in shell commands.
-    assert f"- /common/ -> use {route.cwd} in shell commands" in prompt
+    # The mount is listed under "Host path mappings" with its resolved host path.
+    assert f"- /common/ -> {route.cwd}" in prompt
 
 
 def test_routes_without_host_path_marked_inaccessible() -> None:
@@ -47,10 +47,11 @@ def test_routes_without_host_path_marked_inaccessible() -> None:
 
     prompt = _route_host_path_prompt(comp)
 
-    assert "NOT reachable from the shell" in prompt
+    # A store mount has no host path, so it appears under the no-mapping section
+    # and is never presented as a host path mapping.
+    assert "Virtual mounts without a host path mapping" in prompt
     assert "/memories/" in prompt
-    # A store mount has no host path, so it must not be presented as a mapping.
-    assert "-> use" not in prompt
+    assert " -> " not in prompt
 
 
 def test_non_virtual_filesystem_route_is_not_mapped(tmp_path: Path) -> None:
@@ -61,7 +62,7 @@ def test_non_virtual_filesystem_route_is_not_mapped(tmp_path: Path) -> None:
 
     prompt = _route_host_path_prompt(comp)
 
-    assert "-> use" not in prompt
+    assert " -> " not in prompt
     assert "/common/" in prompt  # listed as shell-inaccessible
 
 
@@ -74,6 +75,6 @@ def test_mix_of_host_and_non_host_routes(tmp_path: Path) -> None:
 
     prompt = _route_host_path_prompt(comp)
 
-    assert f"- /common/ -> use {fs.cwd} in shell commands" in prompt
-    assert "NOT reachable from the shell" in prompt
+    assert f"- /common/ -> {fs.cwd}" in prompt
+    assert "Virtual mounts without a host path mapping" in prompt
     assert "/memories/" in prompt

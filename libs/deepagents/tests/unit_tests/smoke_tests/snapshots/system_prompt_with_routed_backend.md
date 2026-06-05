@@ -91,9 +91,17 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 ## Shell paths vs. virtual paths
 
-The `execute` shell runs on the host filesystem. Some paths you see from the file tools are virtual mounts that do NOT exist in the shell. When running shell commands, use the host path instead of the virtual path.
+The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.
 
-- /common/ -> use <ROUTE_HOST_ROOT> in shell commands
+Some paths returned by the file tools are virtual mounts:
+
+- If a virtual mount has a host path mapping, use the mapped host path when running shell commands.
+- If a virtual mount does not have a host path mapping, it is not accessible from the shell. Use the file tools listed above to interact with those files.
+
+Do not assume that a path returned by a file tool can be used directly in a shell command.
+
+Host path mappings:
+- /common/ -> <ROUTE_HOST_ROOT>
 
 ## `task` (subagent spawner)
 

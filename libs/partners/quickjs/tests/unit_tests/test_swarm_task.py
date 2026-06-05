@@ -18,7 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableLambda
 from pydantic import Field
 
-from langchain_quickjs._swarm_task import (
+from langchain_quickjs._swarm._task import (
     SwarmSubAgent,
     VariantCache,
     create_swarm_task_tool,
@@ -105,7 +105,7 @@ class TestVariantCache:
     def test_evicts_entries_that_exceed_ttl(self) -> None:
         cache = VariantCache(ttl_s=1.0)
 
-        with patch("langchain_quickjs._swarm_task.time") as mock_time:
+        with patch("langchain_quickjs._swarm._task.time") as mock_time:
             mock_time.monotonic = MagicMock(side_effect=[0.0, 0.0, 1.5, 1.5, 1.5])
             cache.get_or_create("key1", lambda: "value1")
 
@@ -118,7 +118,7 @@ class TestVariantCache:
     def test_keeps_entries_alive_when_accessed_within_ttl(self) -> None:
         cache = VariantCache(ttl_s=1.0)
 
-        with patch("langchain_quickjs._swarm_task.time") as mock_time:
+        with patch("langchain_quickjs._swarm._task.time") as mock_time:
             mock_time.monotonic = MagicMock(
                 side_effect=[
                     0.0,
@@ -143,7 +143,7 @@ class TestVariantCache:
     def test_sweeps_multiple_expired_entries_in_one_call(self) -> None:
         cache = VariantCache(ttl_s=1.0)
 
-        with patch("langchain_quickjs._swarm_task.time") as mock_time:
+        with patch("langchain_quickjs._swarm._task.time") as mock_time:
             mock_time.monotonic = MagicMock(
                 side_effect=[
                     0.0,
@@ -168,7 +168,7 @@ class TestVariantCache:
     def test_only_evicts_expired_entries_not_active_ones(self) -> None:
         cache = VariantCache(ttl_s=1.0)
 
-        with patch("langchain_quickjs._swarm_task.time") as mock_time:
+        with patch("langchain_quickjs._swarm._task.time") as mock_time:
             mock_time.monotonic = MagicMock(
                 side_effect=[
                     0.0,
@@ -196,7 +196,7 @@ class TestSubagentValidation:
 
     async def test_throws_when_subagent_type_not_in_configured_list(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ):
             tool = create_swarm_task_tool(
@@ -219,7 +219,7 @@ class TestSubagentValidation:
 
     async def test_includes_available_subagent_names_in_error_message(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ):
             tool = create_swarm_task_tool(
@@ -235,7 +235,7 @@ class TestSubagentValidation:
 
     async def test_agent_mode_requires_subagent_type(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ):
             tool = create_swarm_task_tool(
@@ -280,7 +280,7 @@ class TestAgentMode:
             return agent
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent", side_effect=mock_create_agent
+            "langchain_quickjs._swarm._task.create_agent", side_effect=mock_create_agent
         ):
             tool = create_swarm_task_tool(
                 subagents=[
@@ -304,7 +304,7 @@ class TestAgentMode:
             return _make_runnable(run)
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent", side_effect=capture_agent
+            "langchain_quickjs._swarm._task.create_agent", side_effect=capture_agent
         ):
             tool = create_swarm_task_tool(
                 subagents=[
@@ -329,7 +329,7 @@ class TestAgentMode:
             structured_response={"label": "positive", "score": 0.95},
         )
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=agent):
+        with patch("langchain_quickjs._swarm._task.create_agent", return_value=agent):
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(name="worker", description="W", system_prompt="W.")
@@ -354,7 +354,7 @@ class TestAgentMode:
             }
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_runnable(run),
         ):
             tool = create_swarm_task_tool(
@@ -372,7 +372,7 @@ class TestAgentMode:
             return {"messages": []}
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_runnable(run),
         ):
             tool = create_swarm_task_tool(
@@ -389,7 +389,7 @@ class TestAgentMode:
         self,
     ) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             tool = create_swarm_task_tool(
@@ -423,7 +423,7 @@ class TestAgentMode:
 
     async def test_does_not_compile_new_agent_when_schema_omitted(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             tool = create_swarm_task_tool(
@@ -461,7 +461,7 @@ class TestInvokeMode:
 
     async def test_does_not_call_create_agent_in_invoke_mode(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             tool = create_swarm_task_tool(
@@ -541,7 +541,7 @@ class TestModeDefaulting:
         default_model = _make_mock_model()
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ):
             tool = create_swarm_task_tool(
@@ -575,7 +575,7 @@ class TestMultipleSubagents:
         default_model = _make_mock_model()
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             create_swarm_task_tool(
@@ -597,7 +597,7 @@ class TestMultipleSubagents:
         default_model = _make_mock_model()
 
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             create_swarm_task_tool(
@@ -623,7 +623,7 @@ class TestTTLVariantCacheIntegration:
         self,
     ) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             tool = create_swarm_task_tool(
@@ -665,7 +665,7 @@ class TestTTLVariantCacheIntegration:
 
     async def test_compiles_separate_variants_for_distinct_schemas(self) -> None:
         with patch(
-            "langchain_quickjs._swarm_task.create_agent",
+            "langchain_quickjs._swarm._task.create_agent",
             return_value=_make_fake_agent(),
         ) as mock_create:
             tool = create_swarm_task_tool(

@@ -9,12 +9,13 @@ from langchain_quickjs._extensions import (
     InterpreterExtension,
 )
 from langchain_quickjs._ptc import PTCOption
-from langchain_quickjs._swarm_extension import SwarmExtension, swarm
-from langchain_quickjs._swarm_task import (
+from langchain_quickjs._swarm import (
+    SwarmExtension,
     SwarmSubAgent,
     SwarmTaskMode,
     VariantCache,
     create_swarm_task_tool,
+    swarm,
 )
 from langchain_quickjs.middleware import CodeInterpreterMiddleware
 

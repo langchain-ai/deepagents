@@ -1,14 +1,14 @@
 """Loader for the bundled swarm interpreter scripts.
 
-The TypeScript sources under ``_swarm_scripts/`` are vendored from the
-``swarm`` skill in ``langchain-ai/langchain-skills`` (``config/skills/swarm``).
-They implement the handle-based table API — ``create`` / ``run`` / ``rows`` —
-that the agent imports as ``import { create, run, rows } from "swarm"``.
+The TypeScript sources under ``_scripts/`` are vendored from the ``swarm``
+skill in ``langchain-ai/langchain-skills`` (``config/skills/swarm``). They
+implement the handle-based table API — ``create`` / ``run`` / ``rows`` — that
+the agent imports as ``import { create, run, rows } from "swarm"``.
 
-At runtime the scripts read five functions off ``globalThis.tools``
-(``swarmTask``, ``glob``, ``readFile``, ``writeFile``, ``editFile``); the
-swarm extension installs those as host functions and assembles the ``tools``
-namespace. This module just turns the ``.ts`` files into a ``ModuleScope``.
+At runtime the scripts call five top-level host functions (``__swarmTask``,
+``__swarmGlob``, ``__swarmReadFile``, ``__swarmWriteFile``,
+``__swarmEditFile``); the swarm extension registers those. This module just
+turns the ``.ts`` files into a ``ModuleScope``.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ from langchain_quickjs._skills import _rewrite_js_imports_to_ts
 # The bare specifier the guest imports from: `import ... from "swarm"`.
 SWARM_SPECIFIER = "swarm"
 
-_SCRIPTS_DIR = Path(__file__).parent / "_swarm_scripts"
+_SCRIPTS_DIR = Path(__file__).parent / "_scripts"
 
 
 @lru_cache(maxsize=1)
 def swarm_module_scope() -> ModuleScope:
     """Build the ``ModuleScope`` for the bundled swarm scripts.
 
-    Reads every ``.ts`` file under ``_swarm_scripts/`` into one scope keyed
+    Reads every ``.ts`` file under ``_scripts/`` into one scope keyed
     by filename (``index.ts`` is the entrypoint a bare ``import "swarm"``
     resolves to). Cross-file imports use the TS ``./name.js`` convention
     while the files are ``.ts``; ``_rewrite_js_imports_to_ts`` rewrites

@@ -28,15 +28,15 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from langchain_quickjs._swarm_scripts import swarm_module_scope
-from langchain_quickjs._swarm_task import build_swarm_dispatch
+from langchain_quickjs._swarm._scripts import swarm_module_scope
+from langchain_quickjs._swarm._task import build_swarm_dispatch
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.language_models import BaseChatModel
 
     from langchain_quickjs._extensions import ExtensionContext
-    from langchain_quickjs._swarm_task import SwarmDispatch, SwarmSubAgent
+    from langchain_quickjs._swarm._task import SwarmDispatch, SwarmSubAgent
 
 # Top-level host symbols the scripts call directly (they `declare function
 # __swarm*`). Fixed, extension-owned identifiers — never guest-interpolated.

@@ -18,7 +18,7 @@ from quickjs_rs import Runtime, ThreadWorker
 from langchain_quickjs import InterpreterExtension, SwarmExtension, swarm
 from langchain_quickjs._extensions import has_on_setup, validate_extension_hooks
 from langchain_quickjs._repl import _ThreadREPL
-from langchain_quickjs._swarm_extension import SwarmExtension as _SwarmExtensionClass
+from langchain_quickjs._swarm._extension import SwarmExtension as _SwarmExtensionClass
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

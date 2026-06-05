@@ -2640,6 +2640,7 @@ def create_model(
         apply_stored_credentials,
         get_credential_env_var,
         has_provider_credentials,
+        warn_on_split_credential_source,
     )
 
     if not model_spec:
@@ -2674,6 +2675,11 @@ def create_model(
     # the env var name LangChain reads. Apply before the credential check so
     # `has_provider_credentials` and the downstream SDK see the same value.
     if provider:
+        # Flag a key/endpoint resolved from different env tiers *before*
+        # `apply_stored_credentials` bridges stored values onto plain env vars,
+        # so the check sees the user's raw env intent rather than post-bridge
+        # state. Diagnostic only -- never alters resolution.
+        warn_on_split_credential_source(provider)
         apply_stored_credentials(provider)
 
     # Early credential check — fail fast with an actionable message instead of

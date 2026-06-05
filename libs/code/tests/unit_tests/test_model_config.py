@@ -395,6 +395,151 @@ models = ["m1"]
         assert status.source is ProviderAuthSource.ENV
 
 
+class TestSplitCredentialSource:
+    """`warn_on_split_credential_source` flags key/endpoint env-tier mismatches."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear every OpenAI key/endpoint env var so each test sets its own.
+
+        `dotenv.load_dotenv()` runs at import time and may inject prefixed
+        variants that would otherwise leak into these assertions.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL",
+            "DEEPAGENTS_CODE_OPENAI_API_BASE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_warns_when_key_prefixed_but_base_url_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Prefixed key + plain base URL (no prefixed base URL) emits a DEBUG line."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY" in m and "OPENAI_BASE_URL" in m
+            for m in messages
+        )
+        # The secret value and the URL value must never appear in the log.
+        assert all("sk-secret-value" not in m for m in messages)
+        assert all("https://gateway.example/v1" not in m for m in messages)
+
+    def test_no_warning_when_both_prefixed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A matching prefixed base URL means the pair shares a source: no warning."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://gateway.example/v1"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_key_is_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A plain key with a plain base URL is a same-tier pair: no warning."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_no_base_url_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A prefixed key with no endpoint at all has nothing to mismatch."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_empty_prefixed_base_url_is_not_treated_as_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An empty prefixed base URL shadows the plain one, so there is no split.
+
+        Mirrors `resolve_env_var`: a present-but-empty prefixed variant
+        suppresses the plain value rather than falling through to it.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_BASE_URL", "")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_config_base_url_literal_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """A `config.toml` `base_url` literal wins over env vars: no env split."""
+        from deepagents_code import model_config
+        from deepagents_code.model_config import (
+            clear_caches,
+            warn_on_split_credential_source,
+        )
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://configured.example/v1"
+""")
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            clear_caches()
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+
 class TestThreadColumnPersistence:
     """Tests for thread selector column visibility persistence."""
 

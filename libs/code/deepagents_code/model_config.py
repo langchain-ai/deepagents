@@ -1895,6 +1895,61 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
             os.environ.pop(name, None)
 
 
+def warn_on_split_credential_source(provider: str) -> None:
+    """Log when a provider's key and endpoint resolve from different env tiers.
+
+    The `DEEPAGENTS_CODE_` prefix is a *per-variable* override, not a credential
+    bundle: setting `DEEPAGENTS_CODE_OPENAI_API_KEY` while leaving the endpoint to
+    a plain `OPENAI_BASE_URL` makes the key resolve from the prefixed tier and the
+    endpoint from the unprefixed one. A key and its endpoint are a coherent pair
+    (see `PROVIDER_BASE_URL_ENV`), so a split source is a likely misconfiguration
+    -- e.g. a provider-native key shipped to a gateway URL, or vice versa.
+
+    This is purely diagnostic: it never mutates `os.environ` or changes
+    resolution. Only the env var *names* are logged, never the secret value or
+    the URL. It is emitted at DEBUG because the `deepagents_code` package logger
+    only attaches a handler when `DEEPAGENTS_CODE_DEBUG` is set, and DEBUG stays
+    below `logging.lastResort`'s WARNING stderr threshold so it cannot bleed onto
+    stderr and corrupt the Textual TUI. The `DEEPAGENTS_CODE_DEBUG` file log is
+    where someone chasing a wrong-endpoint bug will look.
+
+    A `config.toml` `base_url` literal wins over env vars in `get_base_url`, so
+    when one is set there is no env-tier split to flag and this returns early.
+
+    Args:
+        provider: Provider name (e.g. `"openai"`).
+    """
+    key_env = get_credential_env_var(provider)
+    base_env = get_base_url_env_var(provider)
+    if not key_env or not base_env:
+        return
+    config = ModelConfig.load()
+    provider_cfg = config.providers.get(provider)
+    if provider_cfg and provider_cfg.get("base_url"):
+        return
+    prefixed_key = f"{_ENV_PREFIX}{key_env}"
+    prefixed_base = f"{_ENV_PREFIX}{base_env}"
+    # Key must actually resolve from the prefixed tier (present and non-empty),
+    # while the endpoint falls back to the plain tier: no prefixed override
+    # present (an empty prefixed var would shadow the plain one in
+    # `resolve_env_var`, so its mere presence means the endpoint is not "plain").
+    key_from_prefixed = bool(os.environ.get(prefixed_key))
+    base_from_plain = prefixed_base not in os.environ and bool(
+        os.environ.get(base_env)
+    )
+    if key_from_prefixed and base_from_plain:
+        logger.debug(
+            "Provider %s: API key resolved from %s but base URL resolved from "
+            "the unprefixed %s. Key and endpoint came from different sources and "
+            "may not be a matching pair. Set %s to pin the endpoint, or unset %s.",
+            provider,
+            prefixed_key,
+            base_env,
+            prefixed_base,
+            base_env,
+        )
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Parsed model configuration from `config.toml`.

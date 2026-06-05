@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 
 from deepagents_code.widgets.loading import LoadingWidget
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class LoadingWidgetApp(App[None]):
@@ -63,6 +67,80 @@ class TestLoadingWidget:
 
             assert widget._animation_timer is None
             assert not pilot.app.query("LoadingWidget")
+
+    def test_pause_resume_excludes_paused_duration(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Elapsed time should not include time spent paused for HITL approval."""
+        now = 100.0
+
+        def fake_time() -> float:
+            return now
+
+        monkeypatch.setattr("deepagents_code.widgets.loading.time", fake_time)
+        widget = LoadingWidget()
+        widget._start_time = now
+
+        now = 112.5
+        widget.pause()
+
+        now = 145.0
+        widget.resume()
+
+        assert widget._start_time == 132.5
+        assert not widget._paused
+
+    def test_resume_when_not_paused_leaves_start_time_unchanged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`resume()` must be a no-op when the widget was never paused.
+
+        The resume callback fires on every approval-future completion and as a
+        `_set_spinner` backstop, so it can land on a never-paused (or
+        replacement) widget. It must not rebase `_start_time` there.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.loading.time",
+            lambda: 999.0,
+        )
+        widget = LoadingWidget()
+        widget._start_time = 100.0
+        widget._paused_elapsed = 12.5  # stale value from a prior pause cycle
+
+        widget.resume()
+
+        assert widget._start_time == 100.0
+        assert not widget._paused
+
+    def test_pause_without_start_time_does_not_raise(self) -> None:
+        """`pause()` before the timer starts must not raise or fabricate time."""
+        widget = LoadingWidget()
+        assert widget._start_time is None
+
+        widget.pause()
+
+        assert widget._paused
+        assert widget._paused_elapsed == 0.0
+
+    async def test_pause_hint_renders_whole_seconds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The paused hint shows whole seconds, matching the live counter."""
+        async with LoadingWidgetApp().run_test() as pilot:
+            widget = pilot.app.query_one("#loading", LoadingWidget)
+            widget._start_time = 100.0
+            monkeypatch.setattr(
+                "deepagents_code.widgets.loading.time",
+                lambda: 112.7,
+            )
+
+            widget.pause()
+
+            assert widget._hint_widget is not None
+            assert str(widget._hint_widget.render()) == "(paused at 12s)"
 
     async def test_on_mount_preserves_start_time_across_remount(self) -> None:
         """`on_mount` must not reset `_start_time` when it is already set.

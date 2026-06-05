@@ -146,7 +146,7 @@ def test_auth_badge_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) 
 
 def _badge_styles(status: ProviderAuthStatus) -> str:
     """Return the concatenated span styles of a provider's auth badge."""
-    return " ".join(span.style or "" for span in format_auth_badge(status).spans)
+    return " ".join(str(span.style or "") for span in format_auth_badge(status).spans)
 
 
 def test_missing_badge_carries_warning_style() -> None:

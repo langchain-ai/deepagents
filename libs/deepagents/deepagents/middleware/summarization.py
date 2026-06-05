@@ -78,7 +78,6 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.runtime import AgentRuntime
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -88,6 +87,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.middleware.runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -307,9 +307,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
-        # Deep Agents specific attributes — backend is injected via _build_runtime
+        # Deep Agents specific attributes — backend injected via BackendMiddleware
+        # Path prefixes derived from backend at first wrap_model_call dispatch.
         self._backend: BackendProtocol | None = None
-        # Default path prefixes; updated in _build_runtime once the backend is known.
         self._history_path_prefix = "/conversation_history"
         self._large_tool_results_prefix = "/large_tool_results"
 
@@ -358,15 +358,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     ) -> tuple[list[AnyMessage], list[AnyMessage]]:
         """Partition messages into those to summarize and those to preserve."""
         return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
-
-    def _build_runtime(self, runtime: AgentRuntime) -> AgentRuntime:
-        """Cache backend and derive path prefixes on first dispatch."""
-        if self._backend is None and isinstance(runtime, AgentRuntime):
-            self._backend = runtime.backend
-            root = runtime.backend.artifacts_root.rstrip("/") if isinstance(runtime.backend, CompositeBackend) else ""
-            self._history_path_prefix = f"{root}/conversation_history"
-            self._large_tool_results_prefix = f"{root}/large_tool_results"
-        return runtime
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages."""
@@ -947,8 +938,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        assert self._backend is not None, "backend not injected — use create_deep_agent or prepend BackendMiddleware"  # noqa: S101
-        backend = self._backend  # On overflow, offload the large preserved tail TM batch to per-TM files.
+        da_runtime: AgentRuntime = request.runtime  # type: ignore[assignment]
+        backend = da_runtime.backend
+        if self._backend is None:
+            self._backend = backend
+            root = backend.artifacts_root.rstrip("/") if isinstance(backend, CompositeBackend) else ""
+            self._history_path_prefix = f"{root}/conversation_history"
+            self._large_tool_results_prefix = f"{root}/large_tool_results"
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = _clip_overflow_tail(
@@ -1068,8 +1064,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        assert self._backend is not None, "backend not injected — use create_deep_agent or prepend BackendMiddleware"  # noqa: S101
-        backend = self._backend  # On overflow, offload the large preserved tail TM batch to per-TM files.
+        da_runtime: AgentRuntime = request.runtime  # type: ignore[assignment]
+        backend = da_runtime.backend
+        if self._backend is None:
+            self._backend = backend
+            root = backend.artifacts_root.rstrip("/") if isinstance(backend, CompositeBackend) else ""
+            self._history_path_prefix = f"{root}/conversation_history"
+            self._large_tool_results_prefix = f"{root}/large_tool_results"
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = await _aclip_overflow_tail(

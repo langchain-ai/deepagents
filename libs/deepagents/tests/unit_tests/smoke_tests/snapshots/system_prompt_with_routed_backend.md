@@ -101,7 +101,7 @@ Some paths returned by the file tools are virtual mounts:
 Do not assume that a path returned by a file tool can be used directly in a shell command.
 
 Host path mappings:
-- /common/ -> <ROUTE_HOST_ROOT>
+- /common/ -> /work/app
 
 ## `task` (subagent spawner)
 

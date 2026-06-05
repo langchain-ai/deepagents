@@ -101,11 +101,12 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
     A `CompositeBackend` whose default supports execution and whose `/common/`
     route is a virtual-mode `FilesystemBackend` should add a "Shell paths vs.
     virtual paths" section mapping the virtual prefix to the route's host path
-    (issue #3050). The host path is machine-specific, so it is redacted to a
-    placeholder before snapshotting.
+    (issue #3050). The route uses a fixed absolute `root_dir` (`/work/app`), which
+    `FilesystemBackend` resolves to itself, so the snapshot is reproducible without
+    redacting a machine-specific path.
     """
     model = _smoke_model()
-    route = FilesystemBackend(root_dir=str(Path.cwd() / "common"), virtual_mode=True)
+    route = FilesystemBackend(root_dir="/work/app", virtual_mode=True)
     backend = CompositeBackend(
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
         routes={"/common/": route},
@@ -128,8 +129,7 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
     assert len(system_messages) >= 1
 
-    # Redact the machine-specific host root so the snapshot is reproducible.
-    text = _system_message_as_text(system_messages[0]).replace(str(route.cwd), "<ROUTE_HOST_ROOT>")
+    text = _system_message_as_text(system_messages[0])
 
     snapshot_path = snapshots_dir / "system_prompt_with_routed_backend.md"
     _assert_snapshot(snapshot_path, text, update_snapshots=update_snapshots)

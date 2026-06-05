@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from deepagents_code import model_config
-from deepagents_code.auth_display import format_auth_status
+from deepagents_code.auth_display import format_auth_badge, format_auth_indicator
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
     ProviderAuthSource,
@@ -98,15 +98,15 @@ _AUTH_STATUS_CASES = [
 
 
 @pytest.mark.parametrize(("status", "auth_label", "model_label"), _AUTH_STATUS_CASES)
-def test_format_auth_status_covers_all_states(
+def test_format_auth_covers_all_states(
     status: ProviderAuthStatus, auth_label: str, model_label: str
 ) -> None:
-    """Both UI styles render every provider auth state from the shared helper."""
-    assert str(format_auth_status(status, style="auth")) == auth_label
-    assert format_auth_status(status, style="model", glyphs=get_glyphs()) == model_label
+    """Both UI surfaces render every provider auth state."""
+    assert format_auth_badge(status).plain == auth_label
+    assert format_auth_indicator(status, get_glyphs()) == model_label
 
 
-def test_auth_style_formats_stored_credentials() -> None:
+def test_auth_badge_formats_stored_credentials() -> None:
     """The auth manager keeps its stored-credential badge."""
     status = ProviderAuthStatus(
         state=ProviderAuthState.CONFIGURED,
@@ -115,10 +115,22 @@ def test_auth_style_formats_stored_credentials() -> None:
         source=ProviderAuthSource.STORED,
     )
 
-    assert str(format_auth_status(status, style="auth")) == "[stored]"
+    assert format_auth_badge(status).plain == "[stored]"
 
 
-def test_auth_style_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auth_badge_env_source_without_var() -> None:
+    """An ENV-source status with no env var falls back to a bare `[env]` badge."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider="openai",
+        env_var=None,
+        source=ProviderAuthSource.ENV,
+    )
+
+    assert format_auth_badge(status).plain == "[env]"
+
+
+def test_auth_badge_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """The auth manager names the env var that wins resolution."""
     monkeypatch.setenv("OPENAI_API_KEY", "canonical")
     monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "prefixed")
@@ -129,9 +141,35 @@ def test_auth_style_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) 
         source=ProviderAuthSource.ENV,
     )
 
-    label = str(format_auth_status(status, style="auth"))
+    assert format_auth_badge(status).plain == "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]"
 
-    assert label == "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]"
+
+def _badge_styles(status: ProviderAuthStatus) -> str:
+    """Return the concatenated span styles of a provider's auth badge."""
+    return " ".join(span.style or "" for span in format_auth_badge(status).spans)
+
+
+def test_missing_badge_carries_warning_style() -> None:
+    """A missing-credential badge is styled as a warning, not muted text."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.MISSING,
+        provider="anthropic",
+        env_var="ANTHROPIC_API_KEY",
+    )
+
+    assert "$warning" in _badge_styles(status)
+
+
+def test_stored_badge_carries_success_style() -> None:
+    """A stored-credential badge is styled as a success, not muted text."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider="openai",
+        env_var="OPENAI_API_KEY",
+        source=ProviderAuthSource.STORED,
+    )
+
+    assert "$success" in _badge_styles(status)
 
 
 @pytest.mark.usefixtures("isolated_model_config")
@@ -145,8 +183,5 @@ def test_vertex_adc_path_renders_implicit_not_missing(
 
     assert status.state is ProviderAuthState.IMPLICIT
     assert status.env_var == "GOOGLE_CLOUD_PROJECT"
-    assert str(format_auth_status(status, style="auth")) == "[implicit auth]"
-    assert (
-        format_auth_status(status, style="model", glyphs=get_glyphs())
-        == "implicit auth"
-    )
+    assert format_auth_badge(status).plain == "[implicit auth]"
+    assert format_auth_indicator(status, get_glyphs()) == "implicit auth"

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from deepagents_code import auth_store, theme
-from deepagents_code.auth_display import format_auth_status
+from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
@@ -670,7 +670,7 @@ class AuthManagerScreen(ModalScreen[None]):
             A composed `Content` with the provider name and a status badge.
         """
         status = get_provider_auth_status(provider)
-        badge = format_auth_status(status, style="auth")
+        badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=provider),
             "  ",

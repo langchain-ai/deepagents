@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
-from deepagents_code.auth_display import format_auth_status
+from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     ModelConfig,
@@ -916,7 +916,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             Text shown next to the provider name, or an empty string when no
                 indicator should be rendered (e.g., `CONFIGURED`).
         """
-        return format_auth_status(auth_status, style="model", glyphs=glyphs)
+        return format_auth_indicator(auth_status, glyphs)
 
     @staticmethod
     def _format_option_label(

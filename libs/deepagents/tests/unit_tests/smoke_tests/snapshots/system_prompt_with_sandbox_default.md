@@ -100,11 +100,8 @@ Some paths returned by the file tools are virtual mounts:
 
 Do not assume that a path returned by a file tool can be used directly in a shell command.
 
-Host path mappings:
-- /common/ -> /work/app
-
 Virtual mounts without a host path mapping (not accessible from the shell):
-- /notes/
+- /common/
 
 ## `task` (subagent spawner)
 

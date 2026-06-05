@@ -35,7 +35,7 @@ from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
-from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -526,24 +526,36 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 def _route_host_path_prompt(backend: BackendProtocol) -> str:
     """Build a prompt section mapping virtual route paths to host shell paths.
 
-    `execute` runs on the host shell, so virtual paths (e.g. `/common/`) may not
-    exist there. Instead of rewriting shell commands, provide the model with
-    host path mappings so it can generate correct commands directly.
+    `execute` runs on the default backend's shell, so virtual paths (e.g.
+    `/common/`) may not exist there. Instead of rewriting shell commands, provide
+    the model with host path mappings so it can generate correct commands directly.
 
-    Routes without a host path mapping are marked as shell-inaccessible and should
-    be accessed through file tools instead. A route exposes a host path only when
-    its backend is a virtual-mode `FilesystemBackend` (or subclass such as
-    `LocalShellBackend`); other backends (e.g. store-backed) have none.
+    A route exposes a usable host path only when its files live on the same
+    filesystem the default's shell runs in. That holds only when:
+
+    - the default is a `LocalShellBackend` (its shell runs on the local host), and
+    - the route is a virtual-mode `FilesystemBackend` (its files are on local disk
+      under `route.cwd`, addressable by the local shell).
+
+    A remote/sandbox default runs its shell in a separate filesystem, so a local
+    `FilesystemBackend` route is not reachable from it — those routes, along with
+    non-virtual filesystem routes and store-backed routes, have no host path
+    mapping and must be accessed through the file tools instead.
 
     Returns an empty string if there are no routes to describe.
     """
     if not isinstance(backend, CompositeBackend):
         return ""
 
+    # Host mappings are only valid when the default's shell shares the local
+    # filesystem with the routes (LocalShellBackend). For a remote/sandbox
+    # default, no local filesystem route is reachable from the shell.
+    default_uses_local_shell = isinstance(backend.default, LocalShellBackend)
+
     host_mappings: list[tuple[str, str]] = []
     no_host_routes: list[str] = []
     for route_prefix, route_backend in backend.sorted_routes:
-        if isinstance(route_backend, FilesystemBackend) and route_backend.virtual_mode:
+        if default_uses_local_shell and isinstance(route_backend, FilesystemBackend) and route_backend.virtual_mode:
             host_mappings.append((route_prefix, str(route_backend.cwd)))
         else:
             no_host_routes.append(route_prefix)

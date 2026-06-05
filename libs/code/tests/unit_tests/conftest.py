@@ -91,6 +91,20 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent update debug/loop-guard env vars from affecting tests.
+
+    `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
+    internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
+    auto-update to break a restart loop. Either leaking in (from a developer
+    shell, or a prior test exercising the production code that sets the
+    sentinel) would make the startup auto-update tests non-deterministic.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local alpha event-listener env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET", raising=False)

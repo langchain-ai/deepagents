@@ -2,6 +2,8 @@
 
 import asyncio
 import inspect
+import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,12 +15,302 @@ import pytest
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
+    _restart_current_process,
     _ripgrep_install_hint,
+    _run_startup_auto_update,
     build_missing_tool_notification,
     check_optional_tools,
+    cli_main,
     format_tool_warning_cli,
     run_textual_cli_async,
 )
+
+
+class TestStartupAutoUpdate:
+    """Tests for startup auto-update behavior."""
+
+    def test_successful_update_restarts_before_launch(self) -> None:
+        """A successful startup auto-update should exec a fresh process."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ) as restart,
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_called_once_with()
+
+    def test_disabled_update_does_not_check_pypi(self) -> None:
+        """Disabled auto-update should not perform network or install work."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+
+    def test_restart_uses_module_entrypoint(self) -> None:
+        """Restart should reload package code from the updated environment."""
+        with (
+            patch.object(sys, "executable", "/tool/bin/python"),
+            patch.object(sys, "argv", ["dcode", "--model", "openai:gpt-5.5"]),
+            patch("os.execv", side_effect=SystemExit(0)) as execv,
+            pytest.raises(SystemExit),
+        ):
+            _restart_current_process()
+
+        execv.assert_called_once_with(
+            "/tool/bin/python",
+            ["/tool/bin/python", "-m", "deepagents_code", "--model", "openai:gpt-5.5"],
+        )
+
+    def test_failed_update_does_not_restart_and_continues(self) -> None:
+        """A failed upgrade must not restart; it surfaces the error and returns."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            # Must not raise: a failed upgrade falls through to launch.
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Auto-update failed" in printed
+
+    def test_editable_install_skips_update(self) -> None:
+        """Editable installs must short-circuit before any PyPI/install work."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+
+    def test_no_update_available_returns_early(self) -> None:
+        """When already current, nothing is announced, installed, or restarted."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, None),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        console.print.assert_not_called()
+
+    def test_debug_update_skips_install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """DEBUG_UPDATE announces the update but skips the actual install."""
+        console = MagicMock()
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "debug mode" in printed
+
+    def test_unexpected_error_does_not_block_startup(self) -> None:
+        """An error in the update machinery must never block launch."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            # Must swallow the error rather than propagate it.
+            _run_startup_auto_update(console)
+
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Auto-update failed before startup" in printed
+
+    def test_restart_loop_guard_skips_repeat_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A re-exec that did not change the version must not re-upgrade."""
+        console = MagicMock()
+        # Simulate the sentinel set by the prior generation before its restart.
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        # Sentinel is consumed so a genuine future update is not suppressed.
+        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "restart loop" in printed
+
+    def test_restart_failure_after_successful_install_continues(self) -> None:
+        """A successful install with a failed re-exec reports an accurate message."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=OSError("exec failed"),
+            ) as restart,
+        ):
+            # Install succeeded; a failed re-exec must not raise or claim the
+            # update failed.
+            _run_startup_auto_update(console)
+
+        restart.assert_called_once_with()
+        # Sentinel is dropped since the restart did not happen.
+        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "automatic restart failed" in printed
+        assert "Auto-update failed" not in printed
+
+    def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
+        """`cli_main` must invoke the startup auto-update on interactive launch.
+
+        Without this guard the feature could be dropped from `cli_main` and
+        every other unit test would still pass, silently regressing it to a
+        no-op.
+        """
+        source = inspect.getsource(cli_main)
+        assert "_run_startup_auto_update(console)" in source
 
 
 class TestResumeHintLogic:

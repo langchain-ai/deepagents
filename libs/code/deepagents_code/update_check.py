@@ -158,6 +158,49 @@ def _latest_from_releases(
     return best_str
 
 
+def get_cached_update_available() -> tuple[bool, str | None]:
+    """Check for updates using only a fresh local cache entry.
+
+    This is the startup fast path: it never contacts PyPI. Stale, missing,
+    corrupt, or unparsable cache data is treated as "no cached update answer" so
+    callers can launch immediately and let a background update check refresh the
+    cache later.
+
+    Returns:
+        A `(available, latest)` tuple. `latest` is `None` when the cache cannot
+            provide a fresh answer.
+    """
+    try:
+        installed = _parse_version(__version__)
+    except InvalidVersion:
+        logger.warning(
+            "Installed version %r is not PEP 440 compliant; "
+            "cache-only update checks disabled for this install",
+            __version__,
+        )
+        return False, None
+
+    cache_key = "version_prerelease" if installed.is_prerelease else "version"
+    try:
+        if not CACHE_FILE.exists():
+            return False, None
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False, None
+        checked_at = data.get("checked_at")
+        if not isinstance(checked_at, (int, float)):
+            return False, None
+        if time.time() - checked_at >= CACHE_TTL:
+            return False, None
+        value = data.get(cache_key)
+        if not isinstance(value, str):
+            return False, None
+        return _parse_version(value) > installed, value
+    except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
+        logger.debug("Failed to read cache-only update answer", exc_info=True)
+        return False, None
+
+
 def get_latest_version(
     *,
     bypass_cache: bool = False,

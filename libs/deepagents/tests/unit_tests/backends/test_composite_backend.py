@@ -1416,11 +1416,25 @@ class TestCompositeLsKeyLayouts:
     keeps working.
     """
 
+    # A skill directory layout:
+    #   my-skill/
+    #   ├── SKILL.md       # metadata + instructions
+    #   ├── scripts/       # executable code
+    #   ├── references/    # documentation
+    #   └── assets/        # templates, resources
+    _SKILL_FILES = (
+        "/memory/skills/my-skill/SKILL.md",
+        "/memory/skills/my-skill/scripts/run.py",
+        "/memory/skills/my-skill/references/guide.md",
+        "/memory/skills/my-skill/assets/template.txt",
+        "/memory/skills/notes.md",
+    )
+
     def _absolute_keyed_composite(self) -> CompositeBackend:
         store = InMemoryStore()
         # Keys carry the FULL mounted path, as a direct store.put caller writes.
-        store.put(("agent",), "/memory/skills/test_skill/SKILL.md", create_file_data("x"))
-        store.put(("agent",), "/memory/skills/notes.md", create_file_data("y"))
+        for path in self._SKILL_FILES:
+            store.put(("agent",), path, create_file_data("x"))
         return CompositeBackend(
             default=StateBackend(),
             routes={"/memory/skills/": StoreBackend(store=store, namespace=lambda _rt: ("agent",))},
@@ -1432,40 +1446,48 @@ class TestCompositeLsKeyLayouts:
             routes={"/memory/skills/": StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("agent",))},
         )
         # Written through the composite -> stored as mount-relative keys.
-        be.write("/memory/skills/test_skill/SKILL.md", "x")
-        be.write("/memory/skills/notes.md", "y")
+        for path in self._SKILL_FILES:
+            be.write(path, "x")
         return be
 
-    def test_ls_absolute_keys_no_duplication(self) -> None:
-        be = self._absolute_keyed_composite()
+    def _assert_layout(self, be: CompositeBackend) -> None:
+        # Route root: the skill directory plus a sibling file, no duplicated segment.
         assert {e["path"] for e in be.ls("/memory/skills/").entries or []} == {
-            "/memory/skills/test_skill/",
+            "/memory/skills/my-skill/",
             "/memory/skills/notes.md",
         }
-        assert {e["path"] for e in be.ls("/memory/skills/test_skill/").entries or []} == {
-            "/memory/skills/test_skill/SKILL.md",
+        # Inside the skill: SKILL.md plus its subdirectories.
+        assert {e["path"] for e in be.ls("/memory/skills/my-skill/").entries or []} == {
+            "/memory/skills/my-skill/SKILL.md",
+            "/memory/skills/my-skill/scripts/",
+            "/memory/skills/my-skill/references/",
+            "/memory/skills/my-skill/assets/",
         }
+        # A nested subdirectory resolves without re-prefixing.
+        assert {e["path"] for e in be.ls("/memory/skills/my-skill/scripts/").entries or []} == {
+            "/memory/skills/my-skill/scripts/run.py",
+        }
+
+    async def _assert_layout_async(self, be: CompositeBackend) -> None:
+        assert {e["path"] for e in (await be.als("/memory/skills/")).entries or []} == {
+            "/memory/skills/my-skill/",
+            "/memory/skills/notes.md",
+        }
+        assert {e["path"] for e in (await be.als("/memory/skills/my-skill/")).entries or []} == {
+            "/memory/skills/my-skill/SKILL.md",
+            "/memory/skills/my-skill/scripts/",
+            "/memory/skills/my-skill/references/",
+            "/memory/skills/my-skill/assets/",
+        }
+
+    def test_ls_absolute_keys_no_duplication(self) -> None:
+        self._assert_layout(self._absolute_keyed_composite())
 
     def test_ls_relative_keys_still_work(self) -> None:
-        be = self._relative_keyed_composite()
-        assert {e["path"] for e in be.ls("/memory/skills/").entries or []} == {
-            "/memory/skills/test_skill/",
-            "/memory/skills/notes.md",
-        }
-        assert {e["path"] for e in be.ls("/memory/skills/test_skill/").entries or []} == {
-            "/memory/skills/test_skill/SKILL.md",
-        }
+        self._assert_layout(self._relative_keyed_composite())
 
     async def test_als_absolute_keys_no_duplication(self) -> None:
-        be = self._absolute_keyed_composite()
-        assert {e["path"] for e in (await be.als("/memory/skills/")).entries or []} == {
-            "/memory/skills/test_skill/",
-            "/memory/skills/notes.md",
-        }
+        await self._assert_layout_async(self._absolute_keyed_composite())
 
     async def test_als_relative_keys_still_work(self) -> None:
-        be = self._relative_keyed_composite()
-        assert {e["path"] for e in (await be.als("/memory/skills/")).entries or []} == {
-            "/memory/skills/test_skill/",
-            "/memory/skills/notes.md",
-        }
+        await self._assert_layout_async(self._relative_keyed_composite())

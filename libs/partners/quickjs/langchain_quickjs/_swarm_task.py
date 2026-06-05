@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -277,6 +278,48 @@ def create_swarm_task_tool(
     Returns:
         A `BaseTool` suitable for the `ptc` config.
     """
+    run = build_swarm_dispatch(subagents=subagents, default_model=default_model)
+    return StructuredTool.from_function(
+        name="swarm_task",
+        description=(
+            "Dispatch a task to a swarm subagent. Supports agent mode "
+            "(full agentic loop) and invoke mode (direct model call)."
+        ),
+        coroutine=run,
+        args_schema=_SwarmTaskInput,
+    )
+
+
+SwarmDispatch = Callable[..., Awaitable[str]]
+"""Async swarm dispatch.
+
+``(description, subagent_type, response_schema, mode) -> str``.
+"""
+
+
+def build_swarm_dispatch(
+    *,
+    subagents: list[SwarmSubAgent] | None = None,
+    default_model: str | BaseChatModel,
+) -> SwarmDispatch:
+    """Build the async swarm dispatch closure.
+
+    Shared by ``create_swarm_task_tool`` (which wraps it in a
+    ``StructuredTool`` for the PTC path) and the swarm interpreter
+    extension (which registers it directly as a host function). The
+    closure compiles each subagent once and owns a per-build
+    ``VariantCache``; it's immutable after construction and carries no
+    cross-call state beyond that cache.
+
+    Args:
+        subagents: Subagent specifications for swarm dispatch targets.
+        default_model: Default model for subagents without their own, and
+            for ``invoke`` mode direct calls.
+
+    Returns:
+        ``async (description, subagent_type=None, response_schema=None,
+        mode=None) -> str``.
+    """
     subs = subagents or []
     compiled: dict[str, _CompiledAgent] = {}
 
@@ -329,12 +372,4 @@ def create_swarm_task_tool(
 
         return await _invoke_agent(entry, description, response_schema, variant_cache)
 
-    return StructuredTool.from_function(
-        name="swarm_task",
-        description=(
-            "Dispatch a task to a swarm subagent. Supports agent mode "
-            "(full agentic loop) and invoke mode (direct model call)."
-        ),
-        coroutine=_run,
-        args_schema=_SwarmTaskInput,
-    )
+    return _run

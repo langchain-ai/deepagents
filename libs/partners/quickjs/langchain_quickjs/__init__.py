@@ -9,6 +9,7 @@ from langchain_quickjs._extensions import (
     InterpreterExtension,
 )
 from langchain_quickjs._ptc import PTCOption
+from langchain_quickjs._swarm_extension import SwarmExtension, swarm
 from langchain_quickjs._swarm_task import (
     SwarmSubAgent,
     SwarmTaskMode,
@@ -25,8 +26,10 @@ __all__ = [
     "InterpreterExtension",
     "ModuleScope",
     "PTCOption",
+    "SwarmExtension",
     "SwarmSubAgent",
     "SwarmTaskMode",
     "VariantCache",
     "create_swarm_task_tool",
+    "swarm",
 ]

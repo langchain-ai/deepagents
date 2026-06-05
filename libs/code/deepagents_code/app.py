@@ -4105,6 +4105,24 @@ class DeepAgentsApp(App):
             # Cosmetic only: must never break app startup or theme changes.
             logger.warning("set_terminal_background raised unexpectedly", exc_info=True)
 
+    def _pause_loading_spinner_for_approval(self) -> None:
+        """Pause the global spinner timer while an approval widget is visible."""
+        if self._loading_widget is not None:
+            self._loading_widget.pause()
+
+    def _resume_loading_spinner_after_approval(
+        self,
+        _future: asyncio.Future[Any] | None = None,
+    ) -> None:
+        """Resume the global spinner timer after an approval decision.
+
+        Accepts an unused `_future` argument so it can be registered directly as
+        a `Future.add_done_callback`, which always passes the completed future
+        positionally.
+        """
+        if self._loading_widget is not None:
+            self._loading_widget.resume()
+
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
 
@@ -4153,6 +4171,11 @@ class DeepAgentsApp(App):
             self._loading_widget = LoadingWidget(status)
             await self._mount_before_queued(messages, self._loading_widget)
         else:
+            # A fresh status update means the agent is active again, so
+            # un-pause as a backstop in case an approval future was ever
+            # abandoned without completing the resume callback. `resume()` is a
+            # no-op when the spinner is not paused.
+            self._loading_widget.resume()
             # Update existing
             self._loading_widget.set_status(status)
             # Reposition via move_child so elapsed-time and animation state
@@ -4264,6 +4287,13 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget is not None:
             while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
+
+        # Pause the elapsed-time counter while the user decides, then resume it
+        # when the decision future completes. Resolve, reject, and cancel all
+        # fire the done-callback; the `_set_spinner` backstop covers the
+        # remaining case where a future is abandoned without completing.
+        self._pause_loading_spinner_for_approval()
+        result_future.add_done_callback(self._resume_loading_spinner_after_approval)
 
         # Create menu with unique ID to avoid conflicts
         from deepagents_code.widgets.approval import ApprovalMenu

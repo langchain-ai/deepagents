@@ -242,7 +242,7 @@ export async function create(source: CreateSource): Promise<SwarmHandle> {
  *
  * Loads the table, partitions rows by filter, interpolates the
  * instruction template per-row (or builds batch prompts), dispatches
- * to subagents via `tools.swarm_task()`, merges results into rows,
+ * to subagents via the extension's dispatch host function, merges results into rows,
  * and persists the updated table.
  *
  * @param handle - A table handle or object with an `id` field.

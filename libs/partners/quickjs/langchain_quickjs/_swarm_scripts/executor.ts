@@ -1,23 +1,18 @@
 import type { FailureGroup, TaskResult, TaskSpec } from "./types.js";
 
 /**
- * PTC tool declaration for swarm subagent dispatch.
+ * Host function for swarm subagent dispatch, injected by the swarm
+ * interpreter extension. Dispatches to subagents with response_schema and
+ * mode support, decoupled from the main agent's task tool.
  *
- * At runtime in QuickJS, `tools` is an ambient global injected by the
- * PTC layer. The swarm skill uses `swarm_task` (a PTC-only tool) rather
- * than the general `task` tool, so that response_schema and mode support
- * are decoupled from the main agent's task tool.
- *
- * For vitest, set up `globalThis.tools` in `beforeEach`.
+ * For vitest, set up `globalThis.__swarmTask` in `beforeEach`.
  */
-declare const tools: {
-  swarmTask?: (args: {
-    description: string;
-    subagent_type?: string;
-    response_schema?: Record<string, unknown>;
-    mode?: "agent" | "invoke";
-  }) => Promise<string>;
-};
+declare function __swarmTask(args: {
+  description: string;
+  subagent_type?: string;
+  response_schema?: Record<string, unknown>;
+  mode?: "agent" | "invoke";
+}): Promise<string>;
 
 /**
  * Column names that must not be overwritten by structured output merging.
@@ -25,12 +20,12 @@ declare const tools: {
 const RESERVED_COLUMNS = new Set(["id", "file"]);
 
 /**
- * Call the PTC `swarm_task` tool.
+ * Dispatch a task to a subagent via the extension's host function.
  *
  * @internal Exported for testing — not part of the public API.
- * @param args - Task arguments forwarded to the swarm task tool.
+ * @param args - Task arguments forwarded to the dispatch host function.
  * @returns The subagent's response as a string.
- * @throws Error if the `swarm_task` PTC tool is not configured.
+ * @throws Error if the swarm extension is not installed.
  */
 export async function callTask(args: {
   description: string;
@@ -38,12 +33,10 @@ export async function callTask(args: {
   response_schema?: Record<string, unknown>;
   mode?: "agent" | "invoke";
 }): Promise<string> {
-  if (typeof tools.swarmTask !== "function") {
-    throw new Error(
-      "Swarm requires a 'swarm_task' tool in the PTC configuration.",
-    );
+  if (typeof __swarmTask !== "function") {
+    throw new Error("Swarm requires the swarm interpreter extension.");
   }
-  return tools.swarmTask(args);
+  return __swarmTask(args);
 }
 
 /**

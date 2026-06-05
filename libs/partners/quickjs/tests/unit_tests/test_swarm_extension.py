@@ -2,10 +2,10 @@
 
 Exercises the extension through a real ``_ThreadREPL`` with an in-memory
 backend: the bundled swarm scripts import as ``import { create, rows } from
-"swarm"``, the host-function adapters (glob/read/write/edit backed by
-``ctx.backend``, swarmTask backed by a stub dispatch) are wired onto
-``globalThis.tools``, and a ``create`` → ``rows`` round-trip persists and
-reads a table back. Model calls are stubbed; file ops use the fake backend.
+"swarm"`` and call the top-level ``__swarm*`` host functions (glob/read/
+write/edit backed by ``ctx.backend``, dispatch backed by a stub) directly,
+and a ``create`` → ``rows`` round-trip persists and reads a table back.
+Model calls are stubbed; file ops use the fake backend.
 """
 
 from __future__ import annotations
@@ -134,11 +134,13 @@ def test_scripts_expose_table_api(worker: ThreadWorker, runtime: Runtime) -> Non
     assert outcome.result == "function,function,function"
 
 
-def test_tools_namespace_assembled(worker: ThreadWorker, runtime: Runtime) -> None:
+def test_host_functions_registered(worker: ThreadWorker, runtime: Runtime) -> None:
+    # The scripts call top-level __swarm* functions directly — no
+    # globalThis.tools namespace. Assert each host symbol is a global fn.
     repl = _make_repl(worker, runtime, [_stub_extension([])], _MemoryBackend())
     outcome = repl.eval_sync(
-        "[typeof tools.swarmTask, typeof tools.glob, typeof tools.readFile,"
-        " typeof tools.writeFile, typeof tools.editFile].join(',')"
+        "[typeof __swarmTask, typeof __swarmGlob, typeof __swarmReadFile,"
+        " typeof __swarmWriteFile, typeof __swarmEditFile].join(',')"
     )
     assert outcome.result == "function,function,function,function,function"
 
@@ -170,7 +172,7 @@ def test_glob_returns_json_paths(worker: ThreadWorker, runtime: Runtime) -> None
     repl = _make_repl(worker, runtime, [_stub_extension([])], backend)
     # The script JSON.parses glob output; assert our adapter returns valid JSON.
     outcome = repl.eval_sync(
-        'const raw = await tools.glob({ pattern: "*.txt" });'
+        'const raw = await __swarmGlob({ pattern: "*.txt" });'
         " JSON.parse(raw).map(e => e.path).sort().join(',')"
     )
     assert outcome.result == "/a.txt,/b.txt"
@@ -181,7 +183,7 @@ def test_file_op_without_backend_errors(worker: ThreadWorker, runtime: Runtime) 
     repl = _make_repl(worker, runtime, [_stub_extension([])], backend=None)
     outcome = repl.eval_sync(
         ' let msg = "";'
-        ' try { await tools.glob({ pattern: "*" }) }'
+        ' try { await __swarmGlob({ pattern: "*" }) }'
         ' catch (e) { msg = "errored" }'
         " msg"
     )

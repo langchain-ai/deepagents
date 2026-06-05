@@ -5,12 +5,12 @@ importable from guest JS as ``import { create, run, rows } from "swarm"`` —
 without the consumer wiring up any PTC tools.
 
 The bundled swarm scripts (vendored from ``langchain-ai/langchain-skills``,
-``config/skills/swarm``) read five functions off ``globalThis.tools``:
-``swarmTask`` (subagent dispatch) and ``glob`` / ``readFile`` / ``writeFile``
-/ ``editFile`` (table persistence). This extension registers those as host
-functions — dispatch via the shared ``build_swarm_dispatch`` closure, file
-ops via ``ctx.backend`` — and assembles the ``tools`` namespace the scripts
-expect, then installs the scripts as the ``swarm`` module.
+``config/skills/swarm``) call five top-level host functions: ``__swarmTask``
+(subagent dispatch) and ``__swarmGlob`` / ``__swarmReadFile`` /
+``__swarmWriteFile`` / ``__swarmEditFile`` (table persistence). This
+extension registers those — dispatch via the shared ``build_swarm_dispatch``
+closure, file ops via ``ctx.backend`` — then installs the scripts as the
+``swarm`` module. No ``globalThis.tools`` involved.
 
 Usage:
 
@@ -38,27 +38,13 @@ if TYPE_CHECKING:
     from langchain_quickjs._extensions import ExtensionContext
     from langchain_quickjs._swarm_task import SwarmDispatch, SwarmSubAgent
 
-# Host symbols are extension-owned, distinctively prefixed so they don't
-# collide with another extension's globals. The setup eval below wires them
-# onto `globalThis.tools` under the camelCase names the scripts read.
-_DISPATCH_SYMBOL = "__swarm_tools_swarmTask"
-_GLOB_SYMBOL = "__swarm_tools_glob"
-_READ_SYMBOL = "__swarm_tools_readFile"
-_WRITE_SYMBOL = "__swarm_tools_writeFile"
-_EDIT_SYMBOL = "__swarm_tools_editFile"
-
-# Merge onto any existing `globalThis.tools` (PTC may have installed some)
-# rather than clobbering it. Host symbols are fixed identifiers — never
-# interpolated from guest input.
-_TOOLS_SETUP = f"""\
-globalThis.tools = Object.assign(globalThis.tools || {{}}, {{
-  swarmTask: {_DISPATCH_SYMBOL},
-  glob: {_GLOB_SYMBOL},
-  readFile: {_READ_SYMBOL},
-  writeFile: {_WRITE_SYMBOL},
-  editFile: {_EDIT_SYMBOL},
-}}); undefined
-"""
+# Top-level host symbols the scripts call directly (they `declare function
+# __swarm*`). Fixed, extension-owned identifiers — never guest-interpolated.
+_DISPATCH_SYMBOL = "__swarmTask"
+_GLOB_SYMBOL = "__swarmGlob"
+_READ_SYMBOL = "__swarmReadFile"
+_WRITE_SYMBOL = "__swarmWriteFile"
+_EDIT_SYMBOL = "__swarmEditFile"
 
 _SYSTEM_PROMPT = """\
 ## swarm
@@ -178,19 +164,18 @@ class SwarmExtension:
     """Interpreter extension exposing the swarm table API to guest JS.
 
     Construct via the :func:`swarm` factory. ``on_setup`` registers the
-    dispatch + file-op host functions, assembles ``globalThis.tools``, and
-    installs the swarm scripts as the ``swarm`` module — on every fresh
-    context.
+    dispatch + file-op host functions and installs the swarm scripts as the
+    ``swarm`` module — on every fresh context.
     """
 
     dispatch: SwarmDispatch
     system_prompt: str | None = _SYSTEM_PROMPT
 
     def on_setup(self, ctx: ExtensionContext) -> None:
+        # Register the host functions the scripts call by name, then install
+        # the scripts. The symbols are plain globals (ctx.register puts them
+        # on globalThis), so the scripts' `__swarmGlob(...)` etc. resolve.
         _register_swarm_host_functions(ctx, self.dispatch)
-        # Wire the host symbols onto globalThis.tools, then install the
-        # scripts. Order matters: the eval references the symbols above.
-        ctx.eval(_TOOLS_SETUP)
         ctx.module(swarm_module_scope())
 
 

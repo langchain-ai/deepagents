@@ -1,21 +1,24 @@
 import type { CreateSource, SwarmHandle } from "./types.js";
 
 /**
- * PTC tool declarations for file operations.
+ * Host functions for file operations, injected by the swarm interpreter
+ * extension. They back the table's persistence onto the deepagents backend.
  *
- * At runtime in QuickJS, `tools` is an ambient global injected by the
- * PTC layer. For vitest, set up `globalThis.tools` in `beforeEach`.
+ * For vitest, set up the `globalThis.__swarm*` functions in `beforeEach`.
  */
-declare const tools: {
-  glob?: (args: { pattern: string }) => Promise<string>;
-  readFile?: (args: { file_path: string }) => Promise<string>;
-  writeFile?: (args: { file_path: string; content: string }) => Promise<string>;
-  editFile?: (args: {
-    file_path: string;
-    old_string: string;
-    new_string: string;
-  }) => Promise<string>;
-};
+declare function __swarmGlob(args: { pattern: string }): Promise<string>;
+declare function __swarmReadFile(args: {
+  file_path: string;
+}): Promise<string>;
+declare function __swarmWriteFile(args: {
+  file_path: string;
+  content: string;
+}): Promise<string>;
+declare function __swarmEditFile(args: {
+  file_path: string;
+  old_string: string;
+  new_string: string;
+}): Promise<string>;
 
 /**
  * Session ID injected by the QuickJS middleware as a global.
@@ -253,11 +256,11 @@ function findDuplicateIds(rows: Record<string, unknown>[]): string[] {
  * @internal
  */
 export async function globFiles(pattern: string): Promise<string[]> {
-  if (typeof tools.glob !== "function") {
-    throw new Error(`Swarm requires a 'glob' tool in the PTC configuration`);
+  if (typeof __swarmGlob !== "function") {
+    throw new Error("Swarm requires the swarm interpreter extension.");
   }
 
-  const raw = await tools.glob({ pattern });
+  const raw = await __swarmGlob({ pattern });
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
     return [];
@@ -276,21 +279,19 @@ export async function globFiles(pattern: string): Promise<string[]> {
 }
 
 /**
- * Read a file's content from the backend via the PTC `readFile` tool.
+ * Read a file's content from the backend via the extension host function.
  *
  * @param path - Backend file path.
  * @returns The file content as a string.
- * @throws Error if the `readFile` PTC tool is not configured.
+ * @throws Error if the swarm extension is not installed.
  *
  * @internal
  */
 export async function readFile(path: string): Promise<string> {
-  if (typeof tools.readFile !== "function") {
-    throw new Error(
-      `Swarm requires a 'readFile' tool in the PTC configuration`,
-    );
+  if (typeof __swarmReadFile !== "function") {
+    throw new Error("Swarm requires the swarm interpreter extension.");
   }
-  return tools.readFile({ file_path: path });
+  return __swarmReadFile({ file_path: path });
 }
 
 /**
@@ -305,7 +306,7 @@ export async function readFile(path: string): Promise<string> {
  * @param content - String content to write.
  * @param previousContent - The last-known content of the file, used
  *   as `old_string` for the editFile fallback.
- * @throws Error if the `writeFile` PTC tool is not configured.
+ * @throws Error if the swarm extension is not installed.
  *
  * @internal
  */
@@ -314,16 +315,14 @@ export async function writeFile(
   content: string,
   previousContent?: string,
 ): Promise<void> {
-  if (typeof tools.writeFile !== "function") {
-    throw new Error(
-      `Swarm requires a 'writeFile' tool in the PTC configuration`,
-    );
+  if (typeof __swarmWriteFile !== "function") {
+    throw new Error("Swarm requires the swarm interpreter extension.");
   }
-  const result = await tools.writeFile({ file_path: path, content });
+  const result = await __swarmWriteFile({ file_path: path, content });
   if (typeof result === "string" && result.includes("already exists")) {
-    if (typeof tools.editFile !== "function") {
+    if (typeof __swarmEditFile !== "function") {
       throw new Error(
-        "Swarm requires an 'edit_file' PTC tool to update existing tables",
+        "Swarm requires the swarm interpreter extension to update existing tables",
       );
     }
     if (previousContent == null) {
@@ -331,7 +330,7 @@ export async function writeFile(
         `Cannot overwrite ${path}: file already exists and no previous content available`,
       );
     }
-    await tools.editFile({
+    await __swarmEditFile({
       file_path: path,
       old_string: previousContent,
       new_string: content,
@@ -435,7 +434,7 @@ async function resolveGlob(pattern: string | string[]): Promise<string[]> {
  *
  * @param source - Exactly one of `glob`, `filePaths`, or `tasks`.
  * @returns A handle with the table's ID, row count, and column names.
- * @throws Error if the source is invalid, empty, or missing required PTC tools.
+ * @throws Error if the source is invalid, empty, or the swarm extension is missing.
  */
 export async function createTable(source: CreateSource): Promise<SwarmHandle> {
   const sourceCount = [source.glob, source.filePaths, source.tasks].filter(

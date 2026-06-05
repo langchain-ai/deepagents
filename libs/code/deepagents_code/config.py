@@ -2473,11 +2473,17 @@ def _create_model_via_init(
                     f"Install: /install {extra}"
                 )
             else:
+                from deepagents_code.extras_info import ExtrasIntrospectionError
                 from deepagents_code.update_check import install_package_command
 
                 try:
                     install_cmd = install_package_command(package)
-                except ValueError:
+                except (ValueError, ExtrasIntrospectionError) as exc:
+                    logger.debug(
+                        "install_package_command failed; falling back to "
+                        "manual hint: %s",
+                        exc,
+                    )
                     install_hint = f"Install the '{package}' package manually"
                 else:
                     install_hint = f"Install with: {install_cmd}"

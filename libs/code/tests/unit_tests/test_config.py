@@ -2605,12 +2605,42 @@ class TestCreateModelViaInitImportError:
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
             pytest.raises(
                 ModelConfigError,
                 match=(
                     "Install with: uv tool install -U deepagents-code "
                     "--with langchain-custom_provider"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_introspection_failure_falls_back_to_manual(
+        self, mock_init: Mock
+    ) -> None:
+        """Unreadable extras metadata degrades to the manual-install hint.
+
+        Exercises the `ExtrasIntrospectionError` arm of the fallback so the
+        user still gets an actionable message instead of an unhandled error
+        leaking out of hint construction.
+        """
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                side_effect=ExtrasIntrospectionError("metadata unreadable"),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})

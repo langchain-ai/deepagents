@@ -5936,9 +5936,15 @@ class TestDeferredActions:
                 provider="custom_provider",
                 package="langchain-custom_provider",
             )
-            with patch(
-                "deepagents_code.extras_info.extra_for_package",
-                return_value=None,
+            with (
+                patch(
+                    "deepagents_code.extras_info.extra_for_package",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.extras_info.installed_extra_names",
+                    return_value=set(),
+                ),
             ):
                 app.on_deep_agents_app_server_start_failed(
                     DeepAgentsApp.ServerStartFailed(error=error)
@@ -5954,7 +5960,53 @@ class TestDeferredActions:
             )
             assert "/model custom_provider:<model>" in rendered
 
-    async def test_retry_startup_clears_missing_package_slot(self) -> None:
+    async def test_server_failure_unknown_package_introspection_failure_manual(
+        self,
+    ) -> None:
+        """Unreadable extras metadata degrades the hint to a manual instruction.
+
+        Exercises the `ExtrasIntrospectionError` arm so a corrupted-metadata
+        environment still surfaces an actionable hint rather than crashing the
+        failure-rendering path.
+        """
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "custom_provider:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'custom_provider'.",
+                provider="custom_provider",
+                package="langchain-custom_provider",
+            )
+            with (
+                patch(
+                    "deepagents_code.extras_info.extra_for_package",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.extras_info.installed_extra_names",
+                    side_effect=ExtrasIntrospectionError("metadata unreadable"),
+                ),
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert (
+                "install the `langchain-custom_provider` package manually" in rendered
+            )
+            assert "uv tool install" not in rendered
+            assert "/model custom_provider:<model>" in rendered
         """`_retry_startup_with_model` must clear the package recovery slot.
 
         Mirrors the credentials-slot reset directly above it. A regression

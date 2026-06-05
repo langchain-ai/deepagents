@@ -2986,11 +2986,17 @@ class DeepAgentsApp(App):
                     "Or pick a different provider with `/model`."
                 )
             else:
+                from deepagents_code.extras_info import ExtrasIntrospectionError
                 from deepagents_code.update_check import install_package_command
 
                 try:
                     install_cmd = install_package_command(missing.package)
-                except ValueError:
+                except (ValueError, ExtrasIntrospectionError) as exc:
+                    logger.debug(
+                        "install_package_command failed; falling back to "
+                        "manual hint: %s",
+                        exc,
+                    )
                     install_hint = f"install the `{missing.package}` package manually"
                 else:
                     install_hint = f"run `{install_cmd}`"

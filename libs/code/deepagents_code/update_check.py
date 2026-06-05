@@ -933,43 +933,25 @@ def is_valid_package_name(package: str) -> bool:
     return bool(_PACKAGE_NAME_RE.fullmatch(package))
 
 
-def install_package_command(package: str) -> str:
-    """Return the shell command that adds a package to the dcode tool env.
+def _dcode_extras_requirement(extras: Iterable[str]) -> str:
+    """Return the validated `deepagents-code[...]` requirement for a uv install.
 
-    The result is built for *execution* (via `perform_install_package`), not for
-    display — surfacing raw `uv tool` invocations to the user is intentionally
-    avoided. `package` is validated and then `shlex.quote`-d: the validation
-    already blocks shell metacharacters, so the quoting is defense in depth that
-    keeps the command safe even if the pattern is later loosened.
-
-    Args:
-        package: Package name to install into the existing tool environment.
-
-    Returns:
-        Shell command string suitable for execution via the shell.
-
-    Raises:
-        ValueError: If `package` is not a conservative PEP 508-style package
-            name.
-    """
-    if not _PACKAGE_NAME_RE.fullmatch(package):
-        msg = (
-            f"Invalid package name {package!r}: must match PEP 508 "
-            f"({_PACKAGE_NAME_RE.pattern})"
-        )
-        raise ValueError(msg)
-    return f"uv tool install -U deepagents-code --with {shlex.quote(package)}"
-
-
-def install_extras_command(extras: Iterable[str]) -> str:
-    """Return the uv command that installs the exact set of dcode extras.
+    Shared by the extra- and package-install commands so already-installed
+    extras survive a `uv tool install` reinstall — a bare `deepagents-code`
+    request would replace the tool and drop them. Returns plain
+    `deepagents-code` when no extras are selected; otherwise the single-quoted
+    bracket form, which keeps zsh from globbing the brackets.
 
     Args:
-        extras: Extra names to include in the tool reinstall.
+        extras: Extra names to encode. Each is validated against PEP 508
+            grammar before interpolation. This is the authoritative gate for
+            caller-supplied extras (`install_extras_command`) and a
+            redundant re-check for extras read from distribution metadata
+            (`install_package_command`).
 
     Returns:
-        Shell command string suitable for display in error messages and
-            execution via `perform_install_extra`.
+        Shell-safe requirement token, e.g. `deepagents-code` or
+            `'deepagents-code[baseten,nvidia]'`.
 
     Raises:
         ValueError: If any extra fails PEP 508 validation.
@@ -982,8 +964,79 @@ def install_extras_command(extras: Iterable[str]) -> str:
                 f"({_EXTRA_NAME_RE.pattern})"
             )
             raise ValueError(msg)
+    if not names:
+        return "deepagents-code"
     extras_part = ",".join(names)
-    return f"uv tool install -U 'deepagents-code[{extras_part}]'"
+    return f"'deepagents-code[{extras_part}]'"
+
+
+def install_package_command(
+    package: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the shell command that adds a package to the dcode tool env.
+
+    The result is built for *execution* (via `perform_install_package`), not for
+    display — surfacing raw `uv tool` invocations to the user is intentionally
+    avoided. `package` is validated and then `shlex.quote`-d: the validation
+    already blocks shell metacharacters, so the quoting is defense in depth that
+    keeps the command safe even if the pattern is later loosened.
+
+    Already-installed extras are folded into the `deepagents-code[...]`
+    requirement via the shared `_dcode_extras_requirement` helper, the same way
+    `install_extras_command` builds its requirement. Without this the reinstall
+    would replace the tool with a plain `deepagents-code`, silently dropping any
+    extras the user added through `/install <extra>`.
+
+    Args:
+        package: Package name to install into the existing tool environment.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata (refused rather than risk
+            dropping them).
+        ValueError: If `package` or any already-installed extra fails PEP 508
+            validation.
+    """
+    if not _PACKAGE_NAME_RE.fullmatch(package):
+        msg = (
+            f"Invalid package name {package!r}: must match PEP 508 "
+            f"({_PACKAGE_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
+
+    try:
+        extras = installed_extra_names(distribution_name, strict=True)
+    except ExtrasIntrospectionError as exc:
+        msg = str(exc)
+        raise ExtrasIntrospectionError(msg) from exc
+    requirement = _dcode_extras_requirement(extras)
+    return f"uv tool install -U {requirement} --with {shlex.quote(package)}"
+
+
+def install_extras_command(extras: Iterable[str]) -> str:
+    """Return the uv command that installs the exact set of dcode extras.
+
+    Args:
+        extras: Extra names to include in the tool reinstall. Validated by
+            `_dcode_extras_requirement`, which raises `ValueError` on any name
+            that fails PEP 508 validation.
+
+    Returns:
+        Shell command string suitable for display in error messages and
+            execution via `perform_install_extra`.
+    """
+    return f"uv tool install -U {_dcode_extras_requirement(extras)}"
 
 
 def install_extra_command(
@@ -1138,11 +1191,12 @@ async def perform_install_package(
 ) -> tuple[bool, str]:
     """Add an arbitrary `package` to the installed dcode tool environment.
 
-    Runs `uv tool install -U deepagents-code --with <package>`, the escape
-    hatch for a provider whose package is not a `deepagents-code` extra (e.g. a
-    custom or in-house `class_path` model). Editable installs are refused — the
-    caller should rerun their `uv tool install --editable` command with `--with
-    <package>` added so it resolves against the editable source.
+    Runs `uv tool install -U 'deepagents-code[<extras>]' --with <package>`, the
+    escape hatch for a provider whose package is not a `deepagents-code` extra
+    (e.g. a custom or in-house `class_path` model). Already-installed extras are
+    preserved so the reinstall does not drop them. Editable installs are refused
+    — the caller should rerun their `uv tool install --editable` command with
+    `--with <package>` added so it resolves against the editable source.
 
     Args:
         package: The package name to install. Must satisfy
@@ -1190,9 +1244,21 @@ async def perform_install_package(
             "added."
         )
 
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
     try:
         cmd = install_package_command(package)
     except ValueError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except ExtrasIntrospectionError as exc:
+        # Distinct from a malformed package name: the running distribution's own
+        # metadata could not be read or parsed. Leave a breadcrumb so the cause
+        # is recoverable from logs, even though the user message is unchanged.
+        logger.warning(
+            "Could not introspect installed extras for package install of %r",
+            package,
+            exc_info=True,
+        )
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 

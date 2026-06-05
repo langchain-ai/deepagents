@@ -9,11 +9,24 @@ from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Input, OptionList, Static
 
-from deepagents_code import auth_store
+from deepagents_code import auth_store, model_config
 from deepagents_code.widgets.auth import AuthManagerScreen, AuthPromptScreen, AuthResult
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _restore_model_caches() -> Iterator[None]:
+    """Reset model-config caches after tests that repoint `DEFAULT_CONFIG_PATH`.
+
+    A few tests patch the config path to isolate base-URL resolution; clearing
+    on teardown stops their throwaway config from leaking into later tests via
+    the cached singleton.
+    """
+    yield
+    model_config.clear_caches()
 
 
 @pytest.fixture
@@ -78,6 +91,67 @@ class TestAuthPromptScreen:
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
 
+    async def test_base_url_round_trips_on_submit(self) -> None:
+        """A base URL typed alongside the key is persisted as the pair."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "  https://proxy.example/v1  "
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("openai") == "sk-key"
+        # Whitespace is stripped before storage.
+        assert auth_store.get_stored_base_url("openai") == "https://proxy.example/v1"
+
+    async def test_submit_from_base_url_field_saves_pair(self) -> None:
+        """Enter in the base-URL field saves the pair, not just the key field.
+
+        `on_input_submitted` reads both inputs regardless of which one fired, so
+        submitting from either field must persist the same key + endpoint.
+        """
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
+            base_url_field.value = "https://proxy.example/v1"
+            base_url_field.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("openai") == "sk-key"
+        assert auth_store.get_stored_base_url("openai") == "https://proxy.example/v1"
+
+    async def test_blank_base_url_field_stores_no_endpoint(self) -> None:
+        """A whitespace-only base URL stores nothing (uses the provider default)."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
+            app.screen.query_one("#auth-prompt-base-url", Input).value = "   "
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("openai") is None
+
+    async def test_existing_base_url_prefills_field(self) -> None:
+        """Reopening the prompt pre-fills the stored endpoint for editing."""
+        auth_store.set_stored_key("openai", "k", base_url="https://stored.example/v1")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert base_url_field.value == "https://stored.example/v1"
+
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""
         app = _AuthHostApp()
@@ -140,22 +214,24 @@ class TestAuthPromptScreen:
         assert app.prompt_dismissed is False
         assert auth_store.get_stored_key("openai") == "still-here"
 
-    async def test_ctrl_d_noop_without_existing_credential(self) -> None:
-        """Ctrl+D does nothing when there's no stored key to delete."""
-        from deepagents_code.widgets.auth import (
-            AuthPromptScreen,
-            DeleteCredentialConfirmScreen,
-        )
+    async def test_ctrl_d_quits_without_existing_credential(self) -> None:
+        """Ctrl+D falls through to quit when there's no stored key to delete.
+
+        The `priority` binding would otherwise swallow the app-level
+        Ctrl+D=quit, leaving the key dead in the modal.
+        """
+        from deepagents_code.widgets.auth import DeleteCredentialConfirmScreen
 
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
+            # No confirm modal — there's nothing to delete.
             await pilot.press("ctrl+d")
             await pilot.pause()
-            # Stay on the prompt — no confirm modal pushed.
             assert not isinstance(app.screen, DeleteCredentialConfirmScreen)
-            assert isinstance(app.screen, AuthPromptScreen)
+            # The key fell through to quit instead of being swallowed.
+            assert app._exit is True
 
     async def test_title_shows_stored_when_existing(self) -> None:
         """Title surfaces a `(stored)` marker when a key already exists."""
@@ -194,14 +270,74 @@ class TestAuthPromptScreen:
             warning_text = " ".join(str(w.render()) for w in error_widgets)
             assert "unreadable" in warning_text
 
-    async def test_helper_text_mentions_env_var(self) -> None:
-        """Helper text shows the canonical env-var name as a hint."""
+    async def test_helper_text_describes_precedence(self) -> None:
+        """Helper text names both env vars and their order vs the stored key.
+
+        A stored key sits between the plain var (which it beats) and the
+        `DEEPAGENTS_CODE_`-prefixed var (which beats it). The meta line must
+        convey that ordering, not imply the three are interchangeable.
+        """
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
-            meta = app.screen.query_one(".auth-prompt-meta", Static)
-            assert "OPENAI_API_KEY" in str(meta.content)
+            meta = app.screen.query_one("#auth-prompt-key-meta", Static)
+            text = str(meta.content)
+            assert "OPENAI_API_KEY" in text
+            assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
+            # The prefixed var is described as overriding the stored key.
+            assert "takes priority" in text
+
+    async def test_base_url_hint_names_endpoint_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With a known endpoint var but no survivor set, name it as a hint."""
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml")
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
+            text = str(hint.content)
+            assert "endpoint var: OPENAI_BASE_URL" in text
+            # It must not claim blank *uses* the plain var (it gets cleared).
+            assert "use OPENAI_BASE_URL" not in text
+
+    async def test_base_url_hint_generic_without_endpoint_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider with no base-URL env var falls back to the generic line."""
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml")
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            # `google_vertexai` has an API-key env var but no base-URL mapping.
+            app.show_prompt("google_vertexai", "GOOGLE_CLOUD_PROJECT")
+            await pilot.pause()
+            hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
+            text = str(hint.content)
+            assert "provider's default endpoint" in text
+            assert "endpoint var" not in text
+
+    async def test_base_url_hint_names_surviving_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The surviving env var is named (not its value) so blank is unambiguous."""
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://scoped.example/v1"
+        )
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
+            text = str(hint.content)
+            assert "DEEPAGENTS_CODE_OPENAI_BASE_URL" in text
+            # The URL value itself is not leaked into the hint.
+            assert "scoped.example" not in text
 
     async def test_no_logging_of_secret(self, caplog: pytest.LogCaptureFixture) -> None:
         """Submitting a key never lands its value in widget logs."""

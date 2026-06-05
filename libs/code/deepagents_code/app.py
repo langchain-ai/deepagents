@@ -3212,11 +3212,15 @@ class DeepAgentsApp(App):
         """
         # Phase 1: version check (benign failure)
         try:
+            from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 is_auto_update_enabled,
                 is_update_available,
                 upgrade_command,
             )
+
+            if await asyncio.to_thread(_is_editable_install):
+                return
 
             available, latest = await asyncio.to_thread(
                 is_update_available,

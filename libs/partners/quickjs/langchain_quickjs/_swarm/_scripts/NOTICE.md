@@ -11,9 +11,9 @@ call the top-level host functions `__swarmTask`, `__swarmGlob`,
 extension registers (see `../_extension.py`). They were adapted from the
 upstream `tools.*` (PTC-namespace) calls to these named host functions.
 
-The sibling `../_PROMPT.md` is likewise vendored — it is the body of the
-upstream skill's `SKILL.md`, with the import specifier adapted from
-`@/skills/swarm` to `swarm`.
+The sibling `../_prompt.py` is likewise vendored — `SWARM_SYSTEM_PROMPT` is
+the body of the upstream skill's `SKILL.md`, with the import specifier
+adapted from `@/skills/swarm` to `swarm`.
 
 To update: re-copy from the upstream skill directory, re-apply the
 `tools.*` → `__swarm*` adaptation, and re-run the test suite.

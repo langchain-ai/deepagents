@@ -1,4 +1,16 @@
+# ruff: noqa: E501, RUF001 — embedded SKILL.md verbatim; long lines and
+# Unicode dashes are part of the upstream content.
+"""System-prompt fragment for the swarm interpreter extension.
 
+The body of the upstream swarm skill's ``SKILL.md``
+(``langchain-ai/langchain-skills``, ``config/skills/swarm``), with the
+import specifier adapted from ``@/skills/swarm`` to ``swarm``. Kept as a
+module-level constant so it is a plain import - no file read, no bundling.
+"""
+
+from __future__ import annotations
+
+SWARM_SYSTEM_PROMPT = r"""
 # Swarm
 
 Process many independent items in parallel. `create` builds a table handle;
@@ -329,3 +341,6 @@ Retrieve rows. Use for inspection and JS-based aggregation.
 | `filter` | Only return matching rows |
 | `columns` | Project to specific columns |
 | `limit` | Max rows returned |
+"""
+
+__all__ = ["SWARM_SYSTEM_PROMPT"]

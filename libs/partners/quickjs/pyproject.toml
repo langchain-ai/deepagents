@@ -34,10 +34,7 @@ dependencies = [
 packages = ["langchain_quickjs"]
 # Bundle the vendored swarm interpreter scripts (loaded at runtime by
 # _swarm/_scripts.py) into the wheel.
-artifacts = [
-    "langchain_quickjs/_swarm/_scripts/*.ts",
-    "langchain_quickjs/_swarm/_PROMPT.md",
-]
+artifacts = ["langchain_quickjs/_swarm/_scripts/*.ts"]
 
 [project.urls]
 Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/quickjs"

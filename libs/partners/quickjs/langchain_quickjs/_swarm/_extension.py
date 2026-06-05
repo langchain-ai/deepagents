@@ -25,11 +25,10 @@ Usage:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from functools import lru_cache
-from pathlib import Path
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from langchain_quickjs._swarm._prompt import SWARM_SYSTEM_PROMPT
 from langchain_quickjs._swarm._scripts import swarm_module_scope
 from langchain_quickjs._swarm._task import build_swarm_dispatch
 
@@ -47,17 +46,6 @@ _GLOB_SYMBOL = "__swarmGlob"
 _READ_SYMBOL = "__swarmReadFile"
 _WRITE_SYMBOL = "__swarmWriteFile"
 _EDIT_SYMBOL = "__swarmEditFile"
-
-
-@lru_cache(maxsize=1)
-def _system_prompt() -> str:
-    """The swarm usage instructions injected into the system prompt.
-
-    Sourced from ``_PROMPT.md`` — the body of the upstream ``swarm`` skill's
-    ``SKILL.md`` (``langchain-ai/langchain-skills``), with the import
-    specifier adapted from ``@/skills/swarm`` to ``swarm``.
-    """
-    return (Path(__file__).parent / "_PROMPT.md").read_text(encoding="utf-8")
 
 
 def _require_dict(payload: Any, call: str) -> dict[str, Any]:
@@ -164,7 +152,7 @@ class SwarmExtension:
     """
 
     dispatch: SwarmDispatch
-    system_prompt: str | None = field(default_factory=_system_prompt)
+    system_prompt: str | None = SWARM_SYSTEM_PROMPT
 
     def on_setup(self, ctx: ExtensionContext) -> None:
         # Register the host functions the scripts call by name, then install

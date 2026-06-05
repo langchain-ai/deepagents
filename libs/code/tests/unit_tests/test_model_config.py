@@ -402,8 +402,9 @@ class TestSplitCredentialSource:
     def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Clear every OpenAI key/endpoint env var so each test sets its own.
 
-        `dotenv.load_dotenv()` runs at import time and may inject prefixed
-        variants that would otherwise leak into these assertions.
+        `dotenv.load_dotenv()` runs during config bootstrap (first `Settings`
+        access) and may inject prefixed variants from a developer's
+        `~/.deepagents/.env` that would otherwise leak into these assertions.
         """
         for var in (
             "OPENAI_API_KEY",
@@ -508,6 +509,93 @@ class TestSplitCredentialSource:
             warn_on_split_credential_source("openai")
 
         assert not caplog.records
+
+    def test_no_warning_when_prefixed_key_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An empty prefixed key does not resolve from the prefixed tier: no warning.
+
+        Symmetric to `test_empty_prefixed_base_url_is_not_treated_as_plain`: the
+        key half of the pair must be *present and non-empty* for a split to exist.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_provider_has_no_base_url_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A provider with a key env var but no base-URL env var returns early.
+
+        `google_vertexai` maps to `GOOGLE_CLOUD_PROJECT` for credentials but has
+        no entry in `PROVIDER_BASE_URL_ENV`, so there is no endpoint variable to
+        compare against.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT", "my-project")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("google_vertexai")
+
+        assert not caplog.records
+
+    def test_warns_for_config_declared_env_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """The prefix is applied to config-declared env names, not just built-ins.
+
+        A `config.toml` provider that declares its own `api_key_env` /
+        `base_url_env` participates in the same split-source detection.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.model_config import (
+            clear_caches,
+            warn_on_split_credential_source,
+        )
+
+        for var in (
+            "MYCO_KEY",
+            "DEEPAGENTS_CODE_MYCO_KEY",
+            "MYCO_BASE_URL",
+            "DEEPAGENTS_CODE_MYCO_BASE_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.myco]
+api_key_env = "MYCO_KEY"
+base_url_env = "MYCO_BASE_URL"
+models = ["m1"]
+""")
+        monkeypatch.setenv("DEEPAGENTS_CODE_MYCO_KEY", "sk-secret-value")
+        monkeypatch.setenv("MYCO_BASE_URL", "https://gateway.example/myco")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            clear_caches()
+            warn_on_split_credential_source("myco")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "DEEPAGENTS_CODE_MYCO_KEY" in m and "MYCO_BASE_URL" in m for m in messages
+        )
 
     def test_no_warning_when_config_base_url_literal_set(
         self,

@@ -250,3 +250,77 @@ class TestMediaUtilsExceptionHandling:
 
             assert result is None
             assert "osascript timed out" in caplog.text
+
+
+class TestLLMRateLimitErrors:
+    """Tests for the provider-token-limit formatter and detector."""
+
+    def _groq_413(self) -> BaseException:
+        """Build a synthetic exception shaped like Groq's 413 TPM error.
+
+        The real SDK class is not always installed in test envs, so we
+        emulate the duck-typed surface that `is_llm_rate_limit_error` looks
+        for: a `status_code == 413` attribute and a message containing the
+        canonical `Limit N, Requested M` phrase.
+        """
+
+        class _FakeGroqAPIStatusError(Exception):
+            status_code = 413
+
+        return _FakeGroqAPIStatusError(
+            "Error code: 413 - {'error': {'message': 'Request too large for "
+            "llama-3.3-70b-versatile on tokens per minute (TPM): Limit 12000, "
+            "Requested 18211. Please try again.', "
+            "'code': 'rate_limit_exceeded'}}",
+        )
+
+    def test_formatter_includes_model_and_limit_numbers(self):
+        from deepagents_code.llm_errors import format_llm_rate_limit_error
+
+        exc = self._groq_413()
+        msg = format_llm_rate_limit_error(exc, model="groq:llama-3.3-70b-versatile")
+
+        assert "token" in msg.lower()
+        assert "Limit" in msg
+        assert "12000" in msg
+        assert "18211" in msg
+        assert "groq:llama-3.3-70b-versatile" in msg
+        assert "Traceback" not in msg
+
+    def test_formatter_without_model_still_actionable(self):
+        from deepagents_code.llm_errors import format_llm_rate_limit_error
+
+        msg = format_llm_rate_limit_error(self._groq_413())
+
+        assert "token" in msg.lower()
+        assert "skills" in msg.lower() or "memory" in msg.lower()
+
+    def test_is_llm_rate_limit_error_detects_413(self, monkeypatch):
+        from deepagents_code import llm_errors
+
+        exc = self._groq_413()
+        monkeypatch.setattr(
+            llm_errors,
+            "LLM_RATE_LIMIT_ERRORS",
+            (type(exc),),
+        )
+        assert llm_errors.is_llm_rate_limit_error(exc) is True
+
+    def test_is_llm_rate_limit_error_ignores_unrelated_exceptions(self, monkeypatch):
+        from deepagents_code import llm_errors
+
+        class _UnrelatedError(Exception):
+            pass
+
+        monkeypatch.setattr(
+            llm_errors,
+            "LLM_RATE_LIMIT_ERRORS",
+            (_UnrelatedError,),
+        )
+        assert llm_errors.is_llm_rate_limit_error(_UnrelatedError("nope")) is False
+
+    def test_is_llm_rate_limit_error_safe_when_no_providers(self, monkeypatch):
+        from deepagents_code import llm_errors
+
+        monkeypatch.setattr(llm_errors, "LLM_RATE_LIMIT_ERRORS", ())
+        assert llm_errors.is_llm_rate_limit_error(self._groq_413()) is False

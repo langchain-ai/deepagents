@@ -6630,15 +6630,32 @@ class DeepAgentsApp(App):
                 turn_stats=turn_stats,
             )
         except Exception as e:  # Resilient tool rendering
-            logger.exception("Agent execution failed")
-            try:
-                from deepagents_code.remote_client import format_agent_exception
+            from deepagents_code.llm_errors import (
+                LLM_RATE_LIMIT_ERRORS,
+                format_llm_rate_limit_error,
+                is_llm_rate_limit_error,
+            )
 
-                error_text = f"Agent error: {format_agent_exception(e)}"
-            except Exception:
-                # The formatter itself must never mask the original error.
-                logger.exception("format_agent_exception failed")
-                error_text = f"Agent error: {e!r}"
+            if LLM_RATE_LIMIT_ERRORS and is_llm_rate_limit_error(e):
+                model_spec = self._effective_model_spec()
+                logger.warning(
+                    "LLM rate/size limit hit (model=%s): %s",
+                    model_spec,
+                    e,
+                )
+                error_text = (
+                    f"Agent error: {format_llm_rate_limit_error(e, model=model_spec)}"
+                )
+            else:
+                logger.exception("Agent execution failed")
+                try:
+                    from deepagents_code.remote_client import format_agent_exception
+
+                    error_text = f"Agent error: {format_agent_exception(e)}"
+                except Exception:
+                    # The formatter itself must never mask the original error.
+                    logger.exception("format_agent_exception failed")
+                    error_text = f"Agent error: {e!r}"
             # Ensure any in-flight tool calls don't remain stuck in "Running..."
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:

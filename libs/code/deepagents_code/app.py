@@ -3722,8 +3722,7 @@ class DeepAgentsApp(App):
             logger.warning("/install --package command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(
-                    f"Install failed: {type(exc).__name__}: {exc}\n"
-                    f"Log: {log_path}",
+                    f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
                 ),
             )
             return

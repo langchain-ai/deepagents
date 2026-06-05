@@ -1161,8 +1161,7 @@ async def perform_install_package(
     """
     if not is_valid_package_name(package):
         return False, (
-            f"Invalid package name {package!r}: must match "
-            f"{_PACKAGE_NAME_RE.pattern}"
+            f"Invalid package name {package!r}: must match {_PACKAGE_NAME_RE.pattern}"
         )
     method = detect_install_method()
     if method == "unknown":

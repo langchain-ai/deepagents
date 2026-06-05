@@ -98,9 +98,9 @@ class TestAuthPromptScreen:
             app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
             app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
-            app.screen.query_one("#auth-prompt-base-url", Input).value = (
-                "  https://proxy.example/v1  "
-            )
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "  https://proxy.example/v1  "
             await pilot.press("enter")
             await pilot.pause()
         assert app.prompt_result is AuthResult.SAVED

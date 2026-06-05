@@ -1997,8 +1997,7 @@ def cli_main() -> None:
 
         if args.package and not args.install:
             console.print(
-                "[bold red]Error:[/bold red] --package requires --install "
-                "<package>.",
+                "[bold red]Error:[/bold red] --package requires --install <package>.",
             )
             sys.exit(2)
 

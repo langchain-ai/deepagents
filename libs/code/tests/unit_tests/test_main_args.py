@@ -1599,8 +1599,6 @@ class TestInstallPackageSubcommand:
 
     def test_option_injection_name_refused(self) -> None:
         """A leading-dash name is rejected before any install path (exit 2)."""
-        code, perform_mock, _console = self._run_install_package(
-            "-rreqs.txt", yes=True
-        )
+        code, perform_mock, _console = self._run_install_package("-rreqs.txt", yes=True)
         assert code == 2
         perform_mock.assert_not_awaited()

@@ -1081,9 +1081,7 @@ models = ["m1"]
         """
         from deepagents_code import auth_store
 
-        auth_store.set_stored_key(
-            "baseten", "k", base_url="https://proxy.example/v1"
-        )
+        auth_store.set_stored_key("baseten", "k", base_url="https://proxy.example/v1")
         config = ModelConfig()
 
         assert config.get_base_url("baseten") == "https://proxy.example/v1"
@@ -1096,9 +1094,7 @@ models = ["m1"]
         """A `config.toml` literal still wins over the stored endpoint."""
         from deepagents_code import auth_store
 
-        auth_store.set_stored_key(
-            "baseten", "k", base_url="https://stored.example/v1"
-        )
+        auth_store.set_stored_key("baseten", "k", base_url="https://stored.example/v1")
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.baseten]
@@ -1145,7 +1141,9 @@ class TestGetDefaultBaseUrlEnv:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The prefixed var survives the clear, so its name is returned."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://scoped.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://scoped.example/v1"
+        )
         assert (
             model_config.get_default_base_url_env("openai")
             == "DEEPAGENTS_CODE_OPENAI_BASE_URL"

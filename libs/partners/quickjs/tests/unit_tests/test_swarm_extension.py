@@ -1,10 +1,11 @@
 """Unit tests for the swarm interpreter extension.
 
-Exercises the extension wiring through a real ``_ThreadREPL``: ``on_setup``
-registers the dispatch host function and the ``swarm`` module, and guest JS
-can ``import { swarm } from "swarm"`` and call it. The dispatch closure is
-stubbed so these tests don't make real model calls; a separate test builds
-the extension via the public ``swarm()`` factory.
+Exercises the extension through a real ``_ThreadREPL`` with an in-memory
+backend: the bundled swarm scripts import as ``import { create, rows } from
+"swarm"``, the host-function adapters (glob/read/write/edit backed by
+``ctx.backend``, swarmTask backed by a stub dispatch) are wired onto
+``globalThis.tools``, and a ``create`` → ``rows`` round-trip persists and
+reads a table back. Model calls are stubbed; file ops use the fake backend.
 """
 
 from __future__ import annotations
@@ -21,6 +22,44 @@ from langchain_quickjs._swarm_extension import SwarmExtension as _SwarmExtension
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    GlobResult,
+    ReadResult,
+    WriteResult,
+)
+
+
+class _MemoryBackend(BackendProtocol):
+    """Minimal in-memory backend for swarm table persistence."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, str] = {}
+
+    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
+        import fnmatch
+
+        matches = [
+            {"path": p} for p in sorted(self.files) if fnmatch.fnmatch(p, pattern)
+        ]
+        return GlobResult(matches=matches)
+
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        if file_path not in self.files:
+            return ReadResult(error="file_not_found")
+        return ReadResult(
+            file_data={"content": self.files[file_path], "encoding": "utf-8"}
+        )
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        self.files[file_path] = content
+        return WriteResult(path=file_path)
 
 
 @pytest.fixture
@@ -52,14 +91,16 @@ def _make_repl(
     worker: ThreadWorker,
     runtime: Runtime,
     extensions: list[InterpreterExtension],
+    backend: BackendProtocol | None = None,
 ) -> _ThreadREPL:
     return _ThreadREPL(
         worker,
         runtime,
-        timeout=5.0,
+        timeout=10.0,
         capture_console=True,
-        max_stdout_chars=4000,
+        max_stdout_chars=8000,
         extensions=extensions,
+        backend=backend,
     )
 
 
@@ -78,57 +119,79 @@ def _stub_extension(calls: list[tuple]) -> SwarmExtension:
     return _SwarmExtensionClass(dispatch=_dispatch)
 
 
-def test_on_setup_registers_module_and_host_fn(
-    worker: ThreadWorker, runtime: Runtime
-) -> None:
-    repl = _make_repl(worker, runtime, [_stub_extension([])])
-    # Host symbol present and the module importable.
-    assert repl.eval_sync("typeof __swarm_dispatch").result == "function"
-    assert repl.eval_sync('typeof (await import("swarm")).swarm').result == "function"
+# ---------------------------------------------------------------------------
+# Module + host wiring
+# ---------------------------------------------------------------------------
 
 
-def test_swarm_callable_from_guest(worker: ThreadWorker, runtime: Runtime) -> None:
-    calls: list[tuple] = []
-    repl = _make_repl(worker, runtime, [_stub_extension(calls)])
+def test_scripts_expose_table_api(worker: ThreadWorker, runtime: Runtime) -> None:
+    repl = _make_repl(worker, runtime, [_stub_extension([])], _MemoryBackend())
     outcome = repl.eval_sync(
-        'const { swarm } = await import("swarm");'
-        ' await swarm({ description: "do a thing", mode: "invoke" })'
+        'const m = await import("swarm");'
+        " [typeof m.create, typeof m.run, typeof m.rows].join(',')"
     )
     assert outcome.error_type is None, outcome.error_message
-    assert outcome.result == "dispatched: do a thing"
-    # camelCase opts marshaled to positional dispatch args.
-    assert calls == [("do a thing", None, None, "invoke")]
+    assert outcome.result == "function,function,function"
 
 
-def test_swarm_forwards_all_options(worker: ThreadWorker, runtime: Runtime) -> None:
-    calls: list[tuple] = []
-    repl = _make_repl(worker, runtime, [_stub_extension(calls)])
-    repl.eval_sync(
-        'const { swarm } = await import("swarm");'
-        " await swarm({"
-        '   description: "triage",'
-        '   subagentType: "screener",'
-        '   responseSchema: { type: "object" },'
-        '   mode: "agent",'
-        " })"
-    )
-    assert calls == [("triage", "screener", {"type": "object"}, "agent")]
-
-
-def test_swarm_rejects_non_object_payload(
-    worker: ThreadWorker, runtime: Runtime
-) -> None:
-    repl = _make_repl(worker, runtime, [_stub_extension([])])
-    # A non-object payload makes the host function raise; the guest sees a
-    # catchable JS error (host exceptions surface as rejected promises).
+def test_tools_namespace_assembled(worker: ThreadWorker, runtime: Runtime) -> None:
+    repl = _make_repl(worker, runtime, [_stub_extension([])], _MemoryBackend())
     outcome = repl.eval_sync(
-        'const { swarm } = await import("swarm");'
-        ' let caught = "";'
-        ' try { await swarm("oops") } catch (e) { caught = "errored" }'
-        " caught"
+        "[typeof tools.swarmTask, typeof tools.glob, typeof tools.readFile,"
+        " typeof tools.writeFile, typeof tools.editFile].join(',')"
+    )
+    assert outcome.result == "function,function,function,function,function"
+
+
+def test_create_then_rows_roundtrip(worker: ThreadWorker, runtime: Runtime) -> None:
+    # create({tasks}) persists a table via writeFile; rows() reads it back.
+    # Exercises the real scripts + the backend-backed host adapters.
+    backend = _MemoryBackend()
+    repl = _make_repl(worker, runtime, [_stub_extension([])], backend)
+    outcome = repl.eval_sync(
+        'const { create, rows } = await import("swarm");'
+        " const table = await create({ tasks: ["
+        '   { id: "a", text: "first" },'
+        '   { id: "b", text: "second" },'
+        " ] });"
+        " const r = await rows(table.id);"
+        " r.length"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "2"
+    # The table was persisted through the backend.
+    assert backend.files, "expected the table to be written to the backend"
+
+
+def test_glob_returns_json_paths(worker: ThreadWorker, runtime: Runtime) -> None:
+    backend = _MemoryBackend()
+    backend.files["/a.txt"] = "x"
+    backend.files["/b.txt"] = "y"
+    repl = _make_repl(worker, runtime, [_stub_extension([])], backend)
+    # The script JSON.parses glob output; assert our adapter returns valid JSON.
+    outcome = repl.eval_sync(
+        'const raw = await tools.glob({ pattern: "*.txt" });'
+        " JSON.parse(raw).map(e => e.path).sort().join(',')"
+    )
+    assert outcome.result == "/a.txt,/b.txt"
+
+
+def test_file_op_without_backend_errors(worker: ThreadWorker, runtime: Runtime) -> None:
+    # No backend configured: a file-op host call surfaces a catchable error.
+    repl = _make_repl(worker, runtime, [_stub_extension([])], backend=None)
+    outcome = repl.eval_sync(
+        ' let msg = "";'
+        ' try { await tools.glob({ pattern: "*" }) }'
+        ' catch (e) { msg = "errored" }'
+        " msg"
     )
     assert outcome.error_type is None
     assert outcome.result == "errored"
+
+
+# ---------------------------------------------------------------------------
+# Extension shape / factory
+# ---------------------------------------------------------------------------
 
 
 def test_system_prompt_present() -> None:
@@ -144,8 +207,6 @@ def test_extension_validates_as_a_hook_impl() -> None:
 
 
 def test_factory_builds_extension() -> None:
-    # The public factory wires a real dispatch closure (no model call here,
-    # just construction) and produces a valid extension.
     ext = swarm(default_model="openai:gpt-4o-mini")
     assert isinstance(ext, SwarmExtension)
     assert has_on_setup(ext) is True

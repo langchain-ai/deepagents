@@ -1,14 +1,16 @@
 """Swarm as an interpreter extension.
 
-A first-party ``InterpreterExtension`` that makes swarm dispatch importable
-from guest JS as ``import { swarm } from "swarm"`` — without going through
-PTC. The extension registers the swarm dispatch closure as a host function,
-ships a tiny JS module that forwards to it, and contributes a system-prompt
-fragment so the agent knows to reach for it.
+A first-party ``InterpreterExtension`` that makes the swarm table API
+importable from guest JS as ``import { create, run, rows } from "swarm"`` —
+without the consumer wiring up any PTC tools.
 
-This is the deterministic-capability counterpart to ``create_swarm_task_tool``
-(which targets the PTC path): same dispatch logic via ``build_swarm_dispatch``,
-delivered as an always-available extension instead of a PTC tool.
+The bundled swarm scripts (vendored from ``langchain-ai/langchain-skills``,
+``config/skills/swarm``) read five functions off ``globalThis.tools``:
+``swarmTask`` (subagent dispatch) and ``glob`` / ``readFile`` / ``writeFile``
+/ ``editFile`` (table persistence). This extension registers those as host
+functions — dispatch via the shared ``build_swarm_dispatch`` closure, file
+ops via ``ctx.backend`` — and assembles the ``tools`` namespace the scripts
+expect, then installs the scripts as the ``swarm`` module.
 
 Usage:
 
@@ -16,87 +18,180 @@ Usage:
 
     CodeInterpreterMiddleware(
         extensions=[swarm(subagents=[screener, classifier], default_model=model)],
+        backend=store_backend,  # required for table persistence (glob/read/write)
     )
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from quickjs_rs import ModuleScope
-
+from langchain_quickjs._swarm_scripts import swarm_module_scope
 from langchain_quickjs._swarm_task import build_swarm_dispatch
 
 if TYPE_CHECKING:
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.language_models import BaseChatModel
 
     from langchain_quickjs._extensions import ExtensionContext
     from langchain_quickjs._swarm_task import SwarmDispatch, SwarmSubAgent
 
-# Host symbol the JS module forwards to. Extension-owned, distinctive
-# prefix so it doesn't collide with another extension's globals.
-_DISPATCH_SYMBOL = "__swarm_dispatch"
+# Host symbols are extension-owned, distinctively prefixed so they don't
+# collide with another extension's globals. The setup eval below wires them
+# onto `globalThis.tools` under the camelCase names the scripts read.
+_DISPATCH_SYMBOL = "__swarm_tools_swarmTask"
+_GLOB_SYMBOL = "__swarm_tools_glob"
+_READ_SYMBOL = "__swarm_tools_readFile"
+_WRITE_SYMBOL = "__swarm_tools_writeFile"
+_EDIT_SYMBOL = "__swarm_tools_editFile"
 
-# The guest-facing module. A thin async wrapper around the host symbol —
-# the symbol name is fixed source, never interpolated from guest input.
-_SWARM_MODULE_SOURCE = """\
-export async function swarm(opts) {
-  return await __swarm_dispatch(opts);
-}
+# Merge onto any existing `globalThis.tools` (PTC may have installed some)
+# rather than clobbering it. Host symbols are fixed identifiers — never
+# interpolated from guest input.
+_TOOLS_SETUP = f"""\
+globalThis.tools = Object.assign(globalThis.tools || {{}}, {{
+  swarmTask: {_DISPATCH_SYMBOL},
+  glob: {_GLOB_SYMBOL},
+  readFile: {_READ_SYMBOL},
+  writeFile: {_WRITE_SYMBOL},
+  editFile: {_EDIT_SYMBOL},
+}}); undefined
 """
 
 _SYSTEM_PROMPT = """\
 ## swarm
 
-`swarm` dispatches a task to a subagent from inside the code interpreter.
-Import and call it from an `eval`:
+Process many independent items in parallel from inside the code interpreter.
+`create` builds a table handle, `run` fans work out across rows to subagents
+and merges results back, and `rows` reads them for aggregation.
 
 ```js
-import { swarm } from "swarm";
-const result = await swarm({
-  description: "Triage this trace",
-  subagentType: "screener",   // omit for mode "invoke"
-  mode: "agent",              // "agent" (default) or "invoke"
-});
+import { create, run, rows } from "swarm";
+const table = await create({ tasks: records });
+const stats = await run(table, { instruction: "Triage {text}" });
+const all = await rows(table);
 ```
 
-Use it to fan work out to subagents in code (loops, `Promise.all`) rather
-than one task at a time.
+One row = one unit of work; swarm batches automatically. Use it instead of
+dispatching tasks one at a time.
 """
+
+
+def _require_dict(payload: Any, call: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        msg = f"{call} expects an options object"
+        raise TypeError(msg)
+    return payload
+
+
+def _require_str(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        msg = f"swarm host call: {key!r} must be a string"
+        raise TypeError(msg)
+    return value
+
+
+def _register_swarm_host_functions(  # noqa: C901 — flat registration of 5 adapters
+    ctx: ExtensionContext, dispatch: SwarmDispatch
+) -> None:
+    """Register the five host functions the swarm scripts read off `tools`.
+
+    Dispatch goes to ``dispatch``; file ops go through ``ctx.backend`` (which
+    raises a clear error if no backend is configured). All guest payloads are
+    validated as dicts with the expected string keys before use.
+    """
+
+    def _backend() -> BackendProtocol:
+        backend = ctx.backend
+        if backend is None:
+            msg = (
+                "swarm table persistence requires a backend; pass "
+                "`backend=` (or `skills_backend=`) to CodeInterpreterMiddleware"
+            )
+            raise RuntimeError(msg)
+        return backend
+
+    @ctx.function(name=_DISPATCH_SYMBOL)
+    async def _swarm_task(payload: Any = None) -> str:
+        # Scripts call with snake_case args (subagent_type, etc.).
+        args = _require_dict(payload, "swarmTask")
+        return await dispatch(
+            args.get("description"),
+            args.get("subagent_type"),
+            args.get("response_schema"),
+            args.get("mode"),
+        )
+
+    @ctx.function(name=_GLOB_SYMBOL)
+    async def _glob(payload: Any = None) -> str:
+        args = _require_dict(payload, "glob")
+        result = await _backend().aglob(_require_str(args, "pattern"))
+        if result.error:
+            raise RuntimeError(result.error)
+        # The script JSON.parses this and reads `.path` off each entry.
+        return json.dumps([dict(m) for m in (result.matches or [])])
+
+    @ctx.function(name=_READ_SYMBOL)
+    async def _read_file(payload: Any = None) -> str:
+        args = _require_dict(payload, "readFile")
+        offset = args.get("offset", 0)
+        limit = args.get("limit", 2000)
+        result = await _backend().aread(
+            _require_str(args, "file_path"),
+            offset if isinstance(offset, int) else 0,
+            limit if isinstance(limit, int) else 2000,
+        )
+        if result.error:
+            raise RuntimeError(result.error)
+        return result.file_data["content"] if result.file_data else ""
+
+    @ctx.function(name=_WRITE_SYMBOL)
+    async def _write_file(payload: Any = None) -> str:
+        args = _require_dict(payload, "writeFile")
+        result = await _backend().awrite(
+            _require_str(args, "file_path"), _require_str(args, "content")
+        )
+        # The script checks for "already exists" in the returned string and
+        # falls back to editFile, so surface the error verbatim, don't raise.
+        if result.error:
+            return result.error
+        return result.path or ""
+
+    @ctx.function(name=_EDIT_SYMBOL)
+    async def _edit_file(payload: Any = None) -> str:
+        args = _require_dict(payload, "editFile")
+        result = await _backend().aedit(
+            _require_str(args, "file_path"),
+            _require_str(args, "old_string"),
+            _require_str(args, "new_string"),
+        )
+        if result.error:
+            raise RuntimeError(result.error)
+        return result.path or ""
 
 
 @dataclass(frozen=True)
 class SwarmExtension:
-    """Interpreter extension exposing swarm dispatch to guest JS.
+    """Interpreter extension exposing the swarm table API to guest JS.
 
     Construct via the :func:`swarm` factory. ``on_setup`` registers the
-    dispatch host function and the ``swarm`` module on every fresh context.
+    dispatch + file-op host functions, assembles ``globalThis.tools``, and
+    installs the swarm scripts as the ``swarm`` module — on every fresh
+    context.
     """
 
     dispatch: SwarmDispatch
     system_prompt: str | None = _SYSTEM_PROMPT
 
     def on_setup(self, ctx: ExtensionContext) -> None:
-        dispatch = self.dispatch
-
-        @ctx.function(name=_DISPATCH_SYMBOL)
-        async def _swarm_dispatch(payload: Any = None) -> str:
-            # Guest payload is untrusted: require a dict and pull only the
-            # known keys. camelCase from JS maps to snake_case kwargs.
-            if not isinstance(payload, dict):
-                msg = "swarm() expects an options object"
-                raise TypeError(msg)
-            return await dispatch(
-                payload.get("description"),
-                payload.get("subagentType"),
-                payload.get("responseSchema"),
-                payload.get("mode"),
-            )
-
-        ctx.module(
-            ModuleScope({"swarm": ModuleScope({"index.js": _SWARM_MODULE_SOURCE})})
-        )
+        _register_swarm_host_functions(ctx, self.dispatch)
+        # Wire the host symbols onto globalThis.tools, then install the
+        # scripts. Order matters: the eval references the symbols above.
+        ctx.eval(_TOOLS_SETUP)
+        ctx.module(swarm_module_scope())
 
 
 def swarm(
@@ -106,10 +201,10 @@ def swarm(
 ) -> SwarmExtension:
     """Build a swarm interpreter extension.
 
-    The returned extension makes ``import { swarm } from "swarm"`` available
-    in the code interpreter, dispatching to subagents via the same logic as
-    ``create_swarm_task_tool`` — but as an always-available extension rather
-    than a PTC tool.
+    Makes ``import { create, run, rows } from "swarm"`` available in the code
+    interpreter. Table persistence (glob/read/write) requires a backend on
+    the middleware (``backend=`` or ``skills_backend=``); pure ``invoke``-mode
+    dispatch via ``swarmTask`` does not.
 
     Args:
         subagents: Subagent specifications for dispatch targets.
@@ -117,7 +212,7 @@ def swarm(
             for ``invoke`` mode direct calls.
 
     Returns:
-        A ``SwarmExtension`` to pass to ``CodeInterpreterMiddleware(extensions=...)``.
+        A ``SwarmExtension`` for ``CodeInterpreterMiddleware(extensions=...)``.
     """
     dispatch = build_swarm_dispatch(subagents=subagents, default_model=default_model)
     return SwarmExtension(dispatch=dispatch)

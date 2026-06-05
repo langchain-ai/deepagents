@@ -44,10 +44,10 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+        - label: code
         - label: acp
         - label: evals
         - label: harbor
-        - label: repl
         - label: daytona
         - label: modal
         - label: quickjs

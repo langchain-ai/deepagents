@@ -1,4 +1,8 @@
+import logging
+import shutil
+import subprocess
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -6,6 +10,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
+from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -56,6 +61,25 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     # glob
     g = be.glob("*.py", path=str(root)).matches
     assert any(i["path"] == str(f2) for i in g)
+
+
+def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    in_root = root / "dir" / "inside.py"
+    outside_root = tmp_path / "outside.py"
+    write_file(in_root, "print('inside')")
+    write_file(outside_root, "print('outside')")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    omitted = be.glob("**/*.py").matches or []
+    explicit_root = be.glob("**/*.py", path="/").matches or []
+
+    omitted_paths = {info["path"] for info in omitted}
+    explicit_root_paths = {info["path"] for info in explicit_root}
+    assert omitted_paths == explicit_root_paths
+    assert str(in_root) in omitted_paths
+    assert str(outside_root) not in omitted_paths
 
 
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -147,7 +171,8 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert len(utils_paths) == 2
 
     empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    assert empty_listing.entries is None
+    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
@@ -212,7 +237,8 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
     empty = be.ls("/nonexistent/")
-    assert empty.entries == []
+    assert empty.entries is None
+    assert empty.error == "Path '/nonexistent/': path_not_found"
 
 
 def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
@@ -559,6 +585,355 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732.
+
+    ripgrep `--glob` patterns with a directory component (e.g. `docs/*.md`)
+    must still match when the process cwd differs from the search root.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    root = tmp_path / "project"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "guide.md").write_text("hello world\n")
+    (root / "notes.md").write_text("hello world\n")
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    matches = be.grep("hello", path=str(root), glob="docs/*.md").matches
+    assert matches is not None
+    matched_paths = [m["path"] for m in matches]
+    assert any(p.endswith("docs/guide.md") for p in matched_paths), f"expected docs/guide.md in {matched_paths}"
+    assert not any(p.endswith("notes.md") for p in matched_paths), f"glob should have excluded notes.md but matched {matched_paths}"
+
+
+def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732, virtual mode variant.
+
+    Exercises the relative-path re-anchoring through `_to_virtual_path` so a
+    regression in path handling can't silently drop results.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    root = tmp_path / "project"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "guide.md").write_text("hello world\n")
+    (root / "notes.md").write_text("hello world\n")
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    matches = be.grep("hello", path="/", glob="docs/*.md").matches
+    assert matches is not None
+    matched_paths = [m["path"] for m in matches]
+    assert any(p == "/docs/guide.md" for p in matched_paths), f"expected /docs/guide.md in {matched_paths}"
+    assert not any("notes" in p for p in matched_paths), f"glob should have excluded notes.md but matched {matched_paths}"
+
+
+def test_grep_on_single_file_path(tmp_path: Path) -> None:
+    """Regression test: grep with `path` pointing at a single file must not crash.
+
+    Before #2732's fix, ripgrep was given the file path directly. Naively
+    threading `cwd=base_full` would raise NotADirectoryError for file paths.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    target = tmp_path / "single.txt"
+    target.write_text("hello single\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(target))
+    assert result.error is None, f"unexpected error: {result.error}"
+    assert result.matches is not None
+    assert any(m["path"].endswith("single.txt") for m in result.matches)
+
+
+def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732: result paths must keep symlink form.
+
+    Pre-fix, ripgrep emitted absolute paths exactly as it crawled them — no
+    `.resolve()` was applied — so users saw the symlinked path they searched
+    under. The fix must preserve that behavior.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "target.txt").write_text("hello symlink\n")
+
+    root = tmp_path / "project"
+    root.mkdir()
+    link = root / "via_link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support directory symlinks")
+
+    monkeypatch.chdir(tmp_path)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.grep("hello", path=str(link))
+    assert result.error is None
+    assert result.matches is not None
+    matched = [m["path"] for m in result.matches]
+    assert matched, "expected at least one match"
+    for p in matched:
+        assert str(link) in p, f"symlink form lost; got {p}"
+        assert str(real) not in p, f"path was resolved through the symlink; got {p}"
+
+
+def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: ripgrep results via symlinks that escape the root must be filtered.
+
+    A directory symlink inside `root` that points outside `root` gives ripgrep
+    access to files beyond the intended search boundary. The containment check
+    must drop those results so they never surface to callers.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("hello secret\n")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    escape = root / "escape"
+    try:
+        escape.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support directory symlinks")
+
+    monkeypatch.chdir(tmp_path)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.grep("hello", path=str(root))
+    matched = [m["path"] for m in (result.matches or [])]
+    assert not any("secret" in p for p in matched), f"containment check failed — escaping symlink leaked result: {matched}"
+
+
+_RG_MISSING_PREFIX = "ripgrep ('rg') not found on PATH"
+
+
+@pytest.fixture
+def _isolate_rg_cache() -> Iterator[None]:
+    """Clear the process-wide `rg` resolver cache around each test that touches it."""
+    fs_module._resolve_ripgrep_path.cache_clear()
+    yield
+    fs_module._resolve_ripgrep_path.cache_clear()
+
+
+class _FakeProc:
+    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_resolve_ripgrep_logs_once_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Missing `rg` should log an `INFO` message exactly once per process.
+
+    Operators investigating slow searches need at least one signal that the
+    Python fallback is in play.
+    """
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: None)
+
+    (tmp_path / "a.txt").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.INFO, logger=fs_module.logger.name):
+        be.grep("hello", path=str(tmp_path))
+        be.grep("hello", path=str(tmp_path))  # second call must not re-log
+
+    matching = [r for r in caplog.records if r.levelno == logging.INFO and r.getMessage().startswith(_RG_MISSING_PREFIX)]
+    assert len(matching) == 1, f"expected exactly one INFO log, got {len(matching)}: {[r.getMessage() for r in matching]}"
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cached absolute path is exec'd verbatim, alongside the expected flags."""
+    fake_rg = "/opt/fake/bin/rg"
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: fake_rg)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> _FakeProc:
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(fs_module.subprocess, "run", fake_run)
+
+    (tmp_path / "a.txt").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    be.grep("hello", path=str(tmp_path))
+
+    cmd = captured["cmd"]
+    assert cmd[0] == fake_rg
+    assert "--json" in cmd
+    assert "-F" in cmd
+    assert "hello" in cmd  # pattern made it through
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A `TimeoutExpired` from `subprocess.run` should emit a `WARNING`."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+
+    def timeout_run(cmd: list[str], **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd, timeout=30)
+
+    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+
+    (tmp_path / "a.txt").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        result = be.grep("hello", path=str(tmp_path))
+
+    assert any("timed out" in r.getMessage() for r in caplog.records), [r.getMessage() for r in caplog.records]
+    # Python fallback still ran, so the actual match should come through.
+    assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_exec_race_logs_warning_and_clears_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """`FileNotFoundError` at exec (post-`which` race) warns with detail and re-probes next call."""
+    which_calls = {"n": 0}
+
+    def counting_which(_name: str) -> str | None:
+        which_calls["n"] += 1
+        return "/usr/bin/rg"
+
+    monkeypatch.setattr(fs_module.shutil, "which", counting_which)
+
+    def missing_run(cmd: list[str], **_kwargs: object) -> object:
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr(fs_module.subprocess, "run", missing_run)
+
+    (tmp_path / "a.txt").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        be.grep("hello", path=str(tmp_path))
+        be.grep("hello", path=str(tmp_path))
+
+    failure_msgs = [r.getMessage() for r in caplog.records if "ripgrep subprocess failed" in r.getMessage()]
+    assert failure_msgs
+    assert "FileNotFoundError" in failure_msgs[0]
+    assert "No such file or directory" in failure_msgs[0]  # str(e) carried through
+    assert which_calls["n"] >= 2, "cache should have been cleared so `which` re-runs"
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_nonzero_returncode_falls_back_with_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hard ripgrep error (rc=2) must not be silently parsed as 'no matches'.
+
+    Without this guard, malformed globs or unreadable directories produce an
+    empty result set and the agent confidently reports no matches.
+    """
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+
+    def erroring_run(_cmd: list[str], **_kwargs: object) -> _FakeProc:
+        return _FakeProc(stdout="", stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
+
+    monkeypatch.setattr(fs_module.subprocess, "run", erroring_run)
+
+    (tmp_path / "a.txt").write_text("hello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        result = be.grep("hello", path=str(tmp_path))
+
+    msgs = [r.getMessage() for r in caplog.records if "ripgrep exited 2" in r.getMessage()]
+    assert msgs, [r.getMessage() for r in caplog.records]
+    assert "error parsing glob" in msgs[0]
+    # Python fallback ran and still returned the real match.
+    assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
+
+
+def _install_flaky_rglob(monkeypatch: pytest.MonkeyPatch, exc: Exception, after_yields: int = 1) -> None:
+    """Replace `Path.rglob` with a generator that yields N entries then raises."""
+    real_rglob = Path.rglob
+
+    def flaky_rglob(self: Path, pattern: str):
+        for idx, entry in enumerate(sorted(real_rglob(self, pattern)), start=1):
+            yield entry
+            if idx >= after_yields:
+                raise exc
+
+    monkeypatch.setattr(Path, "rglob", flaky_rglob)
+
+
+@pytest.mark.parametrize("virtual_mode", [False, True])
+def test_grep_python_fallback_survives_mid_iteration_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, virtual_mode: bool) -> None:
+    """Python grep fallback returns accumulated matches when `rglob` aborts mid-walk.
+
+    `Path.rglob` can raise `FileNotFoundError` (or other `OSError` subclasses)
+    when a directory entry is unlinked or renamed while the walk is in
+    progress. The fallback must surface a partial result rather than letting
+    the exception escape and fail the whole tool invocation.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "first.txt").write_text("hello world\n")
+    (root / "second.txt").write_text("hello world\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=virtual_mode)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, FileNotFoundError("simulated mid-walk unlink"))
+
+    grep_path = "/" if virtual_mode else str(root)
+    result = be.grep("hello", path=grep_path)
+
+    assert result.matches is not None
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert str(root) in result.error if not virtual_mode else True
+
+    matched_paths = {m["path"] for m in result.matches}
+    if virtual_mode:
+        assert "/first.txt" in matched_paths
+        assert "/second.txt" not in matched_paths
+    else:
+        assert any(p.endswith("first.txt") for p in matched_paths)
+        assert not any(p.endswith("second.txt") for p in matched_paths)
+
+
+def test_grep_python_fallback_survives_runtime_error_mid_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`RuntimeError` from `rglob` (e.g. symlink-loop detection) is also recoverable."""
+    root = tmp_path
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, RuntimeError("symlink loop"))
+
+    result = be.grep("hello", path=str(root))
+
+    assert result.error is not None
+    assert "symlink loop" in result.error
+    assert result.matches
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 
@@ -628,6 +1003,35 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
 
 
+class TestGrepPythonFallbackTimeout:
+    """Tests for the wall-clock timeout on the Python grep fallback."""
+
+    def test_python_search_times_out_with_zero_timeout(self, tmp_path: Path) -> None:
+        """`_python_search` returns a `timed out` partial error when the deadline is exceeded."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
+        assert partial_error is not None
+        assert "timed out" in partial_error
+
+    def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`grep` surfaces the timeout as a partial error while still returning matches found so far."""
+        (tmp_path / "file.txt").write_text("hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            be,
+            "_python_search",
+            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, "Grep of '/' timed out after 0s with 1 matching file(s)"),
+        )
+        result = be.grep("hello", path="/")
+        assert result.error is not None
+        assert "timed out" in result.error
+        # Partial matches collected before the timeout are preserved.
+        assert result.matches
+        assert result.matches[0]["path"] == "/file.txt"
+
+
 class TestEditCrlfNormalization:
     """Tests for CRLF normalization in edit(). See #2247."""
 
@@ -692,6 +1096,38 @@ class TestEditCrlfNormalization:
         assert "Human: next" in final
 
 
+def test_ls_nonexistent_path_sets_error(tmp_path: Path) -> None:
+    """Ls on a missing path must surface the failure on .error, not return []."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/missing/")
+
+    assert result.entries is None
+    assert result.error == "Path '/missing/': path_not_found"
+
+
+def test_ls_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
+    """Ls on a file path must surface not_a_directory on .error."""
+    write_file(tmp_path / "file.txt", "content")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/file.txt")
+
+    assert result.entries is None
+    assert result.error == "Path '/file.txt': not_a_directory"
+
+
+def test_ls_empty_directory_returns_empty_entries(tmp_path: Path) -> None:
+    """Ls on an empty directory returns success with an empty entries list."""
+    (tmp_path / "empty").mkdir()
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    result = be.ls("/empty/")
+
+    assert result.error is None
+    assert result.entries == []
+
+
 def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     """A resolver failure in `ls` should not escape the backend boundary."""
     make_symlink_loop(tmp_path / "loop")
@@ -699,7 +1135,7 @@ def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     result = be.ls("loop")
 
-    assert result.entries == []
+    assert result.entries is None
     assert result.error is not None
     assert "Cannot list 'loop'" in result.error
 

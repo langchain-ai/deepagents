@@ -7,21 +7,11 @@ This repository is structured as a monorepo, with various packages located in th
 
 ```txt
 deepagents/          # Core SDK — create_deep_agent, middleware, backends
-cli/                 # Interactive terminal interface (Textual TUI)
 acp/                 # Agent Client Protocol integration
 evals/               # Evaluation suite and Harbor integration
-harbor/              # (legacy — see evals/)
-partners/            # Sandbox provider integrations (see below)
+code/                # Coding agent with interactive terminal interface (Textual TUI)
+cli/                 # Deployment CLI
+partners/            # Provider integrations
 ```
 
 (Each package contains its own `README.md` file with specific details about that package.)
-
-## Sandbox integrations (`partners/`)
-
-The `partners/` directory contains sandbox provider integrations:
-
-* [AgentCore](https://pypi.org/project/langchain-agentcore-codeinterpreter/)
-* [Daytona](https://pypi.org/project/langchain-daytona/)
-* [Modal](https://pypi.org/project/langchain-modal/)
-* [QuickJS](https://pypi.org/project/langchain-quickjs/)
-* [Runloop](https://pypi.org/project/langchain-runloop/)

@@ -10,12 +10,13 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
@@ -326,6 +327,168 @@ class TestSubAgents:
         assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
+
+    def test_private_state_does_not_propagate_between_sibling_subagents(self) -> None:
+        """A private state field should not propagate from one sibling subagent to another."""
+
+        class _LocalPrivateState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        class _LocalPrivateMiddleware(AgentMiddleware[_LocalPrivateState, Any, Any]):
+            state_schema = _LocalPrivateState
+
+            def before_agent(self, state: _LocalPrivateState, runtime: object) -> dict[str, Any] | None:
+                if "shared_value" in state:
+                    return None
+                return {"shared_value": "seeded"}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Seed the interpreter state",
+                                    "subagent_type": "writer",
+                                },
+                                "id": "call_writer",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Read the interpreter state",
+                                    "subagent_type": "reader",
+                                },
+                                "id": "call_reader",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        writer_model = GenericFakeChatModel(messages=iter([AIMessage(content="writer saw seeded")]))
+        reader_model = GenericFakeChatModel(messages=iter([AIMessage(content="reader saw missing")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="writer",
+                    description="Writes state.",
+                    system_prompt="Write the seeded private state value and report completion.",
+                    model=writer_model,
+                    middleware=[_LocalPrivateMiddleware()],
+                ),
+                SubAgent(
+                    name="reader",
+                    description="Reads state.",
+                    system_prompt="Read the private state value and report what you received.",
+                    model=reader_model,
+                ),
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="run the two subagents")]},
+            config={"configurable": {"thread_id": "test_shared_quickjs_subagents"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        assert "seeded" in tool_messages[0].content
+        assert "missing" in tool_messages[1].content
+
+    def test_private_state_does_not_propagate_from_parent_to_subagent(self) -> None:
+        """A private state field on the parent should not be visible to a child subagent."""
+
+        class _ParentPrivateState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        class _ChildCaptureState(AgentState):
+            shared_value: Annotated[str | None, PrivateStateAttr]
+
+        captured_child_states: list[dict[str, Any]] = []
+
+        class _ChildCaptureMiddleware(AgentMiddleware[_ChildCaptureState, Any, Any]):
+            state_schema = _ChildCaptureState
+
+            def before_agent(self, state: _ChildCaptureState, runtime: object) -> dict[str, Any] | None:
+                captured_child_states.append(dict(state))
+                return None
+
+        class _ParentSeedMiddleware(AgentMiddleware[_ParentPrivateState, Any, Any]):
+            state_schema = _ParentPrivateState
+
+            def before_agent(self, state: _ParentPrivateState, runtime: object) -> dict[str, Any] | None:
+                if "shared_value" in state:
+                    return None
+                return {"shared_value": "parent-secret"}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Run the child subagent",
+                                    "subagent_type": "child",
+                                },
+                                "id": "call_child",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        child_model = GenericFakeChatModel(messages=iter([AIMessage(content="child done")]))
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            middleware=[_ParentSeedMiddleware()],
+            subagents=[
+                SubAgent(
+                    name="child",
+                    description="Captures its incoming state.",
+                    system_prompt="Capture the incoming state and complete the task.",
+                    model=child_model,
+                    middleware=[_ChildCaptureMiddleware()],
+                ),
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="run the child subagent")]},
+            config={
+                "configurable": {"thread_id": "test_private_state_parent_to_child"},
+                "metadata": {"shared_value": "parent-secret"},
+            },
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert "child done" in tool_messages[0].content
+        assert captured_child_states, "Child subagent should have received state"
+        assert "shared_value" not in captured_child_states[0]
 
     def test_agent_with_structured_output_tool_strategy(self) -> None:
         """Test that an agent with ToolStrategy properly generates structured output.
@@ -691,6 +854,104 @@ class TestSubAgents:
         # CompiledSubAgent.name takes precedence over the name set in create_agent()
         # so that lc_agent_name in streamed chunks reflects the declared subagent name.
         assert captured_config["metadata"]["lc_agent_name"] == "general-purpose"
+
+    def test_subagent_inherits_parent_user_metadata(self) -> None:
+        """User metadata set on the parent invoke reaches subagent runs (deepagents#3634).
+
+        `langgraph`'s `ensure_config` seeds each run's metadata from the ambient
+        parent config and merges it per-key (langgraph#7926). A user key like
+        `customer_id` therefore propagates into subagent runs, while the
+        subagent's bound `lc_agent_name` wins the key collision and is preserved.
+
+        Requires a `langgraph` that includes langgraph#7926's merge semantics;
+        with the older overwrite behaviour the parent metadata is dropped.
+        """
+        captured_config: Any = None
+
+        @tool
+        def capture_metadata(runtime: ToolRuntime) -> str:
+            """Capture the runtime config from inside the subagent."""
+            nonlocal captured_config
+            captured_config = runtime.config
+            return "OK"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Capture metadata and report it.",
+                                    "subagent_type": "general-purpose",
+                                },
+                                "id": "call_subagent_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The subagent finished successfully."),
+                ]
+            )
+        )
+
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_metadata",
+                                "args": {},
+                                "id": "call_capture_metadata",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(
+            model=subagent_chat_model,
+            tools=[capture_metadata],
+            name="subagent-runtime-check",
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="general-purpose",
+                    description="A general-purpose agent for various tasks.",
+                    runnable=compiled_subagent,
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Run the metadata check.")]},
+            config={
+                "configurable": {"thread_id": str(uuid.uuid4())},
+                # `lc_agent_name` collides with the subagent's bound identity (it
+                # must keep its own value); `customer_id` is a non-colliding user
+                # key that must survive the merge into the subagent's runs.
+                "metadata": {"customer_id": "abc-123", "lc_agent_name": "parent-agent"},
+            },
+            durability="exit",
+        )
+
+        assert captured_config is not None
+        subagent_metadata = captured_config["metadata"]
+        # User-set parent metadata propagated into the subagent run.
+        assert subagent_metadata["customer_id"] == "abc-123"
+        # The subagent's bound identity won the `lc_agent_name` collision.
+        assert subagent_metadata["lc_agent_name"] == "general-purpose"
 
     def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
         interrupt_payloads: list[Any] = []
@@ -1366,6 +1627,66 @@ class TestSubAgents:
         assert len(tool_messages) == 1
         task_tool_message = tool_messages[0]
         assert task_tool_message.content == "Plain text result without structured response"
+
+    def test_fallback_skips_trailing_empty_ai_message(self) -> None:
+        """Skip a trailing empty AIMessage and use the last AIMessage with text.
+
+        Anthropic/Bedrock occasionally emits an empty `end_turn` AIMessage after
+        a successful final tool call. The middleware should walk back to the
+        prior AIMessage carrying the real answer instead of forwarding an empty
+        ToolMessage.
+        """
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [
+                    AIMessage(content="The real answer from the subagent."),
+                    AIMessage(content=""),
+                ],
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_trailing_empty",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="A worker agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Test")]},
+            config={"configurable": {"thread_id": f"test-trailing-empty-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "The real answer from the subagent."
 
     def test_subagent_streaming_emits_messages_and_updates_from_subgraph(self) -> None:
         """Test end-to-end subagent streaming with `subgraphs=True`.
@@ -2485,7 +2806,7 @@ class TestSubAgents:
         assert tool_messages[0].content == "Override response."
 
     def test_ls_agent_type_is_trace_only_metadata(self) -> None:
-        """``ls_agent_type`` must reach LangSmith but not streamed callback metadata.
+        """`ls_agent_type` must reach LangSmith but not streamed callback metadata.
 
         The task tool wraps each subagent invocation in a langsmith
         `tracing_context` with `metadata={"ls_agent_type": "subagent"}` so
@@ -2552,7 +2873,6 @@ class TestSubAgents:
                     description="A test worker subagent.",
                     system_prompt="You are a test worker.",
                     model=subagent_model,
-                    tools=[],
                 )
             ],
         )
@@ -2656,7 +2976,6 @@ class TestSubAgents:
                     description="A test worker subagent.",
                     system_prompt="You are a test worker.",
                     model=subagent_model,
-                    tools=[],
                 )
             ],
         )

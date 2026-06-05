@@ -240,7 +240,7 @@ class TestModelMatchesSpec:
 
     def test_bare_spec_without_colon_no_false_positive(self) -> None:
         model = _make_model({"model_name": "gpt-5"})
-        assert model_matches_spec(model, "gpt-4o") is False
+        assert model_matches_spec(model, "gpt-5.5") is False
 
 
 class TestCheckOpenRouterVersion:

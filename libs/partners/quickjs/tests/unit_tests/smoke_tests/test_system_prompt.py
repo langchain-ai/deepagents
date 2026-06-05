@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -106,10 +108,22 @@ def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
-    return "\n".join(
+    return "".join(
         str(part.get("text", "")) if isinstance(part, dict) else str(part)
         for part in content
     )
+
+
+# Insert a blank line after a `##` heading when the next line is non-blank.
+# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
+# blank line; the fix is on `langchain` `main` and will land in the next
+# release. Drop this normalization once we pin a `langchain` version that
+# includes it.
+_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
+
+
+def _normalize_heading_blanks(text: str) -> str:
+    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
 
 
 def _assert_snapshot(
@@ -123,7 +137,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert actual == expected
+    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:
@@ -145,26 +159,51 @@ def _capture_system_prompt(model: _SmokeChatModel) -> str:
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
     assert len(system_messages) >= 1
-    return _system_message_as_text(system_messages[0])
+    return _system_message_as_text(system_messages[0]).rstrip("\n") + "\n"
 
 
+def _snapshot_name_for_mode(
+    *, base: str, mode: Literal["thread", "turn", "call"]
+) -> str:
+    if mode == "thread":
+        return f"{base}.md"
+    return f"{base}_{mode}.md"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_no_tools(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[CodeInterpreterMiddleware()],
+        middleware=[CodeInterpreterMiddleware(mode=mode)],
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
 
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_no_tools.md"
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_no_tools",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_with_mixed_foreign_functions(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
     mixed_tools = [
         find_users_by_name,
@@ -176,11 +215,14 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools)],
+        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools, mode=mode)],
         tools=mixed_tools,
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
 
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_mixed_foreign_functions.md"
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_mixed_foreign_functions",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)

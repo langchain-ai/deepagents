@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -16,9 +16,10 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
+from langgraph.channels.delta import DeltaChannel
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -30,11 +31,14 @@ from deepagents._excluded_middleware import (
     _validate_excluded_middleware_config,
     _verify_excluded_middleware_coverage,
 )
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -55,6 +59,13 @@ from deepagents.profiles.harness.harness_profiles import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class DeepAgentState(AgentState):
+    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+
+    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -83,6 +94,7 @@ When the user asks you to do something:
 Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
 
 **When things go wrong:**
+
 - If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
 - If you're blocked, tell the user what's wrong and ask for guidance.
 
@@ -173,6 +185,24 @@ def get_default_model() -> ChatAnthropic:
     return _build_default_model()
 
 
+def _merge_fs_interrupt_on(
+    fs_interrupt_on: dict[str, InterruptOnConfig],
+    user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+) -> dict[str, bool | InterruptOnConfig] | None:
+    """Merge fs-permission-derived configs with user-supplied `interrupt_on`.
+
+    User-supplied entries override generated ones per tool name. Returns
+    `None` when both inputs are empty so callers can skip installing
+    `HumanInTheLoopMiddleware`.
+    """
+    if not fs_interrupt_on and not user_interrupt_on:
+        return None
+    merged: dict[str, bool | InterruptOnConfig] = {**fs_interrupt_on}
+    if user_interrupt_on:
+        merged.update(user_interrupt_on)
+    return merged
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
@@ -216,6 +246,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
+    state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -307,9 +338,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
                 [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
                 — are available)
-            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 
@@ -390,6 +421,18 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.
 
+            Each rule's ``mode`` can be:
+
+            - ``"allow"`` (default): the call proceeds.
+            - ``"deny"``: the tool returns a permission-denied error.
+            - ``"interrupt"``: the call pauses for human approval via
+              `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
+              auto-installed when any interrupt-mode rule is present, and the
+              generated `interrupt_on` entries are merged with the
+              `interrupt_on` argument below (user-supplied entries win per
+              tool name). Requires a `langchain` version that supports the
+              ``when`` predicate on `InterruptOnConfig`.
+
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
 
@@ -426,6 +469,41 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
         response_format: A structured output response format to use for the agent.
+        state_schema: Custom state schema for the agent graph. Must be a
+            `TypedDict` subclass of
+            [`DeepAgentState`][deepagents.graph.DeepAgentState] so the
+            built-in `DeltaChannel` reducer on `messages` is preserved.
+
+            Generally, prefer defining state extensions with middleware so
+            the extra fields stay scoped to the hooks and tools that use
+            them.
+
+            When provided, this schema is used as the base graph schema and
+            is merged with state schemas contributed by middleware. It is
+            also forwarded when compiling declarative
+            [`SubAgent`][deepagents.middleware.subagents.SubAgent] specs for
+            the `task` tool, so subagents see the same custom fields as the
+            parent.
+
+            [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
+            runnables do not inherit this schema because they are already
+            compiled — compile those runnables with a compatible state
+            schema if they need access to the same custom state fields.
+            Remote
+            [`AsyncSubAgent`][deepagents.middleware.async_subagents.AsyncSubAgent]
+            specs likewise use the schema configured on the remote graph.
+
+            ```python
+            from deepagents.graph import DeepAgentState
+
+
+            class MyState(DeepAgentState):
+                page_url: str
+                file_urls: list[str]
+
+
+            agent = create_deep_agent(model=..., state_schema=MyState)
+            ```
         context_schema: Schema class that defines immutable run-scoped context.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -463,6 +541,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             distinct middleware classes, or matches no entry in the assembled
             stack.
     """
+    # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
+    # subclass constraint on `state_schema` is enforced by typing alone and not
+    # validated at runtime.
+
     _model_spec: str | None = model if isinstance(model, str) else None
 
     if model is None:
@@ -579,6 +661,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
+            subagent_interrupt_on = _merge_fs_interrupt_on(
+                _build_interrupt_on_from_permissions(subagent_permissions or []),
+                subagent_interrupt_on,
+            )
 
             # Inherit parent tools unless the subagent declares its own.
             # Descriptions are rewritten; exclusion is handled by middleware.
@@ -652,8 +738,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             general_purpose_spec["system_prompt"] = gp_prompt
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
-        if interrupt_on is not None:
-            general_purpose_spec["interrupt_on"] = interrupt_on
+        gp_interrupt_on = _merge_fs_interrupt_on(
+            _build_interrupt_on_from_permissions(permissions or []),
+            interrupt_on,
+        )
+        if gp_interrupt_on is not None:
+            general_purpose_spec["interrupt_on"] = gp_interrupt_on
 
         inline_subagents.insert(0, general_purpose_spec)
 
@@ -670,24 +760,31 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
+    sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
-        deepagent_middleware.append(
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-                task_description=_profile.tool_description_overrides.get("task"),
-            )
+        sub_agent_middleware = SubAgentMiddleware(
+            backend=backend,
+            subagents=inline_subagents,
+            # Overrides the task tool description. Value should include
+            # {available_agents} — a format placeholder replaced with the
+            # subagent name/description list. Without it the model can't
+            # see which subagents exist. None (default) uses the built-in
+            # template. Stale keys silently no-op if the tool is renamed.
+            task_description=_profile.tool_description_overrides.get("task"),
+            state_schema=state_schema,
         )
-    if async_subagents:
-        # Async here means that we run these subagents in a non-blocking manner.
-        # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+        deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
     )
+
+    if async_subagents:
+        # Async here means that we run these subagents in a non-blocking manner.
+        # Currently this supports agents deployed via LangSmith deployments.
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)
@@ -709,14 +806,21 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 add_cache_control=True,
             )
         )
-    if interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+    main_interrupt_on = _merge_fs_interrupt_on(
+        _build_interrupt_on_from_permissions(permissions or []),
+        interrupt_on,
+    )
+    if main_interrupt_on is not None:
+        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
+    if sub_agent_middleware is not None:
+        sub_agent_middleware.private_state_keys = private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale
@@ -749,6 +853,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
+        state_schema=state_schema if state_schema is not None else DeepAgentState,
     ).with_config(
         {
             "recursion_limit": 9_999,

@@ -156,7 +156,7 @@
 | DC1 | API Keys / Credentials | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGGRAPH_API_KEY` | Critical | Process environment only; never written to disk by CLI code | N/A (in-memory) | Process lifetime | All — breach trigger |
 | DC2 | Conversation Messages  | User prompts, LLM responses, tool args/results   | High        | SQLite (`~/.deepagents/*.db`) via LangGraph checkpointer | No (local file, unencrypted) | Unbounded (session files persist) | GDPR if personal data is discussed |
 | DC3 | System Prompt Content  | `DA_SERVER_SYSTEM_PROMPT` env var; custom AGENTS.md contents | Medium | Process environment (transient); `~/.deepagents/{agent}/AGENTS.md` on disk | No | Config lifetime | None direct |
-| DC4 | MCP Trust Fingerprints | `mcp_trust.projects.*` in `config.toml`          | Low         | `~/.deepagents/config.toml`      | No                | Until revoked      | None       |
+| DC4 | MCP Trust Fingerprints | `projects.*` in `mcp_trust.json`                 | Low         | `~/.deepagents/.state/mcp_trust.json` | No           | Until revoked      | None       |
 | DC5 | Offloaded Conversation History | Summarized + raw conversation messages written to sandbox backend | High | Sandbox filesystem at `/conversation_history/{thread_id}.md` | Depends on sandbox provider | Sandbox session lifetime | GDPR if personal data is discussed |
 
 ### Data Classification Details

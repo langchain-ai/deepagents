@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import wcmatch.glob as wcglob
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
@@ -240,18 +242,29 @@ class FilesystemBackend(BackendProtocol):
             path: Absolute directory path to list files from.
 
         Returns:
-            List of `FileInfo`-like dicts for files and directories directly in the
-                directory. Directories have a trailing `/` in their path and
-                `is_dir=True`.
+            `LsResult` with `entries` listing files and directories directly in the
+                directory on success.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
+
+                Missing paths set `error` to `Path '<path>': path_not_found`
+                with `entries=None`.
+
+                File paths set `error` to `Path '<path>': not_a_directory`
+                with `entries=None`.
+
+                Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)
-            if not dir_path.exists() or not dir_path.is_dir():
-                return LsResult(entries=[])
+            if not dir_path.exists():
+                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+            if not dir_path.is_dir():
+                return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=[])
+            return LsResult(error=msg, entries=None)
 
         results: list[FileInfo] = []
         errors: list[str] = []
@@ -618,12 +631,12 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=DEFAULT_GREP_TIMEOUT,
                 check=False,
                 cwd=rg_cwd,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("ripgrep timed out after 30s; using Python grep fallback")
+            logger.warning("ripgrep timed out after %ds; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
             return None
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             # `rg` resolved at cache time but failed at exec — treat as a
@@ -702,25 +715,35 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]], str | None]:  # noqa: C901, PLR0912
+    def _python_search(  # noqa: C901, PLR0912
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        *,
+        timeout: int = DEFAULT_GREP_TIMEOUT,
+    ) -> tuple[dict[str, list[tuple[int, str]]], str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 
-        Recursively searches files, respecting `max_file_size_bytes` limit.
+        Recursively searches files, respecting `max_file_size_bytes` limit
+        and a wall-clock timeout.
 
         Args:
             pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            timeout: Maximum wall-clock seconds before the search is aborted.
 
         Returns:
             `results` contains every match found before iteration completed.
 
                 `partial_error` is `None` on a clean walk, otherwise a
-                human-readable message indicating the walk aborted early
-                (e.g., a directory entry was removed mid-walk); callers
+                human-readable message indicating the walk was incomplete:
+                either the wall-clock `timeout` elapsed or the walk aborted
+                early (e.g., a directory entry was removed mid-walk). Callers
                 should treat such results as incomplete.
         """
-        # Compile escaped pattern once for efficiency (used in loop)
+        deadline = time.monotonic() + timeout
         regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -728,6 +751,14 @@ class FilesystemBackend(BackendProtocol):
 
         try:
             for fp in root.rglob("*"):
+                if time.monotonic() > deadline:
+                    msg = (
+                        f"Grep of '{base_full}' timed out after {timeout}s "
+                        f"with {len(results)} matching file(s); try a more "
+                        f"specific pattern or a narrower path."
+                    )
+                    logger.warning("%s", msg)
+                    return results, msg
                 try:
                     if not fp.is_file():
                         continue
@@ -773,12 +804,12 @@ class FilesystemBackend(BackendProtocol):
 
         return results, None
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
-            path: Base directory to search from. Defaults to root (`/`).
+            path: Base directory to search from. Defaults to `root_dir` / `cwd`.
 
         Returns:
             GlobResult with matching files or error.
@@ -791,11 +822,12 @@ class FilesystemBackend(BackendProtocol):
             raise ValueError(msg)
 
         try:
-            search_path = self.cwd if path == "/" else self._resolve_path(path)
+            search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
             if not search_path.exists() or not search_path.is_dir():
                 return GlobResult(matches=[])
         except (OSError, RuntimeError) as e:
-            return GlobResult(error=f"Error globbing path '{path}': {e}", matches=[])
+            display_path = path if path is not None else "<default>"
+            return GlobResult(error=f"Error globbing path '{display_path}': {e}", matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -851,7 +883,8 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError, ValueError) as e:
             # rglob() raised mid-iteration. Return whatever was accumulated
             # but flag the partial result so callers don't trust it as complete.
-            msg = f"Glob of '{path}' aborted partway: {e}"
+            display_path = path if path is not None else "<default>"
+            msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(error=msg, matches=results)

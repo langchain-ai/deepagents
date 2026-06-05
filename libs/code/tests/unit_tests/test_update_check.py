@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import tomllib
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 from packaging.version import InvalidVersion, Version
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 from deepagents_code._version import __version__
+from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
     _extract_release_times,
@@ -22,6 +28,7 @@ from deepagents_code.update_check import (
     create_update_log_path,
     detect_install_method,
     editable_extra_hint,
+    editable_package_hint,
     format_age_suffix,
     format_installed_age_suffix,
     format_release_age,
@@ -33,13 +40,16 @@ from deepagents_code.update_check import (
     get_sdk_release_time,
     get_seen_version,
     install_extra_command,
+    install_extras_command,
     install_package_command,
     is_auto_update_enabled,
     is_update_available,
     is_valid_extra_name,
+    is_valid_package_name,
     mark_update_notified,
     mark_version_seen,
     perform_install_extra,
+    perform_install_package,
     perform_upgrade,
     set_auto_update,
     should_notify_update,
@@ -83,6 +93,21 @@ def _mock_pypi_response(
     }
     resp.raise_for_status = MagicMock()
     return resp
+
+
+def _write_dist_info(
+    root: Path,
+    name: str,
+    *,
+    version: str = "1.0.0",
+    requires: tuple[str, ...] = (),
+) -> None:
+    normalized = name.replace("-", "_")
+    dist_info = root / f"{normalized}-{version}.dist-info"
+    dist_info.mkdir()
+    metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
+    metadata.extend(f"Requires-Dist: {req}" for req in requires)
+    dist_info.joinpath("METADATA").write_text("\n".join(metadata), encoding="utf-8")
 
 
 class TestParseVersion:
@@ -891,20 +916,125 @@ class TestInstallExtraCommand:
     def test_basic(self) -> None:
         """Single-quoted bracket form, with `-U` to reinstall."""
         assert (
-            install_extra_command("quickjs")
+            install_extras_command(["quickjs"])
             == "uv tool install -U 'deepagents-code[quickjs]'"
         )
 
     def test_provider_extra(self) -> None:
         assert (
-            install_extra_command("fireworks")
+            install_extras_command(["fireworks"])
             == "uv tool install -U 'deepagents-code[fireworks]'"
+        )
+
+    def test_installed_extra_names_missing_distribution_returns_empty(self) -> None:
+        """Display-only introspection stays forgiving when metadata is absent."""
+        assert installed_extra_names("does-not-exist-pkg-xyz-abc") == set()
+
+    def test_install_extra_command_refuses_missing_distribution(self) -> None:
+        """Reinstall commands must not drop extras when metadata is unavailable."""
+        with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):
+            install_extra_command("quickjs", distribution_name="missing-dcode-test")
+
+    def test_no_installed_extras_from_clean_metadata(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Clean metadata with no installed optional deps is distinct from failure."""
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == set()
+        assert (
+            install_extra_command("quickjs", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[quickjs]'"
+        )
+
+    def test_install_extra_command_refuses_invalid_metadata(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Malformed optional-dependency metadata must not drop existing extras."""
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=("not a valid requirement ; ;",),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
+            install_extra_command("quickjs", distribution_name="deepagents-code")
+
+    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
+        """Installing a new extra keeps already-installed extras selected."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_extra_command("baseten", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+        )
+
+    def test_dedupes_existing_extra(self, tmp_path, monkeypatch) -> None:
+        """Installing an already-present extra does not duplicate it."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert (
+            install_extra_command("nvidia", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[nvidia]'"
+        )
+
+    def test_drops_composite_extras(self, tmp_path, monkeypatch) -> None:
+        """Composite extras are not echoed back into uv reinstall commands."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-openai")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-present-dcode-test-openai; extra == "all-providers"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_extra_command("baseten", distribution_name="deepagents-code")
+            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+        )
+
+    def test_sorts_extras_deterministically(self) -> None:
+        assert (
+            install_extras_command({"quickjs", "baseten", "nvidia"})
+            == "uv tool install -U 'deepagents-code[baseten,nvidia,quickjs]'"
         )
 
     def test_rejects_shell_metacharacters(self) -> None:
         assert not is_valid_extra_name("quickjs']; touch /tmp/pwned; '")
         with pytest.raises(ValueError, match="Invalid extra name"):
-            install_extra_command("quickjs']; touch /tmp/pwned; '")
+            install_extra_command(
+                "quickjs']; touch /tmp/pwned; '",
+                distribution_name="missing-dcode-test",
+            )
+        with pytest.raises(ValueError, match="Invalid extra name"):
+            install_extras_command(["quickjs", "bad;name"])
 
 
 class TestEditableExtraHint:
@@ -925,19 +1055,85 @@ class TestEditableExtraHint:
 class TestInstallPackageCommand:
     """`install_package_command` builds a uv tool package install string."""
 
-    def test_basic(self) -> None:
+    def test_basic_no_extras(self, tmp_path, monkeypatch) -> None:
+        """Clean metadata with no installed extras yields a plain requirement."""
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
         assert (
-            install_package_command("langchain-custom")
+            install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
             == "uv tool install -U deepagents-code --with langchain-custom"
         )
 
-    def test_allows_pep508_name_separators(self) -> None:
+    def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
         assert (
-            install_package_command("langchain.custom_provider")
+            install_package_command(
+                "langchain.custom_provider", distribution_name="deepagents-code"
+            )
             == "uv tool install -U deepagents-code --with langchain.custom_provider"
         )
 
+    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
+        """Adding a package keeps already-installed extras selected."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+            == "uv tool install -U 'deepagents-code[nvidia]' --with langchain-custom"
+        )
+
+    def test_refuses_missing_distribution(self) -> None:
+        """Reinstalls must not drop extras when metadata is unavailable."""
+        with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):
+            install_package_command(
+                "langchain-custom", distribution_name="missing-dcode-test"
+            )
+
+    def test_refuses_invalid_metadata(self, tmp_path, monkeypatch) -> None:
+        """Malformed optional-dependency metadata must not drop existing extras."""
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=("not a valid requirement ; ;",),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
+            install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+
     def test_rejects_shell_metacharacters(self) -> None:
+        """A bad package name raises before extras introspection runs.
+
+        Validation precedes the distribution lookup, so the rejection holds
+        regardless of metadata availability.
+        """
         with pytest.raises(ValueError, match="Invalid package name"):
             install_package_command("langchain-custom; touch /tmp/pwned")
 
@@ -1026,6 +1222,170 @@ class TestPerformInstallExtra:
         assert success is False
         assert "uv" in output
         assert "not found" in output
+
+
+class TestIsValidPackageName:
+    """`is_valid_package_name` accepts PEP 508 names, rejects the rest."""
+
+    def test_accepts_plain_and_separated_names(self) -> None:
+        assert is_valid_package_name("langchain-custom")
+        assert is_valid_package_name("langchain.custom_provider")
+
+    def test_rejects_shell_metacharacters(self) -> None:
+        assert not is_valid_package_name("langchain-custom; touch /tmp/pwned")
+
+    def test_rejects_option_injection_leading_dash(self) -> None:
+        """A leading dash would smuggle uv options into `--with <name>`.
+
+        The command is `uv tool install -U deepagents-code --with <name>`; a name
+        like `-rreqs.txt` or `--editable` would be parsed by uv as a flag, not a
+        package. The validator must reject these regardless of `--force`/`--yes`.
+        """
+        assert not is_valid_package_name("-rreqs.txt")
+        assert not is_valid_package_name("--force")
+        assert not is_valid_package_name("-e.")
+
+    def test_rejects_boundary_separators_and_whitespace(self) -> None:
+        """Leading/trailing separators and internal whitespace are rejected."""
+        for bad in (".foo", "foo.", "-foo", "foo-", "_foo", "foo_", "foo bar"):
+            assert not is_valid_package_name(bad), bad
+
+    def test_rejects_non_ascii(self) -> None:
+        r"""The pattern is ASCII-only; a `\w`-based regex would wrongly accept."""
+        assert not is_valid_package_name("foöbar")
+
+    def test_rejects_empty(self) -> None:
+        assert not is_valid_package_name("")
+
+
+class TestEditablePackageHint:
+    """`editable_package_hint` names the package without a raw `uv` command."""
+
+    def test_names_package_without_uv_command(self) -> None:
+        hint = editable_package_hint("langchain-custom")
+        assert "langchain-custom" in hint
+        # We intentionally don't surface raw `uv tool` commands to the user.
+        assert "uv tool" not in hint
+
+
+class TestPerformInstallPackage:
+    """`perform_install_package` execution paths."""
+
+    async def test_editable_install_refuses(self) -> None:
+        """Editable installs cannot accept packages via uv tool install."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="unknown",
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "Editable install" in output
+        assert "langchain-custom" in output
+        # No raw `uv tool` command is surfaced to the user.
+        assert "uv tool" not in output
+
+    async def test_brew_install_refuses(self) -> None:
+        """Homebrew formula can't add packages to the tool env."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="brew",
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "Homebrew" in output
+
+    async def test_other_install_refuses(self) -> None:
+        """Unknown non-editable installs cannot be updated through uv tool."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+            return_value="other",
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "Unsupported install method" in output
+
+    async def test_invalid_package_refuses_before_detecting_install(self) -> None:
+        """Malformed package names must never reach command construction."""
+        with patch(
+            "deepagents_code.update_check.detect_install_method",
+        ) as detect:
+            success, output = await perform_install_package("custom; echo nope")
+        assert success is False
+        assert "Invalid package name" in output
+        detect.assert_not_called()
+
+    async def test_uv_install_runs(self, tmp_path) -> None:
+        """`uv` method runs the subprocess and returns success."""
+        log_path = tmp_path / "install.log"
+        # Inject a no-op command in place of the real uv tool install so the
+        # subprocess actually exits 0 without touching the environment.
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.install_package_command",
+                return_value="printf 'ok\\n'",
+            ),
+        ):
+            success, output = await perform_install_package(
+                "langchain-custom", log_path=log_path
+            )
+        assert success is True
+        assert output == "ok"
+
+    async def test_uv_missing_returns_actionable_error(self) -> None:
+        """When `uv` is not on PATH, surface a clear error before exec."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value=None,
+            ),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "uv" in output
+        assert "not found" in output
+
+    async def test_extras_introspection_failure_is_reported_and_logged(
+        self, caplog
+    ) -> None:
+        """Unreadable distribution metadata surfaces as a reported, logged error.
+
+        Guards the `ExtrasIntrospectionError` arm distinctly from the
+        `ValueError` arm: a narrowing back to `except ValueError` would let the
+        error escape unhandled, and dropping the log would erase the only
+        breadcrumb for what is an environment-corruption signal.
+        """
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                side_effect=ExtrasIntrospectionError("metadata unreadable"),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "ExtrasIntrospectionError" in output
+        assert "metadata unreadable" in output
+        assert "introspect installed extras" in caplog.text
 
 
 class TestRunInstallSubprocessFailureModes:

@@ -300,7 +300,7 @@ class StateBackend(BackendProtocol):
         files = self._read_files()
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Get FileInfo for files matching glob pattern."""
         files = self._read_files()
         result = _glob_search_files(files, pattern, path)

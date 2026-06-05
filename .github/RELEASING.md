@@ -21,7 +21,7 @@ Releases are managed via release-please, which:
 
 1. Analyzes commits made to `main`
 2. Creates/updates a release PR [(example)](https://github.com/langchain-ai/deepagents/pull/1956) with automated changelog and version bumps
-3. When said release PR is merged, creates both a GitHub and PyPI release
+3. When said release PR is merged, triggers the release workflow for that merge commit, which creates both a GitHub and PyPI release
 
 ## How It Works
 
@@ -163,12 +163,15 @@ Tracks the current version of each package. Automatically updated by release-ple
 
 ### Detection Mechanism
 
-The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects releases by checking two conditions on the merge commit:
+The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects merged release PRs by checking two conditions on the merge commit:
 
 1. The package's `CHANGELOG.md` was modified (e.g., `libs/cli/CHANGELOG.md` for the CLI)
 2. The commit message matches the `release(<component>): <version>` pattern
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
+
+> [!NOTE]
+> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
 
 ### Lockfile Updates
 
@@ -427,6 +430,17 @@ The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langch
 **If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 
 **If a fan-out has already happened** (release PRs opened for packages you didn't change), revert the offending commit on `main`. release-please will reconcile the open release PRs on the next push that actually touches package files; PRs for unaffected packages can be closed manually.
+
+### Lockfile churn fan-out
+
+A subtler sibling of the empty-commit case. release-please scopes a commit to a package by the file *paths* it touches and has no notion of "this file is just a lockfile." When a bump-worthy commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of every package that depends on it, release-please attributes the bump-worthy commit to those dependents too and opens a release PR for each — even though their only change is a regenerated lockfile.
+
+> [!NOTE]
+> Closing such a stray release PR does **not** make it stay closed. release-please decides what to release by comparing each component's last-released SHA in `.release-please-manifest.json` against `main`; the unreleased lockfile commit is still there, so the PR is regenerated on the next run. The only ways to stop it are to release the package (merge the PR) or to remove the unreleased bump from `main` — see [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+
+**Avoid it** by landing lockfile regeneration in a separate `chore(deps):` commit/PR — `chore` is hidden and triggers no release, so only the package with real source changes is released.
+
+The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
 
 ### Overriding a Merged Commit's Changelog Entry
 

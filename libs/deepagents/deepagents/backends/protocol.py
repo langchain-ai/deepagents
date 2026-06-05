@@ -31,6 +31,16 @@ r"""File storage format version.
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GREP_TIMEOUT: Final = 30
+"""Default timeout in seconds for one sync grep phase."""
+
+ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
+"""Timeout in seconds for the async grep wrapper.
+
+This gives `FilesystemBackend` enough headroom to finish the worst-case sync
+path: ripgrep timeout, then Python fallback timeout.
+"""
+
 FileOperationError = Literal[
     "file_not_found",
     "permission_denied",
@@ -462,10 +472,30 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        """Async version of `grep`.
 
-    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
+        Wraps the sync call with an async timeout as a safety net. The timeout
+        bounds how long the caller waits; it does not stop the worker thread
+        created by `asyncio.to_thread`.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.grep, pattern, path, glob),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -478,9 +508,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches a single character
                 - `[abc]` matches one character from set
 
-            path: Base directory to search from.
+            path: Optional base directory to search from.
 
-                Default: `'/'` (root).
+                If omitted, the backend chooses its default search root.
 
                 The pattern is applied relative to this path.
 
@@ -498,11 +528,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 message=("`glob_info` is deprecated and will be removed in deepagents==0.7.0; rename to `glob` instead."),
                 package="deepagents",
             )
-            return GlobResult(matches=self.glob_info(pattern, path))
+            return GlobResult(matches=self.glob_info(pattern, path or "/"))
 
         raise NotImplementedError
 
-    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Async version of `glob`."""
         return await asyncio.to_thread(self.glob, pattern, path)
 

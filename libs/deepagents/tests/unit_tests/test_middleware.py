@@ -20,6 +20,7 @@ import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GrepResult,
     ReadResult,
     SandboxBackendProtocol,
 )
@@ -497,6 +498,34 @@ class TestFilesystemMiddleware:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    def test_grep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -1265,6 +1294,66 @@ class TestFilesystemMiddleware:
         # than hardcoding a single value.
         expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
         assert result.content[0]["mime_type"] == expected_mime
+
+    def test_read_file_empty_mapped_binary_returns_empty_content_warning(self):
+        """Empty reads of mapped binary extensions (e.g. .pdf) return the empty-file warning (#3664)."""
+
+        class EmptyPdfBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyPdfBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-pdf-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_empty_unmapped_binary_returns_empty_content_warning(self):
+        """Empty reads of unmapped binary extensions (e.g. .docx) return the empty-file warning (#3664)."""
+
+        class EmptyDocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyDocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-docx-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

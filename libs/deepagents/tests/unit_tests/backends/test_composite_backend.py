@@ -109,6 +109,8 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     # glob
     gl = comp.glob("*.md", path="/").matches
     assert any(i["path"] == "/memories/notes.md" for i in gl)
+    gl_default = comp.glob("*.md").matches
+    assert gl_default == gl
 
 
 def test_composite_backend_store_to_store():
@@ -401,8 +403,9 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     empty_listing = comp.ls("/store/nonexistent/")
     assert empty_listing.entries == []
 
-    empty_listing2 = comp.ls("/nonexistent/")
-    assert empty_listing2.entries == []
+    missing_listing = comp.ls("/nonexistent/")
+    assert missing_listing.entries is None
+    assert missing_listing.error == "Path '/nonexistent/': path_not_found"
 
     listing1 = comp.ls("/store/").entries
     listing2 = comp.ls("/store").entries

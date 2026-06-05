@@ -1934,9 +1934,7 @@ def warn_on_split_credential_source(provider: str) -> None:
     # present (an empty prefixed var would shadow the plain one in
     # `resolve_env_var`, so its mere presence means the endpoint is not "plain").
     key_from_prefixed = bool(os.environ.get(prefixed_key))
-    base_from_plain = prefixed_base not in os.environ and bool(
-        os.environ.get(base_env)
-    )
+    base_from_plain = prefixed_base not in os.environ and bool(os.environ.get(base_env))
     if key_from_prefixed and base_from_plain:
         logger.debug(
             "Provider %s: API key resolved from %s but base URL resolved from "

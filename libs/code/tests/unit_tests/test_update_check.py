@@ -35,6 +35,7 @@ from deepagents_code.update_check import (
     format_release_age_parenthetical,
     format_sdk_age_suffix,
     format_sdk_release_age,
+    get_cached_update_available,
     get_latest_version,
     get_release_time,
     get_sdk_release_time,
@@ -181,6 +182,51 @@ class TestLatestFromReleases:
         }
         assert _latest_from_releases(releases, include_prereleases=False) is None
         assert _latest_from_releases(releases, include_prereleases=True) == "1.0.0b1"
+
+
+class TestCachedUpdateAvailable:
+    def test_fresh_cache_reports_update_without_http(self, cache_file) -> None:
+        """Fresh cache can drive startup auto-update without network access."""
+        cache_file.write_text(
+            json.dumps({"version": "99.0.0", "checked_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (True, "99.0.0")
+
+        mock_get.assert_not_called()
+
+    def test_stale_cache_returns_no_answer_without_http(self, cache_file) -> None:
+        """Stale cache must not trigger a startup network request."""
+        cache_file.write_text(
+            json.dumps(
+                {"version": "99.0.0", "checked_at": time.time() - CACHE_TTL - 1}
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
+    def test_missing_cache_returns_no_answer_without_http(self, cache_file) -> None:
+        """Missing cache should not block startup on a network request."""
+        assert not cache_file.exists()
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
+    def test_fresh_current_cache_reports_no_update(self, cache_file) -> None:
+        """A fresh cache at the installed version should not update."""
+        cache_file.write_text(
+            json.dumps({"version": __version__, "checked_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        assert get_cached_update_available() == (False, __version__)
 
 
 class TestGetLatestVersion:

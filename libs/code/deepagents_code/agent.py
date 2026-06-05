@@ -1217,14 +1217,17 @@ def create_cli_agent(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
     ):
+        # Treat a falsy spec (`None` or `""`) as "no explicit model" so an empty
+        # `model:` in subagent frontmatter inherits the runtime model rather than
+        # being forwarded verbatim to `resolve_model("")`.
         model_spec = subagent_meta["model"]
-        has_explicit_model = model_spec is not None
+        has_explicit_model = bool(model_spec)
         subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],
         }
-        if model_spec is not None:
+        if model_spec:
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
             has_explicit_model=has_explicit_model

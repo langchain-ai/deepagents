@@ -84,6 +84,8 @@ class OptionKind(Enum):
     """Delegates to `config._parse_extra_skills_dirs`."""
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
+    THEME_DELEGATE = "theme"
+    """Delegates to the app theme-preference loader semantics."""
     STRUCTURED = "structured"
     """User-defined table parsed by a dedicated loader; not scalar-coerced."""
 
@@ -97,6 +99,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
 }
 
@@ -382,6 +385,52 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     return _INVALID
 
 
+def _resolve_theme(toml_data: dict[str, Any]) -> tuple[str, str]:
+    """Resolve the active theme using the same precedence as app startup.
+
+    Returns:
+        `(theme_name, source)` for the effective Textual theme.
+    """
+    from deepagents_code import theme
+    from deepagents_code._env_vars import THEME
+    from deepagents_code.app import _resolve_terminal_mapping, _resolve_theme_name
+
+    env_name = os.environ.get(THEME)
+    if env_name is not None:
+        resolved = _resolve_theme_name(env_name)
+        if resolved is not None:
+            return resolved, f"env ({THEME})"
+        logger.warning(
+            "Unknown theme '%s' in %s; falling back to default",
+            env_name,
+            THEME,
+        )
+        return theme.DEFAULT_THEME, "default"
+
+    ui = toml_data.get("ui", {})
+    if not isinstance(ui, dict):
+        if ui is not None:
+            logger.warning(
+                "[ui] should be a table; got %s while resolving theme",
+                type(ui).__name__,
+            )
+        return theme.DEFAULT_THEME, "default"
+
+    resolved = _resolve_terminal_mapping(ui)
+    if resolved is not None:
+        term_program = os.environ.get("TERM_PROGRAM", "").strip()
+        return resolved, f"config.toml [ui.terminal_themes.{term_program}]"
+
+    saved = ui.get("theme")
+    resolved = _resolve_theme_name(saved)
+    if resolved is not None:
+        return resolved, "config.toml [ui.theme]"
+    if isinstance(saved, str):
+        logger.warning("Unknown theme '%s' in config; falling back to default", saved)
+
+    return theme.DEFAULT_THEME, "default"
+
+
 def resolve_scalar(
     option: ConfigOption, *, toml_data: dict[str, Any]
 ) -> tuple[Any, str]:
@@ -400,6 +449,9 @@ def resolve_scalar(
         unset (mirroring `resolve_env_var`), so it falls through to
         `config.toml`/`default` rather than counting as set.
     """
+    if option.kind is OptionKind.THEME_DELEGATE:
+        return _resolve_theme(toml_data)
+
     if option.env_var:
         from deepagents_code.model_config import resolved_env_var_name
 
@@ -559,9 +611,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="display.theme",
         group="Display",
-        summary="Force the CLI to launch with a specific theme name.",
-        kind=OptionKind.STR,
+        summary="Active CLI theme from env, terminal mapping, or saved preference.",
+        kind=OptionKind.THEME_DELEGATE,
         env_var=_env_vars.THEME,
+        toml_keys=("ui", "theme"),
     ),
     ConfigOption(
         key="display.show_header",

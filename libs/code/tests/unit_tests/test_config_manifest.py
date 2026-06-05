@@ -311,6 +311,69 @@ def test_resolve_interpreter_kwargs_maps_settings_fields() -> None:
     assert kwargs["interpreter_timeout_seconds"] == 5.0
 
 
+def test_resolve_theme_uses_terminal_mapping_before_saved_theme(monkeypatch) -> None:
+    """Theme resolution mirrors startup: terminal mapping wins over `[ui].theme`."""
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+
+    value, source = resolve_scalar(
+        opt,
+        toml_data={
+            "ui": {
+                "theme": "atom-one-light",
+                "terminal_themes": {"vscode": "ansi-dark"},
+            }
+        },
+    )
+
+    assert value == "ansi-dark"
+    assert source == "config.toml [ui.terminal_themes.vscode]"
+
+
+def test_resolve_theme_uses_saved_theme_without_terminal_match(monkeypatch) -> None:
+    """A saved `[ui].theme` is reported when no terminal mapping applies."""
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "unknown-terminal")
+
+    value, source = resolve_scalar(
+        opt,
+        toml_data={
+            "ui": {
+                "theme": "atom-one-light",
+                "terminal_themes": {"vscode": "ansi-dark"},
+            }
+        },
+    )
+
+    assert value == "atom-one-light"
+    assert source == "config.toml [ui.theme]"
+
+
+def test_resolve_theme_env_wins_over_config(monkeypatch) -> None:
+    """The explicit theme env var wins over saved config, matching startup."""
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_THEME", "ansi-dark")
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+
+    value, source = resolve_scalar(
+        opt,
+        toml_data={
+            "ui": {
+                "theme": "atom-one-light",
+                "terminal_themes": {"vscode": "langchain"},
+            }
+        },
+    )
+
+    assert value == "ansi-dark"
+    assert source == "env (DEEPAGENTS_CODE_THEME)"
+
+
 # --- Misc -------------------------------------------------------------------
 
 

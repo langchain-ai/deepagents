@@ -797,6 +797,87 @@ class TestCreateModelProfileExtraction:
         assert result.unsupported_modalities == frozenset()
 
 
+class TestCreateModelSplitCredentialWiring:
+    """`create_model` wires the split-credential diagnostic in correctly."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @pytest.fixture(autouse=True)
+    def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL",
+            "DEEPAGENTS_CODE_OPENAI_API_BASE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_create_model_emits_split_credential_warning(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A prefixed key + plain base URL surfaces the DEBUG diagnostic.
+
+        Guards the call site itself: `TestSplitCredentialSource` only exercises
+        the helper in isolation, so without this a dropped call would go unnoticed.
+        """
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            create_model("openai:gpt-5.5")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY" in m and "OPENAI_BASE_URL" in m
+            for m in messages
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_diagnostic_runs_before_apply_stored_credentials(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The diagnostic must observe raw env intent, i.e. run before the bridge.
+
+        `apply_stored_credentials` rewrites the unprefixed base-URL env vars, so
+        the ordering claimed by the call-site comment is load-bearing. Pin it by
+        asserting the relative call order, which a reorder/removal would break.
+        """
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        manager = Mock()
+        monkeypatch.setattr(
+            "deepagents_code.model_config.warn_on_split_credential_source",
+            manager.warn,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.apply_stored_credentials",
+            manager.apply,
+        )
+
+        create_model("openai:gpt-5.5")
+
+        ordered = [name for name, _args, _kwargs in manager.mock_calls]
+        assert ordered == ["warn", "apply"]
+
+
 class TestModelResultApplyToSettings:
     """Tests for ModelResult.apply_to_settings propagation."""
 
@@ -1532,6 +1613,35 @@ api_key_env = "TOGETHER_API_KEY"
 
         assert kwargs["api_key"] == "together-key"
         assert "base_url" not in kwargs
+
+    def test_stored_auth_base_url_reaches_kwargs_without_env_var(
+        self, tmp_path: Path
+    ) -> None:
+        """A `/auth` endpoint reaches the `base_url` kwarg for a non-mapped provider.
+
+        `baseten` has an API-key env var but no base-URL env var, so the stored
+        endpoint resolves only through `get_base_url`'s store fallback. This is
+        the end-to-end path that makes a saved base URL reach the model as the
+        `base_url` constructor kwarg (which `ChatBaseten` accepts via its
+        `base_url` alias) rather than being silently dropped.
+        """
+        from deepagents_code import auth_store
+
+        state_dir = tmp_path / ".state"
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(model_config, "DEFAULT_STATE_DIR", state_dir),
+            patch.dict("os.environ", {"BASETEN_API_KEY": "tk"}, clear=True),
+        ):
+            clear_caches()
+            auth_store.set_stored_key(
+                "baseten", "tk", base_url="https://proxy.example/v1"
+            )
+            kwargs = _get_provider_kwargs("baseten")
+
+        assert kwargs["base_url"] == "https://proxy.example/v1"
 
     def test_prefixed_env_var_beats_canonical(self, tmp_path: Path) -> None:
         """DEEPAGENTS_CODE_ prefixed var overrides canonical in provider kwargs."""
@@ -2576,12 +2686,42 @@ class TestCreateModelViaInitImportError:
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
             pytest.raises(
                 ModelConfigError,
                 match=(
                     "Install with: uv tool install -U deepagents-code "
                     "--with langchain-custom_provider"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_introspection_failure_falls_back_to_manual(
+        self, mock_init: Mock
+    ) -> None:
+        """Unreadable extras metadata degrades to the manual-install hint.
+
+        Exercises the `ExtrasIntrospectionError` arm of the fallback so the
+        user still gets an actionable message instead of an unhandled error
+        leaking out of hint construction.
+        """
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                side_effect=ExtrasIntrospectionError("metadata unreadable"),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})

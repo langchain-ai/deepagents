@@ -274,6 +274,111 @@ class TestStoredCredentials:
 
         assert os.environ["ANTHROPIC_API_KEY"] == "from-env"
 
+    def test_apply_stored_credentials_sets_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored base_url is exported alongside the key, alt name cleared."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_BASE", "https://stale.example/v1")
+        auth_store.set_stored_key(
+            "openai", "from-store", base_url="https://mine.example/v1"
+        )
+
+        assert apply_stored_credentials("openai") is True
+        assert os.environ["OPENAI_BASE_URL"] == "https://mine.example/v1"
+        # The alternate name the SDK also reads must not retain a stale value.
+        assert "OPENAI_API_BASE" not in os.environ
+
+    def test_apply_stored_credentials_blank_base_url_clears_gateway(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key with no base_url clears the inherited (gateway) URL.
+
+        This is what stops a personal key from being shipped to the gateway.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "OPENAI_BASE_URL", "https://gateway.smith.langchain.com/openai/v1"
+        )
+        auth_store.set_stored_key("openai", "sk-personal")
+
+        assert apply_stored_credentials("openai") is True
+        assert os.environ["OPENAI_API_KEY"] == "sk-personal"
+        assert "OPENAI_BASE_URL" not in os.environ
+        assert "OPENAI_API_BASE" not in os.environ
+
+    def test_apply_stored_credentials_blank_base_url_clears_gemini_gateway(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Gemini routes via GOOGLE_GEMINI_BASE_URL, so the pairing applies too.
+
+        The google-genai SDK reads GOOGLE_GEMINI_BASE_URL natively, so a stored
+        key with no base_url must clear it or a personal key reaches the gateway.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "GOOGLE_GEMINI_BASE_URL", "https://gateway.smith.langchain.com/gemini"
+        )
+        auth_store.set_stored_key("google_genai", "personal-gemini-key")
+
+        assert apply_stored_credentials("google_genai") is True
+        assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
+
+    def test_apply_stored_credentials_clears_config_base_url_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A config-declared `base_url_env` participates in the pairing.
+
+        Lets a provider outside the hardcoded set clear an inherited gateway
+        URL when a `/auth` key with no base URL is applied.
+        """
+        import os
+
+        from deepagents_code import auth_store, model_config
+        from deepagents_code.model_config import apply_stored_credentials, clear_caches
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.myco]
+api_key_env = "MYCO_KEY"
+base_url_env = "MYCO_BASE_URL"
+models = ["m1"]
+""")
+        monkeypatch.delenv("MYCO_KEY", raising=False)
+        monkeypatch.setenv("MYCO_BASE_URL", "https://gateway.example/myco")
+        auth_store.set_stored_key("myco", "myco-personal")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            assert apply_stored_credentials("myco") is True
+
+        assert os.environ["MYCO_KEY"] == "myco-personal"
+        assert "MYCO_BASE_URL" not in os.environ
+
     def test_corrupt_store_does_not_block_status(
         self,
         fake_state_dir: Path,
@@ -288,6 +393,239 @@ class TestStoredCredentials:
         status = get_provider_auth_status("anthropic")
         assert status.state is ProviderAuthState.CONFIGURED
         assert status.source is ProviderAuthSource.ENV
+
+
+class TestSplitCredentialSource:
+    """`warn_on_split_credential_source` flags key/endpoint env-tier mismatches."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear every OpenAI key/endpoint env var so each test sets its own.
+
+        `dotenv.load_dotenv()` runs during config bootstrap (first `Settings`
+        access) and may inject prefixed variants from a developer's
+        `~/.deepagents/.env` that would otherwise leak into these assertions.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL",
+            "DEEPAGENTS_CODE_OPENAI_API_BASE",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_warns_when_key_prefixed_but_base_url_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Prefixed key + plain base URL (no prefixed base URL) emits a DEBUG line."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY" in m and "OPENAI_BASE_URL" in m
+            for m in messages
+        )
+        # The secret value and the URL value must never appear in the log.
+        assert all("sk-secret-value" not in m for m in messages)
+        assert all("https://gateway.example/v1" not in m for m in messages)
+
+    def test_no_warning_when_both_prefixed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A matching prefixed base URL means the pair shares a source: no warning."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://gateway.example/v1"
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_key_is_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A plain key with a plain base URL is a same-tier pair: no warning."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_no_base_url_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A prefixed key with no endpoint at all has nothing to mismatch."""
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_empty_prefixed_base_url_is_not_treated_as_plain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An empty prefixed base URL shadows the plain one, so there is no split.
+
+        Mirrors `resolve_env_var`: a present-but-empty prefixed variant
+        suppresses the plain value rather than falling through to it.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_BASE_URL", "")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_prefixed_key_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An empty prefixed key does not resolve from the prefixed tier: no warning.
+
+        Symmetric to `test_empty_prefixed_base_url_is_not_treated_as_plain`: the
+        key half of the pair must be *present and non-empty* for a split to exist.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
+
+    def test_no_warning_when_provider_has_no_base_url_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A provider with a key env var but no base-URL env var returns early.
+
+        `google_vertexai` maps to `GOOGLE_CLOUD_PROJECT` for credentials but has
+        no entry in `PROVIDER_BASE_URL_ENV`, so there is no endpoint variable to
+        compare against.
+        """
+        from deepagents_code.model_config import warn_on_split_credential_source
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT", "my-project")
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"):
+            warn_on_split_credential_source("google_vertexai")
+
+        assert not caplog.records
+
+    def test_warns_for_config_declared_env_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """The prefix is applied to config-declared env names, not just built-ins.
+
+        A `config.toml` provider that declares its own `api_key_env` /
+        `base_url_env` participates in the same split-source detection.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.model_config import (
+            clear_caches,
+            warn_on_split_credential_source,
+        )
+
+        for var in (
+            "MYCO_KEY",
+            "DEEPAGENTS_CODE_MYCO_KEY",
+            "MYCO_BASE_URL",
+            "DEEPAGENTS_CODE_MYCO_BASE_URL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.myco]
+api_key_env = "MYCO_KEY"
+base_url_env = "MYCO_BASE_URL"
+models = ["m1"]
+""")
+        monkeypatch.setenv("DEEPAGENTS_CODE_MYCO_KEY", "sk-secret-value")
+        monkeypatch.setenv("MYCO_BASE_URL", "https://gateway.example/myco")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            clear_caches()
+            warn_on_split_credential_source("myco")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "DEEPAGENTS_CODE_MYCO_KEY" in m and "MYCO_BASE_URL" in m for m in messages
+        )
+
+    def test_no_warning_when_config_base_url_literal_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """A `config.toml` `base_url` literal wins over env vars: no env split."""
+        from deepagents_code import model_config
+        from deepagents_code.model_config import (
+            clear_caches,
+            warn_on_split_credential_source,
+        )
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://configured.example/v1"
+""")
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-secret-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.model_config"),
+        ):
+            clear_caches()
+            warn_on_split_credential_source("openai")
+
+        assert not caplog.records
 
 
 class TestThreadColumnPersistence:
@@ -919,6 +1257,161 @@ models = ["llama3"]
         config = ModelConfig.load(config_path)
 
         assert config.get_base_url("local") == "http://localhost:11434/v1"
+
+    def test_falls_back_to_env_var(self, monkeypatch):
+        """With no config base_url, reads the provider's base-URL env var."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gw.example/openai/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("openai") == "https://gw.example/openai/v1"
+
+    def test_env_prefix_overrides_plain(self, monkeypatch):
+        """`DEEPAGENTS_CODE_*` beats the plain env var, like API keys."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://plain.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://scoped.example/v1"
+        )
+        config = ModelConfig()
+
+        assert config.get_base_url("openai") == "https://scoped.example/v1"
+
+    def test_config_wins_over_env(self, tmp_path, monkeypatch):
+        """A config.toml base_url takes precedence over the env fallback."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example/v1")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+base_url = "https://config.example/v1"
+models = ["gpt-5.5"]
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_base_url("openai") == "https://config.example/v1"
+
+    def test_falls_back_to_config_base_url_env(self, tmp_path, monkeypatch):
+        """A config `base_url_env` extends env resolution beyond built-ins."""
+        monkeypatch.setenv("MYCO_BASE_URL", "https://myco.example/v1")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.myco]
+base_url_env = "MYCO_BASE_URL"
+models = ["m1"]
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_base_url("myco") == "https://myco.example/v1"
+
+    def test_falls_back_to_stored_base_url_for_provider_without_env_var(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A `/auth` endpoint resolves for a provider with no base-URL env var.
+
+        Some OpenAI-compatible providers (e.g. Baseten) have an API-key env var
+        but no dedicated base-URL env var, so steps 1-2 find nothing. The
+        stored endpoint must still resolve here so it reaches the model as the
+        `base_url` kwarg — otherwise a value saved in `/auth` is silently lost.
+        """
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key("baseten", "k", base_url="https://proxy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://proxy.example/v1"
+
+    def test_config_literal_wins_over_stored_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        """A `config.toml` literal still wins over the stored endpoint."""
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key("baseten", "k", base_url="https://stored.example/v1")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.baseten]
+base_url = "https://config.example/v1"
+models = ["m1"]
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_base_url("baseten") == "https://config.example/v1"
+
+    def test_blank_stored_base_url_yields_none(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A stored key with no endpoint leaves `get_base_url` at the default."""
+        from deepagents_code import auth_store
+
+        auth_store.set_stored_key("baseten", "k")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") is None
+
+    def test_corrupt_store_does_not_raise(
+        self,
+        fake_state_dir: Path,
+    ) -> None:
+        """A corrupt credential store resolves to None, never propagating."""
+        fake_state_dir.mkdir(parents=True, exist_ok=True)
+        (fake_state_dir / "auth.json").write_text("{ not valid json")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") is None
+
+
+class TestGetDefaultBaseUrlEnv:
+    """Tests for `get_default_base_url_env` — the var a blank save falls back to.
+
+    A blank save clears the *plain* endpoint vars, so only the
+    `DEEPAGENTS_CODE_`-prefixed name still supplies a value afterward. The
+    helper returns that name (for display), never the plain name or a value.
+    """
+
+    def test_returns_prefixed_name_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The prefixed var survives the clear, so its name is returned."""
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_OPENAI_BASE_URL", "https://scoped.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("openai")
+            == "DEEPAGENTS_CODE_OPENAI_BASE_URL"
+        )
+
+    def test_ignores_plain_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A plain endpoint var is cleared on a blank save, so it is not named."""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        assert model_config.get_default_base_url_env("openai") is None
+
+    def test_uses_config_base_url_env_for_custom_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A config `base_url_env` extends the survivor name to custom providers."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_MYCO_BASE_URL", "https://scoped.example/v1")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.myco]
+base_url_env = "MYCO_BASE_URL"
+models = ["m1"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            model_config.clear_caches()
+            assert (
+                model_config.get_default_base_url_env("myco")
+                == "DEEPAGENTS_CODE_MYCO_BASE_URL"
+            )
+
+    def test_returns_none_when_unset(self) -> None:
+        """No prefixed var means the default comes from config or the SDK."""
+        assert model_config.get_default_base_url_env("openai") is None
+
+    def test_returns_none_for_unknown_provider(self) -> None:
+        """A provider with no base-URL mapping has no env var to name."""
+        assert model_config.get_default_base_url_env("nonexistent") is None
 
 
 class TestModelConfigGetApiKeyEnv:

@@ -4,7 +4,7 @@
 # - Linting for changed packages
 # - Unit Tests for changed packages
 #
-# Only packages with changes are tested. SDK changes also trigger CLI tests.
+# Only packages with changes are tested. SDK changes also trigger CLI and ACP tests.
 # Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
@@ -22,6 +22,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Required for CodSpeed OIDC authentication in _benchmark.yml
+  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -34,19 +36,21 @@ jobs:
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
-      harbor: ${{ steps.filter.outputs.harbor }}
+      code: ${{ steps.filter.outputs.code }}
+      evals: ${{ steps.filter.outputs.evals }}
+      acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -71,9 +75,24 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
-            harbor:
-              - 'libs/harbor/**'
+            code:
+              - 'libs/code/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
+              - '.github/actions/**'
+            evals:
+              - 'libs/evals/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            acp:
+              - 'libs/acp/**'
+              - 'libs/deepagents/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -101,8 +120,8 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
-
   # Run linting on changed packages
   lint-deepagents:
     name: "🧹 Lint deepagents"
@@ -122,14 +141,32 @@ jobs:
       working-directory: "libs/cli"
       python-version: "3.11"
 
-  lint-harbor:
-    name: "🧹 Lint harbor"
+  lint-code:
+    name: "🧹 Lint code"
     needs: changes
-    if: needs.changes.outputs.harbor == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_lint.yml
     with:
-      working-directory: "libs/harbor"
-      python-version: "3.14"
+      working-directory: "libs/code"
+      python-version: "3.11"
+
+  lint-evals:
+    name: "🧹 Lint evals"
+    needs: changes
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/evals"
+      python-version: "3.13"
+
+  lint-acp:
+    name: "🧹 Lint acp"
+    needs: changes
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/acp"
+      python-version: "3.11"
 
   lint-daytona:
     name: "🧹 Lint daytona"
@@ -172,99 +209,141 @@ jobs:
     name: "🧪 Test deepagents"
     needs: changes
     if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
+      coverage-python-version: "3.12"
 
   test-cli:
     name: "🧪 Test cli"
     needs: changes
     if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/cli"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
-  test-harbor:
-    name: "🧪 Test harbor"
+  test-code:
+    name: "🧪 Test deepagents-code"
     needs: changes
-    if: needs.changes.outputs.harbor == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-      fail-fast: false
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_test.yml
     with:
-      working-directory: "libs/harbor"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      working-directory: "libs/code"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-evals:
+    name: "🧪 Test evals"
+    needs: changes
+    if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/evals"
+      python-versions: '["3.12", "3.13"]'
+      coverage-python-version: "3.12"
+
+  test-acp:
+    name: "🧪 Test acp"
+    needs: changes
+    if: needs.changes.outputs.acp == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/acp"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-daytona:
     name: "🧪 Test daytona"
     needs: changes
     if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-modal:
     name: "🧪 Test modal"
     needs: changes
     if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-runloop:
     name: "🧪 Test runloop"
     needs: changes
     if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-quickjs:
     name: "🧪 Test quickjs"
     needs: changes
     if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/quickjs"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.11"
+
+  # Run CodSpeed benchmarks on SDK changes
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
+    needs: changes
+    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/deepagents"
+    secrets: inherit
+
+  # Run CodSpeed benchmarks on code changes
+  benchmark-code:
+    name: "⏱️ Benchmark code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/code"
+    secrets: inherit
+
+  # # TODO(hntrl): re-enable when bench flakiness is under control
+  # benchmark-quickjs:
+  #   name: "⏱️ Benchmark quickjs"
+  #   needs: changes
+  #   if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+  #   uses: ./.github/workflows/_benchmark.yml
+  #   with:
+  #     working-directory: "libs/partners/quickjs"
+  #     has-memory-benchmarks: true
+  #   secrets: inherit
+
+  # Validates every helper script under .github/scripts/test_*.py — currently
+  # `test_release_options.py` (release dropdown ↔ package directories) and
+  # `test_models.py` (eval matrix outputs ↔ evals.yml). Job id/name are kept
+  # for branch-protection compatibility; rename only with a coordinated PR.
+  check-release-options:
+    name: "Validate Release Options"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+      - name: "📦 Install Dependencies"
+        run: python -m pip install pyyaml pytest
+      - name: "🔍 Check workflow helper scripts"
+        run: python -m pytest .github/scripts/test_*.py -v
 
   # Final status check - ensures all jobs passed
   ci_success:
@@ -273,31 +352,51 @@ jobs:
       - changes
       - lint-deepagents
       - lint-cli
-      - lint-harbor
+      - lint-code
+      - lint-evals
+      - lint-acp
       - lint-daytona
       - lint-modal
       - lint-runloop
       - lint-quickjs
       - test-deepagents
       - test-cli
-      - test-harbor
+      - test-code
+      - test-evals
+      - test-acp
       - test-daytona
       - test-modal
       - test-runloop
       - test-quickjs
+      - benchmark-deepagents
+      - benchmark-code
+      - check-release-options
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: "🎉 All Checks Passed"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Get all job results (excluding 'changes' which always succeeds)
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"
 
-          # Check for failures or cancellations
-          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
-            echo "Some jobs failed or were cancelled"
+          if echo "$results" | grep -q '"failure"'; then
+            echo "Some jobs failed"
             exit 1
+          fi
+
+          # On main pushes, concurrency preemption routinely cancels
+          # in-flight jobs when a newer commit arrives — the next run will
+          # validate the latest state, so don't flag those as failures.
+          # On PRs and merge_group runs, a cancellation is almost always a
+          # human action or a real problem, so keep the gate strict.
+          if [ "$EVENT_NAME" != "push" ]; then
+            if echo "$results" | grep -q '"cancelled"'; then
+              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs)"
+              exit 1
+            fi
           fi
 
           echo "All required checks passed (skipped jobs are OK)"

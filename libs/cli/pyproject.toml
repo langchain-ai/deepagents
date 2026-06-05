@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.33"
-description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+version = "0.2.1"
+description = "Deployment tooling for Deep Agents - bundle, run, and ship agents to LangGraph Platform."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
-keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+keywords = ["agents", "ai", "cli", "deploy", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -22,84 +22,22 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Terminals",
 ]
 dependencies = [
     # Framework
-    "deepagents==0.4.11",
-    "langchain>=1.2.10,<2.0.0",
-    "langgraph>=1.1.2,<2.0.0",
-    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+    "deepagents>=0.6.8",
+    "langchain>=1.3.4,<2.0.0",
+    "langgraph>=1.2.4,<2.0.0",
 
-    # Client-server architecture
-    "langgraph-sdk>=0.3.11,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.15,<1.0.0",
+    # Bundling & deploy server
+    "langgraph-sdk>=0.4.2,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
-    # Core model providers - others are added as optional
-    "langchain-anthropic>=1.3.5,<2.0.0",
-    "langchain-google-genai>=4.2.1,<5.0.0",
-    "langchain-openai>=1.1.8,<2.0.0",
-
-    # UI/Terminal
-    "textual>=8.0.0,<9.0.0",
-    "textual-autocomplete>=3.0.0,<5.0.0",
-    "textual-speedups>=0.2.1,<1.0.0",
-    "prompt-toolkit>=3.0.52,<4.0.0",
-    "rich>=14.0.0,<15.0.0",
-    "markdownify>=0.13.0,<2.0.0",
-
-    # Sandbox integrations
-    "langsmith[sandbox]>=0.7.7",
-    "daytona>=0.113.0,<1.0.0",
-    "modal>=0.65.0,<2.0.0",
-    "runloop-api-client>=0.69.0",
-
-    # Tools
-    "tavily-python>=0.7.21,<1.0.0",
-
-    # Clipboard
-    "pyperclip>=1.11.0,<2.0.0",
+    # LangSmith
+    "langsmith>=0.8.9",
 
     # Utilities
-    "uuid-utils>=0.10.0,<1.0.0",
-    "python-dotenv>=1.0.0,<2.0.0",
-    "requests>=2.0.0,<3.0.0",
-    "pillow>=10.0.0,<13.0.0",
-    "pyyaml>=6.0.0",
-    "aiosqlite>=0.19.0,<1.0.0",
-    "tomli-w>=1.0.0,<2.0.0",
-
-    # MCP
-    "langchain-mcp-adapters>=0.2.0,<1.0.0",
-
-    # ACP
-    "deepagents-acp>=0.0.4",
-]
-
-[project.optional-dependencies]
-# Model providers
-anthropic = ["langchain-anthropic>=1.3.5,<2.0.0"]
-baseten = ["langchain-baseten>=0.1.9,<1.0.0"]
-bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
-cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
-deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.2.1,<5.0.0"]
-groq = ["langchain-groq>=1.0.0,<2.0.0"]
-huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
-ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
-litellm = ["langchain-litellm>=0.6.1,<2.0.0"]
-mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
-nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
-ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
-openai = ["langchain-openai>=1.1.8,<2.0.0"]
-openrouter = ["langchain-openrouter>=0.1.0,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
-vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
-xai = ["langchain-xai>=1.0.0,<2.0.0"]
-all-providers = [
-    "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
+    "python-dotenv>=1.2.2,<2.0.0",
 ]
 
 [project.scripts]
@@ -112,7 +50,9 @@ Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
 
 [dependency-groups]
 test = [
@@ -133,10 +73,6 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_cli"]
-
-[tool.hatch.build.targets.wheel.shared-data]
-"deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"
-"deepagents_cli/*.tcss" = "deepagents_cli/"
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
@@ -173,6 +109,7 @@ ignore = [
     "TD003",   # Missing issue link in TODO
 ]
 unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -224,14 +161,14 @@ ignore-var-parameters = true
     "T201",     # `print` found — examples use print for output
     "TRY300",   # Consider moving to `else` block — examples prioritize readability
 ]
-"deepagents_cli/built_in_skills/**/scripts/**" = [
-    "ANN001",   # Missing type annotation for function argument — standalone scripts
-    "ANN201",   # Missing return type annotation — standalone scripts
-    "BLE001",   # Blind exception catch — resilience in standalone scripts
-    "INP001",   # Missing `__init__.py` — scripts are standalone
-    "N806",     # Variable in function should be lowercase — script naming conventions
-    "PLR2004",  # Magic value used in comparison — fine in scripts
-    "T201",     # `print` found — scripts use print for output
+"deepagents_cli/deploy/**" = [
+    "BLE001",   # Blind exception catch — resilience in CLI commands
+    "DOC",      # Docstring conventions — internal CLI module
+    "PLW0108",  # Lambda may be unnecessary — closures over local vars require lambdas
+    "S",        # Security warnings — subprocess calls are controlled CLI invocations
+    "SIM105",   # contextlib.suppress — try/except/pass is clearer in these contexts
+    "T201",     # `print` found — CLI commands use print for user output
+    "TC003",    # Move import into TYPE_CHECKING — imports are used at runtime
 ]
 
 [tool.coverage.run]
@@ -241,13 +178,5 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
-# pytest-benchmark warns once per xdist worker that benchmarks are disabled
-# under parallel execution. Both plugins are needed: xdist for `make test`,
-# benchmark for `make benchmark`. Suppress the noise here.
-# Use a message-match filter so the import of pytest_benchmark isn't required
-# when the plugin is not installed.
-filterwarnings = [
-    "ignore:.*pytest.benchmark.*:pytest.PytestConfigWarning",
-]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

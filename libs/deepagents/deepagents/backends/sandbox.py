@@ -1,22 +1,32 @@
-"""Base sandbox implementation with execute() as the only abstract method.
+"""Base sandbox implementation.
 
-This module provides a base class that implements all SandboxBackendProtocol
-methods using shell commands executed via execute(). Concrete implementations
-only need to implement the execute() method.
+[`BaseSandbox`][deepagents.backends.sandbox.BaseSandbox] implements
+[`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
-It also defines the BaseSandbox implementation used by the CLI sandboxes.
+File listing, grep, glob, and read use shell commands via `execute()`. Write
+delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
+for payloads under `_EDIT_INLINE_MAX_BYTES` and falls back to uploading old/new
+strings as temp files with a server-side replace script for larger ones.
+
+Concrete subclasses implement `execute()` and `upload_files()`; all other
+operations are derived from those.
 """
+# ruff: noqa: D417
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 import shlex
 from abc import ABC, abstractmethod
+from typing import Final
 
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -28,11 +38,9 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import _get_file_type, create_file_data
+from deepagents.backends.utils import _get_file_type
 
-# Standard exit code from timeout(1); sandbox execute() implementations
-# should use this for consistency when a command is killed due to timeout.
-_TIMEOUT_EXIT_CODE = 124
+logger = logging.getLogger(__name__)
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -44,185 +52,366 @@ import base64
 path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
-os.chdir(path)
-matches = sorted(glob.glob(pattern, recursive=True))
-for m in matches:
-    stat = os.stat(m)
-    result = {{
-        'path': m,
-        'size': stat.st_size,
-        'mtime': stat.st_mtime,
-        'is_dir': os.path.isdir(m)
-    }}
-    print(json.dumps(result))
-" 2>/dev/null"""
-
-# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
-# ARG_MAX limits the total size of command-line arguments.
-# Previously, base64-encoded content was interpolated directly into the command
-# string, which would fail for files larger than ~100KB after base64 expansion.
-# Heredocs bypass this by passing data through stdin rather than as arguments.
-# Stdin format: first line is base64-encoded file path, second line is base64-encoded content.
-_WRITE_COMMAND_TEMPLATE = """python3 -c "
-import os
-import sys
-import base64
-import json
-
-# Read JSON payload from stdin containing file_path and content (both base64-encoded)
-payload_b64 = sys.stdin.read().strip()
-if not payload_b64:
-    print('Error: No payload received for write operation', file=sys.stderr)
-    sys.exit(1)
-
 try:
-    payload = base64.b64decode(payload_b64).decode('utf-8')
-    data = json.loads(payload)
-    file_path = data['path']
-    content = base64.b64decode(data['content']).decode('utf-8')
-except Exception as e:
-    print(f'Error: Failed to decode write payload: {{e}}', file=sys.stderr)
+    os.chdir(path)
+    matches = sorted(glob.glob(pattern, recursive=True))
+    for m in matches:
+        try:
+            st = os.stat(m)
+        except OSError:
+            continue
+        print(json.dumps({{
+            'path': m,
+            'size': st.st_size,
+            'mtime': st.st_mtime,
+            'is_dir': os.path.isdir(m),
+        }}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'path_not_found'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
+" 2>&1"""
+"""Find files matching a pattern with metadata.
+
+Uses base64-encoded parameters to avoid shell escaping issues.
+"""
+
+_WRITE_CHECK_TEMPLATE = """python3 -c "
+import os, sys, base64
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+if os.path.exists(path):
+    print('Error: File already exists: ' + repr(path))
     sys.exit(1)
+os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+" 2>&1"""
+"""Preflight check for write operations: verify the target file does not already
+exist and create parent directories.
 
-# Check if file already exists (atomic with write)
-if os.path.exists(file_path):
-    print(f'Error: File \\'{{file_path}}\\' already exists', file=sys.stderr)
-    sys.exit(1)
+Only the (small) base64-encoded path is interpolated — file content is
+transferred separately via `upload_files()`.
+"""
 
-# Create parent directory if needed
-parent_dir = os.path.dirname(file_path) or '.'
-os.makedirs(parent_dir, exist_ok=True)
+MAX_BINARY_BYTES: Final = 500 * 1024
+"""Maximum size of a binary file returned by `read()` as base64.
 
-with open(file_path, 'w') as f:
-    f.write(content)
-" <<'__DEEPAGENTS_EOF__'
-{payload_b64}
-__DEEPAGENTS_EOF__\n"""
+Files exceeding this size return a `Binary file exceeds maximum preview size`
+error rather than being base64-encoded in full. Backends overriding `read()`
+should import and reuse this constant to stay in sync with the base
+implementation. Kept in lockstep with the `MAX_BINARY_BYTES` literal in
+`_READ_COMMAND_TEMPLATE` (asserted by `test_read_constants_match_template`).
+"""
 
-# Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
-# Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
-# JSON bundles all parameters; base64 ensures safe transport of arbitrary content
-# (special chars, newlines, etc.) through the heredoc without escaping issues.
+MAX_OUTPUT_BYTES: Final = 500 * 1024
+"""Maximum size of rendered text content returned by `read()`.
+
+Pages exceeding this cap are truncated and `TRUNCATION_MSG` is appended.
+Mirrors the `MAX_OUTPUT_BYTES` literal in `_READ_COMMAND_TEMPLATE`.
+"""
+
+TRUNCATION_MSG: Final = (
+    "\n\n[Output was truncated due to size limits. "
+    "This paginated read result exceeded the sandbox stdout limit. "
+    "Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
+)
+"""Sentinel appended to `read()` content when `MAX_OUTPUT_BYTES` is hit."""
+
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
-import sys
-import base64
-import json
-import os
+import sys, os, stat as _stat, base64, json
 
-# Read and decode JSON payload from stdin
-payload_b64 = sys.stdin.read().strip()
-if not payload_b64:
-    print('Error: No payload received for edit operation', file=sys.stderr)
-    sys.exit(4)
+payload = json.loads(base64.b64decode(sys.stdin.read().strip()).decode('utf-8'))
+path, old, new = payload['path'], payload['old'], payload['new']
+replace_all = payload.get('replace_all', False)
 
 try:
-    payload = base64.b64decode(payload_b64).decode('utf-8')
-    data = json.loads(payload)
-    file_path = data['path']
-    old = data['old']
-    new = data['new']
-except Exception as e:
-    print(f'Error: Failed to decode edit payload: {{e}}', file=sys.stderr)
-    sys.exit(4)
+    st = os.stat(path)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
 
-# Check if file exists
-if not os.path.isfile(file_path):
-    sys.exit(3)  # File not found
+    with open(path, 'rb') as f:
+        raw = f.read()
 
-# Read file content
-with open(file_path, 'r') as f:
-    text = f.read()
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print(json.dumps({{'error': 'not_a_text_file'}}))
+        sys.exit(0)
 
-# Count occurrences
-count = text.count(old)
+    # Match-driven CRLF handling (issue #2880): the read template normalizes
+    # CRLF to LF for the LLM, so old_string arrives LF-only even when the
+    # file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
+    # variant. The first match reveals the file line-ending style in that
+    # region; apply the same transform to new so the file style is preserved.
+    old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    old_lf = old.replace('\\r\\n', '\\n')
+    new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    new_lf = new.replace('\\r\\n', '\\n')
+    count = 0
+    matched_old, matched_new = old, new
+    for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+        c = text.count(cand_old)
+        if c >= 1:
+            matched_old, matched_new, count = cand_old, cand_new, c
+            break
 
-# Exit with error codes if issues found
-if count == 0:
-    sys.exit(1)  # String not found
-elif count > 1 and not {replace_all}:
-    sys.exit(2)  # Multiple occurrences without replace_all
+    if count == 0:
+        print(json.dumps({{'error': 'string_not_found'}}))
+        sys.exit(0)
+    if count > 1 and not replace_all:
+        print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+        sys.exit(0)
 
-# Perform replacement
-if {replace_all}:
-    result = text.replace(old, new)
-else:
-    result = text.replace(old, new, 1)
+    result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
+    with open(path, 'wb') as f:
+        f.write(result.encode('utf-8'))
 
-# Write back to file
-with open(file_path, 'w') as f:
-    f.write(result)
-
-print(count)
-" <<'__DEEPAGENTS_EOF__'
+    print(json.dumps({{'count': count}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
+" 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
-__DEEPAGENTS_EOF__\n"""
+__DEEPAGENTS_EDIT_EOF__
+"""
+# Make sure to maintain a new line at the end of DEEPAGENTS_EDIT_EOF to denote end of
+# feed. This may not matter for some integrations.
 
-# Use heredoc to pass read parameters via stdin, matching write/edit pattern.
-# Stdin format: base64-encoded JSON with
-#   {"path": str, "offset": int, "limit": int, "file_type": str}.
-# Output: JSON with {"encoding": str, "content": str} on success,
-#   {"error": str} on failure.
-_READ_COMMAND_TEMPLATE = """python3 -c "
-import os
-import sys
-import base64
-import json
+"""Server-side file edit via `execute()`.
 
-payload_b64 = sys.stdin.read().strip()
-if not payload_b64:
-    print(json.dumps({{'error': 'No payload received for read operation'}}))
-    sys.exit(1)
+Reads the file, performs string replacement, and writes back — all on the
+sandbox. The payload (path, old/new strings, replace_all flag) is passed as
+base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
+
+Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
+on failure.
+
+Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
+to `_edit_via_upload()` which transfers old/new strings as temp files.
+
+Keeps a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
+detect end-of-input on a newline-delimited heredoc feed can observe completion.
+"""
+
+_EDIT_INLINE_MAX_BYTES: Final = 50_000
+"""Maximum combined byte size of old_string + new_string for inline server-side edit.
+
+Payloads above this use _edit_via_upload (temp file upload + server-side replace)
+to avoid size limits on the execute() request body imposed by some sandbox providers.
+"""
+
+_EDIT_TMPFILE_TEMPLATE = """python3 -c "
+import os, stat as _stat, sys, json, base64
+
+old_path = base64.b64decode('{old_path_b64}').decode('utf-8')
+new_path = base64.b64decode('{new_path_b64}').decode('utf-8')
+target = base64.b64decode('{target_b64}').decode('utf-8')
+replace_all = {replace_all}
 
 try:
-    payload = base64.b64decode(payload_b64).decode('utf-8')
-    data = json.loads(payload)
-    file_path = data['path']
-    offset = int(data['offset'])
-    limit = int(data['limit'])
-    file_type = data.get('file_type', 'text')
+    old = open(old_path, 'rb').read().decode('utf-8')
+    new = open(new_path, 'rb').read().decode('utf-8')
 except Exception as e:
-    print(json.dumps({{'error': f'Failed to decode read payload: {{e}}'}}))
-    sys.exit(1)
-
-if not os.path.isfile(file_path):
-    print(json.dumps({{'error': 'File not found'}}))
-    sys.exit(1)
-
-if os.path.getsize(file_path) == 0:
-    print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
+    print(json.dumps({{'error': 'temp_read_failed', 'detail': str(e)}}))
     sys.exit(0)
-
-with open(file_path, 'rb') as f:
-    raw = f.read()
+finally:
+    for p in (old_path, new_path):
+        try: os.remove(p)
+        except OSError: pass
 
 try:
-    content = raw.decode('utf-8')
-    encoding = 'utf-8'
-except UnicodeDecodeError:
-    content = base64.b64encode(raw).decode('ascii')
-    encoding = 'base64'
+    st = os.stat(target)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
 
-if encoding == 'utf-8' and file_type == 'text':
-    lines = content.splitlines()
-    start_idx = offset
-    end_idx = offset + limit
-    if start_idx >= len(lines):
-        print(json.dumps({{'error': f'Line offset {{offset}} exceeds file length ({{len(lines)}} lines)'}}))
-        sys.exit(1)
-    selected = lines[start_idx:end_idx]
-    content = '\\n'.join(selected)
+    with open(target, 'rb') as f:
+        raw = f.read()
 
-print(json.dumps({{'encoding': encoding, 'content': content}}))
-" <<'__DEEPAGENTS_EOF__'
-{payload_b64}
-__DEEPAGENTS_EOF__\n"""
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print(json.dumps({{'error': 'not_a_text_file'}}))
+        sys.exit(0)
+
+    # Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+    old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    old_lf = old.replace('\\r\\n', '\\n')
+    new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    new_lf = new.replace('\\r\\n', '\\n')
+    count = 0
+    matched_old, matched_new = old, new
+    for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+        c = text.count(cand_old)
+        if c >= 1:
+            matched_old, matched_new, count = cand_old, cand_new, c
+            break
+
+    if count == 0:
+        print(json.dumps({{'error': 'string_not_found'}}))
+        sys.exit(0)
+    if count > 1 and not replace_all:
+        print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+        sys.exit(0)
+
+    result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
+    with open(target, 'wb') as f:
+        f.write(result.encode('utf-8'))
+
+    print(json.dumps({{'count': count}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
+" 2>&1"""
+"""Server-side file edit via temp-file upload for large payloads.
+
+Old/new strings are uploaded as temporary files via `upload_files()`, then this
+script reads them, performs the replacement on the source file (which never
+leaves the sandbox), and cleans up the temp files.
+
+Output: single-line JSON with `{{"count": N}}` on success or
+`{{"error": ...}}` on failure.  Same success contract as
+`_EDIT_COMMAND_TEMPLATE`; additionally produces
+`{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
+files cannot be read.
+"""
+
+_READ_COMMAND_TEMPLATE = """python3 -c "
+import codecs, os, stat as _stat, sys, base64, json
+
+MAX_OUTPUT_BYTES = 500 * 1024
+MAX_BINARY_BYTES = 500 * 1024
+TRUNCATION_MSG = '\\n\\n' + (
+    '[Output was truncated due to size limits. '
+    'This paginated read result exceeded the sandbox stdout limit. '
+    'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'
+)
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+
+try:
+    st = os.stat(path)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
+
+    if st.st_size == 0:
+        print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
+        sys.exit(0)
+
+    file_type = '{file_type}'
+    if file_type != 'text':
+        if st.st_size > MAX_BINARY_BYTES:
+            print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
+            sys.exit(0)
+        with open(path, 'rb') as f:
+            raw = f.read()
+        print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+        sys.exit(0)
+
+    with open(path, 'rb') as f:
+        raw_prefix = f.read(8192)
+
+    # The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
+    # emoji is 4); the incremental decoder buffers a trailing partial sequence
+    # instead of raising, so legitimate text isn't misclassified as binary.
+    is_binary = False
+    try:
+        codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
+    except UnicodeDecodeError:
+        is_binary = True
+
+    if is_binary:
+        with open(path, 'rb') as f:
+            raw = f.read()
+        print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+        sys.exit(0)
+
+    offset = {offset}
+    limit = {limit}
+    line_count = 0
+    returned_lines = 0
+    truncated = False
+    parts = []
+    current_bytes = 0
+    msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+    effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+
+    with open(path, 'r', encoding='utf-8', newline=None) as f:
+        for raw_line in f:
+            line_count += 1
+            if line_count <= offset:
+                continue
+            if returned_lines >= limit:
+                break
+
+            line = raw_line.rstrip('\\n').rstrip('\\r')
+            piece = line if returned_lines == 0 else '\\n' + line
+            piece_bytes = len(piece.encode('utf-8'))
+            if current_bytes + piece_bytes > effective_limit:
+                truncated = True
+                remaining_bytes = effective_limit - current_bytes
+                if remaining_bytes > 0:
+                    prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                    if prefix:
+                        parts.append(prefix)
+                        current_bytes += len(prefix.encode('utf-8'))
+                break
+
+            parts.append(piece)
+            current_bytes += piece_bytes
+            returned_lines += 1
+
+    if returned_lines == 0 and not truncated:
+        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+        sys.exit(0)
+
+    text = ''.join(parts)
+    if truncated:
+        text += TRUNCATION_MSG
+
+    print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
+" 2>&1"""
+"""Read file content with server-side pagination.
+
+Runs on the sandbox via `execute()`. Only the requested page is returned,
+avoiding full-file transfer for paginated text reads. The path is
+base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
+(safe because they come from internal code, not user input).
+
+Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
+success or `{{"error": ...}}` on failure.
+"""
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
-    """Base sandbox implementation with execute() as abstract method.
+    """Base sandbox implementation with `execute()` as the core abstract method.
 
-    This class provides default implementations for all protocol methods
-    using shell commands. Subclasses only need to implement execute().
+    This class provides default implementations for all protocol methods.
+    File listing, grep, and glob use shell commands via `execute()`. Read uses
+    a server-side Python script via `execute()` for paginated access. Write
+    delegates content transfer to `upload_files()`. Edit uses a server-side
+    script for small payloads and uploads old/new strings as temp files with
+    a server-side replace for large ones.
+
+    !!! note
+
+        `BaseSandbox` does not reduce or partition the trust boundary of
+        `execute()`. Its helper methods are convenience wrappers built on top of
+        the subclass-provided command-execution primitive and assume callers who
+        can use `BaseSandbox` already have whatever shell-execution capability
+        that backend exposes.
+
+    Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
+    and the `id` property.
     """
 
     @abstractmethod
@@ -244,20 +433,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
 
-    @staticmethod
-    def _timeout_error(output: str, *, fallback: str) -> str:
-        """Normalize timeout-related execute output for file-operation methods that delegate to execute()."""
-        stripped = output.strip()
-        if stripped.startswith("Error: "):
-            return stripped[len("Error: ") :]
-        return stripped or fallback
-
-    def ls_info(
-        self,
-        path: str,
-        *,
-        timeout: int | None = None,
-    ) -> LsResult:
+    def ls(self, path: str, *, timeout: int | None = None) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
@@ -276,30 +452,31 @@ try:
             }}
             print(json.dumps(result))
 except FileNotFoundError:
-    pass
+    print(json.dumps({{'error': 'path_not_found'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
 except PermissionError:
-    pass
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>/dev/null"""
 
         result = self.execute(cmd, timeout=timeout)
-        if result.exit_code == _TIMEOUT_EXIT_CODE:
-            return LsResult(
-                error=self._timeout_error(
-                    result.output,
-                    fallback=f"ls timed out after {timeout} seconds" if timeout is not None else "ls timed out",
-                )
-            )
 
         file_infos: list[FileInfo] = []
+        error: str | None = None
         for line in result.output.strip().split("\n"):
             if not line:
                 continue
             try:
                 data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
             except json.JSONDecodeError:
                 continue
+            if isinstance(data, dict) and "error" in data:
+                error = data["error"]
+                continue
+            file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
 
+        if error is not None:
+            return LsResult(entries=None, error=f"Path '{path}': {error}")
         return LsResult(entries=file_infos)
 
     def read(
@@ -310,38 +487,88 @@ except PermissionError:
         *,
         timeout: int | None = None,
     ) -> ReadResult:
-        """Read file content using a single shell command."""
-        file_type = _get_file_type(file_path)
-        payload = json.dumps(
-            {
-                "path": file_path,
-                "offset": int(offset),
-                "limit": int(limit),
-                "file_type": file_type,
-            }
-        )
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        cmd = _READ_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd, timeout=timeout)
+        """Read file content with server-side line-based pagination.
 
+        Runs a Python script on the sandbox via `execute()` that reads the
+        file, detects encoding, and applies offset/limit pagination for text
+        files. Only the requested page is returned over the wire, and text
+        output is capped to about 500 KiB to avoid backend stdout/log transport
+        failures. When that cap is exceeded, the returned content is truncated
+        with guidance to continue pagination using a different `offset` or
+        smaller `limit`.
+
+        Binary files (non-UTF-8) are returned base64-encoded without
+        pagination.
+
+        Args:
+            file_path: Absolute path to the file to read.
+            offset: Starting line number (0-indexed).
+
+                Only applied to text files.
+            limit: Maximum number of lines to return.
+
+                Only applied to text files.
+
+        Returns:
+            `ReadResult` with `file_data` on success or `error` on failure.
+        """
+        file_type = _get_file_type(file_path)
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+
+        # Defensive int coercion in case callers bypass type checking.
+        cmd = _READ_COMMAND_TEMPLATE.format(
+            path_b64=path_b64,
+            file_type=file_type,
+            offset=int(offset),
+            limit=int(limit),
+        )
+        result = self.execute(cmd, timeout=timeout)
         output = result.output.rstrip()
-        if result.exit_code == _TIMEOUT_EXIT_CODE:
-            return ReadResult(
-                error=self._timeout_error(
-                    output,
-                    fallback=f"read timed out after {timeout} seconds" if timeout is not None else "read timed out",
-                )
-            )
 
         try:
             data = json.loads(output)
-        except json.JSONDecodeError:
-            return ReadResult(error=f"File '{file_path}' not found")
+        except (json.JSONDecodeError, ValueError):
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
 
         if "error" in data:
-            return ReadResult(error=data["error"])
+            return ReadResult(error=f"File '{file_path}': {data['error']}")
 
-        return ReadResult(file_data=create_file_data(data["content"], encoding=data.get("encoding", "utf-8")))
+        return ReadResult(
+            file_data=FileData(
+                content=data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            )
+        )
+
+    def _write_preflight(self, file_path: str, *, timeout: int | None = None) -> WriteResult | None:
+        """Run the existence check + parent-directory creation for `write()`.
+
+        Subclasses overriding `write()` (e.g., to use a native SDK transport)
+        should call this first so they preserve the same "fail if file exists"
+        and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
+        window between this check and the actual write — an inherent limitation
+        of splitting the operation across two backend calls.
+
+        Args:
+            file_path: Absolute path for the file about to be written.
+
+        Returns:
+            `None` if the preflight passes (target does not exist, parents
+                created); a populated `WriteResult` with `error` set if the
+                check fails.
+        """
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+        result = self.execute(check_cmd, timeout=timeout)
+        if result.exit_code != 0 or "Error:" in result.output:
+            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+            return WriteResult(error=error_msg)
+        return None
 
     def write(
         self,
@@ -350,32 +577,29 @@ except PermissionError:
         *,
         timeout: int | None = None,
     ) -> WriteResult:
-        """Create a new file. Returns WriteResult; error populated on failure."""
-        # Create JSON payload with file path and base64-encoded content
-        # This avoids shell injection via file_path and ARG_MAX limits on content
-        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        payload = json.dumps({"path": file_path, "content": content_b64})
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        """Create a new file, failing if it already exists.
 
-        # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd, timeout=timeout)
+        Args:
+            file_path: Absolute path for the new file.
+            content: UTF-8 text content to write.
 
-        if result.exit_code == _TIMEOUT_EXIT_CODE:
-            return WriteResult(
-                error=self._timeout_error(
-                    result.output.strip(),
-                    fallback=f"write timed out after {timeout} seconds" if timeout is not None else "write timed out",
-                )
-            )
+        Returns:
+            `WriteResult` with `path` on success or `error` on failure.
+        """
+        preflight_error = self._write_preflight(file_path, timeout=timeout)
+        if preflight_error is not None:
+            return preflight_error
 
-        # Check for errors (exit code or error message in output)
-        if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+        responses = self.upload_files([(file_path, content.encode("utf-8"))])
+        if not responses:
+            # An unreachable condition was reached
+            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
+            raise AssertionError(msg)
+        response = responses[0]
+        if response.error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
 
-        # External storage - no files_update needed
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -386,44 +610,164 @@ except PermissionError:
         *,
         timeout: int | None = None,
     ) -> EditResult:
-        """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Create JSON payload with file path, old string, and new string
-        # This avoids shell injection via file_path and ARG_MAX limits on strings
-        payload = json.dumps({"path": file_path, "old": old_string, "new": new_string})
+        """Edit a file by replacing exact string occurrences.
+
+        For small payloads (combined old/new under `_EDIT_INLINE_MAX_BYTES`),
+        runs a server-side Python script via `execute()` — single round-trip,
+        no file transfer.  For larger payloads, uploads old/new strings as
+        temp files and runs a server-side replace script — the source file
+        never leaves the sandbox.
+
+        `read()` normalizes CRLF to LF for the LLM, so `old_string` is
+        typically LF-only. The server-side script tries `old_string` as-is
+        first, then CRLF- and LF-normalized variants, and applies the same
+        transform to `new_string` so the file's line-ending style is
+        preserved on write. On mixed-ending files, `replace_all=True` only
+        touches occurrences in the first matching style — subsequent edits
+        can replace the rest.
+
+        Args:
+            file_path: Absolute path to the file to edit.
+            old_string: The exact substring to find.
+            new_string: The replacement string.
+            replace_all: If `True`, replace every occurrence.
+
+                If `False` (default), error when more than one
+                occurrence exists.
+
+        Returns:
+            `EditResult` with `path` and `occurrences` on success, or `error`
+                on failure.
+        """
+        payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
+
+        if payload_size <= _EDIT_INLINE_MAX_BYTES:
+            return self._edit_inline(file_path, old_string, new_string, replace_all, timeout=timeout)
+
+        return self._edit_via_upload(file_path, old_string, new_string, replace_all, timeout=timeout)
+
+    def _edit_inline(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
+        """Server-side replace via `execute()` — single round-trip."""
+        payload = json.dumps(
+            {
+                "path": file_path,
+                "old": old_string,
+                "new": new_string,
+                "replace_all": replace_all,
+            }
+        )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-
-        # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd, timeout=timeout)
+        output = result.output.rstrip()
 
-        exit_code = result.exit_code
-        output = result.output.strip()
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
-        if exit_code == _TIMEOUT_EXIT_CODE:
-            return EditResult(
-                error=self._timeout_error(
-                    output,
-                    fallback=f"edit timed out after {timeout} seconds" if timeout is not None else "edit timed out",
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            return self._map_edit_error(data["error"], file_path, old_string)
+
+        return EditResult(
+            path=file_path,
+            occurrences=data.get("count", 1),
+        )
+
+    def _edit_via_upload(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+        *,
+        timeout: int | None = None,
+    ) -> EditResult:
+        """Upload old/new as temp files, replace server-side.
+
+        The source file never leaves the sandbox. Only the old/new strings are
+        transferred via `upload_files()`, and a server-side script reads them,
+        performs the replacement, and cleans up the temp files.
+        """
+        uid = base64.b32encode(os.urandom(10)).decode("ascii").lower()
+        old_tmp = f"/tmp/.deepagents_edit_{uid}_old"  # noqa: S108  # sandbox-internal temp file with 80-bit random uid
+        new_tmp = f"/tmp/.deepagents_edit_{uid}_new"  # noqa: S108
+
+        resps = self.upload_files(
+            [
+                (old_tmp, old_string.encode("utf-8")),
+                (new_tmp, new_string.encode("utf-8")),
+            ]
+        )
+        if len(resps) < 2:  # noqa: PLR2004  # expecting exactly 2 responses
+            return EditResult(error=f"Error editing file '{file_path}': upload returned no response")
+        for r in resps:
+            if r.error:
+                return EditResult(error=f"Error editing file '{file_path}': {r.error}")
+
+        cmd = _EDIT_TMPFILE_TEMPLATE.format(
+            old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
+            new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
+            target_b64=base64.b64encode(file_path.encode("utf-8")).decode("ascii"),
+            replace_all=replace_all,
+        )
+        result = self.execute(cmd, timeout=timeout)
+        output = result.output.rstrip()
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            # Script may not have started or its finally block may not have
+            # run — best-effort cleanup of temp files.
+            cleanup = self.execute(f"rm -f {shlex.quote(old_tmp)} {shlex.quote(new_tmp)}", timeout=timeout)
+            if cleanup.exit_code != 0:
+                logger.warning(
+                    "Failed to clean up temp files for edit %s: %s",
+                    file_path,
+                    cleanup.output[:200],
                 )
-            )
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
-        # Map exit codes to error messages
-        error_messages = {
-            1: f"Error: String not found in file: '{old_string}'",
-            2: f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
-            3: f"Error: File '{file_path}' not found",
-            4: f"Error: Failed to decode edit payload: {output}",
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            return self._map_edit_error(data["error"], file_path, old_string)
+
+        return EditResult(
+            path=file_path,
+            occurrences=data.get("count", 1),
+        )
+
+    @staticmethod
+    def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
+        """Map server-side error codes to `EditResult` objects."""
+        messages: dict[str, str] = {
+            "file_not_found": f"Error: File '{file_path}' not found",
+            "permission_denied": f"Error: Permission denied editing file '{file_path}'",
+            "not_a_file": f"Error: '{file_path}' is not a regular file",
+            "not_a_text_file": f"Error: File '{file_path}' is not a text file",
+            "string_not_found": f"Error: String not found in file: '{old_string}'",
+            "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
         }
-        if exit_code in error_messages:
-            return EditResult(error=error_messages[exit_code])
-        if exit_code != 0:
-            return EditResult(error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}")
+        return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
 
-        count = int(output)
-        # External storage - no files_update needed
-        return EditResult(path=file_path, files_update=None, occurrences=count)
-
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -431,16 +775,30 @@ except PermissionError:
         *,
         timeout: int | None = None,
     ) -> GrepResult:
-        """Structured search results or error string for invalid input."""
+        """Search file contents for a literal string using `grep -F`.
+
+        Args:
+            pattern: Literal string to search for (not a regex).
+            path: Directory or file to search in.
+
+                Defaults to `"."`.
+            glob: Optional file-name glob to restrict the search
+                (e.g. `'*.py'`).
+
+        Returns:
+            `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
+        """
         search_path = shlex.quote(path or ".")
 
         # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        # `-Z` separates the filename from line data with NUL, so filenames may
+        # contain `:` without making the output ambiguous.
+        grep_opts = "-rHnFZ"
 
         # Add glob pattern if specified
         glob_pattern = ""
         if glob:
-            glob_pattern = f"--include='{glob}'"
+            glob_pattern = f"--include={shlex.quote(glob)}"
 
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
@@ -448,69 +806,79 @@ except PermissionError:
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd, timeout=timeout)
 
-        output = result.output.rstrip()
-        if result.exit_code == _TIMEOUT_EXIT_CODE:
-            fallback = f"grep timed out after {timeout} seconds" if timeout is not None else "grep timed out"
-            return GrepResult(error=f"Error: {self._timeout_error(output, fallback=fallback)}")
+        output = result.output.rstrip("\n")
+        if result.exit_code is not None and result.exit_code != 0:
+            detail = output.strip() if output else f"exit code {result.exit_code}"
+            return GrepResult(error=f"Path '{path or '.'}': {detail}")
         if not output:
             return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
+        parse_error: str | None = None
         for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= 3:  # noqa: PLR2004  # Grep output field count
+            # Format is: path\0line_number:text
+            parts = line.split("\0", 1)
+            if len(parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            line_parts = parts[1].split(":", 1)
+            if len(line_parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            try:
                 matches.append(
                     {
                         "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
+                        "line": int(line_parts[0]),
+                        "text": line_parts[1],
                     }
                 )
+            except ValueError:
+                parse_error = line
+
+        if parse_error is not None and not matches:
+            return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
 
         return GrepResult(matches=matches)
 
-    def glob_info(
-        self,
-        pattern: str,
-        path: str = "/",
-        *,
-        timeout: int | None = None,
-    ) -> GlobResult:
-        """Structured glob matching returning GlobResult."""
+    def glob(self, pattern: str, path: str | None = None, *, timeout: int | None = None) -> GlobResult:
+        """Structured glob matching returning `GlobResult`."""
+        search_path = path or "/"
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
-        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+        path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
         result = self.execute(cmd, timeout=timeout)
 
         output = result.output.strip()
-        if result.exit_code == _TIMEOUT_EXIT_CODE:
-            return GlobResult(
-                error=self._timeout_error(
-                    output,
-                    fallback=f"glob timed out after {timeout} seconds" if timeout is not None else "glob timed out",
-                )
-            )
         if not output:
             return GlobResult(matches=[])
 
-        # Parse JSON output into FileInfo dicts
+        # Parse JSON output into FileInfo dicts. Any error record (emitted when
+        # the search path itself is unreachable) wins over partial matches —
+        # mirrors read()/ls() convention: sandbox emits a short code, host wraps
+        # it with the search-path prefix.
         file_infos: list[FileInfo] = []
+        error: str | None = None
         for line in output.split("\n"):
             try:
                 data = json.loads(line)
-                file_infos.append(
-                    {
-                        "path": data["path"],
-                        "is_dir": data["is_dir"],
-                    }
-                )
             except json.JSONDecodeError:
                 continue
+            if isinstance(data, dict) and "error" in data:
+                error = data["error"]
+                continue
+            file_infos.append(
+                {
+                    "path": data["path"],
+                    "is_dir": data["is_dir"],
+                }
+            )
 
+        if error is not None:
+            return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
         return GlobResult(matches=file_infos)
 
     @property
@@ -523,7 +891,10 @@ except PermissionError:
         """Upload multiple files to the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
-        and return errors in FileUploadResponse objects rather than raising.
+        and return errors in `FileUploadResponse` objects rather than raising.
+
+        Upload files is responsible for ensuring that the parent path exists
+        (if user permissions allow the user to write to the given directory)
         """
 
     @abstractmethod
@@ -531,5 +902,5 @@ except PermissionError:
         """Download multiple files from the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
-        and return errors in FileDownloadResponse objects rather than raising.
+        and return errors in `FileDownloadResponse` objects rather than raising.
         """

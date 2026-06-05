@@ -1,13 +1,9 @@
 ---
 name: query-writing
-description: For writing and executing SQL queries - from simple single-table queries to complex multi-table JOINs and aggregations
+description: Writes and executes SQL queries from simple SELECTs to complex multi-table JOINs, aggregations, and subqueries. Use when the user asks to query a database, write SQL, run a SELECT statement, retrieve data, filter records, or generate reports from database tables.
 ---
 
 # Query Writing Skill
-
-## When to Use This Skill
-
-Use this skill when you need to answer a question by writing and executing a SQL query.
 
 ## Workflow for Simple Queries
 
@@ -55,6 +51,13 @@ GROUP BY c.Country
 ORDER BY TotalRevenue DESC
 LIMIT 5;
 ```
+
+## Error Recovery
+
+If a query fails or returns unexpected results:
+1. **Empty results** — Verify column names and WHERE conditions against the schema; check for case sensitivity or NULL values
+2. **Syntax error** — Re-examine JOINs, GROUP BY completeness, and alias references
+3. **Timeout** — Add stricter WHERE filters or LIMIT to reduce result set, then refine
 
 ## Quality Guidelines
 

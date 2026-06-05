@@ -47,9 +47,22 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentJob, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.rubric import (
+    GRADER_SYSTEM_PROMPT,
+    RUBRIC_GRADER_MESSAGE_SOURCE,
+    CriterionEval,
+    CriterionFail,
+    CriterionPass,
+    GraderResponse,
+    GraderVerdict,
+    RubricEvaluation,
+    RubricMiddleware,
+    RubricResult,
+    RubricState,
+)
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import (
@@ -59,12 +72,23 @@ from deepagents.middleware.summarization import (
 )
 
 __all__ = [
+    "GRADER_SYSTEM_PROMPT",
+    "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
-    "AsyncSubAgentJob",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
+    "CriterionEval",
+    "CriterionFail",
+    "CriterionPass",
     "FilesystemMiddleware",
+    "FilesystemPermission",
+    "GraderResponse",
+    "GraderVerdict",
     "MemoryMiddleware",
+    "RubricEvaluation",
+    "RubricMiddleware",
+    "RubricResult",
+    "RubricState",
     "SkillsMiddleware",
     "SubAgent",
     "SubAgentMiddleware",

@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.5.0"
+version = "0.6.8"
 
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
@@ -20,20 +20,23 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain-core>=1.2.19,<2.0.0",
-    "langchain>=1.2.12,<2.0.0",
-    "langchain-anthropic>=1.3.5,<2.0.0",
-    "langchain-google-genai>=4.2.0,<5.0.0",
+    "langchain-core>=1.4.0,<2.0.0",
+    "langsmith>=0.8.3",
+    "langchain>=1.3.4,<2.0.0",
+    "langchain-anthropic>=1.4.3,<2.0.0",
+    "langchain-google-genai>=4.2.2,<5.0.0",
     "wcmatch",
 ]
 
+[project.optional-dependencies]
+quickjs = ["langchain-quickjs"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
@@ -41,6 +44,8 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 [dependency-groups]
 test = [
   "pytest",
+  "pytest-benchmark",
+  "pytest-codspeed>=4.4.0,<5.0.0",
   "pytest-cov",
   "pytest-xdist",
   "pytest-timeout>=2.3.1,<3.0.0",
@@ -49,27 +54,12 @@ test = [
   "ruff>=0.12.2,<0.16.0",
   "ty>=0.0.1,<1.0.0",
   "pytest-asyncio>=1.3.0",
+  "langchain-tests>=1.1.6",
   "langchain-openai",
   "twine",
   "build",
 ]
 
-evals = [
-  "langsmith",
-  "langchain-anthropic",
-  "langchain-baseten",
-  "langchain-deepseek",
-  "langchain-fireworks",
-  "langchain-google-genai",
-  "langchain-groq",
-  "langchain-mistralai",
-  "langchain-ollama",
-  "langchain-openai",
-  "langchain-xai",
-  "datasets>=3.0.0",
-  "nltk>=3.9.0",
-  "tiktoken>=0.8.0",
-]
 
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
@@ -80,8 +70,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 150
-# Exclude any files that shouldn't be linted
-exclude = []
 
 [tool.ruff.format]
 docstring-code-format = true  # Formats code blocks in docstrings
@@ -99,12 +87,16 @@ ignore = [
     "PLC0414", # Import alias does not rename original package — conflicts with type-checker re-export conventions
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+extend-safe-fixes = ["PLR6201"]
 
 [tool.ruff.lint.pyupgrade]
 keep-runtime-typing = true
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 force-single-line = false
@@ -136,6 +128,30 @@ ignore-var-parameters = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not benchmark'"
+filterwarnings = [
+    "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+    # Tests intentionally exercise the legacy `list[str]` store content format
+    # for backwards-compat coverage; the deprecation fires from internal code.
+    "ignore:Store item with `list\\[str\\]` content is deprecated:DeprecationWarning",
+    # `files_update` is exercised by middleware tests verifying internal handling.
+    "ignore:`files_update` was deprecated:DeprecationWarning",
+    # Legacy `FileData` `list[str]` content shape, exercised for compat coverage.
+    "ignore:`FileData` with `list\\[str\\]` content is deprecated:DeprecationWarning",
+    # Filesystem middleware tests still exercise the factory/runtime backend path.
+    "ignore:Passing a callable \\(factory\\) as `backend` is deprecated:DeprecationWarning",
+    "ignore:Passing `runtime` to `StateBackend` is deprecated:DeprecationWarning",
+    # `virtual_mode` default-change notice; tests assert legacy behavior explicitly.
+    "ignore:`LocalShellBackend` `virtual_mode` default will change:DeprecationWarning",
+    "ignore:`FilesystemBackend` `virtual_mode` default will change:DeprecationWarning",
+    # `langsmith.sandbox` is alpha upstream; the FutureWarning fires on import.
+    "ignore:langsmith.sandbox is in alpha:FutureWarning",
+    # pytest-cov complains when invoked with `--no-cov` (used for fast runs).
+    "ignore::pytest_cov.plugin.CovDisabledWarning",
+]
+markers = [
+    "benchmark: wall-time benchmarks for construction performance",
+]
 
 [tool.ty.environment]
 python-version = "3.11"

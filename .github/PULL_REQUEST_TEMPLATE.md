@@ -1,6 +1,8 @@
 Fixes #
 
-<!-- Replace everything above this line with a 1-2 sentence description of your change. Keep the "Fixes #xx" keyword and update the issue number. -->
+---
+
+<!-- Keep the `Fixes #xx` keyword at the very top and update the issue number — this auto-closes the issue on merge. Replace this comment with a 1-2 sentence description of your change. No `# Summary` header; the description is the summary. -->
 
 Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
 
@@ -16,7 +18,7 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
     - fix(sdk): resolve flag parsing error
     - feat(cli): add multi-tenant support
     - test(acp): update API usage tests
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml#L15-L26
+  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml
 
 2. PR description:
 

@@ -75,7 +75,7 @@ async def ralph(
             to auto-detection from environment API keys
             (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`).
         model_params: Additional model parameters (e.g. `{"temperature": 0.5}`).
-        sandbox_type: Sandbox provider (`"none"`, `"modal"`, `"daytona"`, etc.).
+        sandbox_type: Sandbox provider (`"none"`, `"agentcore"`, `"modal"`, `"daytona"`, etc.).
         sandbox_id: Existing sandbox instance ID to reuse.
         sandbox_setup: Path to a setup script to run inside the sandbox.
         stream: Whether to stream model output.
@@ -190,7 +190,7 @@ Examples:
     parser.add_argument(
         "--sandbox",
         default="none",
-        help="Sandbox provider (e.g., modal, daytona). Default: none",
+        help="Sandbox provider (e.g., agentcore, modal, daytona). Default: none",
     )
     parser.add_argument(
         "--sandbox-id",

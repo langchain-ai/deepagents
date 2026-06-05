@@ -1,18 +1,9 @@
 ---
 name: schema-exploration
-description: For discovering and understanding database structure, tables, columns, and relationships
+description: Lists tables, describes columns and data types, identifies foreign key relationships, and maps entity relationships in a database. Use when the user asks about database schema, table structure, column types, what tables exist, ERD, foreign keys, or how entities relate.
 ---
 
 # Schema Exploration Skill
-
-## When to Use This Skill
-
-Use this skill when you need to:
-- Understand the database structure
-- Find which tables contain certain types of data
-- Discover column names and data types
-- Map relationships between tables
-- Answer questions like "What tables are available?" or "What columns does the Customer table have?"
 
 ## Workflow
 
@@ -139,23 +130,3 @@ This requires the query-writing skill to execute.
 - Explain the relationship chain
 - Suggest next steps (use query-writing skill)
 
-## Common Exploration Patterns
-
-### Pattern 1: Find a Table
-"Which table has customer information?"
-→ Use list_tables, then describe Customer table
-
-### Pattern 2: Understand Structure
-"What's in the Invoice table?"
-→ Use schema tool to show columns and sample data
-
-### Pattern 3: Map Relationships
-"How are artists connected to sales?"
-→ Trace the foreign key chain: Artist → Album → Track → InvoiceLine → Invoice
-
-## Tips
-
-- Table names in Chinook are singular and capitalized (Customer, not customers)
-- Foreign keys typically have "Id" suffix and match a table name
-- Use sample data to understand what values look like
-- When unsure which table to use, list all tables first

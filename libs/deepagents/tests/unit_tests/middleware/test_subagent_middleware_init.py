@@ -1,10 +1,12 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
-import warnings
+from typing import get_type_hints
 
 import pytest
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langgraph.graph import START, MessagesState, StateGraph
 
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
@@ -31,32 +33,36 @@ class TestSubagentMiddlewareInit:
     def test_subagent_middleware_init(self) -> None:
         """Test basic SubAgentMiddleware initialization with general-purpose subagent."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     **GENERAL_PURPOSE_SUBAGENT,
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
         )
         assert middleware is not None
-        # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
-        assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
         assert "Available subagent types:" in middleware.system_prompt
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
 
+    def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
+        """Public constructor annotations should support runtime introspection."""
+        hints = get_type_hints(SubAgentMiddleware.__init__)
+
+        assert "state_schema" in hints
+
     def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [get_weather],
                 }
             ],
@@ -69,13 +75,13 @@ class TestSubagentMiddlewareInit:
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""
         middleware = SubAgentMiddleware(
-            backend=StateBackend,
+            backend=StateBackend(),
             subagents=[
                 {
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
@@ -85,57 +91,19 @@ class TestSubagentMiddlewareInit:
         # Custom system prompt plus available subagent types
         assert middleware.system_prompt.startswith("Use the task tool to call a subagent.")
 
-    # ========== Tests for new API ==========
-
-    def test_new_api_requires_backend(self) -> None:
-        """Test that the new API requires backend parameter."""
-        with pytest.raises(ValueError, match="requires either"):
-            SubAgentMiddleware(
-                subagents=[
-                    {
-                        "name": "test",
-                        "description": "Test",
-                        "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
-                        "tools": [],
-                    }
-                ],
-            )
-
-    def test_new_api_requires_subagents(self) -> None:
-        """Test that the new API requires at least one subagent."""
+    def test_requires_subagents(self) -> None:
+        """Test that at least one subagent is required."""
         with pytest.raises(ValueError, match="At least one subagent"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[],
             )
 
-    def test_new_api_no_deprecation_warning(self) -> None:
-        """Test that using only new API args does not emit deprecation warning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            middleware = SubAgentMiddleware(
-                backend=StateBackend,
-                subagents=[
-                    {
-                        "name": "test",
-                        "description": "Test subagent",
-                        "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
-                        "tools": [],
-                    }
-                ],
-            )
-            # Filter for DeprecationWarnings only
-            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(deprecation_warnings) == 0, f"Unexpected deprecation warnings: {deprecation_warnings}"
-        assert middleware is not None
-
-    def test_new_api_subagent_requires_model(self) -> None:
-        """Test that subagents must specify model when using new API."""
+    def test_subagent_requires_model(self) -> None:
+        """Test that subagents must specify model."""
         with pytest.raises(ValueError, match="must specify 'model'"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
@@ -147,98 +115,121 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-    def test_new_api_subagent_requires_tools(self) -> None:
-        """Test that subagents must specify tools when using new API."""
+    def test_subagent_requires_tools(self) -> None:
+        """Test that subagents must specify tools."""
         with pytest.raises(ValueError, match="must specify 'tools'"):
             SubAgentMiddleware(
-                backend=StateBackend,
+                backend=StateBackend(),
                 subagents=[
                     {
                         "name": "test",
                         "description": "Test",
                         "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
+                        "model": "gpt-5.4-mini",
                         # Missing "tools"
                     }
                 ],
             )
 
-    # ========== Tests for deprecated API ==========
+    def _make_echo_graph(self) -> object:
+        """Build a minimal MessagesState graph for use in CompiledSubAgent tests."""
 
-    def test_deprecated_api_still_works(self) -> None:
-        """Test that the deprecated API still works for backward compatibility."""
-        with pytest.warns(DeprecationWarning, match="default_model"):
-            middleware = SubAgentMiddleware(
-                default_model="gpt-4o-mini",
-                default_tools=[get_weather],
-                subagents=[
-                    {
-                        "name": "custom",
-                        "description": "Custom subagent",
-                        "system_prompt": "You are custom.",
-                        "tools": [get_weather],
-                    }
-                ],
-            )
-        assert middleware is not None
-        assert len(middleware.tools) == 1
-        assert middleware.tools[0].name == "task"
-        assert "general-purpose" in middleware.system_prompt
-        assert "custom" in middleware.system_prompt
+        def echo_node(_state: MessagesState) -> dict:
+            return {"messages": [AIMessage(content="hello")]}
 
-    def test_deprecated_api_general_purpose_agent_disabled(self) -> None:
-        """Test deprecated API with general_purpose_agent=False."""
-        with pytest.warns(DeprecationWarning, match="default_model"):
-            middleware = SubAgentMiddleware(
-                default_model="gpt-4o-mini",
-                general_purpose_agent=False,
-                subagents=[
-                    {
-                        "name": "only_agent",
-                        "description": "The only agent",
-                        "system_prompt": "You are the only one.",
-                        "tools": [],
-                    }
-                ],
-            )
-        assert middleware is not None
-        assert "only_agent" in middleware.system_prompt
-        assert "general-purpose" not in middleware.system_prompt
+        builder = StateGraph(MessagesState)
+        builder.add_node("echo", echo_node)
+        builder.add_edge(START, "echo")
+        return builder.compile()
 
-    # ========== Tests for mixing old and new args ==========
+    def test_compiled_subagent_name_propagated_via_config(self) -> None:
+        """CompiledSubAgent.name is forwarded into metadata.lc_agent_name and run_name."""
+        graph = self._make_echo_graph()
 
-    def test_mixed_args_prefers_new_api(self) -> None:
-        """Test that when both backend and deprecated args are provided, new API is used with warning."""
-        with pytest.warns(DeprecationWarning, match="default_model"):
-            middleware = SubAgentMiddleware(
-                backend=StateBackend,
-                subagents=[
-                    {
-                        "name": "test",
-                        "description": "Test subagent",
-                        "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
-                        "tools": [],
-                    }
-                ],
-                default_model="gpt-4o-mini",  # This is deprecated but still triggers warning
-            )
-        assert middleware is not None
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        runnable = specs[0]["runnable"]
+        assert runnable.config is not None
+        assert runnable.config.get("metadata", {}).get("lc_agent_name") == "my-subagent"
+        assert runnable.config.get("run_name") == "my-subagent"
+
+    def test_compiled_subagent_does_not_mutate_original_runnable(self) -> None:
+        """_get_subagents must not mutate the original runnable passed by the caller."""
+        graph = self._make_echo_graph()
+        original_config = getattr(graph, "config", None)
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        middleware._get_subagents()
+
+        assert graph.config == original_config, "Original runnable was mutated by _get_subagents(); use with_config instead of attribute assignment"
+
+    def test_same_runnable_reused_across_multiple_subagents(self) -> None:
+        """Same runnable registered under two different names must not cross-contaminate configs."""
+        graph = self._make_echo_graph()
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "agent-alpha",
+                    "description": "First binding",
+                    "runnable": graph,
+                },
+                {
+                    "name": "agent-beta",
+                    "description": "Second binding",
+                    "runnable": graph,
+                },
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        assert len(specs) == 2
+
+        alpha_runnable = specs[0]["runnable"]
+        beta_runnable = specs[1]["runnable"]
+
+        assert alpha_runnable.config.get("metadata", {}).get("lc_agent_name") == "agent-alpha"
+        assert beta_runnable.config.get("metadata", {}).get("lc_agent_name") == "agent-beta"
+        assert alpha_runnable.config.get("run_name") == "agent-alpha"
+        assert beta_runnable.config.get("run_name") == "agent-beta"
+        assert alpha_runnable is not beta_runnable
+        assert graph.config is None
 
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call subagents.",
             middleware=[
                 SubAgentMiddleware(
-                    backend=StateBackend,
+                    backend=StateBackend(),
                     subagents=[
                         {
                             "name": "subagent1",
                             "description": "First subagent.",
                             "system_prompt": "You are subagent 1.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },
@@ -246,7 +237,7 @@ class TestSubagentMiddlewareInit:
                             "name": "subagent2",
                             "description": "Second subagent.",
                             "system_prompt": "You are subagent 2.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },

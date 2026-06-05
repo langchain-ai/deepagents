@@ -1,0 +1,1533 @@
+[
+  {
+    "id": "multi_turn_composite_69",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "TwitterAPI",
+      "VehicleControlAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "Estimate the distance between two cities. Afterwards, fill the tank with 40 liters of gasoline for my quick trip."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The cities are San Francisco and Rivermist."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Preparations are complete. Start the engine so I can tweet about this journey containing message 'Just started my journey!' with #RoadTrip and @carenthusiast."
+        }
+      ]
+    ],
+    "initial_config": {
+      "VehicleControlAPI": {
+        "fuelLevel": 10.0,
+        "batteryVoltage": 12.6,
+        "engineState": "stopped",
+        "doorStatus": {
+          "driver": "unlocked",
+          "passenger": "unlocked",
+          "rear_left": "unlocked",
+          "rear_right": "unlocked"
+        },
+        "acTemperature": 22.0,
+        "fanSpeed": 60,
+        "acMode": "auto",
+        "humidityLevel": 45.0,
+        "headLightStatus": "off",
+        "brakeStatus": "released",
+        "brakeForce": 0.0,
+        "slopeAngle": 0.0,
+        "distanceToNextVehicle": 100.0,
+        "cruiseStatus": "inactive",
+        "destination": "Rivermist",
+        "frontLeftTirePressure": 32.0,
+        "frontRightTirePressure": 32.0,
+        "rearLeftTirePressure": 30.0,
+        "rearRightTirePressure": 30.0
+      },
+      "TwitterAPI": {
+        "authenticated": true,
+        "tweet_count": 3,
+        "tweet_list": [
+          "Excited for the journey!",
+          "Packing up for the trip.",
+          "Can't wait to hit the road!"
+        ]
+      }
+    },
+    "ground_truth": [
+      [],
+      [],
+      [
+        "get_zipcode_based_on_city('San Francisco')",
+        "get_zipcode_based_on_city('Rivermist')",
+        "estimate_distance(cityA='94016', cityB='83214')",
+        "liter_to_gallon(liter=40)",
+        "fillFuelTank(fuelAmount=10.566880000000001)"
+      ],
+      [
+        "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+        "activateParkingBrake('engage')",
+        "startEngine(ignitionMode='START')",
+        "post_tweet(content='Just started my journey!', tags=['#RoadTrip'], mentions=['@carenthusiast'])"
+      ]
+    ],
+    "num_turns": 4,
+    "num_expected_calls": 9,
+    "difficulty": "medium",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "4-turn composite with underspecified parameters: city distance estimation and fuel filling requiring the model to resolve implicit references."
+  },
+  {
+    "id": "multi_turn_composite_97",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "MessageAPI",
+      "VehicleControlAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "I've heard a friend of mine recently visited a place, and she mentioned the journey felt quite extensive. I'm curious, do you happen to have an idea about the actual distance between the two places?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The places are Rivermist and Stonebrook."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Covering the distance from Rivermist to Stonebrook sure seems like a long trip. I'm a bit worried if my vehicle can endure the journey with the current fuel level. I'm not entirely sure how far my car can travel on the remaining fuel. What do you think?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Thanks a lot! Before I embark on this journey, it makes sense to ensure I won't be left stranded due to an empty tank. Just add to the tank fully."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Great, with my tank now full, let's embark on this journey. Once I'm set to go, I'd appreciate it if you could start the car for me."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "By the way, as I travel, there are critical updates I need to communicate to my friend, who goes by the unique identifier BD732D1888B94DAA. Would you be able to send a message on my behalf promptly?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Lastly, while I'm on the road, I might have the need to review any messages that have popped into my inbox. Could you display what messages I've received thus far?"
+        }
+      ]
+    ],
+    "initial_config": {
+      "VehicleControlAPI": {
+        "fuelLevel": 5.0,
+        "batteryVoltage": 12.6,
+        "engineState": "stopped",
+        "doorStatus": {
+          "driver": "unlocked",
+          "passenger": "unlocked",
+          "rear_left": "unlocked",
+          "rear_right": "unlocked"
+        },
+        "acTemperature": 25.0,
+        "fanSpeed": 50,
+        "acMode": "auto",
+        "humidityLevel": 50.0,
+        "headLightStatus": "off",
+        "brakeStatus": "released",
+        "brakeForce": 0.0,
+        "slopeAngle": 0.0,
+        "distanceToNextVehicle": 50.0,
+        "cruiseStatus": "inactive",
+        "destination": "Stonebrook",
+        "frontLeftTirePressure": 32.0,
+        "frontRightTirePressure": 32.0,
+        "rearLeftTirePressure": 30.0,
+        "rearRightTirePressure": 30.0
+      },
+      "MessageAPI": {
+        "workspace_id": "USR001",
+        "user_count": 4,
+        "user_map": {
+          "Michael": "BD732D1888B94DAA",
+          "Sarah": "USR002",
+          "David": "USR003",
+          "Emma": "USR004"
+        },
+        "messages_sent_map": {
+          "BD732D1888B94DAA": {
+            "USR002": [
+              "Hey, I'm on my way to Stonebrook."
+            ]
+          }
+        },
+        "messages_inbox_map": {
+          "BD732D1888B94DAA": {
+            "USR002": [
+              "Safe travels!"
+            ]
+          }
+        },
+        "message_count": 1,
+        "current_user": "BD732D1888B94DAA"
+      }
+    },
+    "ground_truth": [
+      [],
+      [
+        "get_zipcode_based_on_city(city='Rivermist')",
+        "get_zipcode_based_on_city(city='Stonebrook')",
+        "estimate_distance(cityA='83214', cityB='74532')"
+      ],
+      [
+        "estimate_drive_feasibility_by_mileage(distance=750.0)"
+      ],
+      [
+        "fillFuelTank(fuelAmount=45.0)"
+      ],
+      [],
+      [
+        "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+        "activateParkingBrake('engage')",
+        "startEngine(ignitionMode='START')"
+      ],
+      [
+        "send_message(sender_id='USR001', receiver_id='USR002', message='I am on my way.')"
+      ],
+      [
+        "view_messages_received()"
+      ]
+    ],
+    "num_turns": 8,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "8-turn composite with cross-domain chaining between MessageAPI and VehicleControlAPI requiring distance estimation, fueling, messaging, and multi-step vehicle operations.",
+    "prompt": "Inspect the files under `/cases/multi_turn_composite_97/` and produce the complete ordered API call plan needed to satisfy the user's requests across the full conversation. Return only the calls, one per line, in order.",
+    "answer_snippets": [
+      "estimate_distance(",
+      "estimate_drive_feasibility_by_mileage(distance=750.0)",
+      "fillFuelTank(fuelAmount=45.0)",
+      "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+      "activateParkingBrake('engage')",
+      "startEngine(ignitionMode='START')",
+      "send_message(sender_id='USR001', receiver_id='USR002', message='I am on my way.')",
+      "view_messages_received()"
+    ],
+    "files": {
+      "/cases/multi_turn_composite_97/conversation.md": "Conversation transcript:\n1. User asks for the distance between Rivermist and Stonebrook.\n2. User worries whether the current fuel level can cover the trip.\n3. User asks to fill the tank completely.\n4. User asks to start the car once ready.\n5. User asks to send a message that says 'I am on my way.' to Sarah, whose receiver id is USR002.\n6. User asks to view received messages.\n",
+      "/cases/multi_turn_composite_97/state.json": "{\n  \"MessageAPI\": {\n    \"receiver_lookup\": {\n      \"Sarah\": \"USR002\"\n    },\n    \"sender_id\": \"USR001\"\n  },\n  \"VehicleControlAPI\": {\n    \"fuelLevel\": 5.0,\n    \"tankCapacity\": 50.0\n  }\n}",
+      "/cases/multi_turn_composite_97/reference.md": "City lookup: Rivermist -> 83214, Stonebrook -> 74532.\nDistance between 83214 and 74532 is 750.0 miles.\nTo fill the tank completely from the current state, add 45.0 gallons.\nTo start the vehicle safely, lock all doors, engage the parking brake, then start the engine in START mode.\nWhen the trip update is sent, the message text should be exactly 'I am on my way.'.\n",
+      "/cases/multi_turn_composite_97/api_reference.md": "Relevant functions:\nget_zipcode_based_on_city(city='...')\nestimate_distance(cityA='...', cityB='...')\nestimate_drive_feasibility_by_mileage(distance=...)\nfillFuelTank(fuelAmount=...)\nlockDoors(unlock=False, door=['driver','passenger','rear_left','rear_right'])\nactivateParkingBrake('engage')\nstartEngine(ignitionMode='START')\nsend_message(sender_id='...', receiver_id='...', message='...')\nview_messages_received()\n"
+    }
+  },
+  {
+    "id": "multi_turn_composite_170",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "TwitterAPI",
+      "TravelAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "I'm planning to jet off and stumbled upon a nifty flight from San Francisco to Los Angeles. Since my budget isn't too tight, why don't you go ahead and snag that booking for me? You should know my travel class is 'first' and travel date is '2024-11-15'. Oh, and I've got my card with id 'card123' and account token 'access_token_abc123' all good to go."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "With my flight all set, can you whip up those invoice details for me? I need a nice little record of when I'm traveling, where I'm headed, and how much it's setting me back."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "If things go south with my itinerary, could you be a champ and get me in touch with customer support? Just mention my confirmed booking when you connect us."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Thinking I might need to call off this trip. Could you chat with support to cancel my reservation and make sure my account gets the refund? Thanks a bunch!"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I've picked up some nifty travel insights from my adventures, and I've got the itch to share them. Could you pen a tweet on my behalf using username 'michael_smith' and password 'mikesmit' if I toss you the points? Maybe sprinkle in trendy hashtags 'Travel' and 'Adventure'."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Wow, one of my travel tips got a hit! Can you give it a boost by retweeting it for me? Let's get it out to even more folks."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The username is 'michael_smith' and the tweet ID is 1."
+        }
+      ]
+    ],
+    "initial_config": {
+      "TravelAPI": {
+        "credit_card_list": {
+          "card123": {
+            "card_number": "1234-5678-9876-5432",
+            "expiry_date": "12/25",
+            "cvv": 123,
+            "balance": 5000.0
+          }
+        },
+        "booking_record": {
+          "booking123": {
+            "flight_number": "SF-LA123",
+            "departure": "San Francisco",
+            "destination": "Los Angeles",
+            "travel_class": "Business",
+            "date": "2024-11-15",
+            "cost": 350.0
+          }
+        },
+        "access_token": "access_token_abc123",
+        "token_type": "Bearer",
+        "token_expires_in": 3600,
+        "token_scope": "read_write",
+        "user_first_name": "Michael",
+        "user_last_name": "Smith",
+        "budget_limit": 1000.0
+      },
+      "TwitterAPI": {
+        "username": "michael_smith",
+        "password": "michael1234",
+        "authenticated": true,
+        "tweets": {
+          "1": {
+            "content": "Exploring the world, one city at a time! #Travel #Adventure",
+            "likes": 100,
+            "retweets": 20,
+            "hashtags": [
+              "#Travel",
+              "#Adventure"
+            ]
+          }
+        },
+        "comments": {},
+        "retweets": {
+          "michael_smith": [
+            1
+          ]
+        },
+        "following_list": [
+          "alice",
+          "bob",
+          "charlie"
+        ],
+        "tweet_counter": 2
+      }
+    },
+    "ground_truth": [
+      [],
+      [
+        "get_nearest_airport_by_city(location='San Francisco')",
+        "get_nearest_airport_by_city(location='Los Angeles')",
+        "get_flight_cost(travel_from='SFO',travel_to='LAX',travel_date='2024-11-15',travel_class='first')",
+        "book_flight(access_token='access_token_abc123', card_id='card123', travel_date='2024-11-15', travel_from='SFO', travel_to='LAX', travel_class='first', travel_cost=2000.0)"
+      ],
+      [
+        "retrieve_invoice(access_token='access_token_abc123', booking_id='5431449')"
+      ],
+      [
+        "contact_customer_support(booking_id='5431449', message='Please assist with my confirmed booking.')"
+      ],
+      [
+        "cancel_booking(access_token='access_token_abc123', booking_id='5431449')"
+      ],
+      [
+        "authenticate_twitter(username='michael_smith', password='mikesmit')",
+        "post_tweet(username='michael_smith', content='Exploring the world, one city at a time! #Travel #Adventure', tags=['#Travel', '#Adventure'])"
+      ],
+      [],
+      [
+        "retweet(username='michael_smith', tweet_id=1)"
+      ]
+    ],
+    "num_turns": 8,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "8-turn composite travel and social media scenario with flight booking, payment, itinerary management, and Twitter announcements with implicit parameter resolution."
+  },
+  {
+    "id": "multi_turn_composite_116",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "TradingBot"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "Could you peruse my stock watchlist and share what's on my radar right now, please?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I'm inclined to shake things up a bit. Let's take a certain company out of the equation from my watchlist, shall we?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The company to remove is Zeta Corp."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I have a keen interest in Omega Industries at the moment. Let's delve into the latest stock details to see what they hold."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Word is, the Technology sector is buzzing. Catalogue the stocks in this field for me, as I'm scouting for new investment potential."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I feel it's time to inject some capital into my portfolio\u2014let's allocate an extra $10,000 to my trading funds."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "With the account bolstered, execute a purchase for 'AAPL'-a fair target seems $150 per share, and I'm thinking 50 shares will do the trick."
+        }
+      ]
+    ],
+    "initial_config": {
+      "TradingBot": {
+        "orders": {
+          "12345": {
+            "symbol": "AAPL",
+            "price": 210.65,
+            "num_shares": 10,
+            "status": "Completed"
+          }
+        },
+        "account_info": {
+          "account_id": 67890,
+          "balance": 15000.0,
+          "binding_card": 9876543210123456
+        },
+        "authenticated": true,
+        "market_status": "Open",
+        "order_counter": 12446,
+        "stocks": {
+          "AAPL": {
+            "price": 227.16,
+            "percent_change": 0.17,
+            "volume": 2.552,
+            "MA(5)": 227.11,
+            "MA(20)": 227.09
+          },
+          "GOOG": {
+            "price": 2840.34,
+            "percent_change": 0.24,
+            "volume": 1.123,
+            "MA(5)": 2835.67,
+            "MA(20)": 2842.15
+          },
+          "TSLA": {
+            "price": 667.92,
+            "percent_change": -0.12,
+            "volume": 1.654,
+            "MA(5)": 671.15,
+            "MA(20)": 668.2
+          },
+          "MSFT": {
+            "price": 310.23,
+            "percent_change": 0.09,
+            "volume": 3.234,
+            "MA(5)": 309.88,
+            "MA(20)": 310.11
+          },
+          "NVDA": {
+            "price": 220.34,
+            "percent_change": 0.34,
+            "volume": 1.234,
+            "MA(5)": 220.45,
+            "MA(20)": 220.67
+          },
+          "ALPH": {
+            "price": 1320.45,
+            "percent_change": -0.08,
+            "volume": 1.567,
+            "MA(5)": 1321.12,
+            "MA(20)": 1325.78
+          },
+          "OMEG": {
+            "price": 457.23,
+            "percent_change": 0.12,
+            "volume": 2.345,
+            "MA(5)": 456.78,
+            "MA(20)": 458.12
+          },
+          "QUAS": {
+            "price": 725.89,
+            "percent_change": -0.03,
+            "volume": 1.789,
+            "MA(5)": 726.45,
+            "MA(20)": 728.0
+          },
+          "NEPT": {
+            "price": 88.34,
+            "percent_change": 0.19,
+            "volume": 0.654,
+            "MA(5)": 88.21,
+            "MA(20)": 88.67
+          },
+          "SYNX": {
+            "price": 345.67,
+            "percent_change": 0.11,
+            "volume": 2.112,
+            "MA(5)": 345.34,
+            "MA(20)": 346.12
+          }
+        },
+        "watch_list": [
+          "NVDA",
+          "OMEG",
+          "ZETA"
+        ],
+        "transaction_history": []
+      }
+    },
+    "ground_truth": [
+      [
+        "get_watchlist()"
+      ],
+      [],
+      [
+        "get_symbol_by_name(name='Zeta Corp')",
+        "remove_stock_from_watchlist(symbol='ZETA')"
+      ],
+      [],
+      [
+        "get_symbol_by_name(name='Omega Industries')",
+        "get_stock_info(symbol='OMEG')"
+      ],
+      [
+        "get_available_stocks(sector='Technology')"
+      ],
+      [
+        "fund_account(amount=10000)"
+      ],
+      [
+        "get_symbol_by_name(name='Apple')",
+        "place_order(order_type='Buy', symbol='AAPL', price=150.0, amount=50)"
+      ]
+    ],
+    "num_turns": 8,
+    "num_expected_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "8-turn single-domain TradingBot composite requiring watchlist inspection, market analysis, order placement, and portfolio rebalancing across many sequential steps.",
+    "prompt": "Inspect the files under `/cases/multi_turn_composite_116/` and produce the complete ordered API call plan needed to satisfy the user's requests across the full conversation. Return only the calls, one per line, in order.",
+    "answer_snippets": [
+      "get_watchlist()",
+      "remove_stock_from_watchlist(symbol='ZETA')",
+      "get_stock_info(symbol='OMEG')",
+      "get_available_stocks(sector='Technology')",
+      "fund_account(amount=10000)",
+      "place_order(order_type='Buy', symbol='AAPL', price=150.0, amount=50)"
+    ],
+    "files": {
+      "/cases/multi_turn_composite_116/conversation.md": "Conversation transcript:\n1. Inspect the watchlist.\n2. Remove Zeta Corp from the watchlist.\n3. Look up Omega Industries stock details.\n4. List Technology sector stocks.\n5. Fund the account with an extra $10,000.\n6. Buy 50 shares of Apple at $150 per share.\n",
+      "/cases/multi_turn_composite_116/state.json": "{\n  \"TradingBot\": {\n    \"balance\": 15000.0,\n    \"market_status\": \"Open\",\n    \"watch_list\": [\n      \"NVDA\",\n      \"OMEG\",\n      \"ZETA\"\n    ]\n  }\n}",
+      "/cases/multi_turn_composite_116/reference.md": "Company name lookup: Zeta Corp -> ZETA, Omega Industries -> OMEG, Apple -> AAPL.\nTechnology sector stock discovery uses get_available_stocks(sector='Technology').\nFunding uses fund_account(amount=10000).\nBuying Apple uses place_order(order_type='Buy', symbol='AAPL', price=150.0, amount=50).\n",
+      "/cases/multi_turn_composite_116/api_reference.md": "Relevant functions:\nget_watchlist()\nget_symbol_by_name(name='...')\nremove_stock_from_watchlist(symbol='...')\nget_stock_info(symbol='...')\nget_available_stocks(sector='...')\nfund_account(amount=...)\nplace_order(order_type='Buy', symbol='...', price=..., amount=...)\n"
+    }
+  },
+  {
+    "id": "multi_turn_composite_199",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "MessageAPI",
+      "TravelAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "I'm planning a journey from Los Angeles to New York on the morning of April 15th 2024, preferring to fly business class. However, my funds are in Euros. Arrange this flight using my pre-linked credit card with id 'card_123456789' and access token 'abc123xyz'."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "With my flight now secured, I need to review the invoice outlining the costs involved. Retrieve that invoice for me, please."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "There were hiccups during the booking process. Reach out to customer support and detail the challenges I faced."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Once you've reached out to them, please brief my colleague on the situation using my sender id."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The colleague's id is 'Kevin1048'."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Finally, compile and present all the responses received following the communications regarding the flight issue."
+        }
+      ]
+    ],
+    "initial_config": {
+      "TravelAPI": {
+        "credit_card_list": {
+          "card_123456789": {
+            "card_number": "1234-5678-9876-5432",
+            "expiry_date": "12/25",
+            "cardholder_name": "Michael Thompson",
+            "currency": "EUR",
+            "balance": 5000.0
+          }
+        },
+        "booking_record": {
+          "booking_987654321": {
+            "flight_number": "LA1234",
+            "departure": "Los Angeles",
+            "destination": "New York",
+            "class": "Business",
+            "date": "2024-04-15",
+            "cost": 1200.0
+          }
+        },
+        "access_token": "abc123xyz",
+        "token_type": "Bearer",
+        "token_expires_in": 3600,
+        "token_scope": "read_write",
+        "user_first_name": "Michael",
+        "user_last_name": "Thompson",
+        "budget_limit": 3000.0
+      }
+    },
+    "ground_truth": [
+      [
+        "get_nearest_airport_by_city(location='Los Angeles')",
+        "get_nearest_airport_by_city(location='New York')",
+        "get_flight_cost(travel_from='LAX', travel_to='JFK', travel_date='2024-04-15', travel_class='business')",
+        "compute_exchange_rate(base_currency='USD', target_currency='EUR', value=2400.0)",
+        "book_flight(access_token='abc123xyz', card_id='card_123456789', travel_date='2024-04-15', travel_from='LAX', travel_to='JFK', travel_class='business', travel_cost=960.0)"
+      ],
+      [
+        "retrieve_invoice(access_token='abc123xyz', booking_id='5431449')"
+      ],
+      [
+        "contact_customer_support(booking_id='5431449', message='There were hiccups during the booking process. Please assist.')"
+      ],
+      [],
+      [],
+      [
+        "send_message(sender_id='MichaelTpss', receiver_id='Kevin1048', message='Update on flight issue and customer support contact.')"
+      ],
+      [
+        "view_messages_received()"
+      ]
+    ],
+    "num_turns": 7,
+    "num_expected_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "7-turn composite international travel with currency conversion from Euros, flight reservation, and cross-domain messaging.",
+    "prompt": "Inspect the files under `/cases/multi_turn_composite_199/` and produce the complete ordered API call plan needed to satisfy the user's requests across the full conversation. Return only the calls, one per line, in order.",
+    "answer_snippets": [
+      "get_nearest_airport_by_city(location='Los Angeles')",
+      "get_nearest_airport_by_city(location='New York')",
+      "get_flight_cost(travel_from='LAX', travel_to='JFK', travel_date='2024-04-15', travel_class='business')",
+      "compute_exchange_rate(base_currency='USD', target_currency='EUR', value=2400.0)",
+      "book_flight(access_token='abc123xyz', card_id='card_123456789', travel_date='2024-04-15', travel_from='LAX', travel_to='JFK', travel_class='business', travel_cost=960.0)",
+      "retrieve_invoice(access_token='abc123xyz', booking_id='5431449')",
+      "contact_customer_support(booking_id='5431449', message='There were hiccups during the booking process. Please assist.')",
+      "send_message(sender_id='MichaelTpss', receiver_id='Kevin1048', message='Update on flight issue and customer support contact.')",
+      "view_messages_received()"
+    ],
+    "files": {
+      "/cases/multi_turn_composite_199/conversation.md": "Conversation transcript:\n1. Book a business-class flight from Los Angeles to New York on 2024-04-15 using the linked EUR card and access token.\n2. Retrieve the invoice.\n3. Contact customer support about booking hiccups.\n4. Brief a colleague using the sender id.\n5. The colleague id is Kevin1048.\n6. View all received message responses.\n",
+      "/cases/multi_turn_composite_199/state.json": "{\n  \"MessageAPI\": {\n    \"colleague_id\": \"Kevin1048\",\n    \"sender_id\": \"MichaelTpss\"\n  },\n  \"TravelAPI\": {\n    \"access_token\": \"abc123xyz\",\n    \"booking_id\": \"5431449\",\n    \"card_id\": \"card_123456789\",\n    \"currency\": \"EUR\"\n  }\n}",
+      "/cases/multi_turn_composite_199/reference.md": "Airport lookup: Los Angeles -> LAX, New York -> JFK.\nBusiness-class flight cost on 2024-04-15 from LAX to JFK is 2400.0 USD.\nConvert 2400.0 USD to EUR by calling compute_exchange_rate(base_currency='USD', target_currency='EUR', value=2400.0); the converted travel cost to use for booking is 960.0 EUR.\nCustomer support message text should be: 'There were hiccups during the booking process. Please assist.'\nColleague update text should be: 'Update on flight issue and customer support contact.'\n",
+      "/cases/multi_turn_composite_199/api_reference.md": "Relevant functions:\nget_nearest_airport_by_city(location='...')\nget_flight_cost(travel_from='...', travel_to='...', travel_date='...', travel_class='...')\ncompute_exchange_rate(base_currency='USD', target_currency='EUR', value=...)\nbook_flight(access_token='...', card_id='...', travel_date='...', travel_from='...', travel_to='...', travel_class='...', travel_cost=...)\nretrieve_invoice(access_token='...', booking_id='...')\ncontact_customer_support(booking_id='...', message='...')\nsend_message(sender_id='...', receiver_id='...', message='...')\nview_messages_received()\n"
+    }
+  },
+  {
+    "id": "multi_turn_composite_2",
+    "category": "multi_turn_composite",
+    "involved_classes": [
+      "TicketAPI",
+      "GorillaFileSystem"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "Go into document folder and Could you draft up a create a document titled 'TeamNotes.txt' for keeping track of all the fresh ideas?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "We've gathered a couple of wise insights from Simona, so could you jot down 'Collaboration leads to success. Innovation ignites growth.' into the previous file?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "There seems to be some differences noted by Simona between the 'ideas.txt' file and our 'TeamNotes.txt'. Could you delve into these files to identify and explain the line-by-line distinctions for her?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Simona thinks it's a smart move to secure a certain file. How about we copy it over to the 'Archived' directory under a new name while keeping the original intact? Make sure the Archived directory exists in the document folder. I remembered I put it there."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The file name is 'TeamNotes.txt' and the new name is 'IdeasArchive.txt'."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Before Simona signs off for the day, she'd like to take a peek at what's been stored in 'IdeasArchive.txt'. Could you arrange for her to view its contents?"
+        }
+      ]
+    ],
+    "initial_config": {
+      "GorillaFileSystem": {
+        "root": {
+          "simona": {
+            "type": "directory",
+            "contents": {
+              "documents": {
+                "type": "directory",
+                "contents": {
+                  "ideas.txt": {
+                    "type": "file",
+                    "content": "Collaboration leads to success. Innovation ignites growth."
+                  },
+                  "Archived": {
+                    "type": "directory",
+                    "contents": {}
+                  },
+                  "past_projects": {
+                    "type": "directory",
+                    "contents": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ground_truth": [
+      [
+        "cd(folder='documents')",
+        "touch(file_name='TeamNotes.txt')"
+      ],
+      [
+        "echo(content='Collaboration leads to success. Innovation ignites growth.',file_name='TeamNotes.txt')"
+      ],
+      [
+        "diff(file_name1='ideas.txt', file_name2='TeamNotes.txt')"
+      ],
+      [],
+      [],
+      [
+        "ls()",
+        "cp(source='TeamNotes.txt',destination='Archived')",
+        "cd(folder='Archive')",
+        "mv(source='TeamNotes.txt',destination='IdeasArchive.txt')"
+      ],
+      [
+        "cat(file_name='IdeasArchive.txt')"
+      ]
+    ],
+    "num_turns": 7,
+    "num_expected_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning"
+    ],
+    "rationale": "7-turn composite combining document drafting, file management operations, and support ticket workflow across TicketAPI and GorillaFileSystem."
+  },
+  {
+    "id": "multi_turn_miss_func_0",
+    "category": "multi_turn_miss_func",
+    "involved_classes": [
+      "TwitterAPI",
+      "GorillaFileSystem"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "Move 'final_report.pdf' within document directory to 'temp' directory in document. Make sure to create the directory"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Perform a detailed search using grep to identify sections in the file pertaining to 'budget analysis'."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Upon identifying the requisite 'budget analysis' content, sort the 'final_report.pdf' by line for improved clarity and comprehension."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Move 'previous_report.pdf' in document directory to temp as well and having final report also there, proceed to juxtapose it with 'previous_report.pdf' to detect any critical alterations."
+        }
+      ]
+    ],
+    "initial_config": {
+      "GorillaFileSystem": {
+        "root": {
+          "workspace": {
+            "type": "directory",
+            "contents": {
+              "document": {
+                "type": "directory",
+                "contents": {
+                  "final_report.pdf": {
+                    "type": "file",
+                    "content": "Year2024 This is the final report content including budget analysis and other sections."
+                  },
+                  "previous_report.pdf": {
+                    "type": "file",
+                    "content": "Year203 This is the previous report content with different budget analysis."
+                  }
+                }
+              },
+              "archive": {
+                "type": "directory",
+                "contents": {}
+              }
+            }
+          }
+        }
+      },
+      "TwitterAPI": {
+        "tweet_counter": 3,
+        "tweets": {
+          "0": {
+            "id": 0,
+            "username": "analyst_pro",
+            "content": "Just finished analyzing the reports!",
+            "tags": [
+              "#analysis",
+              "#reports"
+            ],
+            "mentions": []
+          },
+          "1": {
+            "id": 1,
+            "username": "analyst_pro",
+            "content": "Budget analysis insights coming soon!",
+            "tags": [
+              "#budget",
+              "#analysis",
+              "#insights"
+            ],
+            "mentions": []
+          },
+          "2": {
+            "id": 2,
+            "username": "analyst_pro",
+            "content": "Stay tuned for more updates!",
+            "tags": [
+              "#updates",
+              "#staytuned"
+            ],
+            "mentions": []
+          }
+        },
+        "username": "analyst_pro",
+        "password": "Kj8#mP9$vL2"
+      }
+    },
+    "ground_truth": [
+      [
+        "cd(folder='document')",
+        "mkdir(dir_name='temp')",
+        "mv(source='final_report.pdf', destination='temp')"
+      ],
+      [
+        "cd(folder='temp')",
+        "grep(file_name='final_report.pdf',pattern='budget analysis')"
+      ],
+      [],
+      [
+        "sort('final_report.pdf')"
+      ],
+      [
+        "cd(folder='..')",
+        "mv(source='previous_report.pdf',destination='temp')",
+        "cd(folder='temp')",
+        "diff(file_name1='final_report.pdf',file_name2='previous_report.pdf')"
+      ]
+    ],
+    "num_turns": 5,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "5-turn miss_func scenario where the model must recognize that a file sort function is unavailable and refuse gracefully while completing file moves and grep searches."
+  },
+  {
+    "id": "multi_turn_miss_func_63",
+    "category": "multi_turn_miss_func",
+    "involved_classes": [
+      "MessageAPI",
+      "VehicleControlAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "I require assistance in determining the quantity of gasoline necessary for an extensive journey across California. I currently anticipate needing around 166 liters. How much is that in gallon?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Prior to commencing the drive, kindly initiate the engine, ensuring all doors are securely closed and the parking brake is engaged. I am keen to avoid any mishaps on the highway due to an unfilled tank so round it to nearest hundredth and fill that in."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Could you provide me with the approximate distance between San Francisco and Rivermist? This information is crucial for my travel planning notes. Will I be able to get there?"
+        }
+      ]
+    ],
+    "initial_config": {
+      "VehicleControlAPI": {
+        "fuelLevel": 0.0,
+        "batteryVoltage": 12.6,
+        "engineState": "stopped",
+        "doorStatus": {
+          "driver": "unlocked",
+          "passenger": "unlocked",
+          "rear_left": "unlocked",
+          "rear_right": "unlocked"
+        },
+        "acTemperature": 25.0,
+        "fanSpeed": 50,
+        "acMode": "auto",
+        "humidityLevel": 50.0,
+        "headLightStatus": "off",
+        "parkingBrakeStatus": "released",
+        "parkingBrakeForce": 0.0,
+        "slopeAngle": 0.0,
+        "distanceToNextVehicle": 50.0,
+        "cruiseStatus": "inactive",
+        "destination": "None",
+        "frontLeftTirePressure": 32.0,
+        "frontRightTirePressure": 32.0,
+        "rearLeftTirePressure": 30.0,
+        "rearRightTirePressure": 30.0
+      }
+    },
+    "ground_truth": [
+      [
+        "liter_to_gallon(liter=166)"
+      ],
+      [],
+      [
+        "fillFuelTank(fuelAmount=43.85)",
+        "activateParkingBrake(mode='engage')",
+        "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+        "pressBrakePedal(pedalPosition=1.0)",
+        "startEngine(ignitionMode='START')"
+      ],
+      [
+        "get_zipcode_based_on_city('San Francisco')",
+        "get_zipcode_based_on_city('Rivermist')",
+        "estimate_distance(cityA='94016', cityB='83214')",
+        "estimate_drive_feasibility_by_mileage(distance=980.0)"
+      ]
+    ],
+    "num_turns": 4,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "4-turn miss_func scenario where the model must handle a missing engine start function while correctly performing liter-to-gallon conversion and fuel operations."
+  },
+  {
+    "id": "multi_turn_miss_func_55",
+    "category": "multi_turn_miss_func",
+    "involved_classes": [
+      "TicketAPI",
+      "VehicleControlAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "If the fuel level is lower than 10, then go ahead and add double that amount. Let's assume I will also head out right after, so feel free to start the engine using the necessary mode."
+        }
+      ],
+      [],
+      [
+        {
+          "role": "user",
+          "content": "Since we are all set to go, could you quickly check the pressure of all the tires to ensure everything is safe for our journey?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The pressure seemed lower than expected. Let's open a ticket for 'Tire Pressure Issue', and detail it 'Urgent tire pressure issue.'. Given the urgency, classify this as the top priority to issue, where a higher score has more priority."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Apparently, I never got feedback on the tire pressure ticket I created. Can you fetch that ticket for me so I can review the current status?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Great! They just gave me a call back. Now that I've checked the details, let's resolve the tire pressure ticket with an update stating 'Issue resolved!'."
+        }
+      ]
+    ],
+    "initial_config": {
+      "VehicleControlAPI": {
+        "fuelLevel": 7.5,
+        "batteryVoltage": 12.6,
+        "engineState": "stopped",
+        "doorStatus": {
+          "driver": "unlocked",
+          "passenger": "unlocked",
+          "rear_left": "unlocked",
+          "rear_right": "unlocked"
+        },
+        "acTemperature": 25.0,
+        "fanSpeed": 50,
+        "acMode": "auto",
+        "humidityLevel": 50.0,
+        "headLightStatus": "off",
+        "parkingBrakeStatus": "released",
+        "parkingBrakeForce": 0.0,
+        "slopeAngle": 0.0,
+        "distanceToNextVehicle": 50.0,
+        "cruiseStatus": "inactive",
+        "destination": "None",
+        "frontLeftTirePressure": 28.0,
+        "frontRightTirePressure": 28.0,
+        "rearLeftTirePressure": 26.0,
+        "rearRightTirePressure": 26.0
+      },
+      "TicketAPI": {
+        "ticket_queue": [
+          {
+            "id": 1,
+            "title": "tire pressure issue",
+            "description": "Front left: 28.0, Front right: 28.0, Rear left: 26.0, Rear right: 26.0",
+            "priority": "high",
+            "status": "open"
+          }
+        ],
+        "ticket_counter": 2,
+        "current_user": "Michael Thompson"
+      }
+    },
+    "ground_truth": [
+      [],
+      [
+        "displayCarStatus('fuel')",
+        "fillFuelTank(15.0)",
+        "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+        "pressBrakePedal(pedalPosition=1.0)",
+        "startEngine(ignitionMode='START')"
+      ],
+      [
+        "check_tire_pressure()"
+      ],
+      [
+        "create_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)"
+      ],
+      [
+        "get_ticket(ticket_id=2)"
+      ],
+      [
+        "resolve_ticket(ticket_id=2, resolution='Issue resolved!')"
+      ]
+    ],
+    "num_turns": 6,
+    "num_expected_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "6-turn miss_func scenario combining conditional fuel logic with engine start, where a required function is absent mid-conversation and the model must adapt.",
+    "prompt": "Inspect the files under `/cases/multi_turn_miss_func_55/` and produce the complete ordered API call plan needed to satisfy the user's requests across the full conversation. Return only the calls, one per line, in order.",
+    "answer_snippets": [
+      "fillFuelTank(15.0)",
+      "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+      "pressBrakePedal(pedalPosition=1.0)",
+      "startEngine(ignitionMode='START')",
+      "check_tire_pressure()",
+      "create_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)",
+      "get_ticket(ticket_id=2)",
+      "resolve_ticket(ticket_id=2, resolution='Issue resolved!')"
+    ],
+    "files": {
+      "/cases/multi_turn_miss_func_55/conversation.md": "Conversation transcript:\n1. If fuel is lower than 10, add double that amount, then prepare to drive immediately.\n2. Check tire pressure.\n3. Create a top-priority Tire Pressure Issue ticket with description 'Urgent tire pressure issue.'.\n4. Fetch the newly created ticket.\n5. Resolve it with the update 'Issue resolved!'.\n",
+      "/cases/multi_turn_miss_func_55/state.json": "{\n  \"TicketAPI\": {\n    \"next_ticket_id\": 2\n  },\n  \"VehicleControlAPI\": {\n    \"fuelLevel\": 7.5,\n    \"tire_pressures\": {\n      \"frontLeft\": 28.0,\n      \"frontRight\": 28.0,\n      \"rearLeft\": 26.0,\n      \"rearRight\": 26.0\n    }\n  }\n}",
+      "/cases/multi_turn_miss_func_55/reference.md": "When fuel is below 10 and the instruction says add double that amount, add 15.0 gallons.\nTo prepare to drive, lock all doors, press the brake pedal to 1.0, and start the engine in START mode.\nThe urgent tire ticket should use priority=5.\nThe newly created ticket id is 2.\n",
+      "/cases/multi_turn_miss_func_55/api_reference.md": "Relevant functions:\ndisplayCarStatus('fuel')\nfillFuelTank(15.0)\nlockDoors(unlock=False, door=['driver','passenger','rear_left','rear_right'])\npressBrakePedal(pedalPosition=1.0)\nstartEngine(ignitionMode='START')\ncheck_tire_pressure()\ncreate_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)\nget_ticket(ticket_id=2)\nresolve_ticket(ticket_id=2, resolution='Issue resolved!')\n"
+    }
+  },
+  {
+    "id": "multi_turn_miss_param_0",
+    "category": "multi_turn_miss_param",
+    "involved_classes": [
+      "TwitterAPI",
+      "GorillaFileSystem"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "Move 'final_report.pdf' within document directory to 'temp' directory in document. Make sure to create the directory"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Perform a detailed search using grep to identify sections in the file pertaining to 'budget analysis'."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Upon identifying the requisite 'budget analysis' content, sort the 'final_report.pdf' by line for improved clarity and comprehension."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Move one of the file in document directory to temp as well and having final report also there, proceed to juxtapose it with 'previous_report.pdf' to detect any critical alterations."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The specific file is final_report.pdf."
+        }
+      ]
+    ],
+    "initial_config": {
+      "GorillaFileSystem": {
+        "root": {
+          "workspace": {
+            "type": "directory",
+            "contents": {
+              "document": {
+                "type": "directory",
+                "contents": {
+                  "final_report.pdf": {
+                    "type": "file",
+                    "content": "Year2024 This is the final report content including budget analysis and other sections."
+                  },
+                  "previous_report.pdf": {
+                    "type": "file",
+                    "content": "Year203 This is the previous report content with different budget analysis."
+                  }
+                }
+              },
+              "archive": {
+                "type": "directory",
+                "contents": {}
+              }
+            }
+          }
+        }
+      },
+      "TwitterAPI": {
+        "tweet_counter": 3,
+        "tweets": {
+          "0": {
+            "id": 0,
+            "username": "analyst_pro",
+            "content": "Just finished analyzing the reports!",
+            "tags": [
+              "#analysis",
+              "#reports"
+            ],
+            "mentions": []
+          },
+          "1": {
+            "id": 1,
+            "username": "analyst_pro",
+            "content": "Budget analysis insights coming soon!",
+            "tags": [
+              "#budget",
+              "#analysis",
+              "#insights"
+            ],
+            "mentions": []
+          },
+          "2": {
+            "id": 2,
+            "username": "analyst_pro",
+            "content": "Stay tuned for more updates!",
+            "tags": [
+              "#updates",
+              "#staytuned"
+            ],
+            "mentions": []
+          }
+        },
+        "username": "analyst_pro",
+        "password": "Kj8#mP9$vL2"
+      }
+    },
+    "ground_truth": [
+      [
+        "cd(folder='document')",
+        "mkdir(dir_name='temp')",
+        "mv(source='final_report.pdf', destination='temp')"
+      ],
+      [
+        "cd(folder='temp')",
+        "grep(file_name='final_report.pdf',pattern='budget analysis')"
+      ],
+      [
+        "sort('final_report.pdf')"
+      ],
+      [],
+      [
+        "cd(folder='..')",
+        "mv(source='previous_report.pdf',destination='temp')",
+        "cd(folder='temp')",
+        "diff(file_name1='final_report.pdf',file_name2='previous_report.pdf')"
+      ]
+    ],
+    "num_turns": 5,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "5-turn miss_param scenario where an ambiguous file reference forces the model to clarify rather than guess during file move and comparison operations."
+  },
+  {
+    "id": "multi_turn_miss_param_55",
+    "category": "multi_turn_miss_param",
+    "involved_classes": [
+      "TicketAPI",
+      "VehicleControlAPI"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "If the fuel level is lower than, then go ahead and add double that amount. Let's assume I will also head out right after, so feel free to start the engine using the necessary mode."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I think if lower than 10, then we need to double."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Since we are all set to go, could you quickly check the pressure of all the tires to ensure everything is safe for our journey?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The pressure seemed lower than expected. Let's open a ticket for 'Tire Pressure Issue', and detail it 'Urgent tire pressure issue.'. Given the urgency, classify this as the top priority to issue, where a higher score has more priority."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Apparently, I never got feedback on the tire pressure ticket I created. Can you fetch that ticket for me so I can review the current status?"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Great! They just gave me a call back. Now that I've checked the details, let's resolve the tire pressure ticket with an update stating 'Issue resolved!'."
+        }
+      ]
+    ],
+    "initial_config": {
+      "VehicleControlAPI": {
+        "fuelLevel": 7.5,
+        "batteryVoltage": 12.6,
+        "engineState": "stopped",
+        "doorStatus": {
+          "driver": "unlocked",
+          "passenger": "unlocked",
+          "rear_left": "unlocked",
+          "rear_right": "unlocked"
+        },
+        "acTemperature": 25.0,
+        "fanSpeed": 50,
+        "acMode": "auto",
+        "humidityLevel": 50.0,
+        "headLightStatus": "off",
+        "parkingBrakeStatus": "released",
+        "parkingBrakeForce": 0.0,
+        "slopeAngle": 0.0,
+        "distanceToNextVehicle": 50.0,
+        "cruiseStatus": "inactive",
+        "destination": "None",
+        "frontLeftTirePressure": 28.0,
+        "frontRightTirePressure": 28.0,
+        "rearLeftTirePressure": 26.0,
+        "rearRightTirePressure": 26.0
+      },
+      "TicketAPI": {
+        "ticket_queue": [
+          {
+            "id": 1,
+            "title": "tire pressure issue",
+            "description": "Front left: 28.0, Front right: 28.0, Rear left: 26.0, Rear right: 26.0",
+            "priority": "high",
+            "status": "open"
+          }
+        ],
+        "ticket_counter": 2,
+        "current_user": "Michael Thompson"
+      }
+    },
+    "ground_truth": [
+      [],
+      [
+        "displayCarStatus('fuel')",
+        "fillFuelTank(15.0)",
+        "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+        "pressBrakePedal(pedalPosition=1.0)",
+        "startEngine(ignitionMode='START')"
+      ],
+      [
+        "check_tire_pressure()"
+      ],
+      [
+        "create_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)"
+      ],
+      [
+        "get_ticket(ticket_id=2)"
+      ],
+      [
+        "resolve_ticket(ticket_id=2, resolution='Issue resolved!')"
+      ]
+    ],
+    "num_turns": 6,
+    "num_expected_calls": 9,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "6-turn miss_param scenario with an incomplete conditional statement (missing threshold value) requiring the model to request clarification before vehicle operations.",
+    "prompt": "Inspect the files under `/cases/multi_turn_miss_param_55/` and produce the complete ordered API call plan needed to satisfy the user's requests across the full conversation. Return only the calls, one per line, in order.",
+    "answer_snippets": [
+      "fillFuelTank(15.0)",
+      "lockDoors(unlock=False, door=['driver', 'passenger', 'rear_left', 'rear_right'])",
+      "pressBrakePedal(pedalPosition=1.0)",
+      "startEngine(ignitionMode='START')",
+      "check_tire_pressure()",
+      "create_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)",
+      "get_ticket(ticket_id=2)",
+      "resolve_ticket(ticket_id=2, resolution='Issue resolved!')"
+    ],
+    "files": {
+      "/cases/multi_turn_miss_param_55/conversation.md": "Conversation transcript:\n1. User initially gives an incomplete condition: if fuel is lower than [missing value], add double that amount and prepare to drive.\n2. User clarifies: if the fuel level is lower than 10, then we need to double it.\n3. Check tire pressure.\n4. Create a top-priority Tire Pressure Issue ticket with description 'Urgent tire pressure issue.'.\n5. Fetch the newly created ticket.\n6. Resolve it with the update 'Issue resolved!'.\n",
+      "/cases/multi_turn_miss_param_55/state.json": "{\n  \"TicketAPI\": {\n    \"next_ticket_id\": 2\n  },\n  \"VehicleControlAPI\": {\n    \"fuelLevel\": 7.5,\n    \"tire_pressures\": {\n      \"frontLeft\": 28.0,\n      \"frontRight\": 28.0,\n      \"rearLeft\": 26.0,\n      \"rearRight\": 26.0\n    }\n  }\n}",
+      "/cases/multi_turn_miss_param_55/reference.md": "After the clarification, the threshold is 10 and the fuel add amount is 15.0 gallons.\nTo prepare to drive, lock all doors, press the brake pedal to 1.0, and start the engine in START mode.\nThe urgent tire ticket should use priority=5.\nThe newly created ticket id is 2.\n",
+      "/cases/multi_turn_miss_param_55/api_reference.md": "Relevant functions:\ndisplayCarStatus('fuel')\nfillFuelTank(15.0)\nlockDoors(unlock=False, door=['driver','passenger','rear_left','rear_right'])\npressBrakePedal(pedalPosition=1.0)\nstartEngine(ignitionMode='START')\ncheck_tire_pressure()\ncreate_ticket(title='Tire Pressure Issue', description='Urgent tire pressure issue.', priority=5)\nget_ticket(ticket_id=2)\nresolve_ticket(ticket_id=2, resolution='Issue resolved!')\n"
+    }
+  },
+  {
+    "id": "multi_turn_miss_param_39",
+    "category": "multi_turn_miss_param",
+    "involved_classes": [
+      "GorillaFileSystem"
+    ],
+    "tools": [],
+    "conversation": [
+      [
+        {
+          "role": "user",
+          "content": "I need you to set up a fresh folder wherever you're currently working."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The fresh folder should name 'WebDevProjects'. "
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Populate the 'WebDevProjects' folder with 3 files:, 'styles.css',  'index.html', and 'script.js' with content 'Hello World!','Hi World!', 'Halo World!' in each."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "What's the second file name by system order? Don't list out hidden files."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Can you display the content of the first file by system order?"
+        }
+      ]
+    ],
+    "initial_config": {
+      "GorillaFileSystem": {
+        "root": {
+          "current_working_directory": {
+            "type": "directory",
+            "contents": {}
+          }
+        }
+      }
+    },
+    "ground_truth": [
+      [],
+      [
+        "mkdir(dir_name='WebDevProjects')"
+      ],
+      [
+        "cd(folder='WebDevProjects')",
+        "touch(file_name='styles.css')",
+        "echo(content='Hello World!', file_name='styles.css')",
+        "touch(file_name='index.html')",
+        "echo(content='Hi World!', file_name='index.html')",
+        "touch(file_name='script.js')",
+        "echo(content='Halo World!', file_name='script.js')"
+      ],
+      [
+        "ls()"
+      ],
+      [
+        "cat(file_name='styles.css')"
+      ]
+    ],
+    "num_turns": 5,
+    "num_expected_calls": 10,
+    "difficulty": "hard",
+    "axes": [
+      "tool_use",
+      "planning",
+      "instruction_following"
+    ],
+    "rationale": "5-turn miss_param scenario where the directory name is omitted from the setup request, requiring the model to ask for the missing parameter before proceeding."
+  }
+]

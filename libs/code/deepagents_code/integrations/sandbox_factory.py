@@ -73,6 +73,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 _PROVIDER_TO_WORKING_DIR = {
     "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
+    "islo": "/workspace",
     "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
     "modal": "/workspace",
     "runloop": "/home/user",
@@ -94,7 +95,7 @@ def create_sandbox(
     provider abstraction.
 
     Args:
-        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
+        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'islo'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
@@ -179,7 +180,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
+        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'islo'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
 
     Returns:
@@ -698,6 +699,110 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
+class _IsloProvider(SandboxProvider):
+    """Islo sandbox provider — lifecycle management for Islo sandboxes."""
+
+    def __init__(self) -> None:
+        islo_module = _import_provider_module(
+            "islo",
+            provider="islo",
+            package="langchain-islo",
+        )
+
+        from deepagents_code.model_config import resolve_env_var
+
+        api_key = resolve_env_var("ISLO_API_KEY")
+        if not api_key:
+            msg = (
+                "No Islo API key found. Set ISLO_API_KEY "
+                "or DEEPAGENTS_CODE_ISLO_API_KEY."
+            )
+            raise ValueError(msg)
+        self._client = islo_module.Islo(api_key=api_key)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Get or create an Islo sandbox.
+
+        Args:
+            sandbox_id: Not supported yet — must be None.
+            timeout: Seconds to wait for startup.
+            **kwargs: Unused for now (image, vcpus etc. use defaults).
+
+        Returns:
+            `IsloSandbox` instance.
+
+        Raises:
+            NotImplementedError: If `sandbox_id` is provided.
+            RuntimeError: If the sandbox fails to start.
+        """
+        islo_backend = _import_provider_module(
+            "langchain_islo",
+            provider="islo",
+            package="langchain-islo",
+        )
+
+        if sandbox_id:
+            msg = (
+                "Connecting to existing Islo sandbox by ID not yet supported. "
+                "Create a new sandbox by omitting sandbox_id parameter."
+            )
+            raise NotImplementedError(msg)
+
+        sandbox = self._client.sandboxes.create_sandbox(
+            image="docker.io/library/ubuntu:24.04",
+            vcpus=1,
+            memory_mb=2048,
+            disk_gb=10,
+        )
+        last_exc: Exception | None = None
+        for _ in range(timeout // 2):
+            try:
+                # Start a ready check command
+                exec_resp = self._client.sandboxes.exec_in_sandbox(
+                    sandbox_name=sandbox.name,
+                    command=["echo", "ready"],
+                )
+                exec_id = getattr(exec_resp, "exec_id", None)
+                if not exec_id:
+                    # fallback, assume ready after create
+                    break
+                # Poll result
+                for _ in range(10):
+                    result = self._client.sandboxes.get_exec_result(
+                        sandbox.name, exec_id
+                    )
+                    if getattr(result, "status", None) in ("completed", "failed", "timeout"):
+                        if getattr(result, "exit_code", None) == 0:
+                            break
+                        else:
+                            raise RuntimeError("ready check failed")
+                    time.sleep(1)
+                else:
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+            time.sleep(2)
+        else:
+            with contextlib.suppress(Exception):  # Best-effort cleanup
+                self._client.sandboxes.delete_sandbox(sandbox_name=sandbox.name)
+            detail = f" Last error: {last_exc}" if last_exc else ""
+            msg = f"Islo sandbox failed to start within {timeout} seconds.{detail}"
+            raise RuntimeError(msg)
+
+        return islo_backend.IsloSandbox(client=self._client, sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Delete an Islo sandbox by name."""
+        self._client.sandboxes.delete_sandbox(sandbox_name=sandbox_id)
+
+
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -829,7 +934,7 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
+        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'islo'`, `'langsmith'`,
             `'modal'`, `'runloop'`)
 
     Returns:
@@ -848,6 +953,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return _ModalProvider()
     if provider_name == "runloop":
         return _RunloopProvider()
+    if provider_name == "islo":
+        return _IsloProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"
@@ -878,6 +985,7 @@ def verify_sandbox_deps(provider: str) -> None:
     backend_modules: dict[str, tuple[str, str]] = {
         "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
         "daytona": ("langchain_daytona", "daytona"),
+        "islo": ("langchain_islo", "islo"),
         "modal": ("langchain_modal", "modal"),
         "runloop": ("langchain_runloop", "runloop"),
     }

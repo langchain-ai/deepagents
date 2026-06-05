@@ -3505,28 +3505,36 @@ class DeepAgentsApp(App):
         """
         parts = command.split()
         force = "--force" in parts[1:]
-        extras = [p for p in parts[1:] if not p.startswith("-")]
-        if not extras:
+        package_mode = "--package" in parts[1:]
+        names = [p for p in parts[1:] if not p.startswith("-")]
+        if not names:
             from deepagents_code.extras_info import format_known_extras
 
             await self._mount_message(
                 AppMessage(
                     "Usage: /install <extra> [--force]\n"
+                    "       /install <package> --package [--force]\n"
                     "Example: /install quickjs\n\n"
                     f"{format_known_extras()}",
                 ),
             )
             return
-        if len(extras) > 1:
+        if len(names) > 1:
+            label = "package" if package_mode else "extra"
             await self._mount_message(
                 AppMessage(
-                    "Only one extra may be installed per /install command. "
-                    f"Got: {', '.join(extras)}",
+                    f"Only one {label} may be installed per /install command. "
+                    f"Got: {', '.join(names)}",
                 ),
             )
             return
-        extra = extras[0].lower()
         await self._mount_message(UserMessage(command))
+
+        if package_mode:
+            await self._handle_install_package(names[0], force=force)
+            return
+
+        extra = names[0].lower()
 
         try:
             from deepagents_code.config import _is_editable_install
@@ -3645,6 +3653,95 @@ class DeepAgentsApp(App):
 
         await self._mount_message(
             AppMessage(f"Installed extra '{extra}'. {next_step}"),
+        )
+
+    async def _handle_install_package(self, package: str, *, force: bool) -> None:
+        """Install an arbitrary package into the dcode tool env via `uv --with`.
+
+        Backs `/install <package> --package`, the escape hatch for a provider
+        whose package is not a `deepagents-code` extra (e.g. a custom
+        `class_path` model). Arbitrary packages have no curated allowlist, so a
+        `--force` token is required to confirm pulling in third-party code.
+
+        Args:
+            package: The package name to install.
+            force: Whether the user passed `--force` to confirm the install.
+        """
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_package_hint,
+                is_valid_package_name,
+                perform_install_package,
+            )
+        except ImportError as exc:
+            logger.warning("/install --package import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if not is_valid_package_name(package):
+            await self._mount_message(
+                AppMessage(
+                    "Invalid package name. Package names must be "
+                    "alphanumeric with `-`, `_`, or `.` (PEP 508).",
+                ),
+            )
+            return
+
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot install packages.\n"
+                    + editable_package_hint(package),
+                ),
+            )
+            return
+
+        if not force:
+            await self._mount_message(
+                AppMessage(
+                    f"Installing the package '{package}' runs third-party code. "
+                    "Re-run with `--force` to proceed: "
+                    f"`/install {package} --package --force`",
+                ),
+            )
+            return
+
+        log_path = create_update_log_path()
+        await self._mount_message(
+            AppMessage(f"Installing package '{package}'..."),
+        )
+        try:
+            success, output = await perform_install_package(package, log_path=log_path)
+        except OSError as exc:
+            # Let `asyncio.CancelledError` propagate — this runs in the message
+            # pump, so swallowing it would suppress shutdown/cancellation.
+            logger.warning("/install --package command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}",
+                ),
+            )
+            return
+
+        if not success:
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed{detail}\nLog: {log_path}",
+                ),
+            )
+            return
+
+        await self._mount_message(
+            AppMessage(
+                f"Installed package '{package}'. Run `/restart` to load it "
+                "now, or relaunch dcode.",
+            ),
         )
 
     async def _handle_version_command(self) -> None:

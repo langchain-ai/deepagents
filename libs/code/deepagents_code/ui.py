@@ -168,7 +168,11 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
-        "  --install EXTRA            Install an optional extra (e.g. quickjs)"
+        "  --install NAME             Install an optional extra (e.g. quickjs)"
+    )
+    console.print(
+        "  --package                  With --install, treat NAME as a package "
+        "(uv --with), not an extra"
     )
     console.print("  --yes                      Skip --install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")

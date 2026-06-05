@@ -17,6 +17,7 @@ import logging
 import operator
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -920,14 +921,32 @@ def is_valid_extra_name(extra: str) -> bool:
     return bool(_EXTRA_NAME_RE.fullmatch(extra))
 
 
+def is_valid_package_name(package: str) -> bool:
+    """Return whether `package` is safe to embed in a `--with` install command.
+
+    Args:
+        package: Candidate package name from CLI or slash-command input.
+
+    Returns:
+        `True` when the value is a conservative PEP 508-style package name.
+    """
+    return bool(_PACKAGE_NAME_RE.fullmatch(package))
+
+
 def install_package_command(package: str) -> str:
     """Return the shell command that adds a package to the dcode tool env.
+
+    The result is built for *execution* (via `perform_install_package`), not for
+    display — surfacing raw `uv tool` invocations to the user is intentionally
+    avoided. `package` is validated and then `shlex.quote`-d: the validation
+    already blocks shell metacharacters, so the quoting is defense in depth that
+    keeps the command safe even if the pattern is later loosened.
 
     Args:
         package: Package name to install into the existing tool environment.
 
     Returns:
-        Shell command string suitable for display in error messages.
+        Shell command string suitable for execution via the shell.
 
     Raises:
         ValueError: If `package` is not a conservative PEP 508-style package
@@ -939,7 +958,7 @@ def install_package_command(package: str) -> str:
             f"({_PACKAGE_NAME_RE.pattern})"
         )
         raise ValueError(msg)
-    return f"uv tool install -U deepagents-code --with {package}"
+    return f"uv tool install -U deepagents-code --with {shlex.quote(package)}"
 
 
 def install_extras_command(extras: Iterable[str]) -> str:
@@ -1030,6 +1049,20 @@ def editable_extra_hint(extra: str) -> str:
     )
 
 
+def editable_package_hint(package: str) -> str:
+    """Return the canonical action hint for editable installs needing a package.
+
+    Editable installs can't have packages added automatically, so this points
+    the user at adding it to their own development environment. Phrased without
+    a raw install command, since surfacing `uv tool` invocations to the user is
+    intentionally avoided.
+    """
+    return (
+        f"Add '{package}' to your editable checkout's environment (the one your "
+        "editable install of Deep Agents Code runs from), then relaunch."
+    )
+
+
 async def perform_install_extra(
     extra: str,
     *,
@@ -1093,6 +1126,74 @@ async def perform_install_extra(
     try:
         cmd = install_extra_command(extra)
     except (ExtrasIntrospectionError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+async def perform_install_package(
+    package: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Add an arbitrary `package` to the installed dcode tool environment.
+
+    Runs `uv tool install -U deepagents-code --with <package>`, the escape
+    hatch for a provider whose package is not a `deepagents-code` extra (e.g. a
+    custom or in-house `class_path` model). Editable installs are refused — the
+    caller should rerun their `uv tool install --editable` command with `--with
+    <package>` added so it resolves against the editable source.
+
+    Args:
+        package: The package name to install. Must satisfy
+            `is_valid_package_name`; invalid names are rejected without invoking
+            uv (defense in depth against shell injection via the
+            `--force`/`--yes` bypass paths).
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        `(success, output)` — on success, *output* is the combined
+            stdout/stderr from the install. On failure it is an explanatory
+            message: when the install method is unsupported, `package` is
+            malformed, `uv` is unavailable, or the install subprocess fails or
+            times out.
+    """
+    if not is_valid_package_name(package):
+        return False, (
+            f"Invalid package name {package!r}: must match "
+            f"{_PACKAGE_NAME_RE.pattern}"
+        )
+    method = detect_install_method()
+    if method == "unknown":
+        return False, (
+            "Editable install detected — cannot add packages automatically.\n"
+            + editable_package_hint(package)
+        )
+    if method == "brew":
+        return False, (
+            "Homebrew install detected — packages can't be added to a brew "
+            "install. Reinstall Deep Agents Code as a uv-managed tool (see the "
+            "installation docs) to enable adding packages."
+        )
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot add packages without "
+            "knowing which environment provides `dcode`. Reinstall Deep Agents "
+            "Code as a uv-managed tool (see the installation docs) to enable "
+            "adding packages."
+        )
+
+    if not shutil.which("uv"):
+        return False, (
+            "Package installs require uv, which was not found. Reinstall Deep "
+            "Agents Code following the installation docs so packages can be "
+            "added."
+        )
+
+    try:
+        cmd = install_package_command(package)
+    except ValueError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 

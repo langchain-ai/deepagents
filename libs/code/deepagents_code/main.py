@@ -991,8 +991,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--install",
-        metavar="EXTRA",
+        metavar="NAME",
         help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+    )
+    parser.add_argument(
+        "--package",
+        action="store_true",
+        help=(
+            "With --install, treat NAME as a package added via `uv --with` "
+            "(for a custom provider package), not a deepagents-code extra"
+        ),
     )
     parser.add_argument(
         "--yes",
@@ -1984,6 +1992,116 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] Update failed.\n"
                     "Run manually: [cyan]uv tool upgrade "
                     "deepagents-code[/cyan]"
+                )
+                sys.exit(1)
+
+        if args.package and not args.install:
+            console.print(
+                "[bold red]Error:[/bold red] --package requires --install "
+                "<package>.",
+            )
+            sys.exit(2)
+
+        # Handle --install <package> --package flag (headless, no session).
+        # Installs an arbitrary package via `uv --with` for a custom provider,
+        # rather than a deepagents-code extra. Always exits.
+        if args.install and args.package:
+            from rich.markup import escape
+
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_package_hint,
+                is_valid_package_name,
+                perform_install_package,
+            )
+
+            package: str = args.install
+            pkg_log_path: Path | None = None
+            try:
+                if not is_valid_package_name(package):
+                    # Defense in depth — the package is interpolated into a
+                    # shell command. Reject malformed names before any prompt
+                    # or uv call, even with --yes.
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"Invalid package name '{escape(package)}'. "
+                        "Package names must be alphanumeric with `-`, `_`, "
+                        "or `.` (PEP 508).",
+                        highlight=False,
+                    )
+                    sys.exit(2)
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "--install --package is not supported on editable "
+                        "installs.\n" + escape(editable_package_hint(package)),
+                        highlight=False,
+                    )
+                    sys.exit(1)
+
+                # Arbitrary packages have no curated allowlist to vet against,
+                # so confirm before pulling third-party code into the tool env.
+                console.print(
+                    f"This will install the package '{escape(package)}' into "
+                    "the Deep Agents Code environment (this runs third-party "
+                    "code).",
+                    highlight=False,
+                )
+                if not args.yes:
+                    if not sys.stdin.isatty():
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            "Refusing package install in non-interactive mode. "
+                            "Pass --yes to proceed."
+                        )
+                        sys.exit(2)
+                    try:
+                        reply = input(f"Install package '{package}'? [y/N] ")
+                    except EOFError:
+                        console.print("\nAborted.", style="dim")
+                        sys.exit(130)
+                    if reply.strip().lower() not in {"y", "yes"}:
+                        console.print("Aborted.", style="dim")
+                        sys.exit(1)
+
+                console.print(f"Installing package '{package}'...")
+                pkg_log_path = create_update_log_path()
+                console.print(
+                    f"Install log: {pkg_log_path}\n"
+                    f"Tail progress: tail -f {pkg_log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(
+                    perform_install_package(package, log_path=pkg_log_path)
+                )
+                if success:
+                    console.print(f"[green]Installed package '{package}'.[/green]")
+                    sys.exit(0)
+                # Tail the last 200 chars — uv prints the resolved error at the
+                # end. The full output is in the log.
+                detail = f": {output[-200:]}" if output else ""
+                console.print(
+                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
+                    f"Log: {pkg_log_path}",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\nAborted.", style="dim")
+                sys.exit(130)
+            except Exception as exc:
+                logger.warning("--install --package failed", exc_info=True)
+                log_line = f"\nLog: {pkg_log_path}" if pkg_log_path else ""
+                console.print(
+                    f"[bold red]Error:[/bold red] "
+                    f"{type(exc).__name__}: {escape(str(exc))}"
+                    f"{escape(log_line)}",
+                    markup=True,
+                    highlight=False,
                 )
                 sys.exit(1)
 

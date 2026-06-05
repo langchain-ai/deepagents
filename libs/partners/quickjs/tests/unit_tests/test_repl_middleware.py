@@ -14,7 +14,12 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
 
-from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs import (
+    CodeInterpreterMiddleware,
+    ExtensionContext,
+    ExtensionError,
+    InterpreterExtension,
+)
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
 
@@ -169,6 +174,111 @@ def test_system_prompt_injected_once() -> None:
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
     mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert "DO NOT persist across multiple turns" in mw._base_system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: extension system-prompt fragments
+# ---------------------------------------------------------------------------
+
+
+def _injected_system_text(mw: CodeInterpreterMiddleware) -> str:
+    """Drive wrap_model_call once and return the injected system text."""
+    seen: list[ModelRequest] = []
+
+    def handler(req: ModelRequest):
+        from langchain.agents.middleware.types import ModelResponse
+        from langchain_core.messages import AIMessage
+
+        seen.append(req)
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    req = MagicMock(spec=ModelRequest)
+    req.system_message = SystemMessage(content="base")
+    req.tools = []
+
+    def _override(**kwargs):
+        new = MagicMock(spec=ModelRequest)
+        new.system_message = kwargs.get("system_message", req.system_message)
+        return new
+
+    req.override = _override
+    mw.wrap_model_call(req, handler)
+    return "\n".join(
+        block["text"]
+        for block in seen[0].system_message.content_blocks
+        if block["type"] == "text"
+    )
+
+
+class _PromptExtension(InterpreterExtension):
+    system_prompt = "EXTENSION GUIDANCE: use the widget"
+
+    def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+
+class _SilentExtension(InterpreterExtension):
+    system_prompt = None
+
+    def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+
+class _NoHookExtension(InterpreterExtension):
+    system_prompt = "ignored"
+
+
+def test_extension_prompt_injected_without_ptc() -> None:
+    # The ptc=None early-return path must still append extension prompts.
+    mw = CodeInterpreterMiddleware(extensions=[_PromptExtension()])
+    assert "EXTENSION GUIDANCE: use the widget" in _injected_system_text(mw)
+
+
+def test_extension_prompt_injected_with_ptc() -> None:
+    mw = CodeInterpreterMiddleware(ptc=[], extensions=[_PromptExtension()])
+    text = _injected_system_text(mw)
+    assert "EXTENSION GUIDANCE: use the widget" in text
+
+
+def test_extension_prompt_delimited() -> None:
+    mw = CodeInterpreterMiddleware(extensions=[_PromptExtension()])
+    text = _injected_system_text(mw)
+    assert "<extension_prompt>" in text
+    assert "</extension_prompt>" in text
+
+
+def test_silent_extension_contributes_nothing() -> None:
+    mw = CodeInterpreterMiddleware(extensions=[_SilentExtension()])
+    assert mw._extension_prompt == ""
+    assert "<extension_prompt>" not in _injected_system_text(mw)
+
+
+def test_multiple_extension_prompts_concatenate() -> None:
+    class _Other(InterpreterExtension):
+        system_prompt = "SECOND FRAGMENT"
+
+        def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+    mw = CodeInterpreterMiddleware(extensions=[_PromptExtension(), _Other()])
+    text = _injected_system_text(mw)
+    assert "EXTENSION GUIDANCE: use the widget" in text
+    assert "SECOND FRAGMENT" in text
+
+
+def test_no_hook_extension_rejected_at_init() -> None:
+    with pytest.raises(ExtensionError, match="at least one"):
+        CodeInterpreterMiddleware(extensions=[_NoHookExtension()])
+
+
+def test_backend_defaults_to_skills_backend() -> None:
+    sentinel = MagicMock()
+    mw = CodeInterpreterMiddleware(skills_backend=sentinel)
+    assert mw._backend is sentinel
+
+
+def test_backend_explicit_overrides_skills_backend() -> None:
+    skills = MagicMock()
+    explicit = MagicMock()
+    mw = CodeInterpreterMiddleware(skills_backend=skills, backend=explicit)
+    assert mw._backend is explicit
 
 
 # ---------------------------------------------------------------------------

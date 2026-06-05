@@ -34,6 +34,11 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs._extensions import (
+    InterpreterExtension,
+    run_eval_hooks,
+    run_setup_hooks,
+)
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -347,9 +352,20 @@ class _ThreadREPL:
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
+        extensions: list[InterpreterExtension] | None = None,
+        backend: BackendProtocol | None = None,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
+        # Interpreter extensions and the backend their host functions read.
+        # ``on_setup`` runs in ``_ainit`` every time this REPL (and thus the
+        # context) is built — which, because the middleware evicts+rebuilds
+        # the slot each turn under ``snapshot_between_turns``, is every turn.
+        # That matches host-function lifetime: a snapshot restores the JS
+        # heap but not the Python host functions, so they must be re-
+        # registered on each fresh context — exactly as the console is.
+        self._extensions = extensions or []
+        self._backend = backend
         # The Context-level ``timeout`` is used as the cumulative budget
         # for sync evals. Async evals pass ``timeout=`` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
@@ -394,6 +410,15 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
+        # Runs on the worker thread (we're inside it), where the !Send
+        # context lives — the same place the console functions register.
+        if self._extensions:
+            run_setup_hooks(
+                self._extensions,
+                ctx=self._require_ctx(),
+                runtime=self._runtime,
+                backend=self._backend,
+            )
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -733,6 +758,20 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
+            # Per-eval extension hooks run before the guest code, on this
+            # worker loop, with this eval's runtime. Re-registering a host
+            # symbol overwrites the prior one, so an extension can swap in a
+            # closure over fresh per-eval scratch. Inside the try so a hook
+            # error surfaces as an eval error (and the finally restores
+            # _ptc_state); the worker context means binding calls go direct.
+            if self._extensions:
+                run_eval_hooks(
+                    self._extensions,
+                    ctx=ctx,
+                    runtime=self._runtime,
+                    backend=self._backend,
+                    tool_runtime=outer_runtime,
+                )
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
@@ -862,6 +901,8 @@ class _Registry:
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
+    extensions: list[InterpreterExtension] = field(default_factory=list)
+    backend: BackendProtocol | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -904,6 +945,8 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            extensions=self.extensions,
+            backend=self.backend,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

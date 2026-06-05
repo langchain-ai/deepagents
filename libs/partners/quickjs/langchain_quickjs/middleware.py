@@ -33,6 +33,9 @@ if TYPE_CHECKING:
     from deepagents.middleware.skills import SkillMetadata
     from langgraph.runtime import Runtime
 
+    from langchain_quickjs._extensions import InterpreterExtension
+
+from langchain_quickjs._extensions import validate_extension_hooks
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import render_repl_system_prompt
 from langchain_quickjs._ptc import (
@@ -131,6 +134,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             When `None`, skill modules are not installed
             (`import(...)` fails at the resolver). This must be the
             same backend `SkillsMiddleware` uses.
+        extensions: Interpreter extensions (`InterpreterExtension`)
+            installed into the REPL. Each registers JS modules, host
+            (FFI) functions, setup eval, and/or a system-prompt fragment
+            via its `on_setup` / `on_eval` hooks. An extension must
+            implement at least one hook (validated here, fail-fast).
+            Extension `system_prompt` fragments are appended to the REPL
+            system prompt; their `on_setup` runs on every context build
+            and `on_eval` at the start of each eval.
+        backend: Optional `BackendProtocol` exposed to extensions as
+            `ctx.backend` (host functions close over it to reach the
+            filesystem/store). Defaults to `skills_backend` when unset, so
+            callers configuring only that still feed extensions. May be
+            `None` — a backend-free extension is valid.
         ptc: Programmatic tool calling — expose agent tools inside the
             REPL as `tools.<camelCase>(input) => Promise<string>`. One
             `eval` call can then orchestrate many tool calls (loops,
@@ -188,6 +204,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         capture_console: bool = True,
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
+        extensions: "list[InterpreterExtension] | None" = None,
+        backend: "BackendProtocol | None" = None,
         snapshot_between_turns: bool = True,
         max_snapshot_bytes: int | None = None,
     ) -> None:
@@ -207,6 +225,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._capture_console = capture_console
         self._ptc = ptc
         self._skills_backend = skills_backend
+        # Extensions: fail-fast reject any implementing neither hook. The
+        # backend their host functions read defaults to skills_backend so
+        # existing callers configuring only that still feed extensions.
+        self._extensions: list[InterpreterExtension] = list(extensions or [])
+        for ext in self._extensions:
+            validate_extension_hooks(ext)
+        self._backend = backend if backend is not None else skills_backend
         self._snapshot_between_turns = snapshot_between_turns
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -217,12 +242,22 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             capture_console=capture_console,
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
+            extensions=self._extensions,
+            backend=self._backend,
         )
         self._base_system_prompt = render_repl_system_prompt(
             tool_name=tool_name,
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),
             snapshot_between_turns=snapshot_between_turns,
+        )
+        # Extension prompt fragments are static class attributes; precompute
+        # the concatenation once. Each is delimited so the model can tell an
+        # extension's guidance from the core REPL instructions.
+        self._extension_prompt = "".join(
+            f"\n\n<extension_prompt>\n{ext.system_prompt}\n</extension_prompt>"
+            for ext in self._extensions
+            if ext.system_prompt
         )
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         # Stable fallback thread id — used when `thread_id` isn't in
@@ -442,7 +477,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         rebuilds `globalThis.tools` if the exposed name set changed.
         """
         if self._ptc is None:
-            return self._base_system_prompt
+            # No PTC, but extensions may still contribute prompt fragments.
+            return self._base_system_prompt + self._extension_prompt
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
         exposed = filter_tools_for_ptc(
             request_tools,
@@ -468,7 +504,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 exposed_names,
                 render_ptc_prompt(exposed, tool_name=self._tool_name),
             )
-        return self._base_system_prompt + self._ptc_prompt_cache[1]
+        return (
+            self._base_system_prompt
+            + self._ptc_prompt_cache[1]
+            + self._extension_prompt
+        )
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

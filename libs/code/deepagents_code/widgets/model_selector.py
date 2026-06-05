@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
+from deepagents_code.auth_display import format_auth_status
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     ModelConfig,
@@ -915,25 +916,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             Text shown next to the provider name, or an empty string when no
                 indicator should be rendered (e.g., `CONFIGURED`).
         """
-        state = auth_status.state
-        match state:
-            case ProviderAuthState.CONFIGURED:
-                return ""
-            case ProviderAuthState.MISSING:
-                if auth_status.env_var:
-                    return f"{glyphs.warning} missing {auth_status.env_var}"
-                return f"{glyphs.warning} missing credentials"
-            case ProviderAuthState.NOT_REQUIRED:
-                return auth_status.detail or "no API key required"
-            case ProviderAuthState.IMPLICIT:
-                return auth_status.detail or "implicit auth"
-            case ProviderAuthState.MANAGED:
-                return auth_status.detail or "custom auth"
-            case ProviderAuthState.UNKNOWN:
-                detail = auth_status.detail or "credentials unknown"
-                return f"{glyphs.question} {detail}"
-            case _:
-                assert_never(state)
+        return format_auth_status(auth_status, style="model", glyphs=glyphs)
 
     @staticmethod
     def _format_option_label(

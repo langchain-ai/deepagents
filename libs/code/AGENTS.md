@@ -10,10 +10,10 @@ For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmark
 
 **Key Textual resources:**
 
-- **Guide:** https://textual.textualize.io/guide/
-- **Widget gallery:** https://textual.textualize.io/widget_gallery/
-- **CSS reference:** https://textual.textualize.io/styles/
-- **API reference:** https://textual.textualize.io/api/
+- **Guide:** <https://textual.textualize.io/guide/>
+- **Widget gallery:** <https://textual.textualize.io/widget_gallery/>
+- **CSS reference:** <https://textual.textualize.io/styles/>
+- **API reference:** <https://textual.textualize.io/api/>
 
 ### Styled text in widgets
 
@@ -92,8 +92,18 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 `deepagents-code` supports LangChain-based chat model providers as optional dependencies. To add a new provider, update these files (all entries alphabetically sorted):
 
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
-2. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-3. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`
+2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
+3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
+4. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+
+### `PROVIDER_BASE_URL_ENV` guidelines
+
+`PROVIDER_BASE_URL_ENV` pairs a provider with the endpoint env var(s) its LangChain integration and SDK read, so a stored `/auth` endpoint resolves and an inherited gateway URL cannot leak. Before adding an entry:
+
+- **Verify against source — never infer from naming.** Read both the `langchain-<provider>` chat model (look for `from_env` / `get_from_dict_or_env` / `secret_from_env`, or a `Field` default on the `base_url`/`endpoint` alias) and the underlying vendor SDK, and record the exact env var name each reads. The integration and the SDK often read different names (e.g. `GROQ_API_BASE` vs `GROQ_BASE_URL`).
+- **Canonical name first.** Element `[0]` is written by `apply_stored_credentials` and read by `get_base_url`; every other name the integration or SDK may read goes in the tuple so it is cleared too. By convention the SDK's `*_BASE_URL`-style name is canonical and the integration's `*_API_BASE`/`*_API_URL` name is the alternate.
+- **Never list another provider's shared var.** OpenAI-compatible providers (e.g. `deepseek`, `openrouter`, `together`, `xai`, `baseten`) sit on the `openai` SDK, whose only endpoint var is the shared `OPENAI_BASE_URL`. Listing it under those providers would clobber the user's real OpenAI endpoint when their credential is written or cleared — list only the provider's own var (e.g. `DEEPSEEK_API_BASE`), or nothing.
+- **Omit providers with no dedicated var.** When the endpoint is a hardcoded default plus a constructor arg (`baseten`), an `api_base` arg resolved per-provider inside the library (`litellm`), or derived from the region (`google_vertexai`), leave the provider out. A `/auth` endpoint still resolves through `get_base_url`'s stored-credential step and reaches the model as the `base_url` kwarg.
 
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 

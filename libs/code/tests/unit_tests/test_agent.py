@@ -2326,6 +2326,265 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
 
+    def test_adds_configurable_model_middleware_to_implicit_model_subagents(
+        self, tmp_path: Path
+    ) -> None:
+        """Runtime model switches should reach subagents without explicit models."""
+        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        assert "researcher" in subagents_by_name
+        assert "general-purpose" in subagents_by_name
+
+        for name in ("researcher", "general-purpose"):
+            middleware = subagents_by_name[name]["middleware"]
+            assert any(
+                isinstance(mw, ConfigurableModelMiddleware) for mw in middleware
+            ), f"Expected configurable model middleware on subagent {name!r}"
+            # Without a restrictive allow-list, no shell middleware should be added
+            # (the implicit `general-purpose` fallback must not be over-restricted).
+            assert not any(
+                isinstance(mw, ShellAllowListMiddleware) for mw in middleware
+            ), f"Unexpected shell middleware on subagent {name!r}"
+
+    def test_subagent_middleware_combines_shell_and_configurable_model(
+        self, tmp_path: Path
+    ) -> None:
+        """Restrictive shell + implicit model should yield both middlewares.
+
+        Explicitly pinned subagents keep shell restriction but must not gain
+        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
+        clobber the pinned model.
+        """
+        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_metas = [
+            {
+                "name": "researcher",
+                "description": "Researches things",
+                "system_prompt": "Investigate the task thoroughly.",
+                "model": None,
+            },
+            {
+                "name": "pinned",
+                "description": "Runs on a fixed model",
+                "system_prompt": "Stay on your assigned model.",
+                "model": "anthropic:claude-haiku-4-5",
+            },
+        ]
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=subagent_metas,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents_by_name = {
+            subagent["name"]: subagent for subagent in kwargs["subagents"]
+        }
+
+        # Implicit-model subagents (and the general-purpose fallback) get both
+        # middlewares, with the configurable-model swap ordered before the shell
+        # gate so a runtime `/model` switch applies before tools are filtered.
+        for name in ("researcher", "general-purpose"):
+            middleware_types = [
+                type(mw) for mw in subagents_by_name[name]["middleware"]
+            ]
+            assert middleware_types == [
+                ConfigurableModelMiddleware,
+                ShellAllowListMiddleware,
+            ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+
+        # The pinned subagent keeps shell restriction but is NOT given the
+        # configurable-model middleware, so its model stays fixed.
+        pinned = subagents_by_name["pinned"]
+        assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        pinned_middleware = pinned["middleware"]
+        assert any(
+            isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent should retain shell middleware"
+        assert not any(
+            isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent must not gain configurable model middleware"
+
+    def test_empty_string_subagent_model_treated_as_implicit(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty `model:` spec should inherit the runtime model, not pin `""`."""
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "",
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents_by_name = {
+            subagent["name"]: subagent for subagent in kwargs["subagents"]
+        }
+        researcher = subagents_by_name["researcher"]
+        assert "model" not in researcher, "Empty model spec must not be forwarded"
+        assert any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in researcher["middleware"]
+        ), "Implicit-model subagent should receive configurable model middleware"
+
+    def test_preserves_explicit_subagent_model_without_configurable_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit subagent models should not be replaced by runtime switches."""
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "anthropic:claude-haiku-4-5",
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        researcher = subagents_by_name["researcher"]
+        assert researcher["model"] == "anthropic:claude-haiku-4-5"
+        assert not any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in researcher.get("middleware", [])
+        )
+        assert any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in subagents_by_name["general-purpose"]["middleware"]
+        )
+
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:
     mock_settings = Mock()

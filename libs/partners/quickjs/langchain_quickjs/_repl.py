@@ -13,22 +13,21 @@ import json
 import logging
 import threading
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
-from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
     Context,
     DeadlockError,
     HostCancellationError,
-    HostError,
     JSError,
     MarshalError,
     MemoryLimitError,
     ModuleScope,
     Runtime,
+    Snapshot,
     ThreadWorker,
 )
 from quickjs_rs import (
@@ -36,7 +35,7 @@ from quickjs_rs import (
 )
 
 from langchain_quickjs._format import (
-    coerce_tool_output,
+    coerce_tool_output_for_ptc,
     format_handle,
     stringify,
 )
@@ -53,11 +52,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sentinel returned by the formatter when the underlying value was a
-# function/circular ref that couldn't be auto-marshaled. We format it as
-# a handle-shaped result so the model sees "you got back a function" rather
-# than nothing.
-_HANDLE_PLACEHOLDER = "[unmarshalable value]"
+
+def _clear_exception_references(exc: BaseException) -> None:
+    """Drop traceback links to avoid cross-thread GC finalizing QJS handles.
+
+    quickjs_rs exceptions may keep traceback frames that hold temporary
+    ``QjsHandle`` objects. If those cycles are collected on a different
+    thread, quickjs_rs raises "unsendable ... dropped on another thread".
+    """
+    exc.__traceback__ = None
+    exc.__context__ = None
+    exc.__cause__ = None
 
 
 @dataclass
@@ -69,12 +74,59 @@ class EvalOutcome:
     """
 
     stdout: str = ""
+    stdout_truncated_chars: int = 0
     result: str | None = None
     result_kind: str | None = None  # "handle" when marshaling fell back
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
-    commands: list[Command] = field(default_factory=list)
+
+
+class _PTCCallBudgetExceededError(RuntimeError):
+    """Raised when one eval exceeds its configured PTC call budget."""
+
+    def __init__(self, *, limit: int, attempted: int, function_name: str) -> None:
+        self.limit = limit
+        self.attempted = attempted
+        self.function_name = function_name
+        msg = (
+            "PTC call budget exceeded "
+            f"(limit={limit}, attempted={attempted}, "
+            f"function={function_name})"
+        )
+        super().__init__(msg)
+
+    def render_message(self) -> str:
+        return (
+            "PTC call budget exceeded "
+            f"(limit={self.limit}, attempted={self.attempted}, "
+            f"function={self.function_name})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _PTCState:
+    """Per-eval PTC state (reset on each eval call)."""
+
+    remaining_calls: int | None
+    outer_runtime: ToolRuntime | None = None
+    outer_loop: asyncio.AbstractEventLoop | None = None
+
+    def consume_call_budget(
+        self, *, function_name: str, max_ptc_calls: int | None
+    ) -> _PTCState:
+        """Count one PTC bridge call and enforce the per-eval limit."""
+        if self.remaining_calls is None:
+            return self
+        if self.remaining_calls > 0:
+            return replace(self, remaining_calls=self.remaining_calls - 1)
+
+        normalized_limit = max_ptc_calls if max_ptc_calls is not None else 0
+        raise _PTCCallBudgetExceededError(
+            limit=normalized_limit,
+            attempted=normalized_limit + 1,
+            function_name=function_name,
+        )
 
 
 class _ConsoleBuffer:
@@ -86,19 +138,31 @@ class _ConsoleBuffer:
     smaller.
     """
 
-    def __init__(self) -> None:
-        self._lines: list[str] = []
+    def __init__(self, max_chars: int) -> None:
+        self._max_chars = max(0, max_chars)
+        self._stdout = ""
+        self._dropped_chars = 0
 
     def append(self, level: str, args: tuple[Any, ...]) -> None:
         del level  # flattened; see class docstring
-        self._lines.append(" ".join(stringify(a) for a in args))
+        line = " ".join(stringify(a) for a in args)
+        chunk = line if not self._stdout else f"\n{line}"
+        remaining = self._max_chars - len(self._stdout)
+        if remaining <= 0:
+            self._dropped_chars += len(chunk)
+            return
+        kept = chunk[:remaining]
+        self._stdout += kept
+        self._dropped_chars += len(chunk) - len(kept)
 
-    def drain(self) -> str:
-        if not self._lines:
-            return ""
-        out = "\n".join(self._lines)
-        self._lines.clear()
-        return out
+    def drain(self) -> tuple[str, int]:
+        if not self._stdout and self._dropped_chars == 0:
+            return "", 0
+        out = self._stdout
+        dropped = self._dropped_chars
+        self._stdout = ""
+        self._dropped_chars = 0
+        return out, dropped
 
 
 def _normalize_tool_input(raw: Any) -> dict[str, Any]:
@@ -117,15 +181,6 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     # schema validation produces an informative error rather than a
     # silent miss.
     return {"input": raw}
-
-
-def _extract_commands(value: Any) -> list[Command]:
-    """Collect LangGraph ``Command`` values from a tool return payload."""
-    if isinstance(value, Command):
-        return [value]
-    if isinstance(value, list):
-        return [entry for entry in value if isinstance(entry, Command)]
-    return []
 
 
 def _synth_tool_call_id(tool_name: str) -> str:
@@ -149,22 +204,25 @@ def _inject_tool_args_for_ptc(
     """Mirror LangGraph's ``ToolNode._inject_tool_args`` for PTC calls.
 
     LangChain tools that declare ``ToolRuntime`` / ``InjectedState`` /
-    ``InjectedStore`` only see those values when a real ``ToolNode``
-    wires them in. PTC calls bypass the ToolNode, so we replicate the
-    detection logic here. The outer runtime (captured from the active
-    ``eval`` tool invocation) provides state/store/context/config;
-    ``tool_call_id`` is freshly minted per sub-call.
+    ``InjectedStore`` only see those values when a real ``ToolNode`` wires
+    them in. PTC calls bypass it, so we replicate the detection logic here.
+    The outer runtime (captured from the active ``eval`` tool invocation)
+    provides state/store/context/config; ``tool_call_id`` is freshly minted
+    per sub-call. ``InjectedToolCallId`` is handled separately via
+    ``BaseTool.arun(..., tool_call_id=...)`` at the bridge site.
     """
+    enriched = dict(payload)
+
     try:
         from langgraph.prebuilt.tool_node import (  # noqa: PLC0415 — optional dep, imported here so ImportError is catchable
             _get_all_injected_args,
         )
     except ImportError:  # pragma: no cover — langgraph always present
-        return payload
+        return enriched
 
     injected = _get_all_injected_args(tool)
     if not injected or outer_runtime is None:
-        return payload
+        return enriched
 
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. ``type(outer_runtime)`` rather than a literal import
@@ -181,7 +239,6 @@ def _inject_tool_args_for_ptc(
         server_info=getattr(outer_runtime, "server_info", None),
     )
 
-    enriched = dict(payload)
     if injected.runtime:
         enriched[injected.runtime] = derived
     # InjectedState: state can be injected under one or more arg names.
@@ -198,6 +255,52 @@ def _inject_tool_args_for_ptc(
     if injected.store and outer_runtime.store is not None:
         enriched[injected.store] = outer_runtime.store
     return enriched
+
+
+def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
+    """Return whether *tool* declares an ``InjectedToolCallId`` parameter.
+
+    PTC invokes tools with an args dict via ``BaseTool.arun``. Tools that
+    declare ``InjectedToolCallId`` need ``tool_call_id`` passed as a kwarg
+    so ``BaseTool._parse_input``'s built-in injection runs. Detect via the
+    same combination of schema annotations and ``get_type_hints`` that
+    langgraph's ``_get_all_injected_args`` uses.
+
+    Trade-off: passing ``tool_call_id`` as a kwarg makes
+    ``BaseTool._format_output`` wrap the result in a ``ToolMessage`` with
+    string-coerced ``.content`` (unless the tool returns a ``ToolOutputMixin``
+    such as ``Command``). For tools without this annotation we pass
+    ``tool_call_id=None`` and recover the native return value.
+    """
+    try:
+        from typing import get_type_hints  # noqa: PLC0415
+
+        from langchain_core.tools.base import (  # noqa: PLC0415
+            InjectedToolCallId,
+            _is_injected_arg_type,
+            get_all_basemodel_annotations,
+        )
+    except ImportError:  # pragma: no cover — both deps are required at runtime
+        return False
+
+    try:
+        schema_annotations = get_all_basemodel_annotations(tool.get_input_schema())
+    except Exception:  # noqa: BLE001 — schema introspection is best-effort
+        schema_annotations = {}
+    func = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    try:
+        func_annotations = (
+            get_type_hints(func, include_extras=True) if func is not None else {}
+        )
+    except Exception:  # noqa: BLE001 — type-hint resolution is best-effort
+        func_annotations = {}
+
+    # Match langgraph's merge order: schema annotations override func ones.
+    all_annotations = {**func_annotations, **schema_annotations}
+    return any(
+        _is_injected_arg_type(type_, injected_type=InjectedToolCallId)
+        for type_ in all_annotations.values()
+    )
 
 
 def _bridge_symbol_name(tool_name: str) -> str:
@@ -242,6 +345,8 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
+        max_stdout_chars: int,
+        max_ptc_calls: int | None = 256,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -251,7 +356,9 @@ class _ThreadREPL:
         # and what we describe in the system prompt.
         self._per_call_timeout = timeout
         self._capture_console = capture_console
-        self._console = _ConsoleBuffer()
+        # Static budget config; mutable counters live in ``_ptc_state``.
+        self._max_ptc_calls = max_ptc_calls
+        self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. ``_registered_tools`` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -268,14 +375,11 @@ class _ThreadREPL:
         # ``typeof tools.X`` throws ReferenceError instead of returning
         # ``"undefined"``).
         self._tools_installed: bool = False
-        # Outer ToolRuntime captured for the current eval. PTC bridges
-        # forward it into their tool calls so `task`/subagent tools see
-        # graph state, store, context, etc. Set via ``set_outer_runtime``
-        # from the middleware's tool handler immediately before eval.
-        self._outer_runtime: ToolRuntime | None = None
-        # ``Command`` values emitted by PTC-invoked tools during the
-        # currently-running eval call. Drained into ``EvalOutcome``.
-        self._ptc_command_buffer: list[Command] = []
+        # Mutable per-eval PTC state. Tracks call budget plus outer
+        # runtime/loop dispatch context for bridge invocations. Allocated
+        # at eval start and cleared in finally so bridge calls can't run
+        # outside the current eval.
+        self._ptc_state: _PTCState | None = None
         # Slot-local skill install cache. Kept on the REPL (not registry)
         # so thread-scoped backends can resolve same-named skills
         # differently across threads.
@@ -291,8 +395,15 @@ class _ThreadREPL:
         if self._capture_console:
             self._install_console()
 
+    def _require_ctx(self) -> Context:
+        """Return the live QuickJS context or raise if this REPL is closed."""
+        if self._ctx is None:
+            msg = "QuickJS context is closed"
+            raise RuntimeError(msg)
+        return self._ctx
+
     def _install_console(self) -> None:
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         buf = self._console
 
         @ctx.function(name="__console_log")
@@ -334,7 +445,7 @@ class _ThreadREPL:
         self._worker.run_sync(self._ainstall_tools(tools))
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         name_to_tool: dict[str, BaseTool] = {}
         for tool in tools:
             camel = to_camel_case(tool.name)
@@ -373,16 +484,40 @@ class _ThreadREPL:
         self._active_tool_names = target_names
         self._tools_installed = True
 
-    def set_outer_runtime(self, runtime: ToolRuntime | None) -> None:
-        """Record the outer ``ToolRuntime`` for the current eval.
+    async def _ainvoke_tool_on_outer_loop(
+        self,
+        tool: BaseTool,
+        tool_call: dict[str, Any],
+        *,
+        outer_loop: asyncio.AbstractEventLoop | None,
+    ) -> Any:
+        """Run the tool on the outer runtime's loop when available.
 
-        PTC bridges forward this into their ``tool.ainvoke`` calls so
-        tools that depend on ``state`` / ``store`` / ``tool_call_id``
-        (notably subagent ``task`` tools) see the orchestrator's graph
-        context. The middleware calls this immediately before each eval
-        and again with ``None`` after.
+        Uses ``BaseTool.arun(args, tool_call_id=...)`` rather than
+        ``ainvoke(envelope)`` so the result is the tool's native return
+        value rather than a string-coerced ``ToolMessage``. We only pass
+        ``tool_call_id`` when the tool declares ``InjectedToolCallId`` —
+        otherwise ``_format_output`` would wrap the result anyway.
         """
-        self._outer_runtime = runtime
+        args = tool_call["args"]
+        tool_call_id = (
+            tool_call.get("id") if _tool_uses_injected_tool_call_id(tool) else None
+        )
+
+        async def _call() -> Any:
+            return await tool.arun(args, tool_call_id=tool_call_id)
+
+        if outer_loop is None:
+            return await _call()
+        current_loop = asyncio.get_running_loop()
+        if current_loop is outer_loop:
+            return await _call()
+        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
 
     def _register_tool_bridge(self, camel: str) -> str:
         """Install a host-function bridge for one camel-cased tool name.
@@ -393,10 +528,10 @@ class _ThreadREPL:
         later ``install_tools`` that swaps the underlying object (same
         name, different instance) is picked up without re-registration.
         """
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         registered = self._registered_tools
 
-        async def _bridge(raw_input: Any = None) -> str:
+        async def _bridge(raw_input: Any = None) -> Any:
             tool = registered.get(camel)
             if tool is None:
                 # Shouldn't happen — we only rewrite ``globalThis.tools``
@@ -404,18 +539,31 @@ class _ThreadREPL:
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
                 raise RuntimeError(msg)
+            if self._ptc_state is None:
+                msg = "PTC bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            state = self._ptc_state.consume_call_budget(
+                function_name=f"tools.{camel}",
+                max_ptc_calls=self._max_ptc_calls,
+            )
+            self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
             call_id = _synth_tool_call_id(tool.name)
-            # Build a ToolCall-shaped input so InjectedToolCallId and the
-            # runtime-arg injection in _inject_tool_args_for_ptc fire.
+            # Inject runtime/state/store ourselves; ``InjectedToolCallId``
+            # is handled inside ``_ainvoke_tool_on_outer_loop`` via
+            # ``tool.arun(..., tool_call_id=...)``. The bridge intentionally
+            # avoids the tool-call envelope path because it wraps the
+            # result in a ``ToolMessage`` and string-coerces ``.content``,
+            # destroying native return types (lists, dicts, numbers).
             args = _inject_tool_args_for_ptc(
-                tool, payload, self._outer_runtime, call_id
+                tool, payload, state.outer_runtime, call_id
             )
-            result = await tool.ainvoke(
+            result = await self._ainvoke_tool_on_outer_loop(
+                tool,
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+                outer_loop=state.outer_loop,
             )
-            self._ptc_command_buffer.extend(_extract_commands(result))
-            return coerce_tool_output(result)
+            return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
@@ -427,6 +575,7 @@ class _ThreadREPL:
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -437,6 +586,7 @@ class _ThreadREPL:
                 code,
                 skills=skills,
                 skills_backend=skills_backend,
+                outer_runtime=outer_runtime,
             )
         )
 
@@ -446,13 +596,53 @@ class _ThreadREPL:
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
                 skills=skills,
                 skills_backend=skills_backend,
+                outer_runtime=outer_runtime,
+                outer_loop=outer_loop,
             )
+        )
+
+    def create_snapshot(self) -> bytes:
+        """Capture the current context snapshot as bytes."""
+        return self._worker.run_sync(self._acreate_snapshot())
+
+    async def acreate_snapshot(self) -> bytes:
+        """Async variant of ``create_snapshot``."""
+        return await self._worker.run_async(self._acreate_snapshot())
+
+    async def _acreate_snapshot(self) -> bytes:
+        ctx = self._require_ctx()
+        snapshot = ctx.create_snapshot()
+        return snapshot.to_bytes()
+
+    def restore_snapshot(self, payload: bytes, *, inject_globals: bool = True) -> None:
+        """Restore snapshot bytes into this REPL's context."""
+        self._worker.run_sync(
+            self._arestore_snapshot(payload, inject_globals=inject_globals)
+        )
+
+    async def arestore_snapshot(
+        self, payload: bytes, *, inject_globals: bool = True
+    ) -> None:
+        """Async variant of ``restore_snapshot``."""
+        await self._worker.run_async(
+            self._arestore_snapshot(payload, inject_globals=inject_globals)
+        )
+
+    async def _arestore_snapshot(self, payload: bytes, *, inject_globals: bool) -> None:
+        ctx = self._require_ctx()
+        snapshot = Snapshot.from_bytes(payload)
+        self._runtime.restore_snapshot(
+            snapshot,
+            ctx,
+            inject_globals=inject_globals,
         )
 
     def _collect_pending_skills(
@@ -500,12 +690,14 @@ class _ThreadREPL:
                 self._installed_skills.add(cache_key)
         return errors
 
-    async def _aeval_async(  # noqa: C901
+    async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
         code: str,
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         """Uses ``ctx.eval_async`` directly.
 
@@ -515,9 +707,8 @@ class _ThreadREPL:
         evals against shared state is almost always a prompting bug,
         and a loud failure is a better signal than silent serialisation.
         """
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         outcome = EvalOutcome()
-        self._ptc_command_buffer.clear()
         if skills_backend is not None:
             referenced = scan_skill_references(code)
             if referenced:
@@ -527,17 +718,60 @@ class _ThreadREPL:
                 if errors:
                     outcome.error_type = "SkillNotAvailable"
                     outcome.error_message = "; ".join(str(error) for error in errors)
-                    outcome.stdout = self._console.drain()
+                    (
+                        outcome.stdout,
+                        outcome.stdout_truncated_chars,
+                    ) = self._console.drain()
                     return outcome
+        # Save/restore rather than clear-on-exit: a second eval that hits
+        # ConcurrentEvalError would otherwise null out the in-flight
+        # eval's state and orphan its bridge calls.
+        prev_ptc_state = self._ptc_state
+        self._ptc_state = _PTCState(
+            remaining_calls=self._max_ptc_calls,
+            outer_runtime=outer_runtime,
+            outer_loop=outer_loop,
+        )
         try:
-            value = await ctx.eval_async(code, timeout=self._per_call_timeout)
-            outcome.result = stringify(value)
-        except MarshalError:
-            outcome.result_kind = "handle"
-            outcome.result = await self._describe_via_handle_async(code)
+            # Drive any final-expression Promise (e.g. a bare async
+            # IIFE) to its resolved value before marshaling. Without
+            # this the Promise object itself fails to marshal and
+            # the result surfaces as ``[object]`` rather than the
+            # awaited value.
+            handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
+            try:
+                if handle.is_promise():
+                    resolved = await handle.await_promise(
+                        timeout=self._per_call_timeout
+                    )
+                else:
+                    resolved = handle
+                try:
+                    try:
+                        value = resolved.to_python()
+                    except MarshalError as me:
+                        outcome.result_kind = "handle"
+                        outcome.result = format_handle(resolved)
+                        _clear_exception_references(me)
+                    else:
+                        outcome.result = stringify(value)
+                finally:
+                    if resolved is not handle:
+                        resolved.dispose()
+            finally:
+                handle.dispose()
+        except _PTCCallBudgetExceededError as e:
+            # Raised from inside the PTC bridge; quickjs-rs propagates the
+            # original exception out of eval_handle_async / await_promise.
+            # Surface it as a distinct, model-recoverable error so the
+            # agent can shorten its script rather than crash.
+            outcome.error_type = "PTCCallBudgetExceeded"
+            outcome.error_message = e.render_message()
+            _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except DeadlockError as e:
             # Top-level Promise never resolved and no async host work in
             # flight. Surface as a distinct error type because the fix
@@ -546,6 +780,7 @@ class _ThreadREPL:
             # message without context would make this hard to diagnose.
             outcome.error_type = "Deadlock"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except HostCancellationError:
             # JS declined to catch a cancellation — re-raise as
             # CancelledError so asyncio unwinds the caller's task.
@@ -553,43 +788,30 @@ class _ThreadREPL:
             raise asyncio.CancelledError from None
         except JSError as e:
             self._record_js_error(outcome, e)
+            _clear_exception_references(e)
         except ConcurrentEvalError as e:
             outcome.error_type = "ConcurrentEval"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except MemoryLimitError as e:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         finally:
-            outcome.commands.extend(self._ptc_command_buffer)
-            self._ptc_command_buffer.clear()
-            outcome.stdout = self._console.drain()
+            self._ptc_state = prev_ptc_state
+            outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
-        # HostError is a JSError subclass; surface it as "HostError"
-        # so operators can distinguish a bug in our console bridge
-        # from a user-code error.
-        if isinstance(e, HostError):
-            logger.warning("console-bridge host error", exc_info=e.__cause__)
-            outcome.error_type = "HostError"
-        else:
-            outcome.error_type = e.name
+        outcome.error_type = e.name
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 
-    async def _describe_via_handle_async(self, code: str) -> str:
-        ctx = cast("Context", self._ctx)
-        try:
-            handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
-        except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
-            return _HANDLE_PLACEHOLDER
-        try:
-            return format_handle(handle)
-        finally:
-            handle.dispose()
-
     def close(self) -> None:
         self._worker.run_sync(self._aclose())
+
+    async def aclose(self) -> None:
+        await self._worker.run_async(self._aclose())
 
     async def _aclose(self) -> None:
         if self._ctx is not None:
@@ -608,7 +830,8 @@ def _skill_cache_key(metadata: SkillMetadata) -> _SkillCacheKey:
     same-named skills from different sources do not collide inside a
     thread-local cache.
     """
-    return (metadata["name"], metadata["path"], metadata.get("module"))
+    entrypoint = metadata.get("metadata", {}).get("entrypoint")
+    return (metadata["name"], metadata["path"], entrypoint)
 
 
 @dataclass
@@ -631,13 +854,14 @@ class _Registry:
 
     Each LangGraph ``thread_id`` gets its own ``_Slot`` (worker + Runtime
     + Context). Eviction is driven externally via ``evict(thread_id)`` —
-    typically from the middleware's ``after_agent`` hook — so each agent
-    invocation runs against a fresh REPL.
+    typically from the middleware's ``after_agent`` hook.
     """
 
     memory_limit: int
     timeout: float
     capture_console: bool
+    max_stdout_chars: int
+    max_ptc_calls: int | None = 256
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -648,6 +872,12 @@ class _Registry:
                 slot = self._build_slot_locked(thread_id)
                 self._slots[thread_id] = slot
             return slot.repl
+
+    def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
+        """Return existing REPL for ``thread_id`` without creating a new slot."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+            return slot.repl if slot is not None else None
 
     def evict(self, thread_id: str) -> None:
         """Close and remove the slot for ``thread_id``. No-op if absent."""
@@ -663,6 +893,33 @@ class _Registry:
         if slot is not None:
             await self._aclose_slot(slot)
 
+    def reset_repl(self, thread_id: str) -> None:
+        """Replace the slot REPL while keeping its worker and runtime alive."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            return
+
+        with contextlib.suppress(Exception):
+            slot.repl.close()
+        new_repl = _ThreadREPL(
+            slot.worker,
+            slot.runtime,
+            timeout=self.timeout,
+            capture_console=self.capture_console,
+            max_stdout_chars=self.max_stdout_chars,
+            max_ptc_calls=self.max_ptc_calls,
+        )
+
+        with self._lock:
+            current = self._slots.get(thread_id)
+            if current is slot:
+                slot.repl = new_repl
+                return
+        # Slot was removed/replaced while rebuilding.
+        with contextlib.suppress(Exception):
+            new_repl.close()
+
     def _build_slot_locked(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"
         worker = ThreadWorker(name=name)
@@ -672,16 +929,25 @@ class _Registry:
             runtime,
             timeout=self.timeout,
             capture_console=self.capture_console,
+            max_stdout_chars=self.max_stdout_chars,
+            max_ptc_calls=self.max_ptc_calls,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:
+        # Close the context on its owning worker thread before closing the
+        # runtime. This avoids unsendable handle wrappers being finalized on
+        # a non-owner thread during later GC.
+        with contextlib.suppress(Exception):
+            slot.repl.close()
         # Best-effort; never block shutdown on a misbehaving runtime.
         with contextlib.suppress(Exception):
             slot.worker.run_sync(_aclose_runtime(slot.runtime))
         slot.worker.close()
 
     async def _aclose_slot(self, slot: _Slot) -> None:
+        with contextlib.suppress(Exception):
+            await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
         slot.worker.close()

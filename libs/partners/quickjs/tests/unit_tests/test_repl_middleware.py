@@ -1,22 +1,23 @@
-"""Unit tests for REPLMiddleware and its backing REPL wrapper."""
+"""Unit tests for CodeInterpreterMiddleware and its backing REPL wrapper."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
+from langchain.tools import ToolRuntime
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _Registry, _ThreadREPL
+from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -52,7 +53,13 @@ def runtime(worker: ThreadWorker) -> Runtime:
 
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    return _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +85,7 @@ class _StubModel:
 
 
 def test_tool_registered_with_default_name() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # langchain's create_agent accepts a model string; we use a cheap local
     # fake to avoid any provider import. Any string maps through init_chat_model,
     # but we want to avoid network/config; go direct via tools=[] + our middleware.
@@ -91,10 +98,11 @@ def test_tool_registered_with_default_name() -> None:
     tools = agent.nodes["tools"].bound._tools_by_name
     assert "eval" in tools
     assert "persistent" in tools["eval"].description.lower()
+    assert tools["eval"].metadata["ls_code_input_language"] == "javascript"
 
 
 def test_tool_registered_with_custom_name() -> None:
-    mw = REPLMiddleware(tool_name="js")
+    mw = CodeInterpreterMiddleware(tool_name="js")
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     agent = create_agent(
@@ -104,16 +112,27 @@ def test_tool_registered_with_custom_name() -> None:
     tools = agent.nodes["tools"].bound._tools_by_name
     assert "js" in tools
     assert "eval" not in tools
+    assert tools["js"].metadata["ls_code_input_language"] == "javascript"
 
 
 def test_legacy_system_prompt_alias_removed() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     assert not hasattr(mw, "system_prompt")
+
+
+def test_rejects_invalid_max_ptc_calls() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        CodeInterpreterMiddleware(max_ptc_calls=0)
+
+
+def test_rejects_invalid_max_snapshot_bytes() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        CodeInterpreterMiddleware(max_snapshot_bytes=0)
 
 
 def test_system_prompt_injected_once() -> None:
     """wrap_model_call appends exactly one snippet per call, idempotent in content."""
-    mw = REPLMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)
+    mw = CodeInterpreterMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)
     seen: list[ModelRequest] = []
 
     def handler(req: ModelRequest):
@@ -145,6 +164,62 @@ def test_system_prompt_injected_once() -> None:
     assert "`eval` tool" in sys_text
     assert "7.0s per call" in sys_text
     assert "32 MB total" in sys_text
+    assert "across multiple turns for this conversation thread" in sys_text
+
+
+def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    assert "DO NOT persist across multiple turns" in mw._base_system_prompt
+
+
+def test_system_prompt_mentions_mode_call() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert "fresh sandboxed REPL for each invocation" in mw._base_system_prompt
+    assert "does not persist across tool calls" in mw._base_system_prompt
+
+
+def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert mw._snapshot_between_turns is False
+
+
+def test_mode_turn_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
+    assert mw._snapshot_between_turns is False
+
+
+def test_snapshot_between_turns_false_resolves_to_mode_turn() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    assert mw._mode == "turn"
+
+
+def test_snapshot_between_turns_emits_deprecation_warning() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        CodeInterpreterMiddleware(snapshot_between_turns=True)
+
+
+def test_mode_call_with_snapshot_between_turns_true_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="call",
+            snapshot_between_turns=True,
+        )
+
+
+def test_mode_thread_with_snapshot_between_turns_false_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="thread",
+            snapshot_between_turns=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,12 +236,45 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
 
 
 def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
-    a = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
-    b = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    a = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    b = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     a.eval_sync("let shared = 'from_a'")
     outcome = b.eval_sync("typeof shared")
     # QuickJS returns "undefined" for missing globals — an isolated context
     # must not see A's binding.
+    assert outcome.result == "undefined"
+
+
+def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    try:
+        repl = reg.get("thread-a")
+        old_runtime = reg._slots["thread-a"].runtime
+        repl.eval_sync("globalThis.answer = 42")
+        reg.reset_repl("thread-a")
+        replaced = reg.get("thread-a")
+        outcome = replaced.eval_sync("typeof answer")
+        assert replaced is not repl
+        assert reg._slots["thread-a"].runtime is old_runtime
+    finally:
+        reg.close()
     assert outcome.result == "undefined"
 
 
@@ -190,7 +298,13 @@ def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
 
 
 def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
-    tight = _ThreadREPL(worker, runtime, timeout=0.1, capture_console=True)
+    tight = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=0.1,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     outcome = tight.eval_sync("while(true){}")
     assert outcome.error_type == "Timeout"
 
@@ -211,10 +325,87 @@ def test_console_log_is_captured(repl: _ThreadREPL) -> None:
 
 
 def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None:
-    quiet = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=False)
+    quiet = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=False,
+        max_stdout_chars=4000,
+    )
     outcome = quiet.eval_sync("typeof console")
     # With the bridge off, the global is absent.
     assert outcome.result == "undefined"
+
+
+def test_console_capture_is_bounded_at_append_time(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=64,
+    )
+    outcome = bounded.eval_sync(
+        "console.log('x'.repeat(80)); console.log('y'.repeat(80)); 1"
+    )
+    assert outcome.result == "1"
+    assert len(outcome.stdout) <= 64
+    assert outcome.stdout_truncated_chars > 0
+    formatted = format_outcome(outcome, max_result_chars=64)
+    assert "truncated" in formatted
+
+
+def test_console_overflow_preserves_prefix(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=10,
+    )
+    outcome = bounded.eval_sync("console.log('abcdef'); console.log('ghij');")
+    assert outcome.stdout == "abcdef\nghi"
+    assert outcome.stdout_truncated_chars == 1
+
+
+def test_console_truncation_state_resets_between_evals(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=10,
+    )
+    first = bounded.eval_sync("console.log('abcdef'); console.log('ghij');")
+    assert first.stdout_truncated_chars == 1
+    second = bounded.eval_sync("console.log('ok'); 2")
+    assert second.result == "2"
+    assert second.stdout == "ok"
+    assert second.stdout_truncated_chars == 0
+
+
+def test_console_truncation_marker_emits_with_zero_budget(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=0,
+    )
+    outcome = bounded.eval_sync("console.log('hello'); 1")
+    assert outcome.stdout == ""
+    assert outcome.stdout_truncated_chars > 0
+    formatted = format_outcome(outcome, max_result_chars=60)
+    assert "<stdout>" in formatted
+    assert "truncated" in formatted
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +421,58 @@ def test_function_return_falls_back_to_handle_description(repl: _ThreadREPL) -> 
     assert "arity=2" in (outcome.result or "")
     formatted = format_outcome(outcome, max_result_chars=1000)
     assert '<result kind="handle">' in formatted
+
+
+# ---------------------------------------------------------------------------
+# Final-expression Promise unwrapping (issue #3424)
+# ---------------------------------------------------------------------------
+
+
+def test_async_iife_returning_promise_is_unwrapped(repl: _ThreadREPL) -> None:
+    """Issue #3424: a final expression that is a Promise (e.g. a bare async
+    IIFE) must surface its resolved value instead of the Promise object.
+    """
+    outcome = repl.eval_sync(
+        "(async () => { const v = await Promise.resolve(456); return v; })();"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result_kind is None
+    assert outcome.result == "456"
+
+
+def test_top_level_promise_expression_is_unwrapped(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("Promise.resolve(7)")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "7"
+
+
+def test_top_level_await_marshals_resolved_value(repl: _ThreadREPL) -> None:
+    """A `const x = await ...; x;` script must still marshal the resolved
+    value, not the Promise — the existing top-level-await path is unaffected
+    by the new handle-based eval flow.
+    """
+    outcome = repl.eval_sync("const v1 = await Promise.resolve(123); v1;")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "123"
+
+
+def test_rejected_promise_surfaces_as_jserror(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("(async () => { throw new Error('iife-rejection'); })();")
+    assert outcome.result is None
+    assert outcome.error_type == "Error"
+    assert "iife-rejection" in (outcome.error_message or "")
+
+
+def test_unwrapping_does_not_double_user_side_effects(repl: _ThreadREPL) -> None:
+    """The user program (and its console.log side effects) must run exactly
+    once even when the final expression is a Promise that needs unwrapping.
+    """
+    outcome = repl.eval_sync("(async () => { console.log('hit'); return 1; })();")
+    assert outcome.error_type is None
+    assert outcome.result == "1"
+    assert outcome.stdout.count("hit") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +494,12 @@ def test_large_result_is_truncated(repl: _ThreadREPL) -> None:
 
 
 def test_registry_reuses_thread_repl() -> None:
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         r1 = reg.get("thread-a")
         r2 = reg.get("thread-a")
@@ -262,8 +510,24 @@ def test_registry_reuses_thread_repl() -> None:
         reg.close()
 
 
+def test_registry_get_if_exists_does_not_create_slot() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    try:
+        assert reg.get_if_exists("missing") is None
+        assert reg._slots == {}
+        created = reg.get("thread-a")
+        assert reg.get_if_exists("thread-a") is created
+    finally:
+        reg.close()
+
+
 def test_middleware_del_closes_runtime() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # Force a slot to exist
     _ = mw._registry.get("t")
     slots = list(mw._registry._slots.values())
@@ -274,9 +538,41 @@ def test_middleware_del_closes_runtime() -> None:
         assert close_spy.called
 
 
+def test_clear_exception_references_removes_traceback_links() -> None:
+    """Clears traceback/context/cause to avoid cross-thread GC cycles."""
+    outer_msg = "outer"
+    first_msg = "first"
+    second_msg = "second"
+
+    def _raise_outer() -> None:
+        raise ValueError(outer_msg)
+
+    def _raise_with_links() -> None:
+        try:
+            _raise_outer()
+        except ValueError:
+            raise RuntimeError(first_msg) from RuntimeError(second_msg)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _raise_with_links()
+    caught = exc_info.value
+    assert caught.__traceback__ is not None
+    assert caught.__context__ is not None
+    assert caught.__cause__ is not None
+    _clear_exception_references(caught)
+    assert caught.__traceback__ is None
+    assert caught.__context__ is None
+    assert caught.__cause__ is None
+
+
 def test_per_thread_slot_has_own_worker_and_runtime() -> None:
     """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         reg.get("thread-b")
@@ -292,12 +588,22 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
 
 def test_evict_closes_and_removes_slot() -> None:
     """``evict`` closes the runtime and drops the slot from the registry."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime
-        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+        repl = reg._slots["thread-a"].repl
+        with (
+            patch.object(repl, "close", wraps=repl.close) as repl_close_spy,
+            patch.object(rt, "close", wraps=rt.close) as close_spy,
+        ):
             reg.evict("thread-a")
+        assert repl_close_spy.called
         assert close_spy.called
         assert "thread-a" not in reg._slots
     finally:
@@ -306,7 +612,12 @@ def test_evict_closes_and_removes_slot() -> None:
 
 def test_evict_returns_fresh_slot_on_next_get() -> None:
     """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         first = reg.get("thread-a")
         first_runtime = reg._slots["thread-a"].runtime
@@ -320,7 +631,12 @@ def test_evict_returns_fresh_slot_on_next_get() -> None:
 
 def test_evict_unknown_thread_id_is_noop() -> None:
     """Evicting a thread_id that was never registered does not raise."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.evict("never-existed")
         assert reg._slots == {}
@@ -330,12 +646,22 @@ def test_evict_unknown_thread_id_is_noop() -> None:
 
 async def test_aevict_closes_and_removes_slot() -> None:
     """``aevict`` closes the runtime via the worker loop and drops the slot."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime
-        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+        repl = reg._slots["thread-a"].repl
+        with (
+            patch.object(repl, "aclose", wraps=repl.aclose) as repl_close_spy,
+            patch.object(rt, "close", wraps=rt.close) as close_spy,
+        ):
             await reg.aevict("thread-a")
+        assert repl_close_spy.called
         assert close_spy.called
         assert "thread-a" not in reg._slots
     finally:
@@ -343,26 +669,189 @@ async def test_aevict_closes_and_removes_slot() -> None:
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:
-    """``after_agent`` evicts the slot for the resolved thread_id."""
-    mw = REPLMiddleware()
+    """``after_agent`` snapshots state and evicts the resolved thread slot."""
+    mw = CodeInterpreterMiddleware()
     try:
         # Force a slot to exist for the middleware's fallback thread id.
-        mw._registry.get(mw._fallback_thread_id)
+        repl = mw._registry.get(mw._fallback_thread_id)
+        repl.eval_sync("globalThis.counter = 10")
         assert mw._fallback_thread_id in mw._registry._slots
-        mw.after_agent(state={}, runtime=MagicMock())
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
 
 async def test_aafter_agent_evicts_current_thread_slot() -> None:
-    """``aafter_agent`` evicts the slot for the resolved thread_id."""
-    mw = REPLMiddleware()
+    """``aafter_agent`` snapshots state and evicts the resolved thread slot."""
+    mw = CodeInterpreterMiddleware()
     try:
-        mw._registry.get(mw._fallback_thread_id)
+        repl = mw._registry.get(mw._fallback_thread_id)
+        repl.eval_sync("globalThis.counter = 10")
         assert mw._fallback_thread_id in mw._registry._slots
-        await mw.aafter_agent(state={}, runtime=MagicMock())
+        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
+    """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        repl.eval_sync("const answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        assert mw._fallback_thread_id not in mw._registry._slots
+
+        before_update = mw.before_agent(state=update, runtime=MagicMock())
+        assert before_update is None
+        restored = mw._registry.get(mw._fallback_thread_id)
+        assert restored.eval_sync("answer").result == "42"
+    finally:
+        mw._registry.close()
+
+
+async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
+    """Async snapshot roundtrip restores state in a fresh slot."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        await repl.eval_async("const answer = 42")
+        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert isinstance(update, dict)
+        assert mw._fallback_thread_id not in mw._registry._slots
+
+        before_update = await mw.abefore_agent(state=update, runtime=MagicMock())
+        assert before_update is None
+        restored = mw._registry.get(mw._fallback_thread_id)
+        assert restored.eval_sync("answer").result == "42"
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_clears_payload_on_restore_failure() -> None:
+    mw = CodeInterpreterMiddleware()
+    try:
+        update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
+            runtime=MagicMock(),
+        )
+        assert update == {"_quickjs_snapshot_payload": None}
+    finally:
+        mw._registry.close()
+
+
+def test_after_agent_clears_payload_on_snapshot_failure() -> None:
+    mw = CodeInterpreterMiddleware()
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
+            update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update == {"_quickjs_snapshot_payload": None}
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
+    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        with patch.object(repl, "create_snapshot", return_value=b"12345"):
+            update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update == {"_quickjs_snapshot_payload": None}
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
+    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        with patch.object(
+            repl,
+            "acreate_snapshot",
+            new=AsyncMock(return_value=b"12345"),
+        ):
+            update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert update == {"_quickjs_snapshot_payload": None}
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        repl.eval_sync("globalThis.answer = 42")
+        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update is None
+        assert mw._fallback_thread_id not in mw._registry._slots
+
+        before_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b"ignored"},
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+def test_mode_call_ignores_snapshot_payload() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        before_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b"ignored"},
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+async def test_mode_call_resets_state_between_tool_calls() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        tool = mw.tools[0]
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tools=[tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        assert tool.coroutine is not None
+        first_repl = mw._registry.get(mw._fallback_thread_id)
+        first_runtime = mw._registry._slots[mw._fallback_thread_id].runtime
+        first = await tool.coroutine(
+            runtime=runtime,
+            code="globalThis.answer = 42; answer",
+        )
+        assert "<result>42</result>" in first.content
+        after_first = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_first is not None
+        assert after_first is not first_repl
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
+
+        second = await tool.coroutine(runtime=runtime, code="typeof answer")
+        assert "<result>undefined</result>" in second.content
+        after_second = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_second is not None
+        assert after_second is not after_first
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
     finally:
         mw._registry.close()
 
@@ -454,3 +943,222 @@ def test_sync_path_still_works(repl: _ThreadREPL) -> None:
     """After the v0.2 split, the sync path continues to use ``ctx.eval``."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"
+
+
+# ---------------------------------------------------------------------------
+# required_ptc_tools validation
+# ---------------------------------------------------------------------------
+
+
+def _make_skill_metadata(
+    name: str,
+    *,
+    required_ptc_tools: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build a minimal SkillMetadata dict for testing."""
+    inner_metadata: dict[str, str] = {}
+    if required_ptc_tools is not None:
+        inner_metadata["required-ptc-tools"] = " ".join(required_ptc_tools)
+    return {
+        "name": name,
+        "description": "test",
+        "path": f"/skills/{name}/SKILL.md",
+        "metadata": inner_metadata,
+        "license": None,
+        "compatibility": None,
+        "allowed_tools": [],
+    }
+
+
+def _make_ptc_tool(name: str) -> StructuredTool:
+    """Create a minimal StructuredTool for PTC config."""
+    return StructuredTool.from_function(
+        name=name,
+        description=f"{name} tool",
+        func=lambda: "ok",
+    )
+
+
+def test_before_agent_raises_when_required_ptc_tools_missing() -> None:
+    """``before_agent`` raises when a skill needs PTC tools not in config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm",
+                    required_ptc_tools=["swarm_task", "read_file", "write_file"],
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task"):
+            mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+async def test_abefore_agent_raises_when_required_ptc_tools_missing() -> None:
+    """``abefore_agent`` raises when a skill needs PTC tools not in config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm", required_ptc_tools=["swarm_task", "read_file"]
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task"):
+            await mw.abefore_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_passes_when_all_required_ptc_tools_present() -> None:
+    """``before_agent`` succeeds when all required PTC tools are configured."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[
+            _make_ptc_tool("swarm_task"),
+            _make_ptc_tool("read_file"),
+            _make_ptc_tool("write_file"),
+        ],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm", required_ptc_tools=["swarm_task", "read_file"]
+                ),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_passes_when_no_required_ptc_tools() -> None:
+    """``before_agent`` succeeds when skills have no required_ptc_tools."""
+    mw = CodeInterpreterMiddleware(skills_backend=MagicMock())
+    try:
+        state = {
+            "skills_metadata": [_make_skill_metadata("simple-skill")],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_skips_validation_when_no_skills_backend() -> None:
+    """``before_agent`` skips PTC validation when ``skills_backend`` is not set."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task"]),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_ptc_validation_accepts_string_entries() -> None:
+    """``_ptc_tool_names`` collects names from string entries in PTC config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=["swarm_task", "read_file"],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm", required_ptc_tools=["swarm_task", "read_file"]
+                ),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_error_message_includes_all_missing_tools() -> None:
+    """Error message lists all missing tools, not just the first."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm",
+                    required_ptc_tools=["swarm_task", "write_file", "read_file"],
+                ),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task, write_file"):
+            mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+def test_skills_for_eval_skips_skills_with_missing_ptc_tools(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``_skills_for_eval`` filters skills with unsatisfied PTC requirements."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        runtime = MagicMock()
+        runtime.state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "needs-swarm", required_ptc_tools=["swarm_task", "read_file"]
+                ),
+                _make_skill_metadata("plain-skill"),
+            ],
+        }
+        with caplog.at_level("WARNING"):
+            result = mw._skills_for_eval(runtime)
+
+        assert result is not None
+        assert "needs-swarm" not in result
+        assert "plain-skill" in result
+        assert "swarm_task" in caplog.text
+    finally:
+        mw._registry.close()
+
+
+def test_skills_for_eval_includes_skills_when_all_ptc_tools_present() -> None:
+    """``_skills_for_eval`` includes skills when all PTC tools present."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("swarm_task"), _make_ptc_tool("read_file")],
+    )
+    try:
+        runtime = MagicMock()
+        runtime.state = {
+            "skills_metadata": [
+                _make_skill_metadata(
+                    "swarm", required_ptc_tools=["swarm_task", "read_file"]
+                ),
+            ],
+        }
+        result = mw._skills_for_eval(runtime)
+        assert result is not None
+        assert "swarm" in result
+    finally:
+        mw._registry.close()

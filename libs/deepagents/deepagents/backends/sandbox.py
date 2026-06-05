@@ -1,4 +1,7 @@
-"""Base sandbox implementation (`BaseSandbox`) implementing `SandboxBackendProtocol`.
+"""Base sandbox implementation.
+
+[`BaseSandbox`][deepagents.backends.sandbox.BaseSandbox] implements
+[`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
 File listing, grep, glob, and read use shell commands via `execute()`. Write
 delegates content transfer to `upload_files()`. Edit uses server-side `execute()`
@@ -48,17 +51,26 @@ import base64
 path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
-os.chdir(path)
-matches = sorted(glob.glob(pattern, recursive=True))
-for m in matches:
-    stat = os.stat(m)
-    result = {{
-        'path': m,
-        'size': stat.st_size,
-        'mtime': stat.st_mtime,
-        'is_dir': os.path.isdir(m)
-    }}
-    print(json.dumps(result))
+try:
+    os.chdir(path)
+    matches = sorted(glob.glob(pattern, recursive=True))
+    for m in matches:
+        try:
+            st = os.stat(m)
+        except OSError:
+            continue
+        print(json.dumps({{
+            'path': m,
+            'size': st.st_size,
+            'mtime': st.st_mtime,
+            'is_dir': os.path.isdir(m),
+        }}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'path_not_found'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>&1"""
 """Find files matching a pattern with metadata.
 
@@ -81,55 +93,85 @@ Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
+MAX_BINARY_BYTES: Final = 500 * 1024
+"""Maximum size of a binary file returned by `read()` as base64.
+
+Files exceeding this size return a `Binary file exceeds maximum preview size`
+error rather than being base64-encoded in full. Backends overriding `read()`
+should import and reuse this constant to stay in sync with the base
+implementation. Kept in lockstep with the `MAX_BINARY_BYTES` literal in
+`_READ_COMMAND_TEMPLATE` (asserted by `test_read_constants_match_template`).
+"""
+
+MAX_OUTPUT_BYTES: Final = 500 * 1024
+"""Maximum size of rendered text content returned by `read()`.
+
+Pages exceeding this cap are truncated and `TRUNCATION_MSG` is appended.
+Mirrors the `MAX_OUTPUT_BYTES` literal in `_READ_COMMAND_TEMPLATE`.
+"""
+
+TRUNCATION_MSG: Final = (
+    "\n\n[Output was truncated due to size limits. "
+    "This paginated read result exceeded the sandbox stdout limit. "
+    "Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
+)
+"""Sentinel appended to `read()` content when `MAX_OUTPUT_BYTES` is hit."""
+
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
-import sys, os, base64, json
+import sys, os, stat as _stat, base64, json
 
 payload = json.loads(base64.b64decode(sys.stdin.read().strip()).decode('utf-8'))
 path, old, new = payload['path'], payload['old'], payload['new']
 replace_all = payload.get('replace_all', False)
 
-if not os.path.isfile(path):
-    print(json.dumps({{'error': 'file_not_found'}}))
-    sys.exit(0)
-
-with open(path, 'rb') as f:
-    raw = f.read()
-
 try:
-    text = raw.decode('utf-8')
-except UnicodeDecodeError:
-    print(json.dumps({{'error': 'not_a_text_file'}}))
-    sys.exit(0)
+    st = os.stat(path)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
 
-# Match-driven CRLF handling (issue #2880): the read template normalizes
-# CRLF to LF for the LLM, so old_string arrives LF-only even when the
-# file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
-# variant. The first match reveals the file line-ending style in that
-# region; apply the same transform to new so the file style is preserved.
-old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
-old_lf = old.replace('\\r\\n', '\\n')
-new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
-new_lf = new.replace('\\r\\n', '\\n')
-count = 0
-matched_old, matched_new = old, new
-for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
-    c = text.count(cand_old)
-    if c >= 1:
-        matched_old, matched_new, count = cand_old, cand_new, c
-        break
+    with open(path, 'rb') as f:
+        raw = f.read()
 
-if count == 0:
-    print(json.dumps({{'error': 'string_not_found'}}))
-    sys.exit(0)
-if count > 1 and not replace_all:
-    print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
-    sys.exit(0)
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print(json.dumps({{'error': 'not_a_text_file'}}))
+        sys.exit(0)
 
-result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
-with open(path, 'wb') as f:
-    f.write(result.encode('utf-8'))
+    # Match-driven CRLF handling (issue #2880): the read template normalizes
+    # CRLF to LF for the LLM, so old_string arrives LF-only even when the
+    # file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
+    # variant. The first match reveals the file line-ending style in that
+    # region; apply the same transform to new so the file style is preserved.
+    old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    old_lf = old.replace('\\r\\n', '\\n')
+    new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    new_lf = new.replace('\\r\\n', '\\n')
+    count = 0
+    matched_old, matched_new = old, new
+    for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+        c = text.count(cand_old)
+        if c >= 1:
+            matched_old, matched_new, count = cand_old, cand_new, c
+            break
 
-print(json.dumps({{'count': count}}))
+    if count == 0:
+        print(json.dumps({{'error': 'string_not_found'}}))
+        sys.exit(0)
+    if count > 1 and not replace_all:
+        print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+        sys.exit(0)
+
+    result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
+    with open(path, 'wb') as f:
+        f.write(result.encode('utf-8'))
+
+    print(json.dumps({{'count': count}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
 __DEEPAGENTS_EDIT_EOF__
@@ -161,7 +203,7 @@ to avoid size limits on the execute() request body imposed by some sandbox provi
 """
 
 _EDIT_TMPFILE_TEMPLATE = """python3 -c "
-import os, sys, json, base64
+import os, stat as _stat, sys, json, base64
 
 old_path = base64.b64decode('{old_path_b64}').decode('utf-8')
 new_path = base64.b64decode('{new_path_b64}').decode('utf-8')
@@ -179,44 +221,50 @@ finally:
         try: os.remove(p)
         except OSError: pass
 
-if not os.path.isfile(target):
-    print(json.dumps({{'error': 'file_not_found'}}))
-    sys.exit(0)
-
-with open(target, 'rb') as f:
-    raw = f.read()
-
 try:
-    text = raw.decode('utf-8')
-except UnicodeDecodeError:
-    print(json.dumps({{'error': 'not_a_text_file'}}))
-    sys.exit(0)
+    st = os.stat(target)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
 
-# Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
-old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
-old_lf = old.replace('\\r\\n', '\\n')
-new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
-new_lf = new.replace('\\r\\n', '\\n')
-count = 0
-matched_old, matched_new = old, new
-for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
-    c = text.count(cand_old)
-    if c >= 1:
-        matched_old, matched_new, count = cand_old, cand_new, c
-        break
+    with open(target, 'rb') as f:
+        raw = f.read()
 
-if count == 0:
-    print(json.dumps({{'error': 'string_not_found'}}))
-    sys.exit(0)
-if count > 1 and not replace_all:
-    print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
-    sys.exit(0)
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print(json.dumps({{'error': 'not_a_text_file'}}))
+        sys.exit(0)
 
-result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
-with open(target, 'wb') as f:
-    f.write(result.encode('utf-8'))
+    # Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+    old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    old_lf = old.replace('\\r\\n', '\\n')
+    new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+    new_lf = new.replace('\\r\\n', '\\n')
+    count = 0
+    matched_old, matched_new = old, new
+    for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+        c = text.count(cand_old)
+        if c >= 1:
+            matched_old, matched_new, count = cand_old, cand_new, c
+            break
 
-print(json.dumps({{'count': count}}))
+    if count == 0:
+        print(json.dumps({{'error': 'string_not_found'}}))
+        sys.exit(0)
+    if count > 1 and not replace_all:
+        print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
+        sys.exit(0)
+
+    result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
+    with open(target, 'wb') as f:
+        f.write(result.encode('utf-8'))
+
+    print(json.dumps({{'count': count}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>&1"""
 """Server-side file edit via temp-file upload for large payloads.
 
@@ -232,7 +280,7 @@ files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
-import codecs, os, sys, base64, json
+import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
@@ -244,87 +292,92 @@ TRUNCATION_MSG = '\\n\\n' + (
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
 
-if not os.path.isfile(path):
-    print(json.dumps({{'error': 'file_not_found'}}))
-    sys.exit(0)
-
-if os.path.getsize(path) == 0:
-    print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
-    sys.exit(0)
-
-file_type = '{file_type}'
-if file_type != 'text':
-    file_size = os.path.getsize(path)
-    if file_size > MAX_BINARY_BYTES:
-        print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
-        sys.exit(0)
-    with open(path, 'rb') as f:
-        raw = f.read()
-    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
-    sys.exit(0)
-
-with open(path, 'rb') as f:
-    raw_prefix = f.read(8192)
-
-# The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
-# emoji is 4); the incremental decoder buffers a trailing partial sequence
-# instead of raising, so legitimate text isn't misclassified as binary.
-is_binary = False
 try:
-    codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
-except UnicodeDecodeError:
-    is_binary = True
+    st = os.stat(path)
+    if not _stat.S_ISREG(st.st_mode):
+        print(json.dumps({{'error': 'not_a_file'}}))
+        sys.exit(0)
 
-if is_binary:
+    if st.st_size == 0:
+        print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
+        sys.exit(0)
+
+    file_type = '{file_type}'
+    if file_type != 'text':
+        if st.st_size > MAX_BINARY_BYTES:
+            print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
+            sys.exit(0)
+        with open(path, 'rb') as f:
+            raw = f.read()
+        print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+        sys.exit(0)
+
     with open(path, 'rb') as f:
-        raw = f.read()
-    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
-    sys.exit(0)
+        raw_prefix = f.read(8192)
 
-offset = {offset}
-limit = {limit}
-line_count = 0
-returned_lines = 0
-truncated = False
-parts = []
-current_bytes = 0
-msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
-effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+    # The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
+    # emoji is 4); the incremental decoder buffers a trailing partial sequence
+    # instead of raising, so legitimate text isn't misclassified as binary.
+    is_binary = False
+    try:
+        codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
+    except UnicodeDecodeError:
+        is_binary = True
 
-with open(path, 'r', encoding='utf-8', newline=None) as f:
-    for raw_line in f:
-        line_count += 1
-        if line_count <= offset:
-            continue
-        if returned_lines >= limit:
-            break
+    if is_binary:
+        with open(path, 'rb') as f:
+            raw = f.read()
+        print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+        sys.exit(0)
 
-        line = raw_line.rstrip('\\n').rstrip('\\r')
-        piece = line if returned_lines == 0 else '\\n' + line
-        piece_bytes = len(piece.encode('utf-8'))
-        if current_bytes + piece_bytes > effective_limit:
-            truncated = True
-            remaining_bytes = effective_limit - current_bytes
-            if remaining_bytes > 0:
-                prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
-                if prefix:
-                    parts.append(prefix)
-                    current_bytes += len(prefix.encode('utf-8'))
-            break
+    offset = {offset}
+    limit = {limit}
+    line_count = 0
+    returned_lines = 0
+    truncated = False
+    parts = []
+    current_bytes = 0
+    msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+    effective_limit = MAX_OUTPUT_BYTES - msg_bytes
 
-        parts.append(piece)
-        current_bytes += piece_bytes
-        returned_lines += 1
+    with open(path, 'r', encoding='utf-8', newline=None) as f:
+        for raw_line in f:
+            line_count += 1
+            if line_count <= offset:
+                continue
+            if returned_lines >= limit:
+                break
 
-if returned_lines == 0 and not truncated:
-    print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
-    sys.exit(0)
+            line = raw_line.rstrip('\\n').rstrip('\\r')
+            piece = line if returned_lines == 0 else '\\n' + line
+            piece_bytes = len(piece.encode('utf-8'))
+            if current_bytes + piece_bytes > effective_limit:
+                truncated = True
+                remaining_bytes = effective_limit - current_bytes
+                if remaining_bytes > 0:
+                    prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                    if prefix:
+                        parts.append(prefix)
+                        current_bytes += len(prefix.encode('utf-8'))
+                break
 
-text = ''.join(parts)
-if truncated:
-    text += TRUNCATION_MSG
+            parts.append(piece)
+            current_bytes += piece_bytes
+            returned_lines += 1
 
-print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+    if returned_lines == 0 and not truncated:
+        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+        sys.exit(0)
+
+    text = ''.join(parts)
+    if truncated:
+        text += TRUNCATION_MSG
+
+    print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'file_not_found'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>&1"""
 """Read file content with server-side pagination.
 
@@ -398,23 +451,31 @@ try:
             }}
             print(json.dumps(result))
 except FileNotFoundError:
-    pass
+    print(json.dumps({{'error': 'path_not_found'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
 except PermissionError:
-    pass
+    print(json.dumps({{'error': 'permission_denied'}}))
 " 2>/dev/null"""
 
         result = self.execute(cmd)
 
         file_infos: list[FileInfo] = []
+        error: str | None = None
         for line in result.output.strip().split("\n"):
             if not line:
                 continue
             try:
                 data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
             except json.JSONDecodeError:
                 continue
+            if isinstance(data, dict) and "error" in data:
+                error = data["error"]
+                continue
+            file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
 
+        if error is not None:
+            return LsResult(entries=None, error=f"Path '{path}': {error}")
         return LsResult(entries=file_infos)
 
     def read(
@@ -481,6 +542,31 @@ except PermissionError:
             )
         )
 
+    def _write_preflight(self, file_path: str) -> WriteResult | None:
+        """Run the existence check + parent-directory creation for `write()`.
+
+        Subclasses overriding `write()` (e.g., to use a native SDK transport)
+        should call this first so they preserve the same "fail if file exists"
+        and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
+        window between this check and the actual write — an inherent limitation
+        of splitting the operation across two backend calls.
+
+        Args:
+            file_path: Absolute path for the file about to be written.
+
+        Returns:
+            `None` if the preflight passes (target does not exist, parents
+                created); a populated `WriteResult` with `error` set if the
+                check fails.
+        """
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+        result = self.execute(check_cmd)
+        if result.exit_code != 0 or "Error:" in result.output:
+            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+            return WriteResult(error=error_msg)
+        return None
+
     def write(
         self,
         file_path: str,
@@ -495,15 +581,9 @@ except PermissionError:
         Returns:
             `WriteResult` with `path` on success or `error` on failure.
         """
-        # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below - a concurrent process could create the file in
-        # between. This is an inherent limitation of splitting the operation;
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
-        if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+        preflight_error = self._write_preflight(file_path)
+        if preflight_error is not None:
+            return preflight_error
 
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
@@ -666,23 +746,15 @@ except PermissionError:
     @staticmethod
     def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
         """Map server-side error codes to `EditResult` objects."""
-        if error == "file_not_found":
-            return EditResult(
-                error=f"Error: File '{file_path}' not found",
-            )
-        if error == "not_a_text_file":
-            return EditResult(
-                error=f"Error: File '{file_path}' is not a text file",
-            )
-        if error == "string_not_found":
-            return EditResult(
-                error=f"Error: String not found in file: '{old_string}'",
-            )
-        if error == "multiple_occurrences":
-            return EditResult(
-                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
-            )
-        return EditResult(error=f"Error editing file '{file_path}': {error}")
+        messages: dict[str, str] = {
+            "file_not_found": f"Error: File '{file_path}' not found",
+            "permission_denied": f"Error: Permission denied editing file '{file_path}'",
+            "not_a_file": f"Error: '{file_path}' is not a regular file",
+            "not_a_text_file": f"Error: File '{file_path}' is not a text file",
+            "string_not_found": f"Error: String not found in file: '{old_string}'",
+            "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
+        }
+        return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
 
     def grep(
         self,
@@ -706,7 +778,9 @@ except PermissionError:
         search_path = shlex.quote(path or ".")
 
         # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        # `-Z` separates the filename from line data with NUL, so filenames may
+        # contain `:` without making the output ambiguous.
+        grep_opts = "-rHnFZ"
 
         # Add glob pattern if specified
         glob_pattern = ""
@@ -719,31 +793,48 @@ except PermissionError:
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
-        output = result.output.rstrip()
+        output = result.output.rstrip("\n")
+        if result.exit_code is not None and result.exit_code != 0:
+            detail = output.strip() if output else f"exit code {result.exit_code}"
+            return GrepResult(error=f"Path '{path or '.'}': {detail}")
         if not output:
             return GrepResult(matches=[])
 
         # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
+        parse_error: str | None = None
         for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= 3:  # noqa: PLR2004  # Grep output field count
+            # Format is: path\0line_number:text
+            parts = line.split("\0", 1)
+            if len(parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            line_parts = parts[1].split(":", 1)
+            if len(line_parts) != 2:  # noqa: PLR2004  # Grep output field count
+                parse_error = line
+                continue
+            try:
                 matches.append(
                     {
                         "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
+                        "line": int(line_parts[0]),
+                        "text": line_parts[1],
                     }
                 )
+            except ValueError:
+                parse_error = line
+
+        if parse_error is not None and not matches:
+            return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Structured glob matching returning `GlobResult`."""
+        search_path = path or "/"
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
-        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+        path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
         result = self.execute(cmd)
@@ -752,20 +843,29 @@ except PermissionError:
         if not output:
             return GlobResult(matches=[])
 
-        # Parse JSON output into FileInfo dicts
+        # Parse JSON output into FileInfo dicts. Any error record (emitted when
+        # the search path itself is unreachable) wins over partial matches —
+        # mirrors read()/ls() convention: sandbox emits a short code, host wraps
+        # it with the search-path prefix.
         file_infos: list[FileInfo] = []
+        error: str | None = None
         for line in output.split("\n"):
             try:
                 data = json.loads(line)
-                file_infos.append(
-                    {
-                        "path": data["path"],
-                        "is_dir": data["is_dir"],
-                    }
-                )
             except json.JSONDecodeError:
                 continue
+            if isinstance(data, dict) and "error" in data:
+                error = data["error"]
+                continue
+            file_infos.append(
+                {
+                    "path": data["path"],
+                    "is_dir": data["is_dir"],
+                }
+            )
 
+        if error is not None:
+            return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
         return GlobResult(matches=file_infos)
 
     @property

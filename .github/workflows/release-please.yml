@@ -1,6 +1,6 @@
 # Creates release PRs based on conventional commits.
 #
-# When commits land on main, release-please analyzes them and either:
+# When commits land on main, this workflow either:
 # - Creates/updates a release PR with changelog and version bump
 # - When a release PR is merged, triggers the release workflow
 #
@@ -13,6 +13,11 @@ on:
   push:
     branches:
       - main
+
+# Do not put workflow-level concurrency here. Release commits must be able to
+# reach `trigger-releases` even while a normal push is waiting out an in-flight
+# publish; otherwise GitHub can coalesce away the pending release-commit run.
+# The release-please action itself is serialized at the job level below.
 
 permissions:
   contents: read
@@ -47,69 +52,28 @@ jobs:
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
           exit 1
 
-  release-please:
+  # Release commits are the only runs that can dispatch release.yml, so detect
+  # them before the wait/serialized release-please maintenance path. This job is
+  # intentionally short-lived and not in the `release-please` concurrency group.
+  detect-release-commit:
     needs: guard-empty-commit
+    name: Detect merged release PR
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
     outputs:
+      release-commit: ${{ steps.check-releases.outputs.release-commit }}
       cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      code-release: ${{ steps.check-releases.outputs.code-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
-      repl-release: ${{ steps.check-releases.outputs.repl-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
-      pr: ${{ steps.release.outputs.pr }}
-      prs: ${{ steps.release.outputs.prs }}
     steps:
-      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
-        id: release
-        with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-      # Detect releases by checking CHANGELOG.md modifications AND commit message.
-      # release-please always updates CHANGELOG.md when merging a release PR, and
-      # the commit message matches pull-request-title-pattern in release-please-config.json:
-      #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
-
-      # release-please uses GITHUB_TOKEN, so its PR events don't trigger
-      # pull_request_target (GitHub's infinite-loop prevention). Reuse the
-      # shared labelPR() helper so labeling logic stays in one place.
-      - name: Label release PRs
-        if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
-        continue-on-error: true
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          RELEASE_PRS: ${{ steps.release.outputs.prs }}
-        with:
-          script: |
-            let prs;
-            try {
-              prs = JSON.parse(process.env.RELEASE_PRS || '[]');
-            } catch (e) {
-              core.warning(`Failed to parse RELEASE_PRS: ${e.message}`);
-              return;
-            }
-            if (!prs.length) return;
-            const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
-            for (const pr of prs) {
-              try {
-                const labels = await h.labelPR(pr.number, { title: pr.title });
-                console.log(`PR #${pr.number} ("${pr.title}"): +[${labels.join(', ')}]`);
-              } catch (e) {
-                core.warning(`Failed to label PR #${pr.number}: ${e.message}`);
-              }
-            }
 
       - name: Check if release PRs were merged
         id: check-releases
@@ -140,9 +104,16 @@ jobs:
           echo "release-version=${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ -n "$RELEASE_VERSION" ]; then
+            echo "release-commit=true" >> "$GITHUB_OUTPUT"
             echo "Extracted release version: $RELEASE_VERSION"
           elif echo "$COMMIT_MSG" | grep -qE "^release\("; then
-            echo "::warning::Commit looks like a release but version extraction failed: $COMMIT_MSG"
+            # release.yml requires `version` as a non-empty input. Fail loudly
+            # here rather than dispatch with an empty annotation that the
+            # downstream workflow would silently accept via the API.
+            echo "::error::Commit looks like a release but version extraction failed: $COMMIT_MSG"
+            exit 1
+          else
+            echo "release-commit=false" >> "$GITHUB_OUTPUT"
           fi
 
           # grep -q in an `if` conditional is safe under set -eo pipefail;
@@ -167,6 +138,13 @@ jobs:
             echo "ACP release detected: $COMMIT_MSG"
           else
             echo "acp-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-code\):"; then
+            echo "code-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Code release detected: $COMMIT_MSG"
+          else
+            echo "code-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
@@ -197,12 +175,219 @@ jobs:
             echo "quickjs-release=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if echo "$CHANGED" | grep -q "^libs/repl/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-repl\):"; then
-            echo "repl-release=true" >> "$GITHUB_OUTPUT"
-            echo "REPL release detected: $COMMIT_MSG"
-          else
-            echo "repl-release=false" >> "$GITHUB_OUTPUT"
+  # Wait out an in-flight publish instead of recomputing against half-updated state.
+  #
+  # release.yml (the PyPI publisher) creates the git tag and flips the release
+  # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
+  # the release PR merges, in a separate dispatched run. In that window the
+  # manifest already names the new version but the tag does not exist yet. A
+  # normal (non-release) push landing in that window re-runs release-please
+  # against this half-updated state: it finds no tag, and if the label has just
+  # flipped, release-please's own "untagged outstanding -> abort" guard appears
+  # not to fire — so it treats the component as never-released and proposes a
+  # bootstrap downgrade (observed once: 0.1.8 -> 0.1.0 with the full history).
+  #
+  # Crucially, completing a publish does NOT push to main (it only creates a tag
+  # + GitHub release), so nothing re-triggers release-please.yml afterwards. An
+  # earlier version of this guard *skipped* release-please for the in-flight
+  # window — but "skip" stranded this push's commits until some unrelated future
+  # push happened to re-run release-please, which looks like a cancel, not a
+  # defer. So instead we *wait*: poll the label until the publish finishes (or a
+  # bounded timeout), then let release-please run in this same run against the
+  # now-consistent state. This job is deliberately outside the `release-please`
+  # concurrency group so release-commit runs can still dispatch publishing.
+  #
+  # Release commits bypass this wait entirely: their run must reach
+  # `trigger-releases` to dispatch the publish.
+  #
+  # Two fallbacks if the wait can't resolve cleanly:
+  #   * Publish genuinely *stuck* past MAX_WAIT (label never flips, but GitHub is
+  #     answering): skip=true, deferring to the next push, so a hung publish
+  #     outside this run's control never paints main red.
+  #   * GitHub itself unreadable (gh keeps erroring so we can't tell whether a
+  #     publish is in flight): fail the job loudly (exit 1). release-please is
+  #     then skipped via `needs`, and a red guard is the honest signal — better
+  #     than silently guessing "in flight" for 45 min and stranding commits.
+  guard-pending-release:
+    needs: [guard-empty-commit, detect-release-commit]
+    name: Wait while a publish is in flight
+    if: needs.detect-release-commit.outputs.release-commit != 'true'
+    runs-on: ubuntu-latest
+    # Backstops the poll loop at the job level (covers checkout + every `gh`
+    # round-trip, not just the sleeps). Sits ~10 min above MAX_WAIT (45 min) so
+    # the loop's graceful skip=true fallback wins the race over a hard job
+    # timeout even when `gh` calls are slow under runner contention — a hard
+    # timeout would leave `skip` unset, and the downstream gate fails closed on
+    # an unset value, blocking release-please until the next push.
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
+      - name: Wait for in-flight releases
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # No `-e`: the poll loop handles transient `gh` failures itself rather
+          # than aborting the job, which would skip the wait entirely.
+          set -uo pipefail
+
+          # `autorelease: pending` is release-please-action's built-in label,
+          # applied to release PRs and cleared to `autorelease: tagged` by
+          # release.yml once the tag and GitHub release exist, so a merged PR
+          # still carrying it means a publish has not finished.
+          #
+          # --limit is explicit and generous: the default (30) could drop a
+          # genuinely stuck pending PR past the window precisely in the backlog
+          # scenario this guard exists to catch, silently reporting "none".
+          list_pending() {
+            gh pr list --repo "$REPO" --state merged \
+              --label "autorelease: pending" --limit 100 --json number,title \
+              --jq '[.[] | "#\(.number) \(.title)"] | join("; ")'
+          }
+
+          # poll_pending sets PENDING from list_pending and tracks consecutive
+          # failures in QUERY_FAILS. Called directly (never in a subshell) so the
+          # counter persists across iterations. On a `gh` error we set PENDING to
+          # a non-empty sentinel so the caller keeps waiting rather than proceed
+          # on unverified state — but a *sustained* failure means we genuinely
+          # cannot read release state, which we must surface loudly (see the
+          # MAX_QUERY_FAILS bail-out below) rather than mislabel as "in flight".
+          QUERY_FAILS=0
+          poll_pending() {
+            if PENDING=$(list_pending); then
+              QUERY_FAILS=0
+            else
+              QUERY_FAILS=$((QUERY_FAILS + 1))
+              PENDING="(failed to query GitHub)"
+              echo "::warning::Failed to query GitHub for release state (${QUERY_FAILS} consecutive)."
+            fi
+          }
+
+          poll_pending
+          if [ -z "$PENDING" ]; then
+            echo "No in-flight releases; proceeding."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # Poll until the pending label clears. Publishes normally finish in a
+          # few minutes; MAX_WAIT is generous headroom for runner contention and
+          # transient GitHub API errors. MAX_QUERY_FAILS bounds how long we'll
+          # tolerate an *unreadable* GitHub (~2.5 min of back-to-back failures)
+          # before failing the job — distinct from a real publish that's slow.
+          POLL_INTERVAL=30
+          MAX_WAIT=2700 # 45 min
+          MAX_QUERY_FAILS=5
+          WAITED=0
+          echo "::notice::Publish in flight; waiting up to $((MAX_WAIT / 60))m for it to finish before running release-please: $PENDING"
+
+          while [ -n "$PENDING" ] && [ "$WAITED" -lt "$MAX_WAIT" ]; do
+            if [ "$QUERY_FAILS" -ge "$MAX_QUERY_FAILS" ]; then
+              echo "::error::Could not read release state from GitHub after ${QUERY_FAILS} consecutive failures; refusing to guess whether a publish is in flight. release-please is skipped for this push and runs normally on the next one."
+              exit 1
+            fi
+            sleep "$POLL_INTERVAL"
+            WAITED=$((WAITED + POLL_INTERVAL))
+            poll_pending
+            echo "Waited ${WAITED}s; pending: ${PENDING:-<cleared>}"
+          done
+
+          if [ -z "$PENDING" ]; then
+            echo "In-flight publish(es) finished after ${WAITED}s; proceeding."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## release-please proceeding after wait"
+              echo ""
+              echo "A publish was in flight; release-please waited ${WAITED}s for the \`autorelease: pending\` label(s) to clear, then ran normally against the now-consistent state."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Timed out: the publish is likely stuck. Fall back to deferring to the
+          # next push rather than failing — a hung publish is outside this run's
+          # control and the operator must clear it manually.
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::release-please deferred after waiting ${WAITED}s: publish still in flight (or release state unverifiable): $PENDING"
+          {
+            echo "## release-please deferred"
+            echo ""
+            echo "A publish was still in flight (or GitHub's release state stayed unverifiable) after waiting $((MAX_WAIT / 60))m — these merged release PR(s) are still labeled \`autorelease: pending\`:"
+            echo ""
+            echo "$PENDING"
+            echo ""
+            echo "release-please was skipped for this push to avoid recomputing releases against half-updated state (the git tag is not created until the publish finishes). It runs normally on the next push once the publish completes and the label flips to \`autorelease: tagged\`."
+            echo ""
+            echo "If a publish is genuinely **stuck** on \`autorelease: pending\`, clear it per [Release PR Stuck with \"autorelease: pending\" Label](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pr-stuck-with-autorelease-pending-label)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-please:
+    needs: [guard-empty-commit, detect-release-commit, guard-pending-release]
+    # Fail closed: run only on an explicit `skip=false`. An unset value (guard
+    # crashed or hit its job timeout before writing the output) blocks
+    # release-please rather than letting it recompute against unverified state.
+    if: |
+      needs.detect-release-commit.outputs.release-commit != 'true' &&
+      needs.guard-pending-release.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    # Serialize only the release-please action, which mutates shared release
+    # branches and reads in-flight release state. Keeping this at job scope lets
+    # release-commit runs dispatch publishing without queueing behind long guard
+    # waits from ordinary pushes.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      pr: ${{ steps.release.outputs.pr }}
+      prs: ${{ steps.release.outputs.prs }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # release-please uses GITHUB_TOKEN, so its PR events don't trigger
+      # pull_request_target (GitHub's infinite-loop prevention). Reuse the
+      # shared labelPR() helper so labeling logic stays in one place.
+      - name: Label release PRs
+        if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+        with:
+          script: |
+            let prs;
+            try {
+              prs = JSON.parse(process.env.RELEASE_PRS || '[]');
+            } catch (e) {
+              core.warning(`Failed to parse RELEASE_PRS: ${e.message}`);
+              return;
+            }
+            if (!prs.length) return;
+            const { owner, repo } = context.repo;
+            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            for (const pr of prs) {
+              try {
+                const labels = await h.labelPR(pr.number, { title: pr.title });
+                console.log(`PR #${pr.number} ("${pr.title}"): +[${labels.join(', ')}]`);
+              } catch (e) {
+                core.warning(`Failed to label PR #${pr.number}: ${e.message}`);
+              }
+            }
 
   # Update uv.lock files when release-please creates/updates a PR
   # release-please updates pyproject.toml versions but doesn't regenerate lockfiles
@@ -211,7 +396,7 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.prs != '[]' && needs.release-please.outputs.prs
       != ''
-    name: Update lockfiles (${{ matrix.pr.headBranchName }})
+    name: Update lockfiles
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -232,31 +417,82 @@ jobs:
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
 
       - name: Update lockfiles
+        id: update-lockfiles
         run: |
-          git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
-            dir=$(dirname "$lockfile")
-            echo "Updating $dir"
-            if [ "$dir" = "libs/acp" ]; then
-              uv lock --directory "$dir" --python 3.14
-            else
-              uv lock --directory "$dir" --python 3.12
-            fi
-          done
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              echo "Updating $dir"
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+          regenerate
 
       - name: Commit and push
+        # Retry on push rejection. Concurrent release-please runs (one per push to
+        # main) all update the same release branch, so a stale local checkout can
+        # lose the push race ("cannot lock ref ...: is at X but expected Y"). On
+        # rejection: fetch the new tip, reset, re-run `uv lock` against it, and
+        # retry. `uv lock` is deterministic on a given pyproject.toml, so this
+        # converges — and if the rebased state already has the right lockfiles
+        # (another run won), the diff is empty and we exit cleanly.
         env:
           RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "**/uv.lock"
-          if git diff --staged --quiet; then
-            echo "No lockfile changes to commit"
-          else
+
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+
+          stage_and_commit() {
+            git add "**/uv.lock"
+            if git diff --staged --quiet; then
+              return 1
+            fi
             git diff --staged --stat
             git commit -m "chore: update lockfiles"
-            git push origin "HEAD:${RELEASE_BRANCH}"
+            return 0
+          }
+
+          if ! stage_and_commit; then
+            echo "No lockfile changes to commit"
+            exit 0
           fi
+
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${RELEASE_BRANCH}"; then
+              echo "Push succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::Push rejected on attempt ${attempt}; rebasing onto fresh ${RELEASE_BRANCH} and retrying"
+            # Reset to FETCH_HEAD (the SHA `git fetch` just resolved) rather than
+            # `origin/${RELEASE_BRANCH}`, so we don't depend on the remote's
+            # default fetch refspec being configured to update the
+            # remote-tracking ref.
+            git fetch origin "${RELEASE_BRANCH}"
+            git reset --hard FETCH_HEAD
+            regenerate
+            if ! stage_and_commit; then
+              echo "Lockfile already up-to-date on remote after rebase; nothing to push"
+              exit 0
+            fi
+          done
+
+          echo "::error::Push still rejected after 3 attempts on '${RELEASE_BRANCH}'."
+          exit 1
 
   # Dispatch release.yml for each merged release PR.
   #
@@ -282,32 +518,33 @@ jobs:
   # unfixable. In practice it is benign: release.yml itself rarely changes, and
   # the artifact still builds from $RELEASE_SHA via the checkout step.
   trigger-releases:
-    needs: release-please
+    needs: detect-release-commit
     if: |
-      needs.release-please.outputs.cli-release == 'true' ||
-      needs.release-please.outputs.sdk-release == 'true' ||
-      needs.release-please.outputs.acp-release == 'true' ||
-      needs.release-please.outputs.daytona-release == 'true' ||
-      needs.release-please.outputs.modal-release == 'true' ||
-      needs.release-please.outputs.runloop-release == 'true' ||
-      needs.release-please.outputs.quickjs-release == 'true' ||
-      needs.release-please.outputs.repl-release == 'true'
+      needs.detect-release-commit.outputs.cli-release == 'true' ||
+      needs.detect-release-commit.outputs.sdk-release == 'true' ||
+      needs.detect-release-commit.outputs.acp-release == 'true' ||
+      needs.detect-release-commit.outputs.code-release == 'true' ||
+      needs.detect-release-commit.outputs.daytona-release == 'true' ||
+      needs.detect-release-commit.outputs.modal-release == 'true' ||
+      needs.detect-release-commit.outputs.runloop-release == 'true' ||
+      needs.detect-release-commit.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.release-please.outputs.release-version }}
+      VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
-      RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
-      CLI_RELEASE: ${{ needs.release-please.outputs.cli-release }}
-      SDK_RELEASE: ${{ needs.release-please.outputs.sdk-release }}
-      ACP_RELEASE: ${{ needs.release-please.outputs.acp-release }}
-      DAYTONA_RELEASE: ${{ needs.release-please.outputs.daytona-release }}
-      MODAL_RELEASE: ${{ needs.release-please.outputs.modal-release }}
-      RUNLOOP_RELEASE: ${{ needs.release-please.outputs.runloop-release }}
-      QUICKJS_RELEASE: ${{ needs.release-please.outputs.quickjs-release }}
-      REPL_RELEASE: ${{ needs.release-please.outputs.repl-release }}
+      RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
+        }}/actions/workflows/release.yml
+      CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
+      SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
+      ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
+      CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
+      DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
+      MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
+      RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
+      QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
     steps:
       - name: Dispatch release workflows
         # Best-effort: each package dispatch is independent. If one fails (transient
@@ -327,6 +564,15 @@ jobs:
           DISPATCHED=()
           FAILED=()
 
+          # release.yml's `version` input is required and the API silently accepts
+          # an empty string, so guard here. release-please.yml's extraction step
+          # already aborts on regex misses, but `if:` guards on this job could
+          # still let an empty `release-version` reach the dispatch.
+          if [ -z "$VERSION" ]; then
+            echo "::error::release-version is empty — refusing to dispatch release.yml without a version annotation."
+            exit 1
+          fi
+
           # Validate that an output value is exactly "true" or "false". Catches the
           # case where release-please ever emits an empty/unexpected value, which
           # would otherwise silently no-op the dispatch under the `= "true"` check.
@@ -343,15 +589,15 @@ jobs:
           dispatch() {
             local package="$1"
             echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            # `--repo` is required: this job has no `actions/checkout` step, so
+            # `gh` cannot discover the target repo from a local `.git/` and
+            # would otherwise fail with `fatal: not a git repository`.
             if gh workflow run release.yml \
+              --repo "$GITHUB_REPOSITORY" \
               --ref main \
               -f package="$package" \
               -f version="$VERSION" \
               -f release-sha="$RELEASE_SHA"; then
-              # gh workflow run returns 0 once the dispatch is queued but yields
-              # no run ID. Surface a pointer so operators can find the dispatched
-              # run quickly without a manual scroll through Actions.
-              echo "Queued. Watch at: $RELEASE_WORKFLOW_URL"
               DISPATCHED+=("$package")
             else
               echo "::error::Failed to dispatch release.yml for $package"
@@ -364,11 +610,11 @@ jobs:
           CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
+          CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
-          REPL_RELEASE="${REPL_RELEASE:-false}";       assert_bool REPL_RELEASE    "$REPL_RELEASE"
 
           # Banner: log + step summary. The step summary renders at the top of the
           # run page, so operators see the link before scrolling through step logs.
@@ -392,12 +638,11 @@ jobs:
           if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
+          if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
-          if [ "$REPL_RELEASE" = "true" ];    then dispatch langchain-repl;      fi
-
           # Append per-package status to the step summary so operators see at a
           # glance which packages were queued vs. which need a manual retry.
           {
@@ -407,9 +652,9 @@ jobs:
             else
               echo "_none_"
             fi
-            echo ""
-            echo "### Failed (${#FAILED[@]})"
             if [ "${#FAILED[@]}" -gt 0 ]; then
+              echo ""
+              echo "### Failed (${#FAILED[@]})"
               for p in "${FAILED[@]}"; do echo "- \`$p\`"; done
               echo ""
               echo "Recover with:"
@@ -419,8 +664,6 @@ jobs:
                 echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
               done
               echo '```'
-            else
-              echo "_none_"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -429,5 +672,3 @@ jobs:
             echo "::error::Recover with: gh workflow run release.yml -f package=<name> -f version=$VERSION -f release-sha=$RELEASE_SHA"
             exit 1
           fi
-
-          echo "All release workflows dispatched. Watch at: $RELEASE_WORKFLOW_URL"

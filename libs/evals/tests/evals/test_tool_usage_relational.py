@@ -17,8 +17,7 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from langchain_quickjs import REPLMiddleware
-from langchain_repl.middleware import ReplMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 from tests.evals.utils import (
     TrajectoryScorer,
@@ -28,7 +27,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.repl("quickjs", "langchain")]
+pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.repl("quickjs")]
 """Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
@@ -438,11 +437,15 @@ RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
 def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create agent."""
     middleware = []
-    if repl_name == "langchain":
-        middleware = [ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
-    elif repl_name == "quickjs":
-        middleware = [REPLMiddleware(ptc=RELATIONAL_TOOLS)]
-    return create_deep_agent(model=model, middleware=middleware)
+    tools = None
+    if repl_name == "quickjs":
+        middleware = [CodeInterpreterMiddleware(ptc=RELATIONAL_TOOLS)]
+    elif repl_name is None:
+        tools = RELATIONAL_TOOLS
+    else:
+        msg = f'Unknown repl_name "{repl_name}"'
+        raise ValueError(msg)
+    return create_deep_agent(model=model, tools=tools, middleware=middleware)
 
 
 @pytest.mark.eval_tier("baseline")

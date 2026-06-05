@@ -6,11 +6,11 @@ Instead of issuing N serial tool calls, the model can write one block of JavaScr
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 ```
 
@@ -52,11 +52,11 @@ uv add langchain-quickjs
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 
 # Use `ainvoke` — PTC bridges register as async QuickJS host functions,
@@ -68,13 +68,17 @@ The middleware:
 
 1. registers an `eval` tool (configurable name) that runs JS in a persistent context;
 2. appends a short system-prompt snippet explaining the tool's semantics (sandbox, timeout, memory limit);
-3. gives every LangGraph `thread_id` its own QuickJS `Context`, so two conversations can't see each other's globals.
+3. gives every LangGraph `thread_id` its own QuickJS `Runtime`, so two conversations can't see each other's globals.
 
 ## What the REPL is
 
 ### Persistence
 
-The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. Assign to `globalThis.X` to keep a value around under an explicit name.
+The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. By default (`mode="thread"`), state also persists across turns in the same LangGraph `thread_id` by snapshotting after each run and restoring before the next.
+
+Set `mode="call"` to reset REPL state on every `eval` tool call.
+Set `mode="turn"` to persist state only within each turn.
+Snapshot payloads are capped by `max_snapshot_bytes` (defaults to `memory_limit`); oversized snapshots are dropped instead of persisted.
 
 ```js
 // call 1
@@ -123,6 +127,16 @@ The runtime has a shared memory limit across every context under it (default 64 
 <error type="OutOfMemory">...</error>
 ```
 
+PTC host-function calls are also budgeted per eval call (default 256 `tools.*`
+invocations). Exceeding the budget surfaces as:
+
+```xml
+<error type="PTCCallBudgetExceeded">...</error>
+```
+
+Set `max_ptc_calls=None` only in trusted environments. Disabling the
+budget allows unbounded PTC-call loops and increases DoS risk.
+
 Top-level `await` works on the async path — the promise settles before the call returns. An un-resolvable top-level promise (no host work in flight, no resolver) surfaces as `<error type="Deadlock">`.
 
 ### Result formatting
@@ -165,13 +179,10 @@ await tools.summarize({ text: results.join("\n\n") })
 ### Enabling it
 
 ```python
-REPLMiddleware()                              # disabled (default)
-REPLMiddleware(ptc=["search_web"])            # explicit allowlist
-REPLMiddleware(ptc=[search_tool])             # explicit tool object allowlist
+CodeInterpreterMiddleware()                              # disabled (default)
+CodeInterpreterMiddleware(ptc=["search_web"])            # explicit allowlist
+CodeInterpreterMiddleware(ptc=[search_tool])             # explicit tool object allowlist
 ```
-
-Boolean `ptc` values are not supported. Use `ptc=None` (or omit `ptc`) to disable.
-Dict `ptc` configs are not supported.
 
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
 
@@ -182,8 +193,10 @@ When PTC is on, the system-prompt snippet grows an *API Reference — `tools` na
 ```ts
 /** Search the web for the given query. */
 async tools.searchWeb(input: {
-  /** The query string. */ query: string;
-  /** Max results. */ limit?: number;
+  /** The query string. */
+  query: string;
+  /** Max results. */
+  limit?: number;
 }): Promise<string>
 ```
 
@@ -195,10 +208,6 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
 - When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so subagent tools like `task` see graph `state`, `store`, `context`, and a synthesised child `tool_call_id`.
 - Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.
-
-### Why `ainvoke`, not `invoke`
-
-PTC bridges are async host functions. QuickJS refuses to run async host functions from a synchronous `ctx.eval` — doing so raises `ConcurrentEvalError` ("sync eval encountered a registered async host function"). Use `await agent.ainvoke(...)`.
 
 ## Skills: importable JS/TS modules
 
@@ -220,7 +229,7 @@ Under the hood:
 Enable it by passing the same `BackendProtocol` your `SkillsMiddleware` uses:
 
 ```python
-REPLMiddleware(skills_backend=my_backend)
+CodeInterpreterMiddleware(skills_backend=my_backend)
 ```
 
 There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or prune generated code.
@@ -228,12 +237,15 @@ There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or 
 ## Configuration reference
 
 ```python
-REPLMiddleware(
+CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
     timeout=5.0,                     # per-call seconds
+    max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
+    mode="thread",                   # "thread" | "turn" | "call"
+    max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
     skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )
@@ -246,8 +258,8 @@ REPLMiddleware(
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
 | `Timeout` | Call exceeded `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
+| `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
-| `HostError` | A registered host function (console bridge, tool bridge) threw on the Python side. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 | `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |
 

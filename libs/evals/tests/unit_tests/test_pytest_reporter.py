@@ -218,26 +218,40 @@ class _FakeItem:
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnknownMarkWarning")
 class TestFilterByMarker:
-    """Integration check: unknown `--eval-category` values call `pytest.exit`.
+    """Verify include/exclude semantics and exit-on-unknown for `_filter_by_marker`.
 
     Pairs with TestSessionExitStatus to cover the full failure path — the
     filter raises `Exit(returncode=1)`, and the reporter preserves it.
     The `eval_category` mark is registered in the eval conftest, not here.
+
+    Each test imports `_filter_by_marker` lazily because `tests.evals.conftest`
+    pulls in `deepagents_harbor` at module load.
     """
 
     @staticmethod
-    def _make_config(values: list[str]) -> SimpleNamespace:
+    def _make_config(
+        values: list[str], excluded: list[str] | None = None
+    ) -> tuple[SimpleNamespace, list[object]]:
+        """Build a fake `pytest.Config` and return it alongside the deselected list.
+
+        The list is mutated in-place when the filter calls
+        `config.hook.pytest_deselected(items=...)`, so tests can assert on
+        which items were reported as deselected.
+        """
         deselected: list[object] = []
-        return SimpleNamespace(
-            getoption=lambda _option: values,
-            hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)),
+        options = {"--eval-category": values, "--eval-category-exclude": excluded or []}
+        config = SimpleNamespace(
+            getoption=lambda option: options[option],
+            # Lambda adapts the kwarg-only `pytest_deselected(items=...)` call to list.extend.
+            hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)),  # noqa: PLW0108
         )
+        return config, deselected
 
     def test_unknown_value_exits_with_code_1(self):
-        from tests.evals.conftest import _filter_by_marker
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat")]
-        config = self._make_config(["unknown_cat"])
+        config, _ = self._make_config(["unknown_cat"])
 
         with pytest.raises(Exit) as exc_info:
             _filter_by_marker(
@@ -253,10 +267,10 @@ class TestFilterByMarker:
         assert "valid_cat" in msg
 
     def test_known_value_does_not_exit(self):
-        from tests.evals.conftest import _filter_by_marker
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
-        config = self._make_config(["valid_cat"])
+        config, _ = self._make_config(["valid_cat"])
 
         _filter_by_marker(
             config,  # ty: ignore[invalid-argument-type]
@@ -270,15 +284,103 @@ class TestFilterByMarker:
         assert mark.args == ("valid_cat",)
 
     def test_empty_option_is_noop(self):
-        from tests.evals.conftest import _filter_by_marker
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat")]
-        config = self._make_config([])
+        config, _ = self._make_config([])
 
         _filter_by_marker(
             config,  # ty: ignore[invalid-argument-type]
             items,  # ty: ignore[invalid-argument-type]
             option="--eval-category",
             marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
         )
         assert len(items) == 1
+
+    def test_excluded_value_is_removed(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
+        config, deselected = self._make_config([], excluded=["valid_cat"])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
+        )
+        assert len(items) == 1
+        mark = items[0].get_closest_marker("eval_category")
+        assert mark is not None
+        assert mark.args == ("other_cat",)
+        # The excluded item must be reported via `pytest_deselected`, otherwise
+        # pytest's CLI summary loses the "deselected" line.
+        assert len(deselected) == 1
+        deselected_mark = deselected[0].get_closest_marker("eval_category")  # type: ignore[attr-defined]
+        assert deselected_mark is not None
+        assert deselected_mark.args == ("valid_cat",)
+
+    def test_excluded_value_can_overlap_include_list(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
+        config, _ = self._make_config(["valid_cat", "other_cat"], excluded=["valid_cat"])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
+        )
+        assert len(items) == 1
+        mark = items[0].get_closest_marker("eval_category")
+        assert mark is not None
+        assert mark.args == ("other_cat",)
+
+    def test_unknown_excluded_value_exits_with_code_1(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config([], excluded=["unknown_cat"])
+
+        with pytest.raises(Exit) as exc_info:
+            _filter_by_marker(
+                config,  # ty: ignore[invalid-argument-type]
+                items,  # ty: ignore[invalid-argument-type]
+                option="--eval-category",
+                marker_name="eval_category",
+                exclude_option="--eval-category-exclude",
+            )
+
+        assert exc_info.value.returncode == 1
+        msg = str(exc_info.value)
+        assert "--eval-category-exclude" in msg
+        assert "unknown_cat" in msg
+        assert "valid_cat" in msg
+
+    def test_unknown_include_and_exclude_both_reported(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config(["bogus_inc"], excluded=["bogus_exc"])
+
+        with pytest.raises(Exit) as exc_info:
+            _filter_by_marker(
+                config,  # ty: ignore[invalid-argument-type]
+                items,  # ty: ignore[invalid-argument-type]
+                option="--eval-category",
+                marker_name="eval_category",
+                exclude_option="--eval-category-exclude",
+            )
+
+        assert exc_info.value.returncode == 1
+        msg = str(exc_info.value)
+        # Both unknown lists must surface in the same error message.
+        assert "bogus_inc" in msg
+        assert "bogus_exc" in msg
+        assert "--eval-category " in msg or "--eval-category values" in msg
+        assert "--eval-category-exclude" in msg
+        assert "; " in msg

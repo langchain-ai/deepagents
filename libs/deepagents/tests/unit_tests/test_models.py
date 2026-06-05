@@ -34,6 +34,7 @@ from deepagents.profiles.harness.harness_profiles import (
     _resolve_profile_suffix,
 )
 from deepagents.profiles.provider._openrouter import (
+    _OPENROUTER_ALLOW_AZURE_ENV,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
     OPENROUTER_MIN_VERSION,
@@ -47,25 +48,19 @@ from deepagents.profiles.provider.provider_profiles import (
     get_provider_profile,
 )
 
+_OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
+"""Expected default value of `openrouter_provider` injected by the SDK profile."""
 
-@pytest.fixture(autouse=True, scope="module")
-def _bootstrap_profile_registries() -> None:
-    """Force the lazy profile bootstrap before any test snapshots the registries.
 
-    Many tests in this module use `original = dict(_PROVIDER_PROFILES)` /
-    `_HARNESS_PROFILES` plus a `finally`-clause `clear` + `update(original)` to
-    restore registry state. That pattern relies on `original` already containing
-    the built-in profiles. When the bootstrap is triggered for the first time
-    *inside* the `try` (via `register_*_profile`), `original` is empty and the
-    `finally` block wipes the registry — leaving `_loaded=True` so subsequent
-    tests on the same xdist worker see an empty registry. Bootstrapping here
-    guarantees `original` captures the post-bootstrap state.
+@pytest.fixture(autouse=True)
+def _scrub_openrouter_allow_azure_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pop `DEEPAGENTS_OPENROUTER_ALLOW_AZURE` before each test.
+
+    Otherwise an ambient `DEEPAGENTS_OPENROUTER_ALLOW_AZURE=1` in the
+    developer's shell or CI environment would suppress the `openrouter_provider`
+    kwarg the SDK profile injects, silently breaking assertions that expect it.
     """
-    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
-        _ensure_builtin_profiles_loaded,
-    )
-
-    _ensure_builtin_profiles_loaded()
+    monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
 
 
 def _make_model(attrs: dict) -> MagicMock:
@@ -106,6 +101,7 @@ class TestResolveModel:
             "openrouter:anthropic/claude-sonnet-4-6",
             app_url=_OPENROUTER_APP_URL,
             app_title=_OPENROUTER_APP_TITLE,
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
         )
         assert result is mock.return_value
 
@@ -121,6 +117,7 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert "app_url" not in kwargs
         assert kwargs["app_title"] == _OPENROUTER_APP_TITLE
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_var_overrides_app_title(self) -> None:
         env = {"OPENROUTER_APP_TITLE": "My Custom App"}
@@ -134,11 +131,30 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert kwargs["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in kwargs
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_vars_override_both(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://custom.app",
             "OPENROUTER_APP_TITLE": "My Custom App",
+        }
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch.dict("os.environ", env),
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openrouter:anthropic/claude-sonnet-4-6")
+
+        mock.assert_called_once_with(
+            "openrouter:anthropic/claude-sonnet-4-6",
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+
+    def test_openrouter_allow_azure_env_drops_provider_kwarg(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://custom.app",
+            "OPENROUTER_APP_TITLE": "My Custom App",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
         }
         with (
             patch("deepagents._models.init_chat_model") as mock,
@@ -227,7 +243,7 @@ class TestModelMatchesSpec:
 
     def test_bare_spec_without_colon_no_false_positive(self) -> None:
         model = _make_model({"model_name": "gpt-5"})
-        assert model_matches_spec(model, "gpt-4o") is False
+        assert model_matches_spec(model, "gpt-5.5") is False
 
 
 class TestCheckOpenRouterVersion:
@@ -295,6 +311,7 @@ class TestOpenRouterAttributionKwargs:
         assert result == {
             "app_url": _OPENROUTER_APP_URL,
             "app_title": _OPENROUTER_APP_TITLE,
+            "openrouter_provider": _OPENROUTER_AZURE_IGNORE,
         }
 
     def test_omits_app_url_when_env_set(self) -> None:
@@ -303,6 +320,7 @@ class TestOpenRouterAttributionKwargs:
 
         assert "app_url" not in result
         assert result["app_title"] == _OPENROUTER_APP_TITLE
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_omits_app_title_when_env_set(self) -> None:
         with patch.dict("os.environ", {"OPENROUTER_APP_TITLE": "Custom"}):
@@ -310,8 +328,9 @@ class TestOpenRouterAttributionKwargs:
 
         assert result["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in result
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
-    def test_empty_when_both_env_set(self) -> None:
+    def test_only_provider_kwarg_when_both_attribution_env_set(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://example.com",
             "OPENROUTER_APP_TITLE": "Custom",
@@ -319,7 +338,39 @@ class TestOpenRouterAttributionKwargs:
         with patch.dict("os.environ", env):
             result = _openrouter_attribution_kwargs()
 
+        assert result == {"openrouter_provider": _OPENROUTER_AZURE_IGNORE}
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "YES", "on", "ON", " yes "])
+    def test_allow_azure_env_truthy_drops_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert "openrouter_provider" not in result
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "anything-else"])
+    def test_allow_azure_env_non_truthy_keeps_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
+
+    def test_empty_when_all_env_set_and_azure_allowed(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://example.com",
+            "OPENROUTER_APP_TITLE": "Custom",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
+        }
+        with patch.dict("os.environ", env):
+            result = _openrouter_attribution_kwargs()
+
         assert result == {}
+
+    def test_caller_openrouter_provider_wins_over_default(self) -> None:
+        """User-supplied `openrouter_provider` overrides the SDK Azure-ignore default."""
+        caller = {"openrouter_provider": {"order": ["fireworks"]}}
+        result = apply_provider_profile("openrouter:openai/gpt-5", caller, run_pre_init=False)
+
+        assert result["openrouter_provider"] == {"order": ["fireworks"]}
 
 
 class TestProviderProfile:
@@ -1175,6 +1226,7 @@ class TestProfilePluginLoader:
 
         with (
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
+            pytest.warns(UserWarning, match="failed to load entry point"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 side_effect=fake_entry_points,
@@ -1205,6 +1257,7 @@ class TestProfilePluginLoader:
 
         with (
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
+            pytest.warns(UserWarning, match="did not resolve to a callable"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 return_value=[ep],
@@ -1233,6 +1286,7 @@ class TestProfilePluginLoader:
 
         with (
             caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
+            pytest.warns(UserWarning, match="registration callable .* raised"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 return_value=[ep],
@@ -1251,6 +1305,7 @@ class TestProfilePluginLoader:
 
         with (
             caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            pytest.warns(UserWarning, match="Failed to enumerate"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 side_effect=RuntimeError("malformed dist-info"),

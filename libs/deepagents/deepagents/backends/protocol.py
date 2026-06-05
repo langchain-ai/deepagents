@@ -31,6 +31,16 @@ r"""File storage format version.
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GREP_TIMEOUT: Final = 30
+"""Default timeout in seconds for one sync grep phase."""
+
+ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
+"""Timeout in seconds for the async grep wrapper.
+
+This gives `FilesystemBackend` enough headroom to finish the worst-case sync
+path: ripgrep timeout, then Python fallback timeout.
+"""
+
 FileOperationError = Literal[
     "file_not_found",
     "permission_denied",
@@ -199,6 +209,7 @@ def _normalize_files_update(
 
     # `stacklevel=3` lifts attribution past `__init__` and this helper to the
     # user's `WriteResult(...)` / `EditResult(...)` call site.
+    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/deepagents/issues/3220  # noqa: FIX002
     warn_deprecated(
         since="0.5.0",
         removal="0.7.0",
@@ -461,10 +472,30 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        """Async version of `grep`.
 
-    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
+        Wraps the sync call with an async timeout as a safety net. The timeout
+        bounds how long the caller waits; it does not stop the worker thread
+        created by `asyncio.to_thread`.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.grep, pattern, path, glob),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -477,9 +508,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches a single character
                 - `[abc]` matches one character from set
 
-            path: Base directory to search from.
+            path: Optional base directory to search from.
 
-                Default: `'/'` (root).
+                If omitted, the backend chooses its default search root.
 
                 The pattern is applied relative to this path.
 
@@ -497,11 +528,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 message=("`glob_info` is deprecated and will be removed in deepagents==0.7.0; rename to `glob` instead."),
                 package="deepagents",
             )
-            return GlobResult(matches=self.glob_info(pattern, path))
+            return GlobResult(matches=self.glob_info(pattern, path or "/"))
 
         raise NotImplementedError
 
-    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Async version of `glob`."""
         return await asyncio.to_thread(self.glob, pattern, path)
 
@@ -829,7 +860,8 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """

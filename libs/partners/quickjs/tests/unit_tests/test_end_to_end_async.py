@@ -1,4 +1,4 @@
-"""Async end-to-end tests for ``REPLMiddleware`` with a fake LLM.
+"""Async end-to-end tests for ``CodeInterpreterMiddleware`` with a fake LLM.
 
 Covers the same integration surfaces as the prior quickjs e2e suite:
 agent wiring, REPL execution, PTC tool calls, runtime propagation,
@@ -11,35 +11,18 @@ import asyncio
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import Field
 
-from langchain_quickjs import REPLMiddleware
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-
-class _FakeChatModel(GenericFakeChatModel):
-    """GenericFakeChatModel whose bind_tools returns self.
-
-    Without the override, ``create_deep_agent``'s bind_tools call replaces
-    the model with a RunnableBinding whose ``_generate`` no longer reads
-    from the pre-scripted iterator.
-    """
-
-    messages: Iterator[AIMessage | str] = Field(exclude=True)
-
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _FakeChatModel:
-        return self
+from langchain_quickjs import CodeInterpreterMiddleware
+from tests._common import FakeChatModel
 
 
 @tool
@@ -96,12 +79,12 @@ def _script(code: str, *, final_message: str = "done") -> Iterator[AIMessage]:
 
 def _make_agent(
     code: str,
-    middleware: REPLMiddleware,
+    middleware: CodeInterpreterMiddleware,
     *,
     final_message: str = "done",
 ) -> Any:
     return create_deep_agent(
-        model=_FakeChatModel(messages=_script(code, final_message=final_message)),
+        model=FakeChatModel(messages=_script(code, final_message=final_message)),
         middleware=[middleware],
     )
 
@@ -124,7 +107,7 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
     """Basic async test with QuickJS interpreter."""
     result = await _make_agent(
         "6 * 7",
-        REPLMiddleware(),
+        CodeInterpreterMiddleware(),
         final_message="The answer is 42.",
     ).ainvoke(
         {"messages": [HumanMessage(content="Use the eval tool to calculate 6 * 7")]}
@@ -135,14 +118,12 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
     assert result["messages"][-1].content == "The answer is 42."
 
 
-async def test_deepagent_with_quickjs_json_roundtrip_foreign_function() -> None:
-    """Verify async eval can parse JSON strings returned from PTC tool calls."""
-    code = (
-        "const idsJson = await tools.listUserIds({});\n"
-        "const ids = JSON.parse(idsJson);\n"
-        "ids.join(',');"
-    )
-    result = await _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).ainvoke(
+async def test_deepagent_with_quickjs_list_returning_foreign_function() -> None:
+    """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
+    code = "const ids = await tools.listUserIds({});\nids.join(',');"
+    result = await _make_agent(
+        code, CodeInterpreterMiddleware(ptc=[list_user_ids])
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(
@@ -167,7 +148,7 @@ async def test_deepagent_with_quickjs_async_foreign_function() -> None:
     )
     result = await _make_agent(
         code,
-        REPLMiddleware(ptc=[sync_label_tool, async_label_tool]),
+        CodeInterpreterMiddleware(ptc=[sync_label_tool, async_label_tool]),
     ).ainvoke(
         {
             "messages": [
@@ -184,7 +165,7 @@ async def test_quickjs_async_timeout_error() -> None:
     """Verify the async eval path surfaces QuickJS eval timeouts."""
     result = await _make_agent(
         "while (true) {}",
-        REPLMiddleware(timeout=1),
+        CodeInterpreterMiddleware(timeout=1),
         final_message="timeout hit",
     ).ainvoke(
         {
@@ -199,31 +180,46 @@ async def test_quickjs_async_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
-async def test_quickjs_async_tool_exception() -> None:
-    """Verify async tool exceptions surface as eval errors."""
-    result = await _make_agent(
+async def test_quickjs_async_tool_exception_propagates() -> None:
+    """Tool exceptions propagate as the original Python exception so
+    ToolNode's default handler reraises and the agent crashes — same
+    semantics as a non-quickjs tool that raises."""
+    agent = _make_agent(
         "await tools.alwaysFails({value: 'x'})",
-        REPLMiddleware(ptc=[always_fails]),
-    ).ainvoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="Use the eval tool to call the async tool that raises"
-                )
-            ]
-        }
+        CodeInterpreterMiddleware(ptc=[always_fails]),
     )
+    with pytest.raises(RuntimeError, match="boom:x"):
+        await agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Use the eval tool to call the async tool that raises"
+                    )
+                ]
+            }
+        )
 
+
+async def test_quickjs_async_host_call_budget_exceeded() -> None:
+    """Verify async eval surfaces per-eval PTC call budget exhaustion."""
+    result = await _make_agent(
+        "await tools.syncLabel({value: 'a'});\n"
+        "await tools.syncLabel({value: 'b'});\n"
+        "'done'",
+        CodeInterpreterMiddleware(ptc=[sync_label_tool], max_ptc_calls=1),
+    ).ainvoke(
+        {"messages": [HumanMessage(content="Use eval and call sync_label twice.")]}
+    )
     tool_message = _eval_tool_message(result)
-    assert '<error type="HostError">' in tool_message.content
-    assert "Host function failed" in tool_message.content
+    assert '<error type="PTCCallBudgetExceeded">' in tool_message.content
+    assert "limit=1" in tool_message.content
 
 
 async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
     """Verify async PTC tool calls see configurable runtime data."""
     result = await _make_agent(
         "await tools.runtimeConfigurable({value: 'value'})",
-        REPLMiddleware(ptc=[runtime_configurable]),
+        CodeInterpreterMiddleware(ptc=[runtime_configurable]),
     ).ainvoke(
         {
             "messages": [
@@ -245,7 +241,7 @@ async def test_quickjs_async_parallel_agents() -> None:
     async def _run_agent(index: int) -> tuple[int, dict[str, object]]:
         result = await _make_agent(
             f"{index} * 10",
-            REPLMiddleware(),
+            CodeInterpreterMiddleware(),
             final_message=f"done-{index}",
         ).ainvoke(
             {

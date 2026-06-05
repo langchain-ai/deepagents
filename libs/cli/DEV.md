@@ -1,52 +1,44 @@
 # CLI Development Guide
 
-## Live CSS development with Textual devtools
+`deepagents-cli` now contains only the deployment subcommands (`init`, `dev`,
+`deploy`). For interactive-REPL development guidance, see
+[`libs/code/DEV.md`](../code/DEV.md).
 
-Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.
-
-### Prerequisites
-
-Sync the `test` dependency group (includes `textual-dev`):
+## Local setup
 
 ```bash
 cd libs/cli && uv sync --group test
 ```
 
-Create the dev wrapper script (one-time):
+Run the CLI from a checkout:
 
 ```bash
-cat > /tmp/dev_deepagents.py << 'PYEOF'
-"""Dev wrapper to run Deep Agents CLI with textual devtools."""
-import sys
-sys.argv = ["deepagents"] + sys.argv[1:]
-
-from deepagents_cli.main import cli_main
-cli_main()
-PYEOF
+uv run python -m deepagents_cli init my-agent
+uv run python -m deepagents_cli dev --config my-agent/deepagents.toml
+uv run python -m deepagents_cli deploy --config my-agent/deepagents.toml --dry-run
 ```
 
-### Running
-
-**Terminal 1** — devtools console:
+## Tests
 
 ```bash
-cd libs/cli && uv run --group test textual console
+make test       # unit tests (no network)
+make lint       # ruff + ty
 ```
 
-**Terminal 2** — CLI with live reload:
+Integration tests in `tests/integration_tests/` exercise the LangSmith Hub
+seeding path and require `LANGSMITH_API_KEY` to be set.
+
+## `langgraph` subcommand interop
+
+`dev` and `deploy` shell out to the `langgraph` CLI (`langgraph-cli[inmem]`
+runtime dependency). When debugging dev-server startup failures, run the
+generated command manually from the build directory printed by
+`print_bundle_summary`:
 
 ```bash
-cd libs/cli && uv run --group test textual run --dev /tmp/dev_deepagents.py
+cd /tmp/deepagents-dev-XXXX
+langgraph dev --port 2024 --allow-blocking
 ```
 
-Edit any `.tcss` file and save — changes appear immediately. Any `self.log()` calls in widget code show in the console.
-
-### Console options
-
-- `textual console -v` — verbose mode, shows all events (key presses, mouse, etc.)
-- `textual console -x EVENT` — exclude noisy event groups
-- `textual console --port 7342` — custom port (pass matching `--port` to `textual run`)
-
-### Why the wrapper script?
-
-`textual run --dev` handles the devtools connection, but it needs to run inside the project's virtualenv to import `deepagents_cli`. The wrapper script bridges the gap — `uv run --group test textual run --dev` ensures both `textual-dev` (from the `test` group) and `deepagents_cli` are available in the same environment.
+The bundle is self-contained — re-running `langgraph dev` from the build
+directory reproduces the failure without re-bundling.

@@ -60,3 +60,24 @@ def _reset_deprecation_dedupe() -> None:
     emission become reorder-sensitive.
     """
     reset_deprecation_dedupe(*_DEDUPED_TARGETS)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _bootstrap_profile_registries() -> None:
+    """Force the lazy profile bootstrap before any test snapshots the registries.
+
+    Tests across multiple modules use the `original = dict(_HARNESS_PROFILES)` /
+    `_PROVIDER_PROFILES` save-and-restore pattern. If the lazy bootstrap is first
+    triggered *inside* such a `try` block (via `register_*_profile`), `original`
+    captures an empty registry and the `finally` `clear()` + `update(original)`
+    wipes the built-ins — and because the bootstrap sets `_loaded=True`, no
+    later test re-populates them. The next module that depends on built-in
+    profiles then sees `_get_harness_profile(...)` return `None`. Bootstrapping
+    here at session scope guarantees every test in every module starts with a
+    fully populated registry.
+    """
+    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+        _ensure_builtin_profiles_loaded,
+    )
+
+    _ensure_builtin_profiles_loaded()

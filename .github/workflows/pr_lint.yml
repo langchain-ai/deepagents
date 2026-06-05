@@ -27,10 +27,10 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-acp, deepagents-cli, deps,
-#   deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
-#   langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox, modal,
-#   quickjs, repl, runloop, sdk
+#   acp, ci, cli, cli-gha, code, daytona, deepagents, deepagents-acp, deepagents-cli,
+#   deepagents-code, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
+#   langchain-quickjs, langchain-runloop, langsmith-sandbox, modal,
+#   quickjs, runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -63,6 +63,21 @@ jobs:
     name: "validate format"
     runs-on: ubuntu-latest
     steps:
+      - name: "🚫 Reject leading/trailing whitespace"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The semantic-pull-request action reports a confusing "No release
+          # type found" error when the title is otherwise valid but has
+          # surrounding whitespace (e.g., " feat(sdk): ..."). Catch that here
+          # with a clearer message before delegating to the action.
+          trimmed="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+          if [[ "$PR_TITLE" != "$trimmed" ]]; then
+            echo "::error::PR title has leading or trailing whitespace: '$PR_TITLE'"
+            echo "Edit the PR title to remove surrounding whitespace. Suggested title: '$trimmed'"
+            exit 1
+          fi
       - name: "🚫 Reject empty scope"
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -96,10 +111,12 @@ jobs:
             ci
             cli
             cli-gha
+            code
             daytona
             deepagents
             deepagents-acp
             deepagents-cli
+            deepagents-code
             deps
             deps-dev
             evals
@@ -109,12 +126,10 @@ jobs:
             langchain-daytona
             langchain-modal
             langchain-quickjs
-            langchain-repl
             langchain-runloop
             langsmith-sandbox
             modal
             quickjs
-            repl
             runloop
             sdk
           requireScope: true
@@ -154,7 +169,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'ignore-lint-pr-title')
     steps:
       - name: "post or remove bypass-warning comment"
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;

@@ -1,4 +1,4 @@
-.PHONY: test tests integration_test integration_tests lint format help
+.PHONY: test tests integration_test integration_tests lint format benchmark bench bench-memory help
 
 .DEFAULT_GOAL := help
 
@@ -32,6 +32,16 @@ integration_test integration_tests:
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw --now . -- -vv $(TEST_FILE)
+
+benchmark: ## Run benchmark tests
+	uv run --group test pytest ./tests -m benchmark
+	uv run --group test pytest ./tests -m memory_benchmark
+
+bench: ## Run benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests -m benchmark --codspeed
+
+bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests -m memory_benchmark --codspeed
 
 update_snapshots: ## Update smoke test prompt snapshots
 	uv run --group test pytest tests/unit_tests/smoke_tests/test_system_prompt.py --update-snapshots

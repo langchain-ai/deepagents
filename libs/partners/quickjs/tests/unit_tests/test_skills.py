@@ -30,21 +30,21 @@ def _metadata(
     name: str,
     *,
     path: str,
-    module: str | None = None,
+    entrypoint: str | None = None,
     description: str = "x",
 ) -> SkillMetadata:
-    m: SkillMetadata = {
+    inner_metadata: dict[str, str] = {}
+    if entrypoint is not None:
+        inner_metadata["entrypoint"] = entrypoint
+    return {
         "name": name,
         "description": description,
         "path": path,
-        "metadata": {},
+        "metadata": inner_metadata,
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
     }
-    if module is not None:
-        m["module"] = module
-    return m
 
 
 def _write(backend: FilesystemBackend, files: dict[str, str]) -> None:
@@ -68,7 +68,7 @@ def test_load_skill_single_file(tmp_path: Path) -> None:
             f"{skill_dir}/index.js": "export function toSlug(s) { return s; }",
         },
     )
-    meta = _metadata("slugify", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("slugify", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     loaded = load_skill(meta, backend)
 
@@ -94,7 +94,7 @@ def test_load_skill_multi_file_with_subdir(tmp_path: Path) -> None:
             f"{skill_dir}/lib/utf.ts": "export function decode() {}",
         },
     )
-    meta = _metadata("pdf-extract", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("pdf-extract", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     loaded = load_skill(meta, backend)
 
@@ -118,7 +118,7 @@ def test_load_skill_renames_non_index_entrypoint(tmp_path: Path) -> None:
             f"{skill_dir}/helper.ts": "export const y = 2;",
         },
     )
-    meta = _metadata("custom", path=f"{skill_dir}/SKILL.md", module="entry.ts")
+    meta = _metadata("custom", path=f"{skill_dir}/SKILL.md", entrypoint="entry.ts")
 
     loaded = load_skill(meta, backend)
 
@@ -141,7 +141,7 @@ def test_load_skill_ignores_non_code_files(tmp_path: Path) -> None:
             f"{skill_dir}/README.md": "# docs",
         },
     )
-    meta = _metadata("s", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("s", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     loaded = load_skill(meta, backend)
 
@@ -160,7 +160,7 @@ def test_load_skill_missing_module_raises(tmp_path: Path) -> None:
     )
     meta = _metadata("prose", path=f"{skill_dir}/SKILL.md")  # no module
 
-    with pytest.raises(InvalidSkillScopeError, match="no `module` frontmatter"):
+    with pytest.raises(InvalidSkillScopeError, match="no `entrypoint` in metadata"):
         load_skill(meta, backend)
 
 
@@ -175,7 +175,7 @@ def test_load_skill_module_path_not_in_dir_raises(tmp_path: Path) -> None:
             f"{skill_dir}/index.ts": "export const x = 1;",
         },
     )
-    meta = _metadata("typo", path=f"{skill_dir}/SKILL.md", module="entry.ts")
+    meta = _metadata("typo", path=f"{skill_dir}/SKILL.md", entrypoint="entry.ts")
 
     with pytest.raises(InvalidSkillScopeError, match="did not match any file"):
         load_skill(meta, backend)
@@ -190,7 +190,7 @@ def test_load_skill_empty_dir_raises(tmp_path: Path) -> None:
             f"{skill_dir}/SKILL.md": "---\nname: empty\ndescription: x\n---\n",
         },
     )
-    meta = _metadata("empty", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("empty", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     with pytest.raises(InvalidSkillScopeError, match="no JS/TS files"):
         load_skill(meta, backend)
@@ -206,7 +206,7 @@ def test_load_skill_invalid_name_rejected(tmp_path: Path) -> None:
             f"{skill_dir}/index.ts": "export const x = 1;",
         },
     )
-    meta = _metadata("bad name", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("bad name", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     with pytest.raises(InvalidSkillScopeError, match="kebab-case"):
         load_skill(meta, backend)
@@ -224,7 +224,7 @@ def test_load_skill_preserves_utf8_content(tmp_path: Path) -> None:
             f"{skill_dir}/index.js": source,
         },
     )
-    meta = _metadata("emoji", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("emoji", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     loaded = load_skill(meta, backend)
 
@@ -243,7 +243,7 @@ def test_load_skill_rejects_non_utf8(tmp_path: Path) -> None:
         b"---\nname: binary\ndescription: x\n---\n"
     )
     (Path(skill_dir) / "index.js").write_bytes(b"\x80\x81\x82")
-    meta = _metadata("binary", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("binary", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
 
     with pytest.raises(SkillInstallError, match="not valid UTF-8"):
         load_skill(meta, backend)
@@ -264,7 +264,7 @@ async def test_aload_skill_matches_sync(tmp_path: Path) -> None:
             f"{skill_dir}/util.ts": "export const u = 2;",
         },
     )
-    meta = _metadata("dual", path=f"{skill_dir}/SKILL.md", module="index.ts")
+    meta = _metadata("dual", path=f"{skill_dir}/SKILL.md", entrypoint="index.ts")
 
     sync_loaded = load_skill(meta, backend)
     async_loaded = await aload_skill(meta, backend)
@@ -352,11 +352,43 @@ def test_loaded_scope_installs_on_context(tmp_path: Path) -> None:
             f"{skill_dir}/index.js": "export const n = 42;",
         },
     )
-    meta = _metadata("hello", path=f"{skill_dir}/SKILL.md", module="index.js")
+    meta = _metadata("hello", path=f"{skill_dir}/SKILL.md", entrypoint="index.js")
     loaded = load_skill(meta, backend)
 
     with Runtime() as rt, rt.new_context():
         rt.install(ModuleScope({loaded.specifier: loaded.scope}))
+
+
+def test_load_skill_subdirectory_entrypoint_relocates_siblings(tmp_path: Path) -> None:
+    """When the entrypoint is in a subdirectory, sibling files are relocated
+    to the scope root so relative imports from the flattened index resolve."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_dir = str(tmp_path / "skills" / "swarm")
+    _write(
+        backend,
+        {
+            f"{skill_dir}/SKILL.md": "---\nname: swarm\ndescription: x\n---\n",
+            f"{skill_dir}/scripts/index.ts": 'import { create } from "./table.js";',
+            f"{skill_dir}/scripts/table.ts": "export function create() {}",
+            f"{skill_dir}/scripts/lib/utils.ts": "export function read() {}",
+        },
+    )
+    meta = _metadata(
+        "swarm",
+        path=f"{skill_dir}/SKILL.md",
+        entrypoint="scripts/index.ts",
+    )
+
+    loaded = load_skill(meta, backend)
+
+    keys = set(loaded.scope.modules.keys())
+    assert "index.ts" in keys
+    assert "table.ts" in keys
+    assert "lib/utils.ts" in keys
+    # Originals kept for backwards compatibility
+    assert "scripts/index.ts" in keys
+    assert "scripts/table.ts" in keys
+    assert "scripts/lib/utils.ts" in keys
 
 
 __all__: list[Any] = []

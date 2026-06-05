@@ -9,7 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 
 
@@ -314,7 +314,7 @@ class TestFilesystemMiddlewareAsync:
                 }
             )
 
-        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
@@ -347,6 +347,34 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    async def test_agrep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+        ):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
@@ -536,9 +564,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "Hello world" in result
-        assert "Line 2" in result
-        assert "Line 3" in result
+        assert "Hello world" in result.content
+        assert "Line 2" in result.content
+        assert "Line 3" in result.content
 
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
@@ -560,10 +588,10 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "Line 2" in result
-        assert "Line 3" in result
-        assert "Line 1" not in result
-        assert "Line 4" not in result
+        assert "Line 2" in result.content
+        assert "Line 3" in result.content
+        assert "Line 1" not in result.content
+        assert "Line 4" not in result.content
 
     async def test_awrite_file(self):
         """Test async write_file tool."""
@@ -577,8 +605,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        # StoreBackend writes to the store and returns a plain string
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aedit_file(self):
@@ -601,8 +628,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        # StoreBackend writes to the store and returns a plain string
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aedit_file_replace_all(self):
@@ -626,7 +652,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
@@ -650,9 +676,9 @@ class TestFilesystemMiddlewareAsync:
         # Execute should return error message, not raise exception
         result = await execute_tool.ainvoke({"command": "ls -la", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert "Error: Execution not available" in result
-        assert "does not support command execution" in result
+        assert isinstance(result, ToolMessage)
+        assert "Error: Execution not available" in result.content
+        assert "does not support command execution" in result.content
 
     async def test_aexecute_tool_forwards_zero_timeout_to_backend(self):
         """Async execute tool should forward timeout=0 for no-timeout backends."""
@@ -691,7 +717,7 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "echo hello", "timeout": 0, "runtime": rt})
 
-        assert "async ok" in result
+        assert "async ok" in result.content
         assert captured_timeout["value"] == 0
 
     async def test_aexecute_tool_output_formatting(self):
@@ -733,9 +759,9 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
 
-        assert "Async Hello world\nAsync Line 2" in result
-        assert "succeeded" in result
-        assert "exit code 0" in result
+        assert "Async Hello world\nAsync Line 2" in result.content
+        assert "succeeded" in result.content
+        assert "exit code 0" in result.content
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -776,9 +802,9 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "nonexistent", "runtime": rt})
 
-        assert "Async Error: command not found" in result
-        assert "failed" in result
-        assert "exit code 127" in result
+        assert "Async Error: command not found" in result.content
+        assert "failed" in result.content
+        assert "exit code 127" in result.content
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""
@@ -819,5 +845,5 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "cat large_file", "runtime": rt})
 
-        assert "Async Very long output..." in result
-        assert "truncated" in result
+        assert "Async Very long output..." in result.content
+        assert "truncated" in result.content

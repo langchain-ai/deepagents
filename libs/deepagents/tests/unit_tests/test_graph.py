@@ -17,17 +17,18 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
+from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
+    DeepAgentState,
     create_deep_agent,
     get_default_model,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import (
@@ -706,6 +707,93 @@ class TestExtraMiddlewareWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestStateSchema:
+    """Tests for the `state_schema` parameter on `create_deep_agent`.
+
+    Covers wiring (the schema reaches `create_agent` and `SubAgentMiddleware`) and
+    that a custom schema is applied when declarative subagents compile, so the
+    custom field is exposed as a channel on the subagent graph.
+
+    The round-trip of a custom field through a compiled agent is not retested here:
+    it is `create_agent`'s contract, covered upstream in langchain's
+    `test_state_schema.py`. These tests only assert deepagents' own wiring.
+    """
+
+    def test_default_state_schema_uses_deep_agent_state(self) -> None:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model")
+
+        assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
+
+    def test_custom_state_schema_passed_through(self) -> None:
+        class MyState(DeepAgentState):
+            page_url: str
+            file_urls: list[str]
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        assert mock_create.call_args.kwargs["state_schema"] is MyState
+
+    def test_custom_state_schema_propagates_to_subagent_middleware(self) -> None:
+        """Custom schema reaches `SubAgentMiddleware` so declarative subagents compile with it."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        mw_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
+        assert sub_mw._state_schema is MyState
+
+    def test_declarative_subagent_compiles_with_custom_state_schema(self) -> None:
+        """A declarative subagent's compiled runnable exposes the custom field as a channel."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "researcher",
+                    "description": "Research agent",
+                    "system_prompt": "You are a researcher.",
+                    "model": GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
+                    "tools": [],
+                }
+            ],
+            state_schema=MyState,
+        )
+
+        runnable = middleware._get_subagents()[0]["runnable"]
+        properties = runnable.get_input_jsonschema()["properties"]
+        assert "page_url" in properties
+
+
 class _OtherStubMW(AgentMiddleware[Any, Any, Any]):
     """Second stub class so exclusion tests can assert coexistence with `_StubMW`."""
 
@@ -1097,7 +1185,6 @@ class TestMiddlewareExclusionWiring:
         forbidden_classes: tuple[type[AgentMiddleware[Any, Any, Any]], ...] = (
             FilesystemMiddleware,
             SubAgentMiddleware,
-            _PermissionMiddleware,
         )
         for forbidden_cls in forbidden_classes:
             with pytest.raises(ValueError, match=forbidden_cls.__name__):
@@ -1277,13 +1364,12 @@ class TestStringFormExcludedMiddleware:
         [
             "FilesystemMiddleware",
             "SubAgentMiddleware",
-            "PermissionMiddleware",
         ],
     )
     def test_string_entry_rejects_required_scaffolding(self, forbidden: str) -> None:
         """Public-name strings of required scaffolding raise `ValueError` at construction.
 
-        The private `"_PermissionMiddleware"` spelling is rejected by the
+        Underscore-prefixed private middleware names are rejected by the
         grammar guard on `HarnessProfile.__post_init__` (see
         `test_string_entry_rejects_private_underscore_prefixed_names`); the
         public spellings here are caught by the same construction-time
@@ -1292,7 +1378,7 @@ class TestStringFormExcludedMiddleware:
         with pytest.raises(ValueError, match="scaffolding"):
             HarnessProfile(excluded_middleware=frozenset({forbidden}))
 
-    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware", "_PermissionMiddleware"])
+    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware"])
     def test_string_entry_rejects_private_underscore_prefixed_names(self, entry: str) -> None:
         """Underscore-prefixed string entries raise `ValueError` at construction.
 

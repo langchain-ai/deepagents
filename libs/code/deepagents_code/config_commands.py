@@ -18,7 +18,6 @@ manifest/runtime imports here stay confined to the subcommands.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -155,6 +154,8 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
         return "configured" if is_set else "not configured"
     if value is None:
         return "(unset)"
+    if option.key == "display.charset" and value == "auto":
+        return _charset_display_value()
     text = str(value)
     max_len = 60
     if len(text) > max_len:
@@ -166,28 +167,22 @@ def _source_label(option: ConfigOption, source: str) -> str:
     """Render the source column for human output.
 
     Returns:
-        Source label with compact diagnostic hints for defaults and unavailable
-        provider integrations.
+        Source label with compact diagnostic hints for unavailable provider
+        integrations.
     """
     label = source
-    if option.key == "display.charset" and source == "default":
-        label = _charset_default_source_label()
     if _missing_extra_hint(option):
         label = f"{label} [missing extra]"
     return label
 
 
-def _charset_default_source_label() -> str:
-    """Return a compact note explaining the charset `auto` default."""
-    encoding = (
-        getattr(sys.stdout, "encoding", "")
-        or os.environ.get("LC_ALL")
-        or os.environ.get("LANG", "unknown")
-    )
+def _charset_display_value() -> str:
+    """Return the `display.charset=auto` value with its effective glyph mode."""
     from deepagents_code.config import _detect_charset_mode
 
     mode = _detect_charset_mode().value
-    return f"default ({encoding} → {mode})"
+    label = "Unicode" if mode == "unicode" else "ASCII"
+    return f"auto (using {label} glyphs)"
 
 
 def _missing_extra_hint(option: ConfigOption) -> bool:

@@ -146,13 +146,16 @@ def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
     assert payload["data"]["value"] is None
 
 
-def test_charset_default_source_label_includes_auto_detection() -> None:
-    """The charset auto default shows the terminal-derived effective mode."""
+def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
+    """The charset auto value says which glyph mode is actually being used."""
     option = get_option("display.charset")
     assert option is not None
-    label = _source_label(option, "default")
-    assert label.startswith("default (")
-    assert label.endswith(")")
+    value = _display_value(option, is_set=False, value="auto")
+    assert value in {
+        "auto (using Unicode glyphs)",
+        "auto (using ASCII glyphs)",
+    }
+    assert _source_label(option, "default") == "default"
 
 
 # --- Single-source defaults -------------------------------------------------

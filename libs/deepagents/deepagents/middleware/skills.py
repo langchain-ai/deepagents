@@ -113,9 +113,9 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from langchain_core.runnables import RunnableConfig
-    from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.runtime import AgentRuntime
 
 from typing import NotRequired, TypedDict
 
@@ -131,7 +131,6 @@ from langchain.agents.middleware.types import (
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
 
 logger = logging.getLogger(__name__)
 
@@ -745,7 +744,7 @@ User: "Can you research the latest developments in quantum computing?"
 Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!"""
 
 
-class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, ContextT, ResponseT]):
+class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     """Middleware for loading and exposing agent skills to the system prompt.
 
     Loads skills from backend sources and injects them into the system prompt
@@ -786,7 +785,6 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -823,7 +821,6 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
             if missing:
                 msg = f"system_prompt missing required format slot(s): {', '.join(missing)}"
                 raise ValueError(msg)
-        self._backend = backend
         # `self.sources` remains paths-only (`list[str]`) to preserve
         # backwards-compat for callers that inspect it directly; label
         # information is mirrored on `self.source_labels` at the same index.
@@ -909,7 +906,7 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    def before_agent(self, state: SkillsState, runtime: AgentRuntime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (synchronous).
 
         Loads skills once per session from all configured sources. If
@@ -932,7 +929,7 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
-        backend = self._resolve_backend_for_runtime(runtime)
+        backend = runtime.backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 
@@ -955,7 +952,7 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
             update["skills_load_errors"] = skills_load_errors
         return update
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    async def abefore_agent(self, state: SkillsState, runtime: AgentRuntime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (async).
 
         Loads skills once per session from all configured sources. If
@@ -978,7 +975,7 @@ class SkillsMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[SkillsState, Con
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
-        backend = self._resolve_backend_for_runtime(runtime)
+        backend = runtime.backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 

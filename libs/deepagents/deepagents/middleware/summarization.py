@@ -78,7 +78,7 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
+from deepagents.middleware.runtime import AgentRuntime
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -208,7 +208,7 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     }
 
 
-class _DeepAgentsSummarizationMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware):
+class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
@@ -233,7 +233,6 @@ class _DeepAgentsSummarizationMiddleware(_DeepAgentsRuntimeMixin, AgentMiddlewar
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
         trigger: ContextSize | list[ContextSize] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -242,11 +241,10 @@ class _DeepAgentsSummarizationMiddleware(_DeepAgentsRuntimeMixin, AgentMiddlewar
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
-        """Initialize summarization middleware with backend support.
+        """Initialize summarization middleware.
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
             trigger: Threshold(s) that trigger summarization.
             keep: Context retention policy after summarization.
 
@@ -309,13 +307,11 @@ class _DeepAgentsSummarizationMiddleware(_DeepAgentsRuntimeMixin, AgentMiddlewar
             **deprecated_kwargs,
         )
 
-        # Deep Agents specific attributes
-        self._backend = backend
-
-        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
-        _root = artifacts_root.rstrip("/")
-        self._history_path_prefix = f"{_root}/conversation_history"
-        self._large_tool_results_prefix = f"{_root}/large_tool_results"
+        # Deep Agents specific attributes — backend is injected via _build_runtime
+        self._backend: BackendProtocol | None = None
+        # Default path prefixes; updated in _build_runtime once the backend is known.
+        self._history_path_prefix = "/conversation_history"
+        self._large_tool_results_prefix = "/large_tool_results"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
@@ -362,6 +358,15 @@ class _DeepAgentsSummarizationMiddleware(_DeepAgentsRuntimeMixin, AgentMiddlewar
     ) -> tuple[list[AnyMessage], list[AnyMessage]]:
         """Partition messages into those to summarize and those to preserve."""
         return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
+
+    def _build_runtime(self, runtime: AgentRuntime) -> AgentRuntime:
+        """Cache backend and derive path prefixes on first dispatch."""
+        if self._backend is None and isinstance(runtime, AgentRuntime):
+            self._backend = runtime.backend
+            root = runtime.backend.artifacts_root.rstrip("/") if isinstance(runtime.backend, CompositeBackend) else ""
+            self._history_path_prefix = f"{root}/conversation_history"
+            self._large_tool_results_prefix = f"{root}/large_tool_results"
+        return runtime
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages."""
@@ -942,8 +947,8 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._resolve_backend_for_runtime(request.runtime)
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        assert self._backend is not None, "backend not injected — use create_deep_agent or prepend BackendMiddleware"  # noqa: S101
+        backend = self._backend  # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = _clip_overflow_tail(
@@ -1063,8 +1068,8 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._resolve_backend_for_runtime(request.runtime)
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        assert self._backend is not None, "backend not injected — use create_deep_agent or prepend BackendMiddleware"  # noqa: S101
+        backend = self._backend  # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = await _aclip_overflow_tail(
@@ -1341,19 +1346,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        backend = self._summarization._backend
-        if callable(backend):
-            return backend(runtime)
-        return backend
+    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:  # noqa: ARG002
+        return self._summarization._backend  # type: ignore[return-value]
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.

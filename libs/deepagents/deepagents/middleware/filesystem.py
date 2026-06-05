@@ -9,11 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
-
-if TYPE_CHECKING:
-    from langchain_core.runnables.config import RunnableConfig
-    from langgraph.runtime import Runtime
+from typing import Annotated, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -66,7 +62,6 @@ from deepagents.middleware._message_eviction import (
     _offload_tool_message_content,
 )
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 
@@ -606,7 +601,7 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     return message.model_copy(update={"content": evicted})
 
 
-class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemState, ContextT, ResponseT]):
+class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -669,7 +664,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BackendProtocol | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -741,74 +736,6 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             self._create_execute_tool(),
         ]
 
-    @property
-    def _backend(self) -> BACKEND_TYPES:
-        """Alias for ``self.backend`` so ``_DeepAgentsRuntimeMixin`` can resolve it.
-
-        ``FilesystemMiddleware`` exposes the backend as the public ``self.backend``
-        attribute.  The mixin expects ``self._backend``, so this property bridges
-        the two naming conventions without changing any public API.
-        """
-        return self.backend
-
-    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self.backend):
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Passing a callable (factory) as `backend` is deprecated "
-                    "and will be removed in deepagents==0.7.0. Pass a "
-                    "`BackendProtocol` instance directly instead "
-                    "(e.g. `StateBackend()`)."
-                ),
-                package="deepagents",
-            )
-            return self.backend(runtime)  # ty: ignore[call-top-callable]
-        return self.backend
-
-    def _resolve_backend_for_runtime(self, runtime: "Runtime") -> BackendProtocol:
-        """Override to route through ``_get_backend`` so the factory deprecation warning fires.
-
-        When ``self.backend`` is a callable factory the deprecation notice that lives in
-        ``_get_backend`` must still fire for the ``wrap_model_call``/HumanMessage-eviction
-        path.  Routing through ``_get_backend`` (with a synthesised ``ToolRuntime``) keeps
-        the warning centralised and avoids duplicating the message string.
-
-        Args:
-            runtime: Any ``Runtime`` (or ``ToolRuntime``) in scope for the caller.
-
-        Returns:
-            Resolved ``BackendProtocol`` instance.
-        """
-        from deepagents.middleware.runtime import DeepAgentsRuntime  # noqa: PLC0415
-
-        if isinstance(runtime, DeepAgentsRuntime) and runtime.backend is not None:
-            return runtime.backend
-
-        if not callable(self.backend):
-            return self.backend
-
-        # Synthesise a minimal ToolRuntime so _get_backend (and its warning) can fire.
-        config = cast("RunnableConfig", getattr(runtime, "config", {}))
-        tool_rt = ToolRuntime(
-            state=None,
-            context=runtime.context,
-            stream_writer=runtime.stream_writer,
-            store=runtime.store,
-            config=config,
-            tool_call_id=None,
-        )
-        return self._get_backend(tool_rt)
-
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -818,7 +745,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
         ) -> ToolMessage:
             """Synchronous wrapper for ls tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
@@ -857,7 +784,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
         ) -> ToolMessage:
             """Asynchronous wrapper for ls tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
@@ -1007,7 +934,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage:
             """Synchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1034,7 +961,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage:
             """Asynchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1073,7 +1000,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1112,7 +1039,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1167,7 +1094,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1209,7 +1136,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
@@ -1261,7 +1188,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
         ) -> ToolMessage:
             """Synchronous wrapper for glob tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
@@ -1313,7 +1240,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for glob tool."""
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
@@ -1400,7 +1327,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
@@ -1443,7 +1370,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
@@ -1496,7 +1423,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
                         status="error",
                     )
 
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
 
             # Runtime check - fail gracefully if not supported
             if not supports_execution(resolved_backend):
@@ -1586,7 +1513,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
                         status="error",
                     )
 
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
 
             # Runtime check - fail gracefully if not supported
             if not supports_execution(resolved_backend):
@@ -1688,7 +1615,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._resolve_backend_for_runtime(request.runtime)
+            backend = self.backend
             backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1753,7 +1680,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._resolve_backend_for_runtime(request.runtime)
+            backend = self.backend
             backend_supports_execution = supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -1962,7 +1889,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._resolve_backend_for_runtime(request.runtime)
+            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
 
@@ -1988,13 +1915,13 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self._resolve_backend_for_runtime(request.runtime)
+            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
             write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:  # noqa: ARG002
         """Intercept and process large tool results before they're added to state.
 
         Args:
@@ -2011,7 +1938,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             to prevent context window overflow.
         """
         if isinstance(tool_result, ToolMessage):
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_message, _evicted = self._process_large_message(
                 tool_result,
                 resolved_backend,
@@ -2023,7 +1950,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_messages = []
             for message in command_messages:
                 if not isinstance(message, ToolMessage):
@@ -2043,14 +1970,14 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
-    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:  # noqa: ARG002
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.
         See _intercept_large_tool_result for full documentation.
         """
         if isinstance(tool_result, ToolMessage):
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_message, _evicted = await self._aprocess_large_message(
                 tool_result,
                 resolved_backend,
@@ -2062,7 +1989,7 @@ class FilesystemMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[FilesystemSt
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
-            resolved_backend = self._get_backend(runtime)
+            resolved_backend = self.backend
             processed_messages = []
             for message in command_messages:
                 if not isinstance(message, ToolMessage):

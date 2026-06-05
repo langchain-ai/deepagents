@@ -62,9 +62,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain_core.runnables import RunnableConfig
-    from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES
+    from deepagents.middleware.runtime import AgentRuntime
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -79,7 +78,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.runtime import _DeepAgentsRuntimeMixin
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +174,7 @@ def _strip_html_comments(text: str) -> str:
     return _HTML_COMMENT_RE.sub("", text)
 
 
-class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, ContextT, ResponseT]):
+class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system
@@ -189,7 +187,6 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
         sources: list[str],
         add_cache_control: bool = False,
         system_prompt: str | None = MEMORY_SYSTEM_PROMPT,
@@ -197,10 +194,6 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
         """Initialize the memory middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime
-                and returns a backend.
-
-                Use a factory for StateBackend.
             sources: List of memory file paths to load (e.g., `["~/.deepagents/AGENTS.md",
                 "./.deepagents/AGENTS.md"]`).
 
@@ -236,7 +229,6 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
             if "{agent_memory}" not in system_prompt:
                 msg = "system_prompt must contain the `{agent_memory}` format slot"
                 raise ValueError(msg)
-        self._backend = backend
         self.sources = sources
         self._add_cache_control = add_cache_control
         self.system_prompt = system_prompt
@@ -275,7 +267,7 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
         memory_body = "\n\n".join(sections)
         return template.format(agent_memory=memory_body)
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    def before_agent(self, state: MemoryState, runtime: AgentRuntime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -293,7 +285,7 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
         if "memory_contents" in state:
             return None
 
-        backend = self._resolve_backend_for_runtime(runtime)
+        backend = runtime.backend
         contents: dict[str, str] = {}
 
         results = backend.download_files(list(self.sources))
@@ -309,7 +301,7 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    async def abefore_agent(self, state: MemoryState, runtime: AgentRuntime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -327,7 +319,7 @@ class MemoryMiddleware(_DeepAgentsRuntimeMixin, AgentMiddleware[MemoryState, Con
         if "memory_contents" in state:
             return None
 
-        backend = self._resolve_backend_for_runtime(runtime)
+        backend = runtime.backend
         contents: dict[str, str] = {}
 
         results = await backend.adownload_files(list(self.sources))

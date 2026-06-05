@@ -42,6 +42,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.runtime import BackendMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -585,9 +586,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                BackendMiddleware(cast("BackendProtocol", backend)),
                 TodoListMiddleware(),
                 FilesystemMiddleware(
-                    backend=backend,
+                    backend=cast("BackendProtocol", backend),
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     _permissions=subagent_permissions,
                 ),
@@ -596,7 +598,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             ]
             subagent_skills = spec.get("skills")
             if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_middleware.append(SkillsMiddleware(sources=subagent_skills))
             subagent_middleware.extend(spec.get("middleware", []))
 
             # Harness-profile middleware for this subagent's model
@@ -657,9 +659,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            BackendMiddleware(cast("BackendProtocol", backend)),
             TodoListMiddleware(),
             FilesystemMiddleware(
-                backend=backend,
+                backend=cast("BackendProtocol", backend),
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 _permissions=permissions,
             ),
@@ -667,7 +670,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             PatchToolCallsMiddleware(),
         ]
         if skills is not None:
-            gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+            gp_middleware.append(SkillsMiddleware(sources=skills))
 
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
@@ -709,13 +712,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        BackendMiddleware(cast("BackendProtocol", backend)),
         TodoListMiddleware(),
     ]
     if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        deepagent_middleware.append(SkillsMiddleware(sources=skills))
     deepagent_middleware.append(
         FilesystemMiddleware(
-            backend=backend,
+            backend=cast("BackendProtocol", backend),
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
         )
@@ -761,7 +765,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # request model is Anthropic, making it safe to enable unconditionally.
         deepagent_middleware.append(
             MemoryMiddleware(
-                backend=backend,
                 sources=memory,
                 add_cache_control=True,
             )

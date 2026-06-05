@@ -17,6 +17,8 @@ manifest/runtime imports here stay confined to the subcommands.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -144,10 +146,13 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
     """Render an option value for human output, redacting secrets.
 
     Returns:
-        `set`/`not set` for secret options, otherwise the value as text.
+        `configured`/`not configured` for credential options, otherwise the value
+            as text.
     """
+    if option.group == "Credentials" and value is None:
+        return "not configured"
     if option.secret:
-        return "set" if is_set else "not set"
+        return "configured" if is_set else "not configured"
     if value is None:
         return "(unset)"
     text = str(value)
@@ -155,6 +160,41 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
     if len(text) > max_len:
         return text[: max_len - 1] + "\N{HORIZONTAL ELLIPSIS}"
     return text
+
+
+def _source_label(option: ConfigOption, source: str) -> str:
+    """Render the source column for human output.
+
+    Returns:
+        Source label with compact diagnostic hints for defaults and unavailable
+        provider integrations.
+    """
+    label = source
+    if option.key == "display.charset" and source == "default":
+        label = _charset_default_source_label()
+    if _missing_extra_hint(option):
+        label = f"{label} [missing extra]"
+    return label
+
+
+def _charset_default_source_label() -> str:
+    """Return a compact note explaining the charset `auto` default."""
+    encoding = (
+        getattr(sys.stdout, "encoding", "")
+        or os.environ.get("LC_ALL")
+        or os.environ.get("LANG", "unknown")
+    )
+    from deepagents_code.config import _detect_charset_mode
+
+    mode = _detect_charset_mode().value
+    return f"default ({encoding} → {mode})"
+
+
+def _missing_extra_hint(option: ConfigOption) -> bool:
+    """Return whether a credential option's provider integration is unavailable."""
+    if option.group != "Credentials" or option.dependency_module is None:
+        return False
+    return importlib.util.find_spec(option.dependency_module) is None
 
 
 # --- Commands ---------------------------------------------------------------
@@ -207,10 +247,13 @@ def _run_show(output_format: OutputFormat) -> int:
             if opt.group != group:
                 continue
             display = _display_value(opt, is_set=is_set, value=value)
-            # `display` is a resolved env/TOML value and may contain Rich
-            # markup (e.g. `[/]`); escape it so a value can't break rendering.
+            source_label = _source_label(opt, source)
+            # `display` and `source_label` may contain Rich markup from env/TOML
+            # or terminal metadata; escape them so values can't break rendering.
+            display_text = escape(display)
+            source_text = escape(source_label)
             console.print(
-                f"  {opt.key:<34} {escape(display):<22} [dim]{source}[/dim]",
+                f"  {opt.key:<34} {display_text:<22} [dim]{source_text}[/dim]",
                 highlight=False,
             )
         console.print()
@@ -307,9 +350,10 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
     from deepagents_code.config import console
 
     display = _display_value(option, is_set=is_set, value=value)
-    # `display` may carry Rich markup from a user value; escape before render.
+    source_label = _source_label(option, source)
     console.print(
-        f"{option.key} = {escape(display)}  [dim]({source})[/dim]", highlight=False
+        f"{option.key} = {escape(display)}  [dim]({escape(source_label)})[/dim]",
+        highlight=False,
     )
     return 0
 

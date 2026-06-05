@@ -121,37 +121,56 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
 
 @dataclass(frozen=True)
 class ConfigOption:
-    """One user-tunable configuration option and where it can be set.
-
-    Args:
-        key: Canonical dotted identifier used by `config get` and as the
-            stable display key (e.g. `interpreter.memory_limit_mb`).
-        group: Human-readable grouping for `config list`/`config show`.
-        summary: One-line description of what the option controls.
-        kind: How env/TOML values are coerced to a typed value.
-        default: Typed default value, or `None` when there is no static default.
-        env_var: Primary environment variable name the loader reads, or `None`
-            for config-file-only options. For provider credentials this is the
-            canonical name; the `DEEPAGENTS_CODE_` prefix override is applied
-            dynamically at resolution time.
-        toml_keys: Section/key path within `config.toml`, or `None`.
-        cli_flag: Representative CLI flag that sets the option, or `None`.
-        secret: When `True`, `config show` reports only set/not-set, never the
-            raw value.
-        settings_field: Name of the `Settings` attribute this option backs, or
-            `None` when the option is read elsewhere (inline) or is descriptive.
-    """
+    """One user-tunable configuration option and where it can be set."""
 
     key: str
+    """Canonical dotted identifier used by `config get`.
+
+    Also used as the stable display key.
+    """
+
     group: str
+    """Human-readable grouping for `config list` and `config show`."""
+
     summary: str
+    """One-line description of what the option controls."""
+
     kind: OptionKind
+    """How env/TOML values are coerced to a typed value."""
+
     default: Any = None
+    """Typed default value, or `None` when there is no static default."""
+
     env_var: str | None = None
+    """Primary environment variable name the loader reads, or `None`.
+
+    For provider credentials this is the canonical name; the
+    `DEEPAGENTS_CODE_` prefix override is applied dynamically at resolution time.
+    """
+
     toml_keys: tuple[str, ...] | None = None
+    """Section/key path within `config.toml`, or `None`."""
+
     cli_flag: str | None = None
+    """Representative CLI flag that sets the option, or `None`."""
+
     secret: bool = False
+    """Whether `config show` reports only set/not-set, never the raw value."""
+
     settings_field: str | None = None
+    """Name of the `Settings` attribute this option backs, or `None`.
+
+    `None` means the option is read elsewhere inline or is descriptive.
+    """
+
+    dependency_module: str | None = None
+    """Import module required to use the option, or `None`.
+
+    `None` means the option is always available or descriptive only.
+    """
+
+    install_extra: str | None = None
+    """Optional `deepagents-code[...]` extra that provides `dependency_module`."""
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -442,6 +461,29 @@ _EXTRA_CREDENTIAL_ENV: dict[str, str] = {
 
 _SECRET_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "APIKEY")
 
+_PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
+    "anthropic": ("langchain_anthropic", "anthropic"),
+    "azure_openai": ("langchain_openai", "openai"),
+    "baseten": ("langchain_baseten", "baseten"),
+    "cohere": ("langchain_cohere", "cohere"),
+    "deepseek": ("langchain_deepseek", "deepseek"),
+    "fireworks": ("langchain_fireworks", "fireworks"),
+    "google_genai": ("langchain_google_genai", "google-genai"),
+    "google_vertexai": ("langchain_google_vertexai", "vertex"),
+    "groq": ("langchain_groq", "groq"),
+    "huggingface": ("langchain_huggingface", "huggingface"),
+    "ibm": ("langchain_ibm", "ibm"),
+    "litellm": ("langchain_litellm", "litellm"),
+    "mistralai": ("langchain_mistralai", "mistralai"),
+    "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
+    "openai": ("langchain_openai", "openai"),
+    "openrouter": ("langchain_openrouter", "openrouter"),
+    "perplexity": ("langchain_perplexity", "perplexity"),
+    "together": ("langchain_together", "together"),
+    "xai": ("langchain_xai", "xai"),
+}
+"""Provider integration import modules and the extras that install them."""
+
 # Credentials that back a `Settings` field, keyed by canonical env var.
 _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
     "OPENAI_API_KEY": "openai_api_key",
@@ -484,6 +526,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
             if secret
             else f"Project/identifier for the {name} provider."
         )
+        dependency = _PROVIDER_DEPENDENCIES.get(name)
         options.append(
             ConfigOption(
                 key=f"credentials.{name}",
@@ -493,6 +536,8 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 env_var=env_var,
                 secret=secret,
                 settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
+                dependency_module=dependency[0] if dependency else None,
+                install_extra=dependency[1] if dependency else None,
             )
         )
     return tuple(options)

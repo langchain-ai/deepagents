@@ -12,8 +12,10 @@ import argparse
 from deepagents_code import _env_vars
 from deepagents_code.config_commands import (
     _display_value,
+    _missing_extra_hint,
     _resolve,
     _run_get,
+    _source_label,
     run_config_command,
 )
 from deepagents_code.config_manifest import (
@@ -95,7 +97,7 @@ def test_google_cloud_project_is_not_secret() -> None:
 
 
 def test_display_value_redacts_secrets() -> None:
-    """A secret option never renders its raw value, only set/not set."""
+    """A secret option never renders its raw value, only configured state."""
     secret = ConfigOption(
         key="x",
         group="Credentials",
@@ -103,8 +105,34 @@ def test_display_value_redacts_secrets() -> None:
         kind=OptionKind.STR,
         secret=True,
     )
-    assert _display_value(secret, is_set=True, value="sk-supersecret") == "set"
-    assert _display_value(secret, is_set=False, value=None) == "not set"
+    assert _display_value(secret, is_set=True, value="sk-supersecret") == "configured"
+    assert _display_value(secret, is_set=False, value=None) == "not configured"
+
+
+def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
+    """Non-secret credential identifiers still use configured-state language."""
+    option = get_option("credentials.google_vertexai")
+    assert option is not None
+    assert option.secret is False
+    assert _display_value(option, is_set=False, value=None) == "not configured"
+
+
+def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
+    """Credential rows can show when their provider integration is unavailable."""
+    option = ConfigOption(
+        key="credentials.example",
+        group="Credentials",
+        summary="",
+        kind=OptionKind.STR,
+        dependency_module="langchain_missing_provider",
+        install_extra="missing-provider",
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config_commands.importlib.util.find_spec",
+        lambda name: None if name == "langchain_missing_provider" else object(),
+    )
+    assert _missing_extra_hint(option) is True
+    assert _source_label(option, "default") == "default [missing extra]"
 
 
 def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
@@ -116,6 +144,15 @@ def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["set"] is True
     assert payload["data"]["value"] is None
+
+
+def test_charset_default_source_label_includes_auto_detection() -> None:
+    """The charset auto default shows the terminal-derived effective mode."""
+    option = get_option("display.charset")
+    assert option is not None
+    label = _source_label(option, "default")
+    assert label.startswith("default (")
+    assert label.endswith(")")
 
 
 # --- Single-source defaults -------------------------------------------------

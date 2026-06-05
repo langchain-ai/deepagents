@@ -3568,6 +3568,9 @@ class DeepAgentsApp(App):
             )
             return
 
+        # KNOWN_EXTRAS is a curated "did you mean" list, not the authoritative
+        # set (that's pyproject, resolved by uv): defer to --force rather than
+        # refuse, since valid-but-unlisted names exist (e.g. all-providers).
         if extra not in KNOWN_EXTRAS and not force:
             try:
                 manual_cmd = await asyncio.to_thread(install_extra_command, extra)

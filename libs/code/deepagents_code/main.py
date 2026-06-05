@@ -2027,6 +2027,10 @@ def cli_main() -> None:
                     sys.exit(1)
 
                 manual_cmd = install_extra_command(extra)
+                # KNOWN_EXTRAS is a curated "did you mean" list, not the
+                # authoritative set (that's pyproject, resolved by uv): warn and
+                # confirm rather than refuse, since valid-but-unlisted names
+                # exist (e.g. all-providers). Malformed names blocked above.
                 if extra not in KNOWN_EXTRAS:
                     known = ", ".join(sorted(KNOWN_EXTRAS))
                     console.print(

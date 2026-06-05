@@ -1538,10 +1538,11 @@ api_key_env = "TOGETHER_API_KEY"
     ) -> None:
         """A `/auth` endpoint reaches the `base_url` kwarg for a non-mapped provider.
 
-        `together` has an API-key env var but no base-URL env var, so the stored
+        `baseten` has an API-key env var but no base-URL env var, so the stored
         endpoint resolves only through `get_base_url`'s store fallback. This is
-        the end-to-end path that makes a saved base URL actually take effect
-        rather than being silently dropped.
+        the end-to-end path that makes a saved base URL reach the model as the
+        `base_url` constructor kwarg (which `ChatBaseten` accepts via its
+        `base_url` alias) rather than being silently dropped.
         """
         from deepagents_code import auth_store
 
@@ -1551,13 +1552,13 @@ api_key_env = "TOGETHER_API_KEY"
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.object(model_config, "DEFAULT_STATE_DIR", state_dir),
-            patch.dict("os.environ", {"TOGETHER_API_KEY": "tk"}, clear=True),
+            patch.dict("os.environ", {"BASETEN_API_KEY": "tk"}, clear=True),
         ):
             clear_caches()
             auth_store.set_stored_key(
-                "together", "tk", base_url="https://proxy.example/v1"
+                "baseten", "tk", base_url="https://proxy.example/v1"
             )
-            kwargs = _get_provider_kwargs("together")
+            kwargs = _get_provider_kwargs("baseten")
 
         assert kwargs["base_url"] == "https://proxy.example/v1"
 

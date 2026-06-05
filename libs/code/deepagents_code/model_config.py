@@ -527,13 +527,63 @@ registry fallback.
 """
 
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
-    # langchain_openai reads OPENAI_API_BASE, then the openai SDK reads
-    # OPENAI_BASE_URL; langchain_anthropic reads ANTHROPIC_API_URL, then
-    # ANTHROPIC_BASE_URL. The google-genai SDK reads GOOGLE_GEMINI_BASE_URL
-    # (the lone name langchain_google_genai threads through HttpOptions).
+    # Each tuple lists every base-URL env var the provider's LangChain
+    # integration and underlying SDK may read, canonical name first. Names were
+    # verified against the integration and SDK source, not inferred:
+    #   anthropic     langchain_anthropic reads ANTHROPIC_API_URL; the anthropic
+    #                 SDK reads ANTHROPIC_BASE_URL.
+    #   azure_openai  AzureChatOpenAI and the openai SDK both read
+    #                 AZURE_OPENAI_ENDPOINT.
+    #   cohere        langchain_cohere passes base_url=None, so the cohere SDK's
+    #                 CO_API_URL is what takes effect.
+    #   deepseek      ChatDeepSeek reads DEEPSEEK_API_BASE (alias base_url).
+    #   fireworks     ChatFireworks reads FIREWORKS_API_BASE; when unset the
+    #                 fireworks SDK reads FIREWORKS_BASE_URL.
+    #   google_genai  the google-genai SDK reads GOOGLE_GEMINI_BASE_URL (the lone
+    #                 name langchain_google_genai threads through HttpOptions).
+    #   groq          ChatGroq reads GROQ_API_BASE; when unset the groq SDK reads
+    #                 GROQ_BASE_URL.
+    #   huggingface   the integration and huggingface_hub both read
+    #                 HF_INFERENCE_ENDPOINT.
+    #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
+    #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
+    #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
+    #                 reads OPENAI_BASE_URL.
+    #   openrouter    ChatOpenRouter reads OPENROUTER_API_BASE (alias base_url).
+    #   perplexity    the integration passes no base_url, so the perplexity SDK's
+    #                 PERPLEXITY_BASE_URL is what takes effect.
+    #   together      ChatTogether reads TOGETHER_API_BASE (alias base_url).
+    #   xai           ChatXAI reads XAI_API_BASE (alias base_url).
+    #
+    # OpenAI-compatible providers (deepseek, openrouter, together, xai, baseten)
+    # sit on the openai SDK, whose only base-URL env var is the shared
+    # OPENAI_BASE_URL. That name is intentionally NOT listed under those
+    # providers: writing or clearing it under another provider's name would
+    # clobber the user's real OpenAI endpoint. In practice the integration always
+    # passes base_url explicitly, so the shared fallback never fires.
+    #
+    # Omitted (no dedicated, provider-specific endpoint env var): baseten
+    # (hardcoded default + base_url arg), litellm (api_base arg, per-provider
+    # env), google_vertexai (endpoint derived from the region). A `/auth`
+    # endpoint for these still resolves through the stored-credential step of
+    # `get_base_url` and reaches the model as the `base_url` kwarg.
     "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
+    "azure_openai": ("AZURE_OPENAI_ENDPOINT",),
+    "cohere": ("CO_API_URL",),
+    "deepseek": ("DEEPSEEK_API_BASE",),
+    "fireworks": ("FIREWORKS_BASE_URL", "FIREWORKS_API_BASE"),
     "google_genai": ("GOOGLE_GEMINI_BASE_URL",),
+    "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
+    "huggingface": ("HF_INFERENCE_ENDPOINT",),
+    "ibm": ("WATSONX_URL",),
+    "mistralai": ("MISTRAL_BASE_URL",),
+    "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
+    "openrouter": ("OPENROUTER_API_BASE",),
+    "perplexity": ("PERPLEXITY_BASE_URL",),
+    "together": ("TOGETHER_API_BASE",),
+    "xai": ("XAI_API_BASE",),
 }
 """Every base-URL env var a provider's SDK may read.
 
@@ -2075,13 +2125,21 @@ class ModelConfig:
             URL in the default (no-override) case.
         3. The endpoint stored with a `/auth` credential. This is the source
             for providers that have no base-URL env var (e.g. an OpenAI-
-            compatible router like LiteLLM or OpenRouter): step 2 has no name to
-            read, so the stored endpoint is taken directly. It then reaches the
-            SDK as the `base_url` constructor kwarg via `_get_provider_kwargs`,
-            the same path a `config.toml` literal uses. For providers that *do*
-            have an env var, the stored endpoint already arrives via step 2
-            (it was bridged onto the env var), so this step is a redundant — and
-            consistent — fallback.
+            compatible provider like OpenRouter, Groq, or Baseten): step 2 has
+            no name to read, so the stored endpoint is taken directly. It then
+            reaches the model as the `base_url` constructor kwarg via
+            `_get_provider_kwargs`, the same path a `config.toml` literal uses.
+            For providers that *do* have an env var, the stored endpoint already
+            arrives via step 2 (it was bridged onto the env var), so this step
+            is a redundant — and consistent — fallback.
+
+        This function only *resolves* the endpoint; whether it takes effect is a
+        separate contract owned by the provider's LangChain class. The value is
+        delivered as the `base_url` kwarg (see `_get_provider_kwargs`), which the
+        OpenAI/Anthropic-compatible classes accept via a Pydantic `base_url`
+        alias. A class that names the field differently may silently
+        ignore `base_url` — Pydantic models default to `extra="ignore"` — so for
+        those the endpoint must be set via `params`.
 
         A corrupt credential store is treated as "no stored endpoint" rather than
         propagating, so endpoint resolution never newly raises.

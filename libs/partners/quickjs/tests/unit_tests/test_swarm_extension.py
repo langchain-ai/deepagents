@@ -196,10 +196,16 @@ def test_file_op_without_backend_errors(worker: ThreadWorker, runtime: Runtime) 
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_present() -> None:
+def test_system_prompt_is_the_skill_doc() -> None:
     ext = _stub_extension([])
-    assert ext.system_prompt is not None
-    assert "swarm" in ext.system_prompt
+    prompt = ext.system_prompt
+    assert prompt is not None
+    # Sourced from the upstream SKILL.md body: full sections, not a paraphrase.
+    assert "## Flow" in prompt
+    assert "## API Reference" in prompt
+    assert "responseSchema" in prompt
+    # Import specifier adapted to "swarm"; no leftover skill path.
+    assert "@/skills" not in prompt
 
 
 def test_extension_validates_as_a_hook_impl() -> None:

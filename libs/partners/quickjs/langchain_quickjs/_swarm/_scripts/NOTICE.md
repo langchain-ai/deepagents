@@ -6,8 +6,14 @@ The `.ts` files in this directory are vendored from the **swarm** skill in
 
 They implement the handle-based table API (`create` / `run` / `rows`) that the
 swarm interpreter extension loads as the `swarm` module. At runtime the scripts
-read `swarmTask`, `glob`, `readFile`, `writeFile`, and `editFile` off
-`globalThis.tools`; the extension registers those as host functions
-(see `_swarm_extension.py`).
+call the top-level host functions `__swarmTask`, `__swarmGlob`,
+`__swarmReadFile`, `__swarmWriteFile`, and `__swarmEditFile`, which the
+extension registers (see `../_extension.py`). They were adapted from the
+upstream `tools.*` (PTC-namespace) calls to these named host functions.
 
-To update: re-copy from the upstream skill directory and re-run the test suite.
+The sibling `../_PROMPT.md` is likewise vendored — it is the body of the
+upstream skill's `SKILL.md`, with the import specifier adapted from
+`@/skills/swarm` to `swarm`.
+
+To update: re-copy from the upstream skill directory, re-apply the
+`tools.*` → `__swarm*` adaptation, and re-run the test suite.

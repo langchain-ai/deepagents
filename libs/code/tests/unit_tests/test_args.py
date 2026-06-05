@@ -95,10 +95,10 @@ class TestSandboxSnapshotNameArg:
             args = parse_args()
         assert args.sandbox_snapshot_name is None
 
-    def test_snapshot_name_without_langsmith_errors(
+    def test_snapshot_name_without_langsmith_or_runloop_errors(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """`--sandbox-snapshot-name` without `--sandbox langsmith` errors out."""
+        """`--sandbox-snapshot-name` without a supporting sandbox errors out."""
         with (
             patch.object(
                 sys,
@@ -108,7 +108,24 @@ class TestSandboxSnapshotNameArg:
             pytest.raises(SystemExit),
         ):
             parse_args()
-        assert "requires --sandbox langsmith" in capsys.readouterr().err
+        assert "requires --sandbox langsmith or runloop" in capsys.readouterr().err
+
+    def test_snapshot_name_with_runloop(self) -> None:
+        """`--sandbox-snapshot-name` is allowed with `--sandbox runloop`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--sandbox",
+                "runloop",
+                "--sandbox-snapshot-name",
+                "custom-bp",
+            ],
+        ):
+            args = parse_args()
+        assert args.sandbox == "runloop"
+        assert args.sandbox_snapshot_name == "custom-bp"
 
 
 class TestStartupCmdArg:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.2.0"
+version = "0.2.1"
 description = "Deployment tooling for Deep Agents - bundle, run, and ship agents to LangGraph Platform."
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,16 +25,16 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents>=0.6.1",
+    "deepagents>=0.6.8",
     "langchain>=1.3.4,<2.0.0",
-    "langgraph>=1.2.0,<2.0.0",
+    "langgraph>=1.2.4,<2.0.0",
 
     # Bundling & deploy server
-    "langgraph-sdk>=0.3.13,<1.0.0",
+    "langgraph-sdk>=0.4.2,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # LangSmith
-    "langsmith>=0.8.0",
+    "langsmith>=0.8.9",
 
     # Utilities
     "python-dotenv>=1.2.2,<2.0.0",

@@ -2,6 +2,10 @@
 
 # Changelog
 
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.6...langchain-daytona==0.0.7) (2026-06-03)
+
+* Version bumps
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.5...langchain-daytona==0.0.6) (2026-05-12)
 
 ### Features

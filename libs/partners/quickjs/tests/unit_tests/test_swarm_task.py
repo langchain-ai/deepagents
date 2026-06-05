@@ -612,6 +612,93 @@ class TestMultipleSubagents:
 
 
 # ---------------------------------------------------------------------------
+# Middleware pass-through
+# ---------------------------------------------------------------------------
+
+
+class TestMiddleware:
+    """Tests for middleware pass-through to create_agent."""
+
+    def test_passes_middleware_to_create_agent_at_construction(self) -> None:
+        middleware_a = MagicMock()
+        middleware_b = MagicMock()
+
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
+            create_swarm_task_tool(
+                subagents=[
+                    SwarmSubAgent(
+                        name="worker",
+                        description="W",
+                        system_prompt="W.",
+                        middleware=[middleware_a, middleware_b],
+                    )
+                ],
+                default_model=_make_mock_model(),
+            )
+
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["middleware"] == [
+            middleware_a,
+            middleware_b,
+        ]
+
+    async def test_passes_middleware_to_variant_recompilation(self) -> None:
+        middleware_a = MagicMock()
+
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
+            tool = create_swarm_task_tool(
+                subagents=[
+                    SwarmSubAgent(
+                        name="worker",
+                        description="W",
+                        system_prompt="W.",
+                        middleware=[middleware_a],
+                    )
+                ],
+                default_model=_make_mock_model(),
+            )
+
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create_variant:
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}},
+                    },
+                }
+            )
+
+        mock_create_variant.assert_called_once()
+        assert mock_create_variant.call_args.kwargs["middleware"] == [middleware_a]
+
+    def test_defaults_to_empty_middleware_when_not_specified(self) -> None:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
+            create_swarm_task_tool(
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
+                default_model=_make_mock_model(),
+            )
+
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["middleware"] == []
+
+
+# ---------------------------------------------------------------------------
 # TTL variant cache integration
 # ---------------------------------------------------------------------------
 

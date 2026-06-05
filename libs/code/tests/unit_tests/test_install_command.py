@@ -245,3 +245,113 @@ async def test_install_slash_editable_install_refuses() -> None:
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert any("Editable install detected" in str(m._content) for m in app_msgs)
+
+
+async def test_install_slash_package_requires_force() -> None:
+    """`--package` without `--force` must not call `perform_install_package`."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await pilot.pause()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        joined = "\n".join(str(m._content) for m in app_msgs)
+        assert "--force" in joined
+        assert "third-party code" in joined
+        # The raw `uv tool` command is never surfaced to the user.
+        assert "uv tool" not in joined
+
+
+async def test_install_slash_package_with_force_runs() -> None:
+    """`--package --force` invokes `perform_install_package` and recommends restart."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+        ):
+            await app._handle_command("/install langchain-custom --package --force")
+            await pilot.pause()
+        perform_mock.assert_awaited_once()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        success = next(
+            m
+            for m in app_msgs
+            if "Installed package 'langchain-custom'" in str(m._content)
+        )
+        assert "/restart" in str(success._content)
+
+
+async def test_install_slash_package_failure_renders_log() -> None:
+    """A failed package install surfaces the detail + log, but no `uv` command."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ) as perform_mock,
+        ):
+            await app._handle_command("/install langchain-custom --package --force")
+            await pilot.pause()
+        perform_mock.assert_awaited_once()
+        err_msgs = list(app.query(ErrorMessage))
+        joined = "\n".join(str(m._content) for m in err_msgs)
+        assert "Install failed" in joined
+        assert "resolver: conflict" in joined
+        assert "Log:" in joined
+        assert "uv tool" not in joined
+
+
+async def test_install_slash_package_invalid_refuses_even_with_force() -> None:
+    """Malformed package names must not reach command construction."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+        ):
+            await app._handle_command("/install custom;touch --package --force")
+            await pilot.pause()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert any("Invalid package name" in str(m._content) for m in app_msgs)
+
+
+async def test_install_slash_package_editable_install_refuses() -> None:
+    """Editable installs must not invoke `perform_install_package` from the TUI."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+        ):
+            await app._handle_command("/install langchain-custom --package --force")
+            await pilot.pause()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert any("Editable install detected" in str(m._content) for m in app_msgs)

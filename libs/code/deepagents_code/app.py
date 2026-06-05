@@ -560,16 +560,21 @@ def save_theme_preference(name: str) -> bool:
     return _save_theme_preference_result(name).ok
 
 
-def _load_cursor_blink_preference() -> bool:
-    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+def _load_bool_ui_preference(key: str, *, log_label: str) -> bool:
+    """Load a boolean `[ui]` preference from `~/.deepagents/config.toml`.
 
-    The chat input cursor blink can be turned off by setting
-    `[ui].cursor_blink = false` in the config file. There is no in-app command
-    for this; the file is edited manually.
+    These preferences have no in-app command; the file is edited manually. The
+    loader is intentionally forgiving: any problem reading or parsing the config
+    falls back to `True` (the feature stays on) after logging a warning, so a
+    typo in a cosmetic setting never breaks startup.
+
+    Args:
+        key: The key to read from the `[ui]` table.
+        log_label: Human-readable name of the preference, used in warning logs.
 
     Returns:
-        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
-            unreadable, or malformed.
+        The saved `[ui].<key>` value, or `True` when unset, unreadable,
+            or malformed.
     """
     import tomllib
 
@@ -581,26 +586,58 @@ def _load_cursor_blink_preference() -> bool:
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
-        logger.warning("Could not read config for cursor blink preference: %s", exc)
+        logger.warning("Could not read config for %s preference: %s", log_label, exc)
         return True
 
     ui = data.get("ui", {})
     if not isinstance(ui, dict):
         logger.warning(
-            "[ui] should be a table; got %s while loading cursor blink preference",
+            "[ui] should be a table; got %s while loading %s preference",
             type(ui).__name__,
+            log_label,
         )
         return True
 
-    value = ui.get("cursor_blink")
+    value = ui.get(key)
     if isinstance(value, bool):
         return value
     if value is not None:
         logger.warning(
-            "[ui].cursor_blink should be a boolean; got %s",
+            "[ui].%s should be a boolean; got %s",
+            key,
             type(value).__name__,
         )
     return True
+
+
+def _load_cursor_blink_preference() -> bool:
+    """Load the saved cursor-blink preference from `~/.deepagents/config.toml`.
+
+    The chat input cursor blink can be turned off by setting
+    `[ui].cursor_blink = false` in the config file. There is no in-app command
+    for this; the file is edited manually.
+
+    Returns:
+        The saved `[ui].cursor_blink` value, or `True` (blink on) when unset,
+        unreadable, or malformed.
+    """
+    return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
+
+
+def _load_terminal_progress_preference() -> bool:
+    """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
+
+    The terminal taskbar/dock/tab progress indicator (where supported) can be
+    turned off by setting `[ui].terminal_progress = false` in the config file.
+    There is no in-app command for this; the file is edited manually. The
+    `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` environment variable still disables all
+    terminal escapes regardless of this value.
+
+    Returns:
+        The saved `[ui].terminal_progress` value, or `True` (progress on) when
+        unset, unreadable, or malformed.
+    """
+    return _load_bool_ui_preference("terminal_progress", log_label="terminal progress")
 
 
 def _save_terminal_theme_mapping_result(
@@ -1409,6 +1446,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._terminal_progress_enabled = _load_terminal_progress_preference()
+        """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
 
         self.sync_terminal_background()
 
@@ -2946,11 +2986,17 @@ class DeepAgentsApp(App):
                     "Or pick a different provider with `/model`."
                 )
             else:
+                from deepagents_code.extras_info import ExtrasIntrospectionError
                 from deepagents_code.update_check import install_package_command
 
                 try:
                     install_cmd = install_package_command(missing.package)
-                except ValueError:
+                except (ValueError, ExtrasIntrospectionError) as exc:
+                    logger.debug(
+                        "install_package_command failed; falling back to "
+                        "manual hint: %s",
+                        exc,
+                    )
                     install_hint = f"install the `{missing.package}` package manually"
                 else:
                     install_hint = f"run `{install_cmd}`"
@@ -3013,10 +3059,11 @@ class DeepAgentsApp(App):
             # inline imports will still succeed — just without the warm-up.
             logger.debug("Import prewarm worker was cancelled", exc_info=True)
         except WorkerFailed:
-            # Prewarm body best-efforts third-party imports and already
-            # warns; logging at WARNING here surfaces unexpected failures
-            # (e.g. a regression that breaks a non-optional import) that
-            # the body itself didn't catch.
+            # Defense in depth: `_prewarm_deferred_imports` swallows every
+            # import failure in its own guard, so this branch is effectively
+            # unreachable for import errors. It stays as a backstop for a
+            # failure originating outside that guard (e.g. the worker
+            # machinery itself) so a failed prewarm never propagates here.
             logger.warning("Import prewarm worker failed", exc_info=True)
 
     @staticmethod
@@ -3025,12 +3072,38 @@ class DeepAgentsApp(App):
 
         Populates `sys.modules` so the first user-triggered inline import
         is a cheap dict lookup instead of a cold module load.
+
+        Prewarming is purely a cache optimization, so every failure is
+        swallowed (logged at WARNING): the affected module simply cold-loads
+        on first use instead. This guard is load-bearing when the installed
+        package is replaced in place mid-session — e.g. a concurrent
+        `uv tool upgrade deepagents-code`, which rewrites the tool
+        environment's files. A module that hasn't been imported yet can be
+        transiently absent on disk during that swap, and the deferred import
+        then raises `ModuleNotFoundError`. Letting that propagate would crash
+        the whole TUI (the worker exception surfaces as a fatal full-screen
+        traceback) over a transient filesystem race that resolves itself by
+        the time the user actually triggers the import.
         """
-        # Internal modules moved from top-level to local imports — a failure
-        # here indicates a packaging or code bug, not a missing optional dep, so
-        # we let the exception propagate (the worker catches it and logs
-        # at WARNING). textual_adapter and update_check are included so
-        # _post_paint_init's inline imports are dict lookups.
+        try:
+            DeepAgentsApp._load_deferred_modules()
+        except Exception:
+            logger.warning(
+                "Import prewarm failed; deferred modules will cold-load on first use",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _load_deferred_modules() -> None:
+        """Import the modules prewarmed by `_prewarm_deferred_imports`.
+
+        Split out so the prewarm worker entry point can wrap the entire
+        import sequence in a single best-effort guard — see that method's
+        docstring for why a failure here must never be fatal.
+        """
+        # Internal modules moved from top-level to local imports. textual_adapter
+        # and update_check are included so _post_paint_init's inline imports are
+        # dict lookups.
         from deepagents_code.clipboard import (
             copy_selection_to_clipboard,  # noqa: F401
         )
@@ -3045,7 +3118,11 @@ class DeepAgentsApp(App):
             # Heavy third-party deps deferred from textual_adapter /
             # tool_display — hit on first message send and first tool
             # approval. Best-effort: missing optional deps should not block the
-            # TUI from rendering.
+            # TUI from rendering. This inner guard is intentionally narrower
+            # than the outer one in `_prewarm_deferred_imports`: an absent
+            # optional dep is expected, so it logs and lets the remaining
+            # (always-present) modules still warm rather than aborting the
+            # whole sequence.
             with _DEEPAGENTS_IMPORT_LOCK:
                 from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT  # noqa: F401
                 from langchain.agents.middleware.human_in_the_loop import (  # noqa: F401
@@ -3069,9 +3146,7 @@ class DeepAgentsApp(App):
         # language in skill bodies.
         _get_lexer("python")
 
-        # Widgets deferred from app.py module level — a failure here indicates
-        # a packaging or code bug (same as the block above), so we let
-        # exceptions propagate.
+        # Widgets deferred from app.py module level.
         from deepagents_code.widgets.approval import ApprovalMenu  # noqa: F401
         from deepagents_code.widgets.ask_user import AskUserMenu  # noqa: F401
         from deepagents_code.widgets.launch_init import LaunchNameScreen  # noqa: F401
@@ -3436,28 +3511,36 @@ class DeepAgentsApp(App):
         """
         parts = command.split()
         force = "--force" in parts[1:]
-        extras = [p for p in parts[1:] if not p.startswith("-")]
-        if not extras:
+        package_mode = "--package" in parts[1:]
+        names = [p for p in parts[1:] if not p.startswith("-")]
+        if not names:
             from deepagents_code.extras_info import format_known_extras
 
             await self._mount_message(
                 AppMessage(
                     "Usage: /install <extra> [--force]\n"
+                    "       /install <package> --package [--force]\n"
                     "Example: /install quickjs\n\n"
                     f"{format_known_extras()}",
                 ),
             )
             return
-        if len(extras) > 1:
+        if len(names) > 1:
+            label = "package" if package_mode else "extra"
             await self._mount_message(
                 AppMessage(
-                    "Only one extra may be installed per /install command. "
-                    f"Got: {', '.join(extras)}",
+                    f"Only one {label} may be installed per /install command. "
+                    f"Got: {', '.join(names)}",
                 ),
             )
             return
-        extra = extras[0].lower()
         await self._mount_message(UserMessage(command))
+
+        if package_mode:
+            await self._handle_install_package(names[0], force=force)
+            return
+
+        extra = names[0].lower()
 
         try:
             from deepagents_code.config import _is_editable_install
@@ -3499,6 +3582,9 @@ class DeepAgentsApp(App):
             )
             return
 
+        # KNOWN_EXTRAS is a curated "did you mean" list, not the authoritative
+        # set (that's pyproject, resolved by uv): defer to --force rather than
+        # refuse, since valid-but-unlisted names exist (e.g. all-providers).
         if extra not in KNOWN_EXTRAS and not force:
             try:
                 manual_cmd = await asyncio.to_thread(install_extra_command, extra)
@@ -3573,6 +3659,94 @@ class DeepAgentsApp(App):
 
         await self._mount_message(
             AppMessage(f"Installed extra '{extra}'. {next_step}"),
+        )
+
+    async def _handle_install_package(self, package: str, *, force: bool) -> None:
+        """Install an arbitrary package into the dcode tool env via `uv --with`.
+
+        Backs `/install <package> --package`, the escape hatch for a provider
+        whose package is not a `deepagents-code` extra (e.g. a custom
+        `class_path` model). Arbitrary packages have no curated allowlist, so a
+        `--force` token is required to confirm pulling in third-party code.
+
+        Args:
+            package: The package name to install.
+            force: Whether the user passed `--force` to confirm the install.
+        """
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_package_hint,
+                is_valid_package_name,
+                perform_install_package,
+            )
+        except ImportError as exc:
+            logger.warning("/install --package import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if not is_valid_package_name(package):
+            await self._mount_message(
+                AppMessage(
+                    "Invalid package name. Package names must be "
+                    "alphanumeric with `-`, `_`, or `.` (PEP 508).",
+                ),
+            )
+            return
+
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot install packages.\n"
+                    + editable_package_hint(package),
+                ),
+            )
+            return
+
+        if not force:
+            await self._mount_message(
+                AppMessage(
+                    f"Installing the package '{package}' runs third-party code. "
+                    "Re-run with `--force` to proceed: "
+                    f"`/install {package} --package --force`",
+                ),
+            )
+            return
+
+        log_path = create_update_log_path()
+        await self._mount_message(
+            AppMessage(f"Installing package '{package}'..."),
+        )
+        try:
+            success, output = await perform_install_package(package, log_path=log_path)
+        except OSError as exc:
+            # Let `asyncio.CancelledError` propagate — this runs in the message
+            # pump, so swallowing it would suppress shutdown/cancellation.
+            logger.warning("/install --package command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
+                ),
+            )
+            return
+
+        if not success:
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Install failed{detail}\nLog: {log_path}",
+                ),
+            )
+            return
+
+        await self._mount_message(
+            AppMessage(
+                f"Installed package '{package}'. Run `/restart` to load it "
+                "now, or relaunch dcode.",
+            ),
         )
 
     async def _handle_version_command(self) -> None:
@@ -3948,18 +4122,20 @@ class DeepAgentsApp(App):
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
-            try:
-                clear_terminal_progress()
-            except Exception:
-                # Cosmetic only — must never break spinner lifecycle.
-                logger.exception("clear_terminal_progress raised unexpectedly")
+            if self._terminal_progress_enabled:
+                try:
+                    clear_terminal_progress()
+                except Exception:
+                    # Cosmetic only — must never break spinner lifecycle.
+                    logger.exception("clear_terminal_progress raised unexpectedly")
             return
 
-        try:
-            set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
-        except Exception:
-            # Cosmetic only — must never break spinner lifecycle.
-            logger.exception("set_terminal_progress raised unexpectedly")
+        if self._terminal_progress_enabled:
+            try:
+                set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("set_terminal_progress raised unexpectedly")
 
         try:
             messages = self.query_one("#messages", Container)
@@ -7558,7 +7734,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_code.widgets.agent_selector import AgentSelectorScreen
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_code.widgets.notification_center import (
             NotificationCenterScreen,
@@ -7580,7 +7756,10 @@ class DeepAgentsApp(App):
         ):
             self.screen.action_cursor_up()
             return
-        if isinstance(self.screen, NotificationSettingsScreen):
+        if isinstance(self.screen, (AuthPromptScreen, NotificationSettingsScreen)):
+            # These modals hold multiple focusable inputs; reuse shift+tab to
+            # step focus backward (the Screen's own app.focus_previous binding
+            # never fires because this priority binding consumes the key first).
             self.screen.focus_previous()
             return
         if isinstance(
@@ -7797,10 +7976,10 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard on mouse release."""
+        """Copy selection to clipboard after click-chain selection updates."""
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
-        copy_selection_to_clipboard(self)
+        self.call_after_refresh(copy_selection_to_clipboard, self)
 
     # =========================================================================
     # Model Switching

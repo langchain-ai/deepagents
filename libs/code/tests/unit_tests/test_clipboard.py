@@ -251,6 +251,25 @@ class TestCopySelectionToClipboard:
             markup=False,
         )
 
+    def test_copies_select_all_selection(self) -> None:
+        """Textual represents triple-click/select-all as `Selection(None, None)`."""
+        from textual.selection import SELECT_ALL
+
+        mock_app = MagicMock()
+        widget = MagicMock()
+        widget.is_attached = True
+        widget.text_selection = SELECT_ALL
+        widget.get_selection.return_value = ("full widget text", None)
+        mock_app.query.return_value = [widget]
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "full widget text")
+
     def test_handles_widget_selection_failures(self, caplog) -> None:
         """A failing widget logs and is skipped, not re-raised."""
         mock_app = MagicMock()
@@ -323,6 +342,21 @@ class TestCopySelectionToClipboard:
 
         copy.assert_called_once_with(mock_app, "sibling text")
         assert "Skipping widget" in caplog.text
+
+
+class TestAppSelectionCopy:
+    """Regression coverage for click-chain selection copy timing."""
+
+    def test_mouse_up_defers_copy_until_after_click_selection_updates(self) -> None:
+        from deepagents_code.app import DeepAgentsApp
+
+        mock_app = MagicMock()
+        event = MagicMock()
+        with patch("deepagents_code.clipboard.copy_selection_to_clipboard") as copy:
+            DeepAgentsApp.on_mouse_up(mock_app, event)
+
+        copy.assert_not_called()
+        mock_app.call_after_refresh.assert_called_once_with(copy, mock_app)
 
 
 class TestClipboardLogger:

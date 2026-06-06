@@ -1,0 +1,50 @@
+LangChain,https://langchain.com
+3M,https://en.wikipedia.org/wiki/3M
+A. O. Smith,https://en.wikipedia.org/wiki/A._O._Smith
+Abbott Laboratories,https://en.wikipedia.org/wiki/Abbott_Laboratories
+AbbVie,https://en.wikipedia.org/wiki/AbbVie
+Accenture,https://en.wikipedia.org/wiki/Accenture
+Adobe Inc.,https://en.wikipedia.org/wiki/Adobe_Inc.
+Advanced Micro Devices,https://en.wikipedia.org/wiki/AMD
+AES Corporation,https://en.wikipedia.org/wiki/AES_Corporation
+Aflac,https://en.wikipedia.org/wiki/Aflac
+Agilent Technologies,https://en.wikipedia.org/wiki/Agilent_Technologies
+Air Products,https://en.wikipedia.org/wiki/Air_Products
+Airbnb,https://en.wikipedia.org/wiki/Airbnb
+Akamai Technologies,https://en.wikipedia.org/wiki/Akamai_Technologies
+Albemarle Corporation,https://en.wikipedia.org/wiki/Albemarle_Corporation
+Alexandria Real Estate Equities,https://en.wikipedia.org/wiki/Alexandria_Real_Estate_Equities
+Align Technology,https://en.wikipedia.org/wiki/Align_Technology
+Allegion,https://en.wikipedia.org/wiki/Allegion
+Alliant Energy,https://en.wikipedia.org/wiki/Alliant_Energy
+Allstate,https://en.wikipedia.org/wiki/Allstate
+Alphabet Inc.,https://en.wikipedia.org/wiki/Alphabet_Inc.
+Altria,https://en.wikipedia.org/wiki/Altria
+Amazon,https://en.wikipedia.org/wiki/Amazon_(company)
+Amcor,https://en.wikipedia.org/wiki/Amcor
+Ameren,https://en.wikipedia.org/wiki/Ameren
+American Electric Power,https://en.wikipedia.org/wiki/American_Electric_Power
+American Express,https://en.wikipedia.org/wiki/American_Express
+American International Group,https://en.wikipedia.org/wiki/American_International_Group
+American Tower,https://en.wikipedia.org/wiki/American_Tower
+American Water Works,https://en.wikipedia.org/wiki/American_Water_Works
+Ameriprise Financial,https://en.wikipedia.org/wiki/Ameriprise_Financial
+Ametek,https://en.wikipedia.org/wiki/Ametek
+Amgen,https://en.wikipedia.org/wiki/Amgen
+Amphenol,https://en.wikipedia.org/wiki/Amphenol
+Analog Devices,https://en.wikipedia.org/wiki/Analog_Devices
+Aon plc,https://en.wikipedia.org/wiki/Aon_(company)
+APA Corporation,https://en.wikipedia.org/wiki/APA_Corporation
+Apollo Global Management,https://en.wikipedia.org/wiki/Apollo_Global_Management
+Apple Inc.,https://en.wikipedia.org/wiki/Apple_Inc.
+Applied Materials,https://en.wikipedia.org/wiki/Applied_Materials
+AppLovin,https://en.wikipedia.org/wiki/AppLovin
+Aptiv,https://en.wikipedia.org/wiki/Aptiv
+Arch Capital Group,https://en.wikipedia.org/wiki/Arch_Capital_Group
+Archer Daniels Midland,https://en.wikipedia.org/wiki/Archer_Daniels_Midland
+Ares Management,https://en.wikipedia.org/wiki/Ares_Management
+Arista Networks,https://en.wikipedia.org/wiki/Arista_Networks
+Arthur J. Gallagher & Co.,https://en.wikipedia.org/wiki/Arthur_J._Gallagher_%26_Co.
+Assurant,https://en.wikipedia.org/wiki/Assurant
+AT&T,https://en.wikipedia.org/wiki/AT%26T
+Atmos Energy,https://en.wikipedia.org/wiki/Atmos_Energy

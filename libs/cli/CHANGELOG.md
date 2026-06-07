@@ -9,7 +9,7 @@ From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and `mcp
 
 ### Bug Fixes
 
-* **cli:** support `state` deploy backend ([#3790](https://github.com/langchain-ai/deepagents/issues/3790)) ([04b4bb9](https://github.com/langchain-ai/deepagents/commit/04b4bb946fc5ff914b8cccc8c9543d10533de0f8))
+* support `state` deploy backend via state kwarg rather than `default`, misc API alignments with MDA ([#3790](https://github.com/langchain-ai/deepagents/issues/3790)) ([04b4bb9](https://github.com/langchain-ai/deepagents/commit/04b4bb946fc5ff914b8cccc8c9543d10533de0f8))
 
 ## [0.2.1](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.0...deepagents-cli==0.2.1) (2026-06-03)
 

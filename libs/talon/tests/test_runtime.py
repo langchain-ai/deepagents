@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import pytest
 from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
 
@@ -22,7 +23,6 @@ from deepagents_talon.runtime import (
 )
 
 if TYPE_CHECKING:
-    import pytest
     from langgraph.types import Command
 
 
@@ -415,6 +415,69 @@ async def test_runtime_leaves_non_openai_model_string_with_openai_base_url(
     await runtime.start()
 
     assert captured["model"] == "anthropic:claude-sonnet-4-6"
+
+
+async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    model = SimpleNamespace(profile={"max_input_tokens": 200_000, "tool_calling": True})
+    compact = PassthroughMiddleware()
+
+    def fake_init_chat_model(*args: Any, **kwargs: Any) -> object:
+        captured["init_args"] = args
+        captured["init_kwargs"] = kwargs
+        return model
+
+    def fake_create_summarization_tool_middleware(
+        compact_model: object,
+        backend: object,
+    ) -> PassthroughMiddleware:
+        captured["compact_model"] = compact_model
+        captured["compact_backend"] = backend
+        return compact
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_summarization_tool_middleware",
+        fake_create_summarization_tool_middleware,
+    )
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="anthropic:claude-sonnet-4-6",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_CONTEXT_SIZE": "75000"},
+    )
+
+    await runtime.start()
+
+    assert captured["init_args"] == ("anthropic:claude-sonnet-4-6",)
+    assert captured["init_kwargs"] == {}
+    assert model.profile == {"max_input_tokens": 75_000, "tool_calling": True}
+    assert captured["model"] is model
+    assert captured["compact_model"] is model
+    assert captured["compact_backend"] is runtime.backend
+    assert captured["middleware"] == [compact]
+
+
+async def test_runtime_rejects_invalid_context_size() -> None:
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_CONTEXT_SIZE": "0"},
+    )
+
+    with pytest.raises(ValueError, match="DEEPAGENTS_TALON_CONTEXT_SIZE"):
+        await runtime.start()
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(

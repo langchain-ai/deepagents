@@ -30,21 +30,21 @@ _SKILLS_DIR = "skills"
 _SUBAGENTS_DIR = "subagents"
 _SKILL_FILE = "SKILL.md"
 
-_BACKEND_TYPE_DEFAULT = "default"
+_BACKEND_TYPE_STATE = "state"
+_BACKEND_TYPE_SANDBOX = "sandbox"
 _BACKEND_TYPE_THREAD_SCOPED_SANDBOX = "thread_scoped_sandbox"
 _BACKEND_TYPE_AGENT_SCOPED_SANDBOX = "agent_scoped_sandbox"
-_LEGACY_BACKEND_TYPE_SANDBOX = "sandbox"
+_LEGACY_BACKEND_TYPE_DEFAULT = "default"
 _VALID_BACKEND_TYPES = frozenset(
     {
-        _BACKEND_TYPE_DEFAULT,
+        _BACKEND_TYPE_STATE,
+        _BACKEND_TYPE_SANDBOX,
         _BACKEND_TYPE_THREAD_SCOPED_SANDBOX,
         _BACKEND_TYPE_AGENT_SCOPED_SANDBOX,
     }
 )
-_SANDBOX_BACKEND_TYPES = frozenset(
-    {_BACKEND_TYPE_THREAD_SCOPED_SANDBOX, _BACKEND_TYPE_AGENT_SCOPED_SANDBOX}
-)
 _SANDBOX_INTEGER_FIELDS = frozenset({"idle_ttl_seconds", "delete_after_stop_seconds"})
+_VALID_SANDBOX_SCOPES = frozenset({"thread", "agent"})
 _VALID_IDENTITY = frozenset({"personal", "shared"})
 _VALID_VISIBILITY = frozenset({"tenant", "user"})
 _VALID_TENANT_ACCESS = frozenset({"read", "run", "write"})
@@ -236,7 +236,8 @@ def _read_agent_json(root: Path) -> dict[str, Any]:
         if backend_type is not None:
             msg = (
                 f"{path}: `runtime.backend_type` is no longer supported. "
-                'Use top-level `backend`: {"type": "thread_scoped_sandbox"} instead.'
+                'Use top-level `backend`: {"type": "sandbox", '
+                '"sandbox_config": {"scope": "thread"}} instead.'
             )
             raise ProjectError(msg)
 
@@ -272,44 +273,83 @@ def _normalize_backend(backend: object, *, source: Path) -> dict[str, Any]:
         raise ProjectError(msg)
     data = dict(cast("dict[str, Any]", backend))
     backend_type = data.get("type")
-    if backend_type == _LEGACY_BACKEND_TYPE_SANDBOX:
-        backend_type = _BACKEND_TYPE_THREAD_SCOPED_SANDBOX
+    if backend_type == _LEGACY_BACKEND_TYPE_DEFAULT:
+        backend_type = _BACKEND_TYPE_STATE
         data["type"] = backend_type
     if backend_type is not None and backend_type not in _VALID_BACKEND_TYPES:
         msg = f"backend.type {backend_type!r} not in {sorted(_VALID_BACKEND_TYPES)}"
         raise ProjectError(msg)
 
-    sandbox = data.get("sandbox")
-    if sandbox is None:
-        return data
-    if backend_type not in _SANDBOX_BACKEND_TYPES:
+    if backend_type == _BACKEND_TYPE_THREAD_SCOPED_SANDBOX:
+        return _normalize_sandbox_backend(data, source=source, default_scope="thread")
+    if backend_type == _BACKEND_TYPE_AGENT_SCOPED_SANDBOX:
+        return _normalize_sandbox_backend(data, source=source, default_scope="agent")
+    if backend_type == _BACKEND_TYPE_SANDBOX:
+        return _normalize_sandbox_backend(data, source=source, default_scope="thread")
+
+    if data.get("sandbox") is not None or data.get("sandbox_config") is not None:
         msg = (
-            f"{source}: `backend.sandbox` requires `backend.type` to be "
-            "`thread_scoped_sandbox` or `agent_scoped_sandbox`."
+            f"{source}: sandbox settings require `backend.type` to be "
+            "`thread_scoped_sandbox`, `agent_scoped_sandbox`, or `sandbox`."
         )
         raise ProjectError(msg)
-    data["sandbox"] = _normalize_sandbox_config(sandbox, source=source)
     return data
 
 
-def _normalize_sandbox_config(sandbox: object, *, source: Path) -> dict[str, Any]:
+def _normalize_sandbox_backend(
+    backend: dict[str, Any],
+    *,
+    source: Path,
+    default_scope: str,
+) -> dict[str, Any]:
+    data = dict(backend)
+    sandbox = data.pop("sandbox", None)
+    sandbox_config = data.pop("sandbox_config", None)
+
+    config: dict[str, Any] = {}
+    if sandbox is not None:
+        config = _normalize_sandbox_config(sandbox, field="sandbox", source=source)
+    if sandbox_config is not None:
+        config = {
+            **config,
+            **_normalize_sandbox_config(
+                sandbox_config, field="sandbox_config", source=source
+            ),
+        }
+    config.setdefault("scope", default_scope)
+
+    data["type"] = _BACKEND_TYPE_SANDBOX
+    data["sandbox_config"] = config
+    return data
+
+
+def _normalize_sandbox_config(
+    sandbox: object,
+    *,
+    field: str,
+    source: Path,
+) -> dict[str, Any]:
     if not isinstance(sandbox, dict):
-        msg = f"{source}: `backend.sandbox` must be an object."
+        msg = f"{source}: `backend.{field}` must be an object."
         raise ProjectError(msg)
     data = dict(cast("dict[str, Any]", sandbox))
+    scope = data.get("scope")
+    if scope is not None and scope not in _VALID_SANDBOX_SCOPES:
+        msg = f"{source}: `backend.{field}.scope` must be `thread` or `agent`."
+        raise ProjectError(msg)
     policies = data.get("policy_ids")
     if policies is not None and (
         not isinstance(policies, list)
         or not all(isinstance(policy, str) for policy in policies)
     ):
-        msg = f"{source}: `backend.sandbox.policy_ids` must be an array of strings."
+        msg = f"{source}: `backend.{field}.policy_ids` must be an array of strings."
         raise ProjectError(msg)
     for key in _SANDBOX_INTEGER_FIELDS:
         value = data.get(key)
         if value is not None and (
             not isinstance(value, int) or isinstance(value, bool)
         ):
-            msg = f"{source}: `backend.sandbox.{key}` must be an integer."
+            msg = f"{source}: `backend.{field}.{key}` must be an integer."
             raise ProjectError(msg)
     return data
 
@@ -543,7 +583,7 @@ expects the new layout. Quick mapping:
 
   [agent]                       → agent.json (top-level keys: name, description)
   [agent].model                 → agent.json model
-  [sandbox].scope               → agent.json backend.type ("thread_scoped_sandbox")
+  [sandbox].scope               → agent.json backend.sandbox_config.scope
   [auth], [memories], [frontend]→ remove; managed by the platform now
 
 Then run `deepagents init --force` to refresh scaffolding or migrate by hand.

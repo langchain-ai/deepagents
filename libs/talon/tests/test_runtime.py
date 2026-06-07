@@ -467,6 +467,53 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     assert captured["middleware"] == [compact]
 
 
+async def test_runtime_does_not_duplicate_existing_compact_tool_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    model = SimpleNamespace(profile={"max_input_tokens": 200_000})
+    existing = PassthroughMiddleware()
+
+    def fake_init_chat_model(*_args: Any, **_kwargs: Any) -> object:
+        return model
+
+    def fail_create_summarization_tool_middleware(
+        _model: object,
+        _backend: object,
+    ) -> PassthroughMiddleware:
+        msg = "compact middleware should not be created when one already exists"
+        raise AssertionError(msg)
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.SummarizationToolMiddleware",
+        PassthroughMiddleware,
+    )
+    monkeypatch.setattr("deepagents_talon.runtime.init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(
+        "deepagents_talon.runtime.create_summarization_tool_middleware",
+        fail_create_summarization_tool_middleware,
+    )
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="anthropic:claude-sonnet-4-6",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        middleware=(existing,),
+        env={"DEEPAGENTS_TALON_CONTEXT_SIZE": "75000"},
+    )
+
+    await runtime.start()
+
+    assert model.profile == {"max_input_tokens": 75_000}
+    assert captured["middleware"] == [existing]
+
+
 async def test_runtime_rejects_invalid_context_size() -> None:
     runtime = DeepAgentRuntime(
         model="test:model",

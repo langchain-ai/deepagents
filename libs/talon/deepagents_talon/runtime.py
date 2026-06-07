@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.summarization import (
+    SummarizationToolMiddleware,
+    create_summarization_tool_middleware,
+)
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
@@ -313,7 +316,7 @@ class DeepAgentRuntime:
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
-        if context_size is not None:
+        if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         self._graph = create_deep_agent(
             model=model,
@@ -818,6 +821,12 @@ def _context_size_from_env(env: Mapping[str, str]) -> int | None:
         msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
         raise ValueError(msg)
     return value
+
+
+def _has_summarization_tool_middleware(
+    middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+) -> bool:
+    return any(isinstance(item, SummarizationToolMiddleware) for item in middleware)
 
 
 def _apply_context_size(model: BaseChatModel, context_size: int) -> None:

@@ -1217,6 +1217,18 @@ class ChatInput(Vertical):
         )
         self._text_area.focus()
 
+    def set_cwd(self, cwd: str | Path) -> None:
+        """Update file completion to use a new cwd."""
+        self._cwd = Path(cwd)
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is not None:
+            file_controller.set_cwd(self._cwd)
+            self.run_worker(
+                file_controller.warm_cache(),
+                exclusive=False,
+                exit_on_error=False,
+            )
+
     def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.
 

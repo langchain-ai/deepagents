@@ -1224,6 +1224,29 @@ async def get_thread_agent(thread_id: str) -> str | None:
             return row[0] if row else None
 
 
+async def get_thread_cwd(thread_id: str) -> str | None:
+    """Get the most recently stored cwd for a thread.
+
+    Returns:
+        Most recent cwd for the thread, or None if not found.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+
+        query = """
+            SELECT json_extract(metadata, '$.cwd')
+            FROM checkpoints
+            WHERE thread_id = ? AND json_extract(metadata, '$.cwd') IS NOT NULL
+            ORDER BY checkpoint_id DESC
+            LIMIT 1
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            value = row[0] if row else None
+            return value if isinstance(value, str) and value else None
+
+
 async def thread_exists(thread_id: str) -> bool:
     """Check if a thread exists in checkpoints.
 

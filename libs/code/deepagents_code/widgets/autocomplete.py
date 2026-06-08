@@ -525,6 +525,13 @@ class FuzzyFileController:
         """Force refresh of file cache."""
         self._file_cache = None
 
+    def set_cwd(self, cwd: Path) -> None:
+        """Switch completion roots to a new cwd."""
+        self._cwd = cwd
+        self._project_root = find_project_root(self._cwd) or self._cwd
+        self._file_cache = None
+        self.reset()
+
     async def warm_cache(self) -> None:
         """Pre-populate the file cache off the event loop."""
         if self._file_cache is not None:

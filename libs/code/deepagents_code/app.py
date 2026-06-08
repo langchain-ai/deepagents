@@ -2610,6 +2610,7 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
+        resumed_thread_id: str | None = None
         try:
             resume = self._resume_thread_intent
             self._resume_thread_intent = None  # consumed
@@ -2631,6 +2632,7 @@ class DeepAgentsApp(App):
                         if self._server_kwargs:
                             self._server_kwargs["assistant_id"] = agent_name
                     self._lc_thread_id = thread_id
+                    resumed_thread_id = thread_id
                     self._should_adopt_resumed_model = not self._model_explicitly_set
                 else:
                     self._lc_thread_id = generate_thread_id()
@@ -2641,6 +2643,7 @@ class DeepAgentsApp(App):
                     self.notify(msg, severity="warning", markup=False)
             elif await thread_exists(resume):
                 self._lc_thread_id = resume
+                resumed_thread_id = resume
                 self._should_adopt_resumed_model = not self._model_explicitly_set
                 if self._assistant_id == default_agent:
                     agent_name = await get_thread_agent(resume)
@@ -2656,6 +2659,11 @@ class DeepAgentsApp(App):
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
+            if resumed_thread_id is not None:
+                await self._offer_thread_cwd_switch(
+                    resumed_thread_id,
+                    restart_server=False,
+                )
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -10141,6 +10149,219 @@ class DeepAgentsApp(App):
             else:
                 logger.debug(missing_message, thread_id)
 
+    def _apply_cwd_to_ui(self, cwd: Path) -> None:
+        """Update cwd-dependent UI state after changing process cwd."""
+        cwd_text = str(cwd)
+        self._cwd = cwd_text
+        if self._chat_input is not None:
+            self._chat_input.set_cwd(cwd)
+        if self._status_bar is not None:
+            self._status_bar.cwd = cwd_text
+
+    def _switch_process_cwd(self, cwd: Path) -> None:
+        """Change process cwd and synchronize cwd-aware widgets."""
+        os.chdir(cwd)
+        self._apply_cwd_to_ui(cwd)
+
+    @staticmethod
+    def _resolve_thread_cwd_mismatch(
+        raw: str, current_cwd: str
+    ) -> tuple[Path | None, bool]:
+        """Resolve a stored thread cwd and whether it is unavailable.
+
+        Returns:
+            Mismatched cwd and whether the stored absolute path is unavailable.
+        """
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            return None, False
+        if not target.is_dir():
+            return None, True
+        try:
+            current = Path(current_cwd).expanduser().resolve()
+            resolved = target.resolve()
+        except OSError:
+            current = Path(current_cwd).expanduser().absolute()
+            resolved = target.absolute()
+        return (None, False) if current == resolved else (resolved, False)
+
+    async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
+        """Return the thread cwd when it differs from the current app cwd."""
+        from deepagents_code.sessions import get_thread_cwd
+
+        raw = await get_thread_cwd(thread_id)
+        if not raw:
+            return None
+
+        target, unavailable = await asyncio.to_thread(
+            self._resolve_thread_cwd_mismatch,
+            raw,
+            self._cwd,
+        )
+        if unavailable:
+            self.notify(
+                f"Thread {thread_id} was last used in {raw!r}, but that directory "
+                "is not available. Staying in the current directory; local "
+                "context may be stale.",
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
+        return target
+
+    @staticmethod
+    def _unwrap_cwd_switch_server_result(
+        result: object,
+    ) -> tuple[object, object, object | None]:
+        """Return a server startup result or raise its exception.
+
+        Returns:
+            The successful server startup result.
+        """
+        from typing import cast
+
+        if isinstance(result, Exception):
+            raise result
+        return cast("tuple[object, object, object | None]", result)
+
+    async def _replace_server_after_cwd_switch(self, cwd: Path) -> bool:
+        """Switch cwd and replace the app-owned server process.
+
+        Returns:
+            True when the session can continue, False when restart failed.
+        """
+        if self._server_kwargs is None or self._server_proc is None:
+            self.notify(
+                "Switched cwd locally, but this session cannot restart its server. "
+                "Relaunch dcode from the thread directory if tools look stale.",
+                severity="warning",
+                timeout=10,
+                markup=False,
+            )
+            self._switch_process_cwd(cwd)
+            return True
+
+        from deepagents_code.main import _preload_session_mcp_server_info
+        from deepagents_code.server_manager import start_server_and_get_agent
+
+        previous_cwd = Path(self._cwd)
+        previous_agent = self._agent
+        previous_server = self._server_proc
+        previous_mcp_info = self._mcp_server_info
+
+        try:
+            self._connecting = True
+            self._agent = None
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connecting()
+            except NoMatches:
+                pass
+            self._switch_process_cwd(cwd)
+
+            coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
+            if self._mcp_preload_kwargs is not None:
+                coros.append(
+                    _preload_session_mcp_server_info(**self._mcp_preload_kwargs)
+                )
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            server_result = self._unwrap_cwd_switch_server_result(results[0])
+            from typing import cast
+
+            mcp_info: list[Any] | None = None
+            if len(results) > 1:
+                mcp_result = results[1]
+                if isinstance(mcp_result, BaseException):
+                    logger.warning(
+                        "MCP metadata preload after cwd switch failed",
+                        exc_info=(
+                            type(mcp_result),
+                            mcp_result,
+                            mcp_result.__traceback__,
+                        ),
+                    )
+                    self.notify(
+                        "MCP tool metadata could not be refreshed after cwd switch. "
+                        "Use /mcp to check.",
+                        severity="warning",
+                        timeout=8,
+                        markup=False,
+                    )
+                else:
+                    mcp_info = cast("list[Any] | None", mcp_result)
+
+            agent, server_proc, _manager = server_result
+            event = self.ServerReady(
+                agent=agent,
+                server_proc=server_proc,
+                mcp_server_info=mcp_info,
+            )
+        except Exception as exc:
+            logger.exception("Failed to restart server after cwd switch")
+            with suppress(OSError):
+                self._switch_process_cwd(previous_cwd)
+            self._agent = previous_agent
+            self._server_proc = previous_server
+            self._mcp_server_info = previous_mcp_info
+            self._connecting = False
+            self.notify(
+                f"Could not switch to the thread cwd ({type(exc).__name__}: {exc}). "
+                "Staying in the current directory.",
+                severity="error",
+                timeout=10,
+                markup=False,
+            )
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connected(
+                    self._mcp_tool_count,
+                    mcp_unauthenticated=self._mcp_unauthenticated,
+                    mcp_errored=self._mcp_errored,
+                    mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
+                )
+            except NoMatches:
+                pass
+            return False
+        else:
+            previous_server.stop()
+            self.on_deep_agents_app_server_ready(event)
+            return True
+
+    async def _offer_thread_cwd_switch(
+        self,
+        thread_id: str,
+        *,
+        restart_server: bool,
+    ) -> bool:
+        """Offer to switch to a resumed thread's cwd when it differs.
+
+        Returns:
+            True when resume can continue, False when a requested switch failed.
+        """
+        target = await self._thread_cwd_mismatch(thread_id)
+        if target is None:
+            return True
+
+        from deepagents_code.widgets.cwd_switch import CwdSwitchPromptScreen
+
+        choice = await self._push_screen_wait(
+            CwdSwitchPromptScreen(current_cwd=self._cwd, thread_cwd=str(target))
+        )
+        if choice == "switch":
+            if restart_server:
+                return await self._replace_server_after_cwd_switch(target)
+            self._switch_process_cwd(target)
+            return True
+
+        self.notify(
+            "Continuing in the current directory. Cached local context may be "
+            "stale and tools may operate in the wrong project.",
+            severity="warning",
+            timeout=10,
+            markup=False,
+        )
+        return True
+
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
@@ -10170,6 +10391,9 @@ class DeepAgentsApp(App):
 
         if self._thread_switching:
             await self._mount_message(AppMessage("Thread switch already in progress."))
+            return
+
+        if not await self._offer_thread_cwd_switch(thread_id, restart_server=True):
             return
 
         # Save previous state for rollback on failure

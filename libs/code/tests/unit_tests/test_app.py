@@ -11,13 +11,13 @@ import os
 import signal
 import time
 import webbrowser
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Iterator
-    from pathlib import Path
 
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
@@ -11209,3 +11209,80 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class TestResumeThreadCwdSwitch:
+    """Tests for cwd mismatch handling while resuming threads."""
+
+    async def test_offer_switch_changes_process_cwd_and_widgets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Accepting the prompt switches process and UI cwd before startup."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        push_wait = AsyncMock(return_value="switch")
+        app._push_screen_wait = push_wait  # type: ignore[method-assign]
+        chat_input = MagicMock()
+        app._chat_input = chat_input
+        status_bar = MagicMock()
+        status_bar.cwd = str(current)
+        app._status_bar = status_bar
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok is True
+        assert Path.cwd() == target
+        assert app._cwd == str(target)
+        chat_input.set_cwd.assert_called_once_with(target)
+        assert status_bar.cwd == str(target)
+
+    async def test_offer_stay_warns_without_switching(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Declining the prompt leaves cwd unchanged and warns."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="stay")  # type: ignore[method-assign]
+        notify = MagicMock()
+        app.notify = notify  # type: ignore[method-assign]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok is True
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        notify.assert_called_once()
+        assert "Cached local context may be stale" in notify.call_args.args[0]
+
+    async def test_no_prompt_when_thread_cwd_matches_current(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Matching cwd resumes without prompting."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        push_wait = AsyncMock(return_value="switch")
+        app._push_screen_wait = push_wait  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_code.sessions.get_thread_cwd", return_value=str(tmp_path)
+        ):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok is True
+        push_wait.assert_not_called()

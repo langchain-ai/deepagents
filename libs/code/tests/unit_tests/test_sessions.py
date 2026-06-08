@@ -241,6 +241,37 @@ class TestThreadFunctions:
             agent = asyncio.run(sessions.get_thread_agent("nonexistent"))
             assert agent is None
 
+    def test_get_thread_cwd(self, temp_db):
+        """Get thread cwd returns the stored working directory."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread1"))
+            assert cwd == "/home/user/project-a"
+
+    def test_get_thread_cwd_returns_latest_value(self, temp_db):
+        """Get thread cwd uses the most recent checkpoint metadata."""
+        conn = sqlite3.connect(str(temp_db))
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            (
+                "thread1",
+                "zz_latest",
+                json.dumps({"agent_name": "agent1", "cwd": "/tmp/new-cwd"}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread1"))
+            assert cwd == "/tmp/new-cwd"
+
+    def test_get_thread_cwd_not_found(self, temp_db):
+        """Get thread cwd returns None when missing."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread3"))
+            assert cwd is None
+
     def test_delete_thread(self, temp_db):
         """Delete thread removes thread."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):

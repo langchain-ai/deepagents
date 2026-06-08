@@ -10837,9 +10837,10 @@ class TestRestartCommand:
                 nonlocal clear_called
                 clear_called = True
 
-            async def _fake_restart() -> None:  # noqa: RUF029  # awaited by handler
+            async def _fake_restart() -> bool:  # noqa: RUF029  # awaited by handler
                 nonlocal restart_called
                 restart_called = True
+                return True
 
             from deepagents_code.config import settings
 
@@ -10853,6 +10854,9 @@ class TestRestartCommand:
             assert reload_called
             assert clear_called
             assert restart_called
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Restarting LangGraph server" in m for m in app_msgs)
+            assert any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(
         self, monkeypatch: pytest.MonkeyPatch

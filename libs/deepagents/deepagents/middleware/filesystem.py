@@ -556,9 +556,6 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     # default, no local filesystem route is reachable from the shell.
     default_uses_local_shell = isinstance(backend.default, LocalShellBackend)
 
-    # Mappings the model applies by removing the route prefix and replacing it
-    # with the host path (e.g. "/common/" -> "/data" turns "/common/x" into
-    # "/data/x"; "/common/" -> "" turns "/common/x" into "/x").
     host_mappings: list[tuple[str, str]] = []
     no_host_routes: list[str] = []
     for route_prefix, route_backend in backend.sorted_routes:

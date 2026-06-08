@@ -1,6 +1,7 @@
 """Normalize empty `ls`/`glob` tool output for the model.
 
 !!! warning "Temporary workaround"
+
     This middleware exists only because the SDK's `ls`/`glob` tools currently
     serialize a successful-but-empty result as the literal `"[]"`. Upstream is
     expected to start returning useful empty-result content directly, at which
@@ -40,6 +41,16 @@ class _FilesystemEmptyResultMiddleware(AgentMiddleware):
     which is ambiguous to the model. This middleware rewrites only that exact
     case (success status, list tool, "[]" content) to `No files found`; error
     results, non-list tools, and non-empty output pass through untouched.
+
+    !!! warning "Temporary workaround"
+
+        This middleware exists only because the SDK's `ls`/`glob` tools currently
+        serialize a successful-but-empty result as the literal `"[]"`. Upstream is
+        expected to start returning useful empty-result content directly, at which
+        point this middleware becomes redundant and should be removed. The canary
+        test `test_sdk_still_returns_bracket_for_empty_listing` in
+        `tests/unit_tests/test_filesystem_empty_result.py` fails loudly when that
+        upstream change lands, signalling that this module can be deleted.
     """
 
     @staticmethod

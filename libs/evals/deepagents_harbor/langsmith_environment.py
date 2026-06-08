@@ -142,7 +142,7 @@ class LangSmithEnvironment(BaseEnvironment):
 
     def _validate_gpu_support(self) -> None:
         """Override base to avoid calling `self.type()`."""
-        if self.task_env_config.gpus > 0:
+        if (self.task_env_config.gpus or 0) > 0:
             msg = "LangSmith sandbox does not support GPU allocation."
             raise RuntimeError(msg)
 
@@ -247,8 +247,13 @@ class LangSmithEnvironment(BaseEnvironment):
         snapshot_name = self._build_snapshot_name(image)
 
         vcpus = self.task_env_config.cpus
-        mem_bytes = self.task_env_config.memory_mb * _BYTES_PER_MB
-        fs_capacity_bytes = self.task_env_config.storage_mb * _BYTES_PER_MB
+        memory_mb = self.task_env_config.memory_mb
+        storage_mb = self.task_env_config.storage_mb
+        if memory_mb is None or storage_mb is None:
+            msg = "LangSmith sandbox requires memory_mb and storage_mb to be configured."
+            raise ValueError(msg)
+        mem_bytes = memory_mb * _BYTES_PER_MB
+        fs_capacity_bytes = storage_mb * _BYTES_PER_MB
 
         await self._ensure_snapshot(client, snapshot_name, image, fs_capacity_bytes)
         self._snapshot_name = snapshot_name

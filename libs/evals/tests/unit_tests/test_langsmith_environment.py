@@ -548,7 +548,7 @@ class TestExec:
     async def test_exec_delegates_to_sandbox(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         result = await env.exec("echo hello")
 
@@ -558,7 +558,7 @@ class TestExec:
     async def test_exec_passes_cwd_and_env(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("ls", cwd="/app", env={"FOO": "bar"})
 
@@ -573,7 +573,7 @@ class TestExec:
         """
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
         env._default_cwd = "/app"
 
         await env.exec("ls")
@@ -584,7 +584,7 @@ class TestExec:
     async def test_exec_explicit_cwd_overrides_default(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
         env._default_cwd = "/app"
 
         await env.exec("ls", cwd="/tmp")
@@ -595,7 +595,7 @@ class TestExec:
     async def test_exec_uses_default_timeout(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("echo hello")
 
@@ -604,7 +604,7 @@ class TestExec:
     async def test_exec_forwards_custom_timeout(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("echo hello", timeout_sec=10)
 
@@ -648,7 +648,7 @@ class TestWorkdirDetection:
                 return _FakeExecResult(stdout=dir_probe_stdout)
             return _FakeExecResult()
 
-        sandbox.run = _run  # type: ignore[assignment]
+        sandbox.run = _run  # ty: ignore[invalid-assignment]
         mock_client.create_sandbox.return_value = sandbox
         return sandbox
 
@@ -715,7 +715,7 @@ class TestWorkdirDetection:
                     raise RuntimeError(msg)
                 return _FakeExecResult()
 
-            sandbox.run = _run  # type: ignore[assignment]
+            sandbox.run = _run  # ty: ignore[invalid-assignment]
             mock_client.create_sandbox.return_value = sandbox
             mock_cls.return_value = mock_client
 
@@ -743,7 +743,7 @@ class TestWorkdirDetection:
 
     async def test_stop_clears_default_cwd(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox()  # ty: ignore[invalid-assignment]
         env._client = AsyncMock()
         env._snapshot_name = "snap-tmpl"
         env._default_cwd = "/app"
@@ -759,7 +759,7 @@ class TestFileOps:
     async def test_upload_file(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         src = tmp_path / "local.txt"
         src.write_text("hello world")
@@ -772,7 +772,7 @@ class TestFileOps:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
         sandbox._read_files["/app/data.txt"] = b"file content"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded.txt"
         await env.download_file("/app/data.txt", dest)
@@ -782,7 +782,7 @@ class TestFileOps:
     async def test_upload_dir(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
@@ -801,12 +801,12 @@ class TestFileOps:
         sandbox = _FakeSandbox()
         sandbox._read_files["/remote/a.txt"] = b"aaa"
         sandbox._read_files["/remote/sub/b.txt"] = b"bbb"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(stdout="/remote/a.txt\n/remote/sub/b.txt\n")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/remote", dest)
@@ -819,12 +819,12 @@ class TestFileOps:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
         sandbox._read_files["/remote/good.txt"] = b"ok"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(stdout="/remote/good.txt\n/remote/bad.txt\n")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         # bad.txt is not in _read_files, so download_file → sandbox.read
         # returns b"" by default, but we override read to raise for bad.txt.
@@ -836,7 +836,7 @@ class TestFileOps:
                 raise FileNotFoundError(msg)
             return await original_read(path)
 
-        sandbox.read = _failing_read  # type: ignore[assignment]
+        sandbox.read = _failing_read  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/remote", dest)
@@ -854,12 +854,12 @@ class TestFileOps:
     async def test_download_dir_empty(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(exit_code=1, stderr="No such file or directory")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/nonexistent", dest)
@@ -879,7 +879,7 @@ class TestStop:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_sandbox = _FakeSandbox(name="my-sandbox")
-        env._sandbox = mock_sandbox  # type: ignore[assignment]
+        env._sandbox = mock_sandbox  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "harbor-ubuntu-24-04"
 
@@ -895,7 +895,7 @@ class TestStop:
     async def test_stop_no_delete_skips_cleanup(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
-        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox()  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "snap-tmpl"
 
@@ -910,7 +910,7 @@ class TestStop:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_client.delete_sandbox.side_effect = RuntimeError("API timeout")
-        env._sandbox = _FakeSandbox(name="my-sandbox")  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox(name="my-sandbox")  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "harbor-my-image"
 

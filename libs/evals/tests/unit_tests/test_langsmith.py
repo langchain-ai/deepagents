@@ -65,7 +65,7 @@ class TestResolveLangsmithApiKey:
         monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "sandbox-key")
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
-        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "sandbox-key"
         assert name == "LANGSMITH_SANDBOX_API_KEY"
 
@@ -73,7 +73,7 @@ class TestResolveLangsmithApiKey:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
-        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "ls-key"
         assert name == "LANGSMITH_API_KEY"
 
@@ -81,7 +81,7 @@ class TestResolveLangsmithApiKey:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
         monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
-        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "lc-key"
         assert name == "LANGCHAIN_API_KEY"
 
@@ -89,7 +89,7 @@ class TestResolveLangsmithApiKey:
         monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "")
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
         monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
-        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
         assert value == "ls-key"
         assert name == "LANGSMITH_API_KEY"
 

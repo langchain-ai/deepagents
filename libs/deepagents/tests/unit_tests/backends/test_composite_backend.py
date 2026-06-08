@@ -1403,3 +1403,24 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_backend_rejects_prefix_without_leading_slash() -> None:
+    mem_store = InMemoryStore()
+    with pytest.raises(ValueError, match="Route prefix must start with '/'"):
+        CompositeBackend(
+            default=StoreBackend(store=mem_store, namespace=lambda _: ("default",)),
+            routes={"memories/": StoreBackend(store=mem_store, namespace=lambda _: ("mem",))},
+        )
+
+
+def test_composite_backend_rejects_prefix_without_leading_slash_mixed() -> None:
+    mem_store = InMemoryStore()
+    with pytest.raises(ValueError, match="Route prefix must start with '/'"):
+        CompositeBackend(
+            default=StoreBackend(store=mem_store, namespace=lambda _: ("default",)),
+            routes={
+                "/valid/": StoreBackend(store=mem_store, namespace=lambda _: ("valid",)),
+                "invalid": StoreBackend(store=mem_store, namespace=lambda _: ("bad",)),
+            },
+        )

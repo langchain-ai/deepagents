@@ -159,6 +159,11 @@ class CompositeBackend(BackendProtocol):
         # Virtual routes
         self.routes = routes
 
+        for prefix in routes:
+            if not prefix.startswith("/"):
+                msg = f"Route prefix must start with '/': {prefix!r}"
+                raise ValueError(msg)
+
         # Sort routes by length (longest first) for correct prefix matching
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
 

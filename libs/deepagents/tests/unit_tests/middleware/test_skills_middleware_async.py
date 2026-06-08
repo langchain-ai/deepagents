@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
+from deepagents.backends.state import StateBackend
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -450,6 +451,78 @@ async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Pat
 
     assert "base-skill" in content
     assert "user-skill" in content
+
+
+async def test_agent_with_skills_middleware_requested_skills_async(tmp_path: Path) -> None:
+    """`requested_skills` state key should filter prompt skills in async flows."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+
+    first_skill_path = str(skills_dir / "skill-one" / "SKILL.md")
+    second_skill_path = str(skills_dir / "skill-two" / "SKILL.md")
+
+    responses = backend.upload_files(
+        [
+            (first_skill_path, make_skill_content("skill-one", "First skill description").encode("utf-8")),
+            (second_skill_path, make_skill_content("skill-two", "Second skill description").encode("utf-8")),
+        ]
+    )
+    assert all(r.error is None for r in responses)
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I can see selected skills only.")]))
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    agent = create_agent(model=fake_model, middleware=[middleware])
+
+    result = await agent.ainvoke(
+        {
+            "messages": [HumanMessage(content="Use only one skill.")],
+            "requested_skills": ["skill-two"],
+        }
+    )
+
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    first_call = fake_model.call_history[0]
+    system_message = first_call["messages"][0]
+    content = system_message.text
+    assert "skill-two" in content
+    assert "Second skill description" in content
+    assert "skill-one" not in content
+    assert "First skill description" not in content
+
+
+async def test_abefore_model_consumes_requested_skills() -> None:
+    """`abefore_model` should consume `requested_skills` and clear the key."""
+    middleware = SkillsMiddleware(backend=StateBackend(), sources=[])
+    state = {
+        "requested_skills": ["skill-b"],
+        "skills_metadata": [
+            {
+                "name": "skill-a",
+                "description": "Skill A",
+                "path": "/skills/skill-a/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+            },
+            {
+                "name": "skill-b",
+                "description": "Skill B",
+                "path": "/skills/skill-b/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+            },
+        ],
+    }
+
+    result = await middleware.abefore_model(state, None)  # type: ignore[arg-type]
+    assert result is not None
+    assert result["requested_skills"] == []
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["skill-b"]
 
 
 async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) -> None:

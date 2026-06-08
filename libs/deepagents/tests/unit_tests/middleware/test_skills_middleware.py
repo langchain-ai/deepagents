@@ -1707,6 +1707,45 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     assert "Base registry description" not in content, "Should not contain base source description"
 
 
+def test_agent_with_skills_middleware_requested_skills_filters_prompt(tmp_path: Path) -> None:
+    """`requested_skills` state key should deterministically filter prompt skills."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+
+    first_skill_path = str(skills_dir / "skill-one" / "SKILL.md")
+    second_skill_path = str(skills_dir / "skill-two" / "SKILL.md")
+
+    responses = backend.upload_files(
+        [
+            (first_skill_path, make_skill_content("skill-one", "First skill description").encode("utf-8")),
+            (second_skill_path, make_skill_content("skill-two", "Second skill description").encode("utf-8")),
+        ]
+    )
+    assert all(r.error is None for r in responses)
+
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I can see selected skills only.")]))
+    middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
+    agent = create_agent(model=fake_model, middleware=[middleware])
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="Use only one skill.")],
+            "requested_skills": ["skill-two"],
+        }
+    )
+
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    first_call = fake_model.call_history[0]
+    system_message = first_call["messages"][0]
+    content = system_message.text
+    assert "skill-two" in content
+    assert "Second skill description" in content
+    assert "skill-one" not in content
+    assert "First skill description" not in content
+
+
 def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     """Test that before_agent skips loading if skills_metadata is already in state."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -2102,6 +2141,73 @@ def test_modify_request_uses_custom_template() -> None:
     assert "WARN:" in appended
     assert "LIST:" in appended
     assert "## Skills System" not in appended  # default template marker absent
+
+
+def test_before_model_consumes_requested_skills() -> None:
+    """`before_model` should consume `requested_skills` and clear the key."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="LOC:{skills_locations}|WARN:{skills_load_warnings}|LIST:{skills_list}",
+    )
+    state = {
+        "requested_skills": ["skill-b"],
+        "skills_metadata": [
+            {
+                "name": "skill-a",
+                "description": "Skill A",
+                "path": "/skills/skill-a/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+            },
+            {
+                "name": "skill-b",
+                "description": "Skill B",
+                "path": "/skills/skill-b/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+            },
+        ],
+    }
+
+    result = middleware.before_model(state, None)  # type: ignore[arg-type]
+    assert result is not None
+    assert result["requested_skills"] == []
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["skill-b"]
+
+
+def test_before_model_warns_for_missing_requested_skills() -> None:
+    """Missing requested skills should be recorded in `skills_load_errors`."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="LOC:{skills_locations}|WARN:{skills_load_warnings}|LIST:{skills_list}",
+    )
+    state = {
+        "requested_skills": ["missing-skill"],
+        "skills_metadata": [
+            {
+                "name": "skill-a",
+                "description": "Skill A",
+                "path": "/skills/skill-a/SKILL.md",
+                "license": None,
+                "compatibility": None,
+                "metadata": {},
+                "allowed_tools": [],
+            }
+        ],
+        "skills_load_errors": ["baseline warning"],
+    }
+
+    result = middleware.before_model(state, None)  # type: ignore[arg-type]
+    assert result is not None
+    assert result["requested_skills"] == []
+    assert result["skills_metadata"] == []
+    assert result["skills_load_errors"] == ["baseline warning", "Requested skill not found: missing-skill"]
 
 
 # --- required-ptc-tools stays in metadata ----------------------------------

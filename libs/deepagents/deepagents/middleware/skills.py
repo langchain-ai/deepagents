@@ -292,6 +292,14 @@ class SkillMetadata(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
+    requested_skills: NotRequired[list[str]]
+    """Optional skill names to inject into model context.
+
+    When provided, `before_model` consumes this list by filtering
+    `skills_metadata` to matching skill names, then clears this field
+    by setting it to an empty list in the returned state update.
+    """
+
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
 
@@ -299,11 +307,14 @@ class SkillsState(AgentState):
     """Skill source loading errors. Not propagated to parent agents."""
 
 
-class SkillsStateUpdate(TypedDict):
+class SkillsStateUpdate(TypedDict, total=False):
     """State update for the skills middleware."""
 
     skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata to merge into state."""
+
+    requested_skills: list[str]
+    """Requested skills after middleware consumption."""
 
     skills_load_errors: NotRequired[list[str]]
     """Skill source loading errors to merge into state."""
@@ -910,6 +921,58 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         lines.append("</skill_load_warnings>")
         return "\n".join(lines)
 
+    def _select_skills_for_context(
+        self,
+        requested_skills: list[object],
+        skills_metadata: list[SkillMetadata],
+    ) -> tuple[list[SkillMetadata], list[str]]:
+        """Filter loaded skills by an explicit request list."""
+        requested_names: set[str] = set()
+        for candidate in requested_skills:
+            if not isinstance(candidate, str):
+                logger.warning(
+                    "Ignoring non-string entry in `requested_skills` state value (got %s)",
+                    type(candidate).__name__,
+                )
+                continue
+            name = candidate.strip()
+            if name:
+                requested_names.add(name)
+
+        if not requested_names:
+            return skills_metadata, []
+
+        available_names = {skill["name"] for skill in skills_metadata}
+        selected = [skill for skill in skills_metadata if skill["name"] in requested_names]
+        missing_names = sorted(requested_names - available_names)
+        missing_errors = [f"Requested skill not found: {name}" for name in missing_names]
+        return selected, missing_errors
+
+    def _consume_requested_skills(self, state: SkillsState) -> SkillsStateUpdate | None:
+        """Consume `requested_skills` into `skills_metadata` once skills are loaded."""
+        if "skills_metadata" not in state:
+            return None
+
+        raw_requested = state.get("requested_skills")
+        if raw_requested is None or raw_requested == []:
+            return None
+
+        if not isinstance(raw_requested, list):
+            logger.warning(
+                "Ignoring non-list `requested_skills` state value (got %s)",
+                type(raw_requested).__name__,
+            )
+            return SkillsStateUpdate(requested_skills=[])
+
+        selected_skills, missing_errors = self._select_skills_for_context(raw_requested, state.get("skills_metadata", []))
+        update = SkillsStateUpdate(
+            skills_metadata=selected_skills,
+            requested_skills=[],
+        )
+        if missing_errors:
+            update["skills_load_errors"] = [*state.get("skills_load_errors", []), *missing_errors]
+        return update
+
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject skills documentation into a model request's system message.
 
@@ -937,6 +1000,14 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         new_system_message = append_to_system_message(request.system_message, skills_section)
 
         return request.override(system_message=new_system_message)
+
+    def before_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> SkillsStateUpdate | None:  # noqa: ARG002
+        """Consume `requested_skills` into loaded skills before model invocation."""
+        return self._consume_requested_skills(state)
+
+    async def abefore_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> SkillsStateUpdate | None:  # noqa: ARG002
+        """Async variant of `before_model`."""
+        return self._consume_requested_skills(state)
 
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).

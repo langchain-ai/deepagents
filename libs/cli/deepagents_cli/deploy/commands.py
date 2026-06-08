@@ -136,7 +136,7 @@ _STARTER_AGENT_JSON = """\
   "description": "A managed deep agent.",
   "model": "openai:gpt-5.5",
   "backend": {{
-    "type": "default"
+    "type": "state"
   }}
 }}
 """

@@ -100,8 +100,8 @@ def test_runtime_and_permissions_round_trip(tmp_path: Path) -> None:
     proj = Project.load(tmp_path)
     assert proj.runtime == {"model": {"model_id": "anthropic:claude-sonnet-4-6"}}
     assert proj.backend == {
-        "type": "thread_scoped_sandbox",
-        "sandbox": {"policy_ids": ["p-1"]},
+        "type": "sandbox",
+        "sandbox_config": {"scope": "thread", "policy_ids": ["p-1"]},
     }
     assert proj.permissions == {
         "identity": "personal",
@@ -169,10 +169,10 @@ def test_runtime_backend_type_raises_migration_error(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("hi")
     with pytest.raises(ProjectError, match=r"runtime\.backend_type") as excinfo:
         Project.load(tmp_path)
-    assert "thread_scoped_sandbox" in str(excinfo.value)
+    assert "sandbox_config" in str(excinfo.value)
 
 
-def test_legacy_sandbox_backend_type_normalizes_to_thread_scoped(
+def test_sandbox_backend_type_defaults_to_thread_scope(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "agent.json").write_text(
@@ -189,9 +189,25 @@ def test_legacy_sandbox_backend_type_normalizes_to_thread_scoped(
     (tmp_path / "AGENTS.md").write_text("hi")
     proj = Project.load(tmp_path)
     assert proj.backend == {
-        "type": "thread_scoped_sandbox",
-        "sandbox": {"policy_ids": ["p-1"]},
+        "type": "sandbox",
+        "sandbox_config": {"scope": "thread", "policy_ids": ["p-1"]},
     }
+
+
+def test_legacy_default_backend_type_normalizes_to_state(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "backend": {"type": "default"}}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {"type": "state"}
+
+
+def test_state_backend_type_is_allowed(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x", "backend": {"type": "state"}}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {"type": "state"}
 
 
 def test_agent_scoped_sandbox_backend_type_is_allowed(tmp_path: Path) -> None:
@@ -200,7 +216,37 @@ def test_agent_scoped_sandbox_backend_type_is_allowed(tmp_path: Path) -> None:
     )
     (tmp_path / "AGENTS.md").write_text("hi")
     proj = Project.load(tmp_path)
-    assert proj.backend == {"type": "agent_scoped_sandbox"}
+    assert proj.backend == {"type": "sandbox", "sandbox_config": {"scope": "agent"}}
+
+
+def test_sandbox_backend_config_is_allowed(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "sandbox",
+            "sandbox_config": {
+              "scope": "agent",
+              "policy_ids": ["p-1"],
+              "idle_ttl_seconds": 900,
+              "delete_after_stop_seconds": 300
+            }
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {
+        "type": "sandbox",
+        "sandbox_config": {
+            "scope": "agent",
+            "policy_ids": ["p-1"],
+            "idle_ttl_seconds": 900,
+            "delete_after_stop_seconds": 300,
+        },
+    }
 
 
 def test_invalid_backend_type_raises(tmp_path: Path) -> None:
@@ -212,12 +258,12 @@ def test_invalid_backend_type_raises(tmp_path: Path) -> None:
         Project.load(tmp_path)
 
 
-def test_sandbox_config_with_default_backend_raises(tmp_path: Path) -> None:
+def test_sandbox_settings_with_default_backend_raises(tmp_path: Path) -> None:
     (tmp_path / "agent.json").write_text(
         '{"name": "x", "backend": {"type": "default", "sandbox": {}}}'
     )
     (tmp_path / "AGENTS.md").write_text("hi")
-    with pytest.raises(ProjectError, match=r"backend\.sandbox"):
+    with pytest.raises(ProjectError, match=r"sandbox settings"):
         Project.load(tmp_path)
 
 
@@ -253,6 +299,48 @@ def test_sandbox_ttl_fields_must_be_integers(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("hi")
     with pytest.raises(ProjectError, match=r"idle_ttl_seconds"):
         Project.load(tmp_path)
+
+
+def test_sandbox_config_scope_must_be_valid(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "sandbox",
+            "sandbox_config": {"scope": "workspace"}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    with pytest.raises(ProjectError, match=r"scope"):
+        Project.load(tmp_path)
+
+
+def test_sandbox_config_overrides_legacy_sandbox_config(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "thread_scoped_sandbox",
+            "sandbox": {"policy_ids": ["old"], "idle_ttl_seconds": 900},
+            "sandbox_config": {"policy_ids": ["new"]}
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    proj = Project.load(tmp_path)
+    assert proj.backend == {
+        "type": "sandbox",
+        "sandbox_config": {
+            "scope": "thread",
+            "policy_ids": ["new"],
+            "idle_ttl_seconds": 900,
+        },
+    }
 
 
 def test_load_with_tools_reads_tools_json() -> None:

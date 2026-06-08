@@ -3201,11 +3201,15 @@ class DeepAgentsApp(App):
             self._update_check_done.set()
 
     async def _check_for_updates_impl(self, *, periodic: bool = False) -> None:
-        """Check PyPI for a newer version and either auto-update or queue a modal.
+        """Check PyPI for a newer version and surface it in-session.
 
         Phase 1 contacts PyPI and records the latest version on the app.
-        Phase 2 either performs the auto-upgrade (when enabled), or
-        registers the actionable notice and schedules the update modal.
+        Phase 2 surfaces a detected update without installing it in-session
+        (the actual install runs at startup via `_run_startup_auto_update`):
+        when auto-update is enabled it toasts a prompt to restart so the
+        startup path can upgrade; otherwise it raises an actionable notice
+        (periodic recheck) or registers the notice and schedules the update
+        modal (initial check).
         Phase 2 sets `_update_modal_pending` *only* when the modal is
         actually being scheduled; a detected-but-throttled update
         leaves the event clear so missing-dep toasts still fire.
@@ -3215,6 +3219,7 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 is_auto_update_enabled,
+                is_installed_version_at_least,
                 is_update_available,
                 upgrade_command,
             )
@@ -3228,6 +3233,9 @@ class DeepAgentsApp(App):
             )
             if not available or latest is None:
                 return
+            if await asyncio.to_thread(is_installed_version_at_least, latest):
+                self._update_available = (False, None)
+                return
 
             self._update_available = (True, latest)
         except Exception:
@@ -3237,68 +3245,16 @@ class DeepAgentsApp(App):
         # Phase 2: auto-update or register actionable notice
         try:
             from deepagents_code._version import __version__ as cli_version
+            from deepagents_code.update_check import (
+                format_installed_age_suffix,
+                format_release_age_parenthetical,
+                mark_update_notified,
+                should_notify_update,
+            )
 
             if is_auto_update_enabled():
-                from deepagents_code._env_vars import DEBUG_UPDATE
-                from deepagents_code.update_check import (
-                    create_update_log_path,
-                    perform_upgrade,
-                )
-
-                if os.environ.get(DEBUG_UPDATE):
-                    self.notify(
-                        "Skipped update install (debug mode).",
-                        severity="information",
-                        timeout=4,
-                        markup=False,
-                    )
-                    return
-
-                log_path = create_update_log_path()
-                self.notify(
-                    f"Updating to v{latest}... Logs: {log_path}",
-                    severity="information",
-                    timeout=5,
-                    markup=False,
-                )
-                success, output = await perform_upgrade(log_path=log_path)
-                if success:
-                    self.notify(
-                        f"Updated to v{latest}. Restart to use the new version.",
-                        severity="information",
-                        timeout=10,
-                    )
-                else:
-                    logger.warning(
-                        "Background auto-upgrade to v%s failed. Output:\n%s",
-                        latest,
-                        output,
-                    )
-                    cmd = upgrade_command()
-                    snippet = _truncate(output, limit=160) if output else ""
-                    message = (
-                        f"Auto-update failed. Run manually: {cmd}\nLog: {log_path}"
-                    )
-                    if snippet:
-                        message = f"{message}\n{snippet}"
-                    self.notify(
-                        message,
-                        severity="warning",
-                        timeout=15,
-                        markup=False,
-                    )
-            else:
-                from deepagents_code.update_check import (
-                    format_installed_age_suffix,
-                    format_release_age_parenthetical,
-                    mark_update_notified,
-                    should_notify_update,
-                )
-
                 if not await asyncio.to_thread(should_notify_update, latest):
                     return
-
-                cmd = upgrade_command()
                 release_age = await asyncio.to_thread(
                     format_release_age_parenthetical,
                     latest,
@@ -3307,33 +3263,56 @@ class DeepAgentsApp(App):
                     format_installed_age_suffix,
                     cli_version,
                 )
-                notification = self._build_update_notification(
-                    latest=latest,
-                    cli_version=cli_version,
-                    release_age=release_age,
-                    installed_age=installed_age,
-                    upgrade_cmd=cmd,
+                self.notify(
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Restart dcode to auto-update before startup.",
+                    severity="information",
+                    timeout=12,
+                    markup=False,
                 )
-                if periodic:
-                    self._notify_actionable(
-                        notification,
-                        severity="information",
-                        timeout=12,
-                        action_hint="Press ctrl+n to install.",
-                    )
-                    await asyncio.to_thread(mark_update_notified, latest)
-                    return
-                # Register without a toast: the dedicated modal is
-                # the update's UI, so a parallel toast would be
-                # redundant. Registration still makes the entry
-                # reachable via ctrl+n if the modal is dismissed.
-                self._notice_registry.add(notification)
                 await asyncio.to_thread(mark_update_notified, latest)
-                # Set *before* scheduling the modal: the optional-tools
-                # worker may race with this path, and it gates toast
-                # suppression on this event.
-                self._update_modal_pending.set()
-                self.call_after_refresh(self._open_update_available_modal, notification)
+                return
+
+            if not await asyncio.to_thread(should_notify_update, latest):
+                return
+
+            cmd = upgrade_command()
+            release_age = await asyncio.to_thread(
+                format_release_age_parenthetical,
+                latest,
+            )
+            installed_age = await asyncio.to_thread(
+                format_installed_age_suffix,
+                cli_version,
+            )
+            notification = self._build_update_notification(
+                latest=latest,
+                cli_version=cli_version,
+                release_age=release_age,
+                installed_age=installed_age,
+                upgrade_cmd=cmd,
+            )
+            if periodic:
+                self._notify_actionable(
+                    notification,
+                    severity="information",
+                    timeout=12,
+                    action_hint="Press ctrl+n to install.",
+                )
+                await asyncio.to_thread(mark_update_notified, latest)
+                return
+            # Register without a toast: the dedicated modal is
+            # the update's UI, so a parallel toast would be
+            # redundant. Registration still makes the entry
+            # reachable via ctrl+n if the modal is dismissed.
+            self._notice_registry.add(notification)
+            await asyncio.to_thread(mark_update_notified, latest)
+            # Set *before* scheduling the modal: the optional-tools
+            # worker may race with this path, and it gates toast
+            # suppression on this event.
+            self._update_modal_pending.set()
+            self.call_after_refresh(self._open_update_available_modal, notification)
         except Exception:
             logger.warning("Update check/notify failed unexpectedly", exc_info=True)
             if is_auto_update_enabled():
@@ -4105,6 +4084,24 @@ class DeepAgentsApp(App):
             # Cosmetic only: must never break app startup or theme changes.
             logger.warning("set_terminal_background raised unexpectedly", exc_info=True)
 
+    def _pause_loading_spinner_for_approval(self) -> None:
+        """Pause the global spinner timer while an approval widget is visible."""
+        if self._loading_widget is not None:
+            self._loading_widget.pause()
+
+    def _resume_loading_spinner_after_approval(
+        self,
+        _future: asyncio.Future[Any] | None = None,
+    ) -> None:
+        """Resume the global spinner timer after an approval decision.
+
+        Accepts an unused `_future` argument so it can be registered directly as
+        a `Future.add_done_callback`, which always passes the completed future
+        positionally.
+        """
+        if self._loading_widget is not None:
+            self._loading_widget.resume()
+
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
 
@@ -4153,6 +4150,11 @@ class DeepAgentsApp(App):
             self._loading_widget = LoadingWidget(status)
             await self._mount_before_queued(messages, self._loading_widget)
         else:
+            # A fresh status update means the agent is active again, so
+            # un-pause as a backstop in case an approval future was ever
+            # abandoned without completing the resume callback. `resume()` is a
+            # no-op when the spinner is not paused.
+            self._loading_widget.resume()
             # Update existing
             self._loading_widget.set_status(status)
             # Reposition via move_child so elapsed-time and animation state
@@ -4264,6 +4266,13 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget is not None:
             while self._pending_approval_widget is not None:  # noqa: ASYNC110  # Simple polling is sufficient here
                 await asyncio.sleep(0.1)
+
+        # Pause the elapsed-time counter while the user decides, then resume it
+        # when the decision future completes. Resolve, reject, and cancel all
+        # fire the done-callback; the `_set_spinner` backstop covers the
+        # remaining case where a future is abandoned without completing.
+        self._pause_loading_spinner_for_approval()
+        result_future.add_done_callback(self._resume_loading_spinner_after_approval)
 
         # Create menu with unique ID to avoid conflicts
         from deepagents_code.widgets.approval import ApprovalMenu

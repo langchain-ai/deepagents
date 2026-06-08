@@ -7978,6 +7978,39 @@ class TestNotificationCenterIntegration:
         assert app._update_available == (False, None)
         assert not app._update_modal_pending.is_set()
 
+    async def test_update_check_ignores_stale_notice_after_in_place_upgrade(
+        self,
+    ) -> None:
+        """Skip stale notices after an in-place upgrade."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+            ) as auto_update_enabled,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates()
+                await pilot.pause()
+
+        auto_update_enabled.assert_not_called()
+        assert app._notice_registry.get("update:available") is None
+        assert app._update_available == (False, None)
+        assert not app._update_modal_pending.is_set()
+
     async def test_update_check_auto_opens_dedicated_modal(self) -> None:
         """A detected update auto-opens the dedicated update modal after first paint."""
         from deepagents_code.widgets.update_available import UpdateAvailableScreen

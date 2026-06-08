@@ -100,7 +100,7 @@ class LoadingWidget(Static):
         self._hint_widget: Static | None = None
         self._animation_timer: Timer | None = None
         self._paused = False
-        self._paused_elapsed: int = 0
+        self._paused_elapsed: float = 0.0
 
     def compose(self) -> ComposeResult:
         """Compose the loading widget layout.
@@ -185,19 +185,38 @@ class LoadingWidget(Static):
         """
         self._paused = True
         if self._start_time is not None:
-            self._paused_elapsed = int(time() - self._start_time)
+            self._paused_elapsed = time() - self._start_time
         self._status = status
         if self._status_widget:
             self._status_widget.update(f" {status}... ")
         if self._hint_widget:
+            # Display whole seconds to match the live counter in
+            # `_update_animation`; `_paused_elapsed` stays a float only so
+            # `resume()` can rebase `_start_time` with sub-second precision.
             self._hint_widget.update(
-                f"(paused at {format_duration(self._paused_elapsed)})"
+                f"(paused at {format_duration(int(self._paused_elapsed))})"
             )
         if self._spinner_widget:
             self._spinner_widget.update(Content.styled(get_glyphs().pause, "dim"))
 
     def resume(self) -> None:
-        """Resume the animation."""
+        """Resume the animation, excluding the paused interval from elapsed time.
+
+        Rebases `_start_time` forward by the paused duration so the elapsed-time
+        counter continues from where it paused rather than counting the wait.
+
+        No-op when not currently paused. This method is wired both as a
+        `Future.add_done_callback` and as a self-healing net in the app's
+        `_set_spinner`, so it can fire on a widget that was never paused (e.g.
+        one created to replace the paused spinner mid-approval). Returning early
+        there avoids rebasing the start time or clobbering that widget's status.
+        """
+        if not self._paused:
+            # Load-bearing guard: resuming a never-paused (or replacement)
+            # widget must not rebase `_start_time` with a stale
+            # `_paused_elapsed`, which would silently jump its timer.
+            return
+        self._start_time = time() - self._paused_elapsed
         self._paused = False
         self._status = "Thinking"
         if self._status_widget:

@@ -8,7 +8,6 @@ encodes the score (0-1 correctness).
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import json
 import math
 from dataclasses import dataclass, field
@@ -16,9 +15,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-plt: Any = None
-if importlib.util.find_spec("matplotlib.pyplot") is not None:
-    plt = importlib.import_module("matplotlib.pyplot")
+try:
+    plt: Any = importlib.import_module("matplotlib.pyplot")
+except ImportError:
+    plt = None
 
 if TYPE_CHECKING:
     from matplotlib.figure import Figure

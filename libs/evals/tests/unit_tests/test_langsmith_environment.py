@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from harbor.models.task.config import EnvironmentConfig
+from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPolicy
 from harbor.models.trial.paths import TrialPaths
 
 from deepagents_harbor.langsmith_environment import (
@@ -72,6 +72,7 @@ def _make_env(
     cpus: int = 1,
     memory_mb: int = 2048,
     storage_mb: int = 10240,
+    network_policy: NetworkPolicy | None = None,
 ) -> LangSmithEnvironment:
     """Create a LangSmithEnvironment with a temp directory.
 
@@ -108,6 +109,7 @@ def _make_env(
         session_id="test-session-001",
         trial_paths=trial_paths,
         task_env_config=config,
+        network_policy=network_policy,
     )
 
 
@@ -191,7 +193,7 @@ class TestValidation:
                 task_env_config=config,
             )
 
-    def test_internet_disabled_raises(self, tmp_path: Path) -> None:
+    def test_internet_disabled_is_accepted(self, tmp_path: Path) -> None:
         env_dir = tmp_path / "environment"
         env_dir.mkdir()
         (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
@@ -202,14 +204,15 @@ class TestValidation:
         trial_paths = TrialPaths(trial_dir=trial_dir)
         trial_paths.mkdir()
 
-        with pytest.raises(ValueError, match="internet"):
-            LangSmithEnvironment(
-                environment_dir=env_dir,
-                environment_name="test",
-                session_id="s1",
-                trial_paths=trial_paths,
-                task_env_config=config,
-            )
+        env = LangSmithEnvironment(
+            environment_dir=env_dir,
+            environment_name="test",
+            session_id="s1",
+            trial_paths=trial_paths,
+            task_env_config=config,
+        )
+
+        assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
 
     def test_accepts_factory_kwargs(self, tmp_path: Path) -> None:
         """Harbor's EnvironmentFactory passes logger, override_* kwargs."""
@@ -279,7 +282,35 @@ class TestProperties:
 
     def test_can_disable_internet(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        assert env.can_disable_internet is False
+        assert env.can_disable_internet is True
+        assert env.capabilities.disable_internet is True
+        assert env.capabilities.network_allowlist is True
+
+    def test_no_network_policy_builds_deny_all_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
+        )
+
+        assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
+
+    def test_allowlist_policy_builds_allowlist_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(
+                network_mode=NetworkMode.ALLOWLIST,
+                allowed_hosts=["api.openai.com", "github.com"],
+            ),
+        )
+
+        assert env._network_proxy_config() == {
+            "access_control": {"allow_list": ["api.openai.com", "github.com"]}
+        }
+
+    def test_public_network_policy_omits_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        assert env._network_proxy_config() is None
 
     def test_type_raises(self, tmp_path: Path) -> None:
         with pytest.raises(NotImplementedError):
@@ -488,8 +519,44 @@ class TestStartSnapshotProvisioning:
             assert kwargs["mem_bytes"] == 2048 * 1024 * 1024
             assert kwargs["fs_capacity_bytes"] == 10240 * 1024 * 1024
             assert kwargs["timeout"] == 120
+            assert "proxy_config" not in kwargs
             assert "template_name" not in kwargs
             assert "snapshot_id" not in kwargs
+
+    async def test_create_sandbox_passes_no_network_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
+        )
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            assert mock_client.create_sandbox.call_args.kwargs["proxy_config"] == {
+                "access_control": {"deny_list": ["*"]}
+            }
+
+    async def test_create_sandbox_passes_allowlist_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(
+                network_mode=NetworkMode.ALLOWLIST,
+                allowed_hosts=["api.openai.com", "github.com"],
+            ),
+        )
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            assert mock_client.create_sandbox.call_args.kwargs["proxy_config"] == {
+                "access_control": {"allow_list": ["api.openai.com", "github.com"]}
+            }
 
     async def test_force_build_is_noop(self, tmp_path: Path) -> None:
         """force_build accepted for interface compat but does not change calls."""

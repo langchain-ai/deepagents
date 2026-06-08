@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 from dockerfile_parse import DockerfileParser
 from harbor.environments.base import BaseEnvironment, ExecResult
+from harbor.environments.capabilities import EnvironmentCapabilities
+from harbor.models.task.config import NetworkMode
 from harbor.models.trial.paths import EnvironmentPaths, TrialPaths
 from harbor.utils.logger import logger
 from langsmith.sandbox import AsyncSandboxClient
@@ -102,6 +104,11 @@ class LangSmithEnvironment(BaseEnvironment):
         raise NotImplementedError(msg)
 
     @property
+    def capabilities(self) -> EnvironmentCapabilities:
+        """Capabilities supported by LangSmith sandboxes."""
+        return EnvironmentCapabilities(disable_internet=True, network_allowlist=True)
+
+    @property
     def is_mounted(self) -> bool:
         """Whether the environment mounts host logging directories."""
         return False
@@ -114,7 +121,7 @@ class LangSmithEnvironment(BaseEnvironment):
     @property
     def can_disable_internet(self) -> bool:
         """Whether LangSmith sandboxes support network isolation."""
-        return False
+        return True
 
     # -- Validation overrides --------------------------------------------------
     # Override base-class validators so they never call self.type(), which
@@ -146,11 +153,28 @@ class LangSmithEnvironment(BaseEnvironment):
             msg = "LangSmith sandbox does not support GPU allocation."
             raise RuntimeError(msg)
 
+    def _validate_network_policy_support(self) -> None:
+        """LangSmith supports no-network and allowlist policies via proxy config."""
+        return
+
     def _validate_internet_config(self) -> None:
-        """Override base to avoid calling `self.type()`."""
-        if not self.task_env_config.allow_internet:
-            msg = "LangSmith sandbox does not support disabling internet access."
-            raise ValueError(msg)
+        """Deprecated validation hook kept for compatibility with older Harbor."""
+        return
+
+    def _network_proxy_config(self) -> dict[str, Any] | None:
+        """Build LangSmith proxy_config for Harbor's network policy."""
+        network_mode = self.network_policy.network_mode
+        allowed_hosts = list(self.network_policy.allowed_hosts)
+
+        if self.task_env_config.allow_internet is False:
+            network_mode = NetworkMode.NO_NETWORK
+            allowed_hosts = []
+
+        if network_mode == NetworkMode.NO_NETWORK:
+            return {"access_control": {"deny_list": ["*"]}}
+        if network_mode == NetworkMode.ALLOWLIST:
+            return {"access_control": {"allow_list": allowed_hosts}}
+        return None
 
     # -- Image resolution ------------------------------------------------------
 
@@ -258,13 +282,18 @@ class LangSmithEnvironment(BaseEnvironment):
         await self._ensure_snapshot(client, snapshot_name, image, fs_capacity_bytes)
         self._snapshot_name = snapshot_name
 
-        sandbox = await client.create_sandbox(
-            snapshot_name=snapshot_name,
-            vcpus=vcpus,
-            mem_bytes=mem_bytes,
-            fs_capacity_bytes=fs_capacity_bytes,
-            timeout=120,
-        )
+        proxy_config = self._network_proxy_config()
+        create_sandbox_kwargs: dict[str, Any] = {
+            "snapshot_name": snapshot_name,
+            "vcpus": vcpus,
+            "mem_bytes": mem_bytes,
+            "fs_capacity_bytes": fs_capacity_bytes,
+            "timeout": 120,
+        }
+        if proxy_config is not None:
+            create_sandbox_kwargs["proxy_config"] = proxy_config
+
+        sandbox = await client.create_sandbox(**create_sandbox_kwargs)
         self._sandbox = sandbox
         logger.info(
             "Created LangSmith sandbox '%s' from snapshot '%s' "

@@ -1121,7 +1121,7 @@ class TestSectionGhCli:
         bin_dir.mkdir()
         gh = bin_dir / "gh"
         gh.write_text(
-            '#!/bin/sh\n'
+            "#!/bin/sh\n"
             'if [ "$1" = search ] && [ "$3" = --help ]; then\n'
             "  cat <<'EOF'\n"
             "JSON FIELDS\n"

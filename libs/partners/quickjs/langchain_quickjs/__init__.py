@@ -2,6 +2,13 @@
 
 from quickjs_rs import ModuleScope
 
+from langchain_quickjs._baseline import (
+    EditFileExtension,
+    FilesystemExtension,
+    GlobExtension,
+    LlmExtension,
+    SubagentExtension,
+)
 from langchain_quickjs._extensions import (
     ExtensionContext,
     ExtensionError,
@@ -21,12 +28,17 @@ from langchain_quickjs.middleware import CodeInterpreterMiddleware
 
 __all__ = [
     "CodeInterpreterMiddleware",
+    "EditFileExtension",
     "ExtensionContext",
     "ExtensionError",
+    "FilesystemExtension",
+    "GlobExtension",
     "HostFunction",
     "InterpreterExtension",
+    "LlmExtension",
     "ModuleScope",
     "PTCOption",
+    "SubagentExtension",
     "SwarmExtension",
     "SwarmSubAgent",
     "SwarmTaskMode",

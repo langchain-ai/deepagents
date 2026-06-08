@@ -16,7 +16,11 @@ import pytest
 from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import InterpreterExtension, SwarmExtension, swarm
-from langchain_quickjs._extensions import has_on_setup, validate_extension_hooks
+from langchain_quickjs._extensions import (
+    has_on_setup,
+    validate_extension_exports,
+    validate_extension_hooks,
+)
 from langchain_quickjs._repl import _ThreadREPL
 from langchain_quickjs._swarm._extension import SwarmExtension as _SwarmExtensionClass
 
@@ -212,6 +216,7 @@ def test_extension_validates_as_a_hook_impl() -> None:
     ext = _stub_extension([])
     assert has_on_setup(ext) is True
     validate_extension_hooks(ext)  # does not raise
+    validate_extension_exports(ext)  # does not raise
 
 
 def test_factory_builds_extension() -> None:

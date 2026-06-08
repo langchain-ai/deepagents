@@ -33,6 +33,7 @@ from langchain_quickjs import (
 from langchain_quickjs._extensions import (
     has_on_eval,
     has_on_setup,
+    validate_extension_exports,
     validate_extension_hooks,
 )
 from langchain_quickjs._repl import _ThreadREPL
@@ -280,18 +281,21 @@ def test_eval_returns_completion_value(
 
 class _SetupOnly(InterpreterExtension):
     system_prompt = None
+    exported_globals = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None: ...
 
 
 class _EvalOnly(InterpreterExtension):
     system_prompt = None
+    exported_globals = ()
 
     def on_eval(self, ctx, runtime) -> None: ...
 
 
 class _Both(InterpreterExtension):
     system_prompt = "use the thing"
+    exported_globals = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None: ...
 
@@ -300,6 +304,7 @@ class _Both(InterpreterExtension):
 
 class _Neither(InterpreterExtension):
     system_prompt = None
+    exported_globals = ()
 
 
 def test_hook_detection() -> None:
@@ -327,6 +332,47 @@ def test_validate_rejects_empty_extension() -> None:
         validate_extension_hooks(_Neither())
 
 
+def test_validate_exports_accepts_empty_or_identifier_tuple() -> None:
+    validate_extension_exports(_SetupOnly())
+
+    class _Valid(InterpreterExtension):
+        system_prompt = None
+        exported_globals = ("widget", "$ok", "_also_ok")
+
+        def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+    validate_extension_exports(_Valid())
+
+
+def test_validate_exports_rejects_missing_metadata() -> None:
+    class _Missing(InterpreterExtension):
+        system_prompt = None
+
+        def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+    with pytest.raises(ExtensionError, match="exported_globals"):
+        validate_extension_exports(_Missing())
+
+
+def test_validate_exports_rejects_non_tuple_or_bad_identifier() -> None:
+    class _ListExports(InterpreterExtension):
+        system_prompt = None
+        exported_globals = frozenset({"x"})  # type: ignore[assignment]
+
+        def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+    class _BadIdentifier(InterpreterExtension):
+        system_prompt = None
+        exported_globals = ("bad-name",)
+
+        def on_setup(self, ctx: ExtensionContext) -> None: ...
+
+    with pytest.raises(ExtensionError, match="tuple\\[str, \\.\\.\\.\\]"):
+        validate_extension_exports(_ListExports())
+    with pytest.raises(ExtensionError, match="invalid exported global"):
+        validate_extension_exports(_BadIdentifier())
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: on_setup wired into the REPL slot lifecycle
 # ---------------------------------------------------------------------------
@@ -336,6 +382,7 @@ class _GreetExtension(InterpreterExtension):
     """Registers a host function plus a module that forwards to it."""
 
     system_prompt = None
+    exported_globals = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None:
         @ctx.function(name="__greet_host")
@@ -434,6 +481,7 @@ class _CounterExtension(InterpreterExtension):
     """
 
     system_prompt = None
+    exported_globals = ()
 
     def on_eval(self, ctx: ExtensionContext, runtime) -> None:
         count = [0]

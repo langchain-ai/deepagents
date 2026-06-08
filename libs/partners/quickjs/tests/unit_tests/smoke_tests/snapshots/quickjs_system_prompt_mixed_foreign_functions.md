@@ -179,3 +179,50 @@ async function fetchWeather(input: {
   city: string;
 }): Promise<string>
 ```
+
+<extension_prompt>
+Baseline capability available:
+
+- `await subagent({ description, subagentType, responseSchema? })`
+- Use this to delegate complex work to a named subagent.
+- Input keys are camelCase only (`subagentType`, `responseSchema`).
+- Returns a string by default.
+- Returns a native structured value when `responseSchema` is provided.
+
+</extension_prompt>
+
+<extension_prompt>
+Baseline capability available:
+
+- `await llm({ prompt, responseSchema? })`
+- Use this for one-shot model calls without a tool loop.
+- Returns a string by default.
+- Returns a native structured value when `responseSchema` is provided.
+
+</extension_prompt>
+
+<extension_prompt>
+Baseline filesystem capability available (`fs`):
+
+- `await fs.readFile(path, { encoding?: "utf8" | "base64" })`
+- `await fs.writeFile(path, data, { encoding?: "utf8" | "base64", flag?: "w" | "wx" })`
+- `await fs.readdir(path = ".")`
+- Relative paths resolve from `/`.
+
+</extension_prompt>
+
+<extension_prompt>
+Baseline helper available:
+
+- `await glob(pattern, { cwd? })`
+- Returns matched paths.
+
+</extension_prompt>
+
+<extension_prompt>
+Baseline helper available:
+
+- `await editFile({ filePath, oldString, newString, replaceAll? })`
+- Performs exact string replacement on an existing file.
+
+</extension_prompt>

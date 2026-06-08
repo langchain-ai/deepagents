@@ -35,7 +35,15 @@ if TYPE_CHECKING:
 
     from langchain_quickjs._extensions import InterpreterExtension
 
-from langchain_quickjs._extensions import validate_extension_hooks
+from langchain_quickjs._baseline import (
+    BASELINE_RESERVED_GLOBALS,
+    build_baseline_extensions,
+    extension_export_names,
+)
+from langchain_quickjs._extensions import (
+    validate_extension_exports,
+    validate_extension_hooks,
+)
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import render_repl_system_prompt
 from langchain_quickjs._ptc import (
@@ -52,6 +60,8 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
+_DEFAULT_SUBAGENT_MAX_IN_FLIGHT = 128
+_DEFAULT_LLM_MAX_IN_FLIGHT = 128
 
 
 class REPLState(AgentState):
@@ -138,15 +148,27 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             installed into the REPL. Each registers JS modules, host
             (FFI) functions, setup eval, and/or a system-prompt fragment
             via its `on_setup` / `on_eval` hooks. An extension must
-            implement at least one hook (validated here, fail-fast).
+            implement at least one hook and declare `exported_globals`
+            (`tuple[str, ...]`, use `()` for none), validated here
+            fail-fast.
             Extension `system_prompt` fragments are appended to the REPL
             system prompt; their `on_setup` runs on every context build
-            and `on_eval` at the start of each eval.
+            and `on_eval` at the start of each eval. Built-in baseline
+            extensions (`subagent`, `llm`, `fs`, `glob`, `editFile`) are
+            always loaded first; user extensions are appended.
         backend: Optional `BackendProtocol` exposed to extensions as
             `ctx.backend` (host functions close over it to reach the
             filesystem/store). Defaults to `skills_backend` when unset, so
             callers configuring only that still feed extensions. May be
             `None` — a backend-free extension is valid.
+        subagent_max_in_flight: Maximum concurrent `subagent(...)` calls
+            permitted within one eval. Default 10.
+        llm_max_in_flight: Maximum concurrent `llm(...)` calls permitted
+            within one eval. Default 10.
+        subagent_timeout_s: Optional timeout applied to each individual
+            `subagent(...)` call. `None` defers to eval timeout.
+        llm_timeout_s: Optional timeout applied to each individual
+            `llm(...)` call. `None` defers to eval timeout.
         ptc: Programmatic tool calling — expose agent tools inside the
             REPL as `tools.<camelCase>(input) => Promise<string>`. One
             `eval` call can then orchestrate many tool calls (loops,
@@ -206,6 +228,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         skills_backend: "BackendProtocol | None" = None,
         extensions: "list[InterpreterExtension] | None" = None,
         backend: "BackendProtocol | None" = None,
+        subagent_max_in_flight: int = _DEFAULT_SUBAGENT_MAX_IN_FLIGHT,
+        llm_max_in_flight: int = _DEFAULT_LLM_MAX_IN_FLIGHT,
+        subagent_timeout_s: float | None = None,
+        llm_timeout_s: float | None = None,
         snapshot_between_turns: bool = True,
         max_snapshot_bytes: int | None = None,
     ) -> None:
@@ -217,6 +243,18 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
             raise ValueError(msg)
+        if subagent_max_in_flight < 1:
+            msg = "`subagent_max_in_flight` must be >= 1"
+            raise ValueError(msg)
+        if llm_max_in_flight < 1:
+            msg = "`llm_max_in_flight` must be >= 1"
+            raise ValueError(msg)
+        if subagent_timeout_s is not None and subagent_timeout_s <= 0:
+            msg = "`subagent_timeout_s` must be > 0 or None"
+            raise ValueError(msg)
+        if llm_timeout_s is not None and llm_timeout_s <= 0:
+            msg = "`llm_timeout_s` must be > 0 or None"
+            raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._max_ptc_calls = max_ptc_calls
@@ -225,13 +263,26 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._capture_console = capture_console
         self._ptc = ptc
         self._skills_backend = skills_backend
+        self._backend = backend if backend is not None else skills_backend
         # Extensions: fail-fast reject any implementing neither hook. The
         # backend their host functions read defaults to skills_backend so
         # existing callers configuring only that still feed extensions.
-        self._extensions: list[InterpreterExtension] = list(extensions or [])
-        for ext in self._extensions:
+        user_extensions: list[InterpreterExtension] = list(extensions or [])
+        for ext in user_extensions:
             validate_extension_hooks(ext)
-        self._backend = backend if backend is not None else skills_backend
+            validate_extension_exports(ext)
+        self._validate_reserved_extension_names(user_extensions)
+        baseline_extensions = build_baseline_extensions(
+            subagent_max_in_flight=subagent_max_in_flight,
+            llm_max_in_flight=llm_max_in_flight,
+            subagent_timeout_s=subagent_timeout_s,
+            llm_timeout_s=llm_timeout_s,
+            llm_model=None,
+        )
+        self._extensions: list[InterpreterExtension] = [
+            *baseline_extensions,
+            *user_extensions,
+        ]
         self._snapshot_between_turns = snapshot_between_turns
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -333,6 +384,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             args_schema=EvalSchema,
             metadata={"ls_code_input_language": "javascript"},
         )
+
+    def _validate_reserved_extension_names(
+        self, extensions: list["InterpreterExtension"]
+    ) -> None:
+        for ext in extensions:
+            overlap = sorted(BASELINE_RESERVED_GLOBALS & extension_export_names(ext))
+            if not overlap:
+                continue
+            msg = (
+                f"{type(ext).__name__} uses reserved CI baseline global names: "
+                f"{', '.join(overlap)}"
+            )
+            raise ValueError(msg)
 
     def _ptc_tool_names(self) -> set[str]:
         """Collect tool names from the PTC configuration."""

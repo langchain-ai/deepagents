@@ -153,6 +153,7 @@ class SwarmExtension:
 
     dispatch: SwarmDispatch
     system_prompt: str | None = SWARM_SYSTEM_PROMPT
+    exported_globals: tuple[str, ...] = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None:
         # Register the host functions the scripts call by name, then install

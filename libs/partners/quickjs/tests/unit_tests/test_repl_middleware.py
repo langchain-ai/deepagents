@@ -212,18 +212,27 @@ def _injected_system_text(mw: CodeInterpreterMiddleware) -> str:
 
 class _PromptExtension(InterpreterExtension):
     system_prompt = "EXTENSION GUIDANCE: use the widget"
+    exported_globals = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None: ...
 
 
 class _SilentExtension(InterpreterExtension):
     system_prompt = None
+    exported_globals = ()
 
     def on_setup(self, ctx: ExtensionContext) -> None: ...
 
 
 class _NoHookExtension(InterpreterExtension):
     system_prompt = "ignored"
+    exported_globals = ()
+
+
+class _MissingExportsExtension(InterpreterExtension):
+    system_prompt = None
+
+    def on_setup(self, ctx: ExtensionContext) -> None: ...
 
 
 def test_extension_prompt_injected_without_ptc() -> None:
@@ -246,14 +255,16 @@ def test_extension_prompt_delimited() -> None:
 
 
 def test_silent_extension_contributes_nothing() -> None:
+    baseline = CodeInterpreterMiddleware()
     mw = CodeInterpreterMiddleware(extensions=[_SilentExtension()])
-    assert mw._extension_prompt == ""
-    assert "<extension_prompt>" not in _injected_system_text(mw)
+    assert mw._extension_prompt == baseline._extension_prompt
+    assert _injected_system_text(mw) == _injected_system_text(baseline)
 
 
 def test_multiple_extension_prompts_concatenate() -> None:
     class _Other(InterpreterExtension):
         system_prompt = "SECOND FRAGMENT"
+        exported_globals = ()
 
         def on_setup(self, ctx: ExtensionContext) -> None: ...
 
@@ -266,6 +277,11 @@ def test_multiple_extension_prompts_concatenate() -> None:
 def test_no_hook_extension_rejected_at_init() -> None:
     with pytest.raises(ExtensionError, match="at least one"):
         CodeInterpreterMiddleware(extensions=[_NoHookExtension()])
+
+
+def test_extension_missing_exported_globals_rejected_at_init() -> None:
+    with pytest.raises(ExtensionError, match="exported_globals"):
+        CodeInterpreterMiddleware(extensions=[_MissingExportsExtension()])
 
 
 def test_backend_defaults_to_skills_backend() -> None:

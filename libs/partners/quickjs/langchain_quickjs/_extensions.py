@@ -40,9 +40,9 @@ HostFunction = Callable[..., Any | Awaitable[Any]]
 class ExtensionError(RuntimeError):
     """Raised when an extension does something invalid.
 
-    Covers an invalid JS identifier and the at-least-one-hook check.
-    Surfaced at the point of failure so the traceback names the offending
-    extension.
+    Covers invalid JS identifiers, missing export metadata, and the
+    at-least-one-hook check. Surfaced at the point of failure so the
+    traceback names the offending extension.
     """
 
 
@@ -164,11 +164,12 @@ class ExtensionContext:
 class InterpreterExtension(Protocol):
     """A reusable unit installed into the QuickJS interpreter.
 
-    An extension declares an optional ``system_prompt`` and implements one
-    or both lifecycle hooks the middleware drives against an
-    ``ExtensionContext``. Both are optional, but an extension must
-    implement at least one — one with neither does nothing, and the
-    middleware rejects it at registration (see ``extension_hooks``).
+    An extension declares an optional ``system_prompt``, the top-level
+    globals it exports, and one or both lifecycle hooks the middleware
+    drives against an ``ExtensionContext``. Both hooks are optional, but an
+    extension must implement at least one — one with neither does nothing,
+    and the middleware rejects it at registration (see
+    ``validate_extension_hooks``).
 
     The Protocol is ``runtime_checkable`` for ``isinstance`` convenience,
     but the check is structural and weak — the middleware uses explicit
@@ -177,6 +178,7 @@ class InterpreterExtension(Protocol):
     """
 
     system_prompt: str | None
+    exported_globals: tuple[str, ...]
 
     def on_setup(self, ctx: ExtensionContext) -> None:
         """Register durable contributions, once per context creation.
@@ -231,6 +233,29 @@ def validate_extension_hooks(ext: InterpreterExtension) -> None:
             "an extension must implement at least one lifecycle hook"
         )
         raise ExtensionError(msg)
+
+
+def validate_extension_exports(ext: InterpreterExtension) -> None:
+    """Raise if ``ext.exported_globals`` is missing or invalid.
+
+    ``exported_globals`` must be a tuple of valid top-level JS identifiers.
+    Extensions that do not export any top-level global must set
+    ``exported_globals = ()`` explicitly.
+    """
+    exported = getattr(ext, "exported_globals", None)
+    if not isinstance(exported, tuple):
+        msg = (
+            f"{type(ext).__name__} must declare `exported_globals` as "
+            "`tuple[str, ...]` (use `()` when there are no guest globals)"
+        )
+        raise ExtensionError(msg)
+    for name in exported:
+        if not isinstance(name, str) or not is_valid_js_identifier(name):
+            msg = (
+                f"{type(ext).__name__} has invalid exported global {name!r}; "
+                "expected JS identifier (/^[A-Za-z_$][A-Za-z0-9_$]*$/)"
+            )
+            raise ExtensionError(msg)
 
 
 def run_setup_hooks(
@@ -293,5 +318,6 @@ __all__ = [
     "has_on_setup",
     "run_eval_hooks",
     "run_setup_hooks",
+    "validate_extension_exports",
     "validate_extension_hooks",
 ]

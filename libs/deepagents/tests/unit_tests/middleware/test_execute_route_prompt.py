@@ -81,16 +81,33 @@ def test_routes_without_host_path_marked_inaccessible() -> None:
     assert " -> " not in prompt
 
 
-def test_non_virtual_filesystem_route_is_not_mapped(tmp_path: Path) -> None:
-    # virtual_mode=False routes don't remap their prefix to root_dir, so the
-    # prefix is not a usable host path and must not be offered as a mapping.
+def test_non_virtual_filesystem_route_maps_by_dropping_prefix(tmp_path: Path) -> None:
+    # Non-virtual routes strip the prefix and use the remaining absolute path
+    # as-is on the host (root_dir ignored), so the host path is the path with the
+    # prefix removed -> the model is told to drop the prefix for shell commands.
     route = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     comp = CompositeBackend(default=_local_shell(), routes={"/common/": route})
 
     prompt = _route_host_path_prompt(comp)
 
+    assert 'remove the "/common" prefix' in prompt
+    assert "/common/file.txt is /file.txt" in prompt
+
+
+def test_non_virtual_route_not_mapped_under_remote_sandbox(tmp_path: Path) -> None:
+    # Under a remote sandbox default, even a non-virtual local route is on local
+    # disk and unreachable from the sandbox shell -> no mapping.
+    route = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    comp = CompositeBackend(
+        default=_RemoteSandbox(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/common/": route},
+    )
+
+    prompt = _route_host_path_prompt(comp)
+
     assert " -> " not in prompt
-    assert "/common/" in prompt  # listed as shell-inaccessible
+    assert "Virtual mounts without a host path mapping" in prompt
+    assert "/common/" in prompt
 
 
 def test_mix_of_host_and_non_host_routes(tmp_path: Path) -> None:

@@ -102,6 +102,7 @@ Do not assume that a path returned by a file tool can be used directly in a shel
 
 Host path mappings:
 - /common/ -> /work/app
+- /legacy/ -> remove the "/legacy" prefix (e.g. /legacy/file.txt is /file.txt)
 
 Virtual mounts without a host path mapping (not accessible from the shell):
 - /notes/

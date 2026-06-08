@@ -113,23 +113,27 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
 
 
 def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    """Snapshot the materialized prompt for both route classifications (issue #3050).
+    """Snapshot the materialized prompt for all route classifications (issue #3050).
 
-    A `CompositeBackend` whose default supports execution renders a "Shell paths
-    vs. virtual paths" section that covers both branches:
+    A `CompositeBackend` whose default is a `LocalShellBackend` renders a "Shell
+    paths vs. virtual paths" section that covers all three cases:
 
     - `/common/` is a virtual-mode `FilesystemBackend`, so it appears under
-      "Host path mappings" with its host path. The route uses a fixed absolute
+      "Host path mappings" mapped to its host root. The route uses a fixed absolute
       `root_dir` (`/work/app`), which `FilesystemBackend` resolves to itself, so
       the snapshot is reproducible without redacting a machine-specific path.
+    - `/legacy/` is a non-virtual `FilesystemBackend`, so it appears under
+      "Host path mappings" with a drop-the-prefix rule (root_dir is ignored, the
+      remaining absolute path is used as-is on the host).
     - `/notes/` is a `StateBackend` (in-memory, no host path), so it appears under
       "Virtual mounts without a host path mapping" and is marked shell-inaccessible.
     """
     model = _smoke_model()
     route = FilesystemBackend(root_dir="/work/app", virtual_mode=True)
+    legacy = FilesystemBackend(root_dir="/work/legacy", virtual_mode=False)
     backend = CompositeBackend(
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
-        routes={"/common/": route, "/notes/": StateBackend()},
+        routes={"/common/": route, "/legacy/": legacy, "/notes/": StateBackend()},
     )
     agent = create_deep_agent(model=model, backend=backend)
 

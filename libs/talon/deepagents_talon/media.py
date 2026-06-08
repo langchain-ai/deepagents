@@ -6,8 +6,9 @@ import base64
 import mimetypes
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
+from urllib.parse import urlparse
 
 from deepagents_talon.interfaces import ChannelMedia
 
@@ -138,7 +139,7 @@ def extract_markdown_media(text: str) -> tuple[str, list[MarkdownMediaRef]]:
         refs.append(
             MarkdownMediaRef(
                 alt=match.group(1),
-                path=Path(match.group(2)).expanduser(),
+                path=Path(match.group(2)),
             ),
         )
         return ""
@@ -148,24 +149,89 @@ def extract_markdown_media(text: str) -> tuple[str, list[MarkdownMediaRef]]:
     return _restore_code(cleaned, fences, codes).strip(), refs
 
 
-def outbound_channel_media(ref: MarkdownMediaRef, *, caption: str | None = None) -> ChannelMedia:
+def outbound_channel_media(
+    ref: MarkdownMediaRef,
+    *,
+    caption: str | None = None,
+    root: Path | None = None,
+) -> ChannelMedia:
     """Build an outbound channel media payload for a markdown media ref.
 
     Args:
         ref: Markdown media reference.
         caption: Optional caption for the media.
+        root: Optional directory that must contain the referenced media. When
+            supplied, Markdown references must be relative paths resolved inside
+            this root.
 
     Returns:
         Channel media payload.
 
     Raises:
-        ValueError: If the referenced path is not an image or video.
+        ValueError: If the referenced path is unsafe or is not an image or video.
     """
-    media_type = _outbound_media_type(ref.path)
+    path = (
+        resolve_bounded_media_path(ref.path, root, require_relative=True)
+        if root is not None
+        else ref.path.expanduser()
+    )
+    media_type = _outbound_media_type(path)
     if media_type is None:
-        msg = f"unsupported outbound media file type: {ref.path}"
+        msg = f"unsupported outbound media file type: {path}"
         raise ValueError(msg)
-    return ChannelMedia(path=ref.path, media_type=media_type, caption=caption)
+    return ChannelMedia(path=path, media_type=media_type, caption=caption)
+
+
+def resolve_bounded_media_path(
+    path: Path,
+    root: Path,
+    *,
+    require_relative: bool = False,
+) -> Path:
+    """Resolve a local media path and enforce containment under a trusted root.
+
+    Args:
+        path: Candidate media path.
+        root: Directory that must contain the media after symlink resolution.
+        require_relative: Whether to reject absolute candidate paths up front.
+
+    Returns:
+        Canonical media path under `root`.
+
+    Raises:
+        ValueError: If the path is unsafe, unavailable, or escapes `root`.
+    """
+    raw = str(path)
+    parsed = urlparse(raw)
+    windows_path = PureWindowsPath(raw)
+    is_windows_drive_path = bool(windows_path.drive)
+    if parsed.scheme and not is_windows_drive_path:
+        msg = f"media path must be a local filesystem path: {path}"
+        raise ValueError(msg)
+    if raw.startswith("~") or (
+        require_relative
+        and (path.is_absolute() or windows_path.is_absolute() or is_windows_drive_path)
+    ):
+        msg = f"media path must be a local relative path under the outbound root: {path}"
+        raise ValueError(msg)
+    if ".." in path.parts or ".." in windows_path.parts:
+        msg = f"media path must not contain parent-directory traversal: {path}"
+        raise ValueError(msg)
+
+    root_resolved = root.expanduser().resolve()
+    candidate_input = root_resolved / path if not path.is_absolute() else path
+    try:
+        candidate = candidate_input.resolve(strict=True)
+    except OSError as exc:
+        msg = f"media file is unavailable: {path}"
+        raise ValueError(msg) from exc
+    if not candidate.is_relative_to(root_resolved):
+        msg = f"media path escapes outbound root: {path}"
+        raise ValueError(msg)
+    if not candidate.is_file():
+        msg = f"media path is not a regular file: {path}"
+        raise ValueError(msg)
+    return candidate
 
 
 def _document_parts(paths: list[Path]) -> list[str]:

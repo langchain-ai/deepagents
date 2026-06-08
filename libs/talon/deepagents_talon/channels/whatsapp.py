@@ -58,6 +58,8 @@ class WhatsAppChannelConfig:
     Args:
         session_dir: Directory for bridge authentication and Chromium profile state.
         inbound_media_dir: Directory where the bridge stores downloaded inbound media.
+        outbound_media_dir: Optional root that outbound media must remain under
+            before it is staged for the bridge.
         host: Loopback host where the bridge listens.
         port: Loopback port where the bridge listens.
         exposure: Inbound trigger policy.
@@ -74,6 +76,7 @@ class WhatsAppChannelConfig:
 
     session_dir: Path
     inbound_media_dir: Path | None = None
+    outbound_media_dir: Path | None = None
     host: str = DEFAULT_BRIDGE_HOST
     port: int = DEFAULT_BRIDGE_PORT
     exposure: ChannelExposure = field(default_factory=ChannelExposure)
@@ -114,10 +117,16 @@ class WhatsAppChannelConfig:
                 str(config.inbound_media_dir / "whatsapp"),
             ),
         )
+        outbound_media_dir = Path(
+            env.get("DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR")
+            or env.get("DEEPAGENTS_TALON_WORKSPACE")
+            or "/workspace",
+        )
         command = _bridge_command(env)
         return cls(
             session_dir=session,
             inbound_media_dir=inbound_media_dir,
+            outbound_media_dir=outbound_media_dir,
             host=host,
             port=port,
             exposure=_exposure_from_env(env),
@@ -288,7 +297,7 @@ class WhatsAppChannel:
             conversation_id: WhatsApp chat id.
             media: Media payload to send.
         """
-        checked = validate_media(media)
+        checked = validate_media(media, root=self.config.outbound_media_dir)
         staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
         payload: dict[str, object] = {
             "chat_id": conversation_id,

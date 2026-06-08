@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -13,9 +13,6 @@ from deepagents_talon.channels.base import (
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_default_exposure_allows_only_self_messages() -> None:
@@ -72,6 +69,27 @@ def test_validate_media_accepts_matching_image(tmp_path: Path) -> None:
     media = validate_media(ChannelMedia(path=path, media_type="image", caption="caption"))
 
     assert media == ChannelMedia(path=path, media_type="image", caption="caption")
+
+
+def test_validate_media_accepts_relative_path_under_root(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    path = root / "image.png"
+    path.write_bytes(b"not-really-a-png")
+
+    media = validate_media(ChannelMedia(path=Path("image.png"), media_type="image"), root=root)
+
+    assert media == ChannelMedia(path=path.resolve(), media_type="image")
+
+
+def test_validate_media_rejects_path_outside_root(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"not-really-a-png")
+
+    with pytest.raises(ChannelMediaError, match="escapes outbound root"):
+        validate_media(ChannelMedia(path=outside, media_type="image"), root=root)
 
 
 def test_validate_media_rejects_type_mismatch(tmp_path: Path) -> None:

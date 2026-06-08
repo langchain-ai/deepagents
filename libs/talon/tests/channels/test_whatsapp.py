@@ -8,7 +8,7 @@ from typing import Self, cast
 
 import pytest
 
-from deepagents_talon.channels.base import ChannelExposure, ExposureMode
+from deepagents_talon.channels.base import ChannelExposure, ChannelMediaError, ExposureMode
 from deepagents_talon.channels.whatsapp import (
     BridgeTransport,
     WhatsAppBridgeError,
@@ -424,6 +424,23 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
             },
         ),
     ]
+
+
+async def test_channel_rejects_media_outside_configured_outbound_root(tmp_path: Path) -> None:
+    transport = RecordingTransport()
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"image")
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, outbound_media_dir=root),
+        transport=cast("BridgeTransport", transport),
+    )
+
+    with pytest.raises(ChannelMediaError, match="escapes outbound root"):
+        await channel.send_media("chat", ChannelMedia(path=outside, media_type="image"))
+
+    assert transport.posts == []
 
 
 async def test_channel_waits_for_bridge_health_before_polling(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
@@ -48,6 +49,9 @@ logger = logging.getLogger(__name__)
 _STOP_COMMAND = "/stop"
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
+_DEFAULT_WORKSPACE = "/workspace"
+_OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
+_WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
 
 @dataclass(slots=True)
@@ -377,7 +381,11 @@ class TalonHost:
                 await channel.send_message(conversation_id, result.text)
             return
 
-        media, failed = _outbound_media_from_refs(refs, cleaned)
+        media, failed = _outbound_media_from_refs(
+            refs,
+            cleaned,
+            root=_outbound_media_root(self.config),
+        )
         text = _with_failed_attachment_text(cleaned, failed)
         sent_media, send_failed = await _send_channel_media(
             channel,
@@ -457,17 +465,28 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
 def _outbound_media_from_refs(
     refs: list[MarkdownMediaRef],
     cleaned_text: str,
+    *,
+    root: Path,
 ) -> tuple[list[ChannelMedia], list[str]]:
     media: list[ChannelMedia] = []
     failed: list[str] = []
     for index, ref in enumerate(refs):
         caption = cleaned_text if index == 0 and cleaned_text else getattr(ref, "alt", "") or None
         try:
-            media.append(outbound_channel_media(ref, caption=caption))
+            media.append(outbound_channel_media(ref, caption=caption, root=root))
         except ValueError:
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
+
+
+def _outbound_media_root(config: TalonConfig) -> Path:
+    raw = (
+        config.env.get(_OUTBOUND_MEDIA_DIR_ENV)
+        or config.env.get(_WORKSPACE_ENV)
+        or _DEFAULT_WORKSPACE
+    )
+    return Path(raw).expanduser()
 
 
 def _with_failed_attachment_text(text: str, failed: list[str]) -> str:

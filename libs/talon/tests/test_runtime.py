@@ -643,6 +643,79 @@ async def test_runtime_returns_sanitized_structured_error_after_persistent_auth_
     assert "new-token" not in result.text
 
 
+async def test_runtime_reraises_provider_auth_without_fleet_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_error = StatusError(401, "OpenAI API key is invalid")
+    graph = AuthFailingGraph(provider_error)
+
+    def fake_create_deep_agent(**_kwargs: Any) -> object:
+        return graph
+
+    reloads = 0
+
+    async def reload_agent_components() -> RuntimeAgentComponents:
+        nonlocal reloads
+        reloads += 1
+        return RuntimeAgentComponents(model="test:model")
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        reload_agent_components=reload_agent_components,
+    )
+    await runtime.start()
+
+    with pytest.raises(StatusError, match="OpenAI API key"):
+        await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
+
+    assert reloads == 0
+    assert len(graph.calls) == 1
+
+
+async def test_runtime_reraises_provider_auth_after_fleet_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expired = AuthFailingGraph(StatusError(401, "expired OAuth token"))
+    provider_denied = AuthFailingGraph(StatusError(401, "Anthropic API key is invalid"))
+    graphs: list[object] = [expired, provider_denied]
+
+    def fake_create_deep_agent(**_kwargs: Any) -> object:
+        return graphs.pop(0)
+
+    reloads = 0
+
+    async def reload_agent_components() -> RuntimeAgentComponents:
+        nonlocal reloads
+        reloads += 1
+        return RuntimeAgentComponents(
+            model="test:model",
+            tools=(custom_tool,),
+            skills=(),
+            middleware=(),
+        )
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        reload_agent_components=reload_agent_components,
+    )
+    await runtime.start()
+
+    with pytest.raises(StatusError, match="Anthropic API key"):
+        await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
+
+    assert reloads == 1
+    assert len(expired.calls) == 1
+    assert len(provider_denied.calls) == 1
+
+
 async def test_cron_tools_use_current_request_origin(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

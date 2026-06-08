@@ -147,6 +147,25 @@ _AUTH_MESSAGE_MARKERS = (
     "token expired",
     "unauthorized",
 )
+_MCP_AUTH_MESSAGE_MARKERS = (
+    "bearer",
+    "fleet mcp",
+    "invalid_token",
+    "mcp",
+    "oauth",
+    "refresh token",
+)
+_PROVIDER_AUTH_MESSAGE_MARKERS = (
+    "anthropic",
+    "api key",
+    "apikey",
+    "authentication_error",
+    "invalid api",
+    "invalid x-api-key",
+    "no api key",
+    "openai",
+    "x-api-key",
+)
 
 _CONTINUATION_NUDGE = (
     "Your action budget was exhausted mid-task. Continue working and complete the task. "
@@ -443,7 +462,7 @@ class DeepAgentRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if self.reload_agent_components is not None and _is_auth_failure(exc):
+                if self.reload_agent_components is not None and _is_mcp_auth_failure(exc):
                     if refreshed_auth:
                         logger.warning(
                             "Fleet MCP authorization failed after credential reload "
@@ -946,6 +965,18 @@ def _is_auth_failure(exc: BaseException) -> bool:
     if isinstance(exc, BaseExceptionGroup):
         return any(_is_auth_failure(item) for item in exc.exceptions)
     return _contains_marker(str(exc).lower(), _AUTH_MESSAGE_MARKERS)
+
+
+def _is_mcp_auth_failure(exc: BaseException) -> bool:
+    if not _is_auth_failure(exc):
+        return False
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_mcp_auth_failure(item) for item in exc.exceptions)
+
+    text = str(exc).lower()
+    if _contains_marker(text, _PROVIDER_AUTH_MESSAGE_MARKERS):
+        return False
+    return _contains_marker(text, _MCP_AUTH_MESSAGE_MARKERS)
 
 
 def _status_code(exc: BaseException) -> int | None:

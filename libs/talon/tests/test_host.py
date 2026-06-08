@@ -90,9 +90,9 @@ class VoiceTranscriber:
 
 
 class MediaAgent(BlockingAgent):
-    def __init__(self, image: Path) -> None:
+    def __init__(self, image: Path | str) -> None:
         super().__init__()
-        self.image = image
+        self.image = str(image)
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         del request
@@ -124,8 +124,8 @@ class ApprovalAgent(BlockingAgent):
         return AgentResult(text=f"decision:{decision}")
 
 
-def _config(tmp_path: Path) -> TalonConfig:
-    return TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
+    return TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test", **(env or {})}, base_home=tmp_path)
 
 
 async def test_host_starts_and_stops_components(tmp_path: Path) -> None:
@@ -185,10 +185,16 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
 
 async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
     channel = RecordingChannel()
-    image = tmp_path / "result.png"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = workspace / "result.png"
     image.write_bytes(b"image")
-    agent = MediaAgent(image)
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    agent = MediaAgent("result.png")
+    host = TalonHost(
+        config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
+        agent=agent,
+        channels=[channel],
+    )
     await host.start()
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
@@ -198,9 +204,31 @@ async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -
     assert channel.media == [
         (
             "chat",
-            ChannelMedia(path=image, media_type="image", caption="Here is the image."),
+            ChannelMedia(path=image.resolve(), media_type="image", caption="Here is the image."),
         ),
     ]
+
+
+async def test_host_rejects_markdown_media_outside_workspace(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"secret")
+    agent = MediaAgent(outside)
+    host = TalonHost(
+        config=_config(tmp_path, {"DEEPAGENTS_TALON_WORKSPACE": str(workspace)}),
+        agent=agent,
+        channels=[channel],
+    )
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="draw"))
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert channel.media == []
+    assert channel.sent == [("chat", "Here is the image.\n\n_(Could not attach: chart.)_")]
 
 
 async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> None:

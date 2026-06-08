@@ -92,6 +92,9 @@ The bridge prints a QR code during pairing. By default, inbound exposure is
 Outbound WhatsApp messages include a `deepagents bot` header by default so
 self-message conversations clearly distinguish agent replies from operator
 messages. Set `DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER` to customize that label.
+Markdown image/video references in assistant replies may attach files only when
+they are relative paths inside `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or inside
+`DEEPAGENTS_TALON_WORKSPACE` when no outbound media directory is configured.
 
 Inbound voice transcription is opt-in:
 

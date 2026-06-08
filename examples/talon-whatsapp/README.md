@@ -61,6 +61,9 @@ echo runtime for smoke tests.
 The Docker example overrides `DEEPAGENTS_TALON_HOME` to
 `/workspace/.deepagents`, so cron jobs are stored at
 `~/agent-workspace/.deepagents/<assistant-id>/cron/jobs.json`.
+Assistant Markdown image/video attachments must use relative paths inside
+`DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or inside `DEEPAGENTS_TALON_WORKSPACE`
+when no outbound media directory is configured.
 
 Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` to trace each channel or
 cron-triggered run. `LANGSMITH_PROJECT` defaults to `deepagents-talon`.

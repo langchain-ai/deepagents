@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -115,11 +116,13 @@ def chunk_text(text: str, *, limit: int = MAX_TEXT_CHARS) -> list[str]:
     return chunks
 
 
-def validate_media(media: ChannelMedia) -> ChannelMedia:
+def validate_media(media: ChannelMedia, *, root: Path | None = None) -> ChannelMedia:
     """Validate outbound media path, type, and size.
 
     Args:
         media: Media payload to validate.
+        root: Optional directory that must contain the media after symlink
+            resolution.
 
     Returns:
         The validated media payload.
@@ -127,7 +130,15 @@ def validate_media(media: ChannelMedia) -> ChannelMedia:
     Raises:
         ChannelMediaError: If the file is missing, unsupported, or too large.
     """
-    path = media.path.expanduser()
+    try:
+        path = (
+            resolve_bounded_media_path(media.path, root, require_relative=False)
+            if root is not None
+            else media.path.expanduser()
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        raise ChannelMediaError(msg) from exc
     if not path.is_file():
         msg = f"media file does not exist: {path}"
         raise ChannelMediaError(msg)

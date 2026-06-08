@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -12,10 +13,8 @@ from deepagents_talon.media import (
     build_model_content,
     extract_markdown_media,
     outbound_channel_media,
+    resolve_bounded_media_path,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_build_inbound_text_injects_readable_document(tmp_path: Path) -> None:
@@ -74,6 +73,12 @@ def test_extract_markdown_media_ignores_code_spans(tmp_path: Path) -> None:
     assert f"`![code]({ignored})`" in cleaned
 
 
+def test_extract_markdown_media_preserves_unexpanded_paths() -> None:
+    _cleaned, refs = extract_markdown_media("send ![home](~/secret.png)")
+
+    assert refs == [MarkdownMediaRef(alt="home", path=Path("~/secret.png"))]
+
+
 def test_outbound_channel_media_rejects_unsupported_file(tmp_path: Path) -> None:
     document = tmp_path / "readme.txt"
 
@@ -88,3 +93,47 @@ def test_outbound_channel_media_builds_video_payload(tmp_path: Path) -> None:
     media = outbound_channel_media(ref, caption="caption")
 
     assert media == ChannelMedia(path=video, media_type="video", caption="caption")
+
+
+def test_outbound_channel_media_resolves_relative_path_under_root(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    image = root / "result.png"
+    image.write_bytes(b"image")
+
+    media = outbound_channel_media(
+        MarkdownMediaRef(alt="chart", path=Path("result.png")),
+        caption="caption",
+        root=root,
+    )
+
+    assert media == ChannelMedia(path=image.resolve(), media_type="image", caption="caption")
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        "/etc/passwd.png",
+        "../secret.png",
+        "~/secret.png",
+        "file:///tmp/secret.png",
+    ],
+)
+def test_outbound_channel_media_rejects_unsafe_paths(tmp_path: Path, raw_path: str) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="media path"):
+        outbound_channel_media(MarkdownMediaRef(alt="secret", path=Path(raw_path)), root=root)
+
+
+def test_resolve_bounded_media_path_rejects_symlink_escape(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"secret")
+    link = root / "link.png"
+    link.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="escapes outbound root"):
+        resolve_bounded_media_path(Path("link.png"), root, require_relative=True)

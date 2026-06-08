@@ -1,0 +1,18 @@
+job_name: terminal-bench-langsmith
+jobs_dir: jobs/terminal-bench
+n_attempts: 1
+timeout_multiplier: 2.0
+orchestrator:
+  type: local
+  n_concurrent_trials: 1
+environment:
+  import_path: deepagents_harbor:LangSmithSandboxEnvironment
+  delete: true
+  kwargs:
+    idle_ttl_seconds: 0
+    delete_after_stop_seconds: 7200
+agents:
+  - import_path: deepagents_harbor:DeepAgentsWrapper
+# The dataset is supplied on the CLI so the registry resolves automatically, e.g.
+#   uv run harbor run --config examples/terminal-bench-langsmith.yaml \
+#     --dataset terminal-bench@2.0 -n 1 -l 1

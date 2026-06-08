@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-langsmith-sandbox-smoke run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-langsmith-sandbox-smoke run-terminal-bench-langsmith run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
 
 .DEFAULT_GOAL := help
 
@@ -28,6 +28,10 @@ run-hello-world: ## Run hello-world job
 run-langsmith-sandbox-smoke: ## Run smoke task on LangSmith prod sandboxes
 	@mkdir -p jobs/langsmith-sandbox
 	uv run harbor run --config examples/langsmith-sandbox-smoke.yaml
+
+run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes
+	@mkdir -p jobs/terminal-bench
+	uv run harbor run --config examples/terminal-bench-langsmith.yaml --dataset terminal-bench@2.0 -n 1 -l 1
 
 run-terminal-bench-modal: ## Run terminal-bench on Modal
 	@mkdir -p jobs/terminal-bench

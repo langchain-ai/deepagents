@@ -85,6 +85,17 @@ The smoke job lives at `examples/langsmith-sandbox-smoke.yaml`. It creates or
 reuses a sandbox snapshot from the task's `[environment].docker_image`, claims a
 box, runs DeepAgents, verifies the result, and deletes the box at teardown.
 
+To evaluate DeepAgents against a benchmark on the same environment, run
+terminal-bench. The dataset is passed on the CLI so its registry resolves
+automatically:
+
+```bash
+make run-terminal-bench-langsmith
+# or set your own concurrency (-n) and task count (-l):
+uv run harbor run --config examples/terminal-bench-langsmith.yaml \
+  --dataset terminal-bench@2.0 -n 4 -l 10
+```
+
 Current scope:
 
 - Supported: task configs with `[environment].docker_image`.
@@ -188,6 +199,8 @@ Makefile shortcuts are available for common workflows:
 - `make run-terminal-bench-modal` - Run 4 tasks on Modal
 - `make run-terminal-bench-runloop` - Run 10 tasks on Runloop
 - `make run-langsmith-sandbox-smoke` - Run the smoke task on LangSmith prod
+  sandboxes
+- `make run-terminal-bench-langsmith` - Run terminal-bench on LangSmith prod
   sandboxes
 
 ## Resources

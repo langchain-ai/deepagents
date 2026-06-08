@@ -27,11 +27,11 @@ run-hello-world: ## Run hello-world job
 
 run-langsmith-sandbox-smoke: ## Run smoke task on LangSmith prod sandboxes
 	@mkdir -p jobs/langsmith-sandbox
-	uv run harbor run --config examples/langsmith-sandbox-smoke.yaml
+	uv run harbor run -p examples/tasks/langsmith-sandbox-smoke --agent-import-path deepagents_harbor:DeepAgentsWrapper -e langsmith -n 1 --jobs-dir jobs/langsmith-sandbox --delete --ek idle_ttl_seconds=0 --ek delete_after_stop_seconds=7200
 
 run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes
 	@mkdir -p jobs/terminal-bench
-	uv run harbor run --config examples/terminal-bench-langsmith.yaml --dataset terminal-bench@2.0 -n 1 -l 1
+	uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -e langsmith -n 1 -l 1 --jobs-dir jobs/terminal-bench
 
 run-terminal-bench-modal: ## Run terminal-bench on Modal
 	@mkdir -p jobs/terminal-bench

@@ -63,12 +63,17 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
 
 ### Run on LangSmith Production Sandboxes
 
-This package includes a Harbor environment adapter for LangSmith sandbox boxes:
-`deepagents_harbor:LangSmithSandboxEnvironment`.
+Harbor ships a built-in LangSmith sandbox environment via the `harbor[langsmith]`
+extra (this package depends on it). Select it with `-e langsmith`, the same way
+as the other environments.
 
-The adapter uses the LangSmith SDK client for auth and requests. It can
-authenticate from `LANGSMITH_PROFILE=prod`, `LANGSMITH_API_KEY`, or an explicit
-`environment.kwargs.api_key`. Do not put production API keys in config files.
+> **Note:** the built-in `langsmith` environment ships in the harbor release that
+> includes [harbor-framework/harbor#1610](https://github.com/harbor-framework/harbor/pull/1610)
+> (merged after `0.13.1`). Until that release is on PyPI, `-e langsmith` is
+> unavailable; run `uv lock` to refresh once it lands.
+
+It authenticates from `LANGSMITH_PROFILE=prod`, `LANGSMITH_API_KEY`, or a
+configured LangSmith SDK profile. Do not put production API keys in config files.
 
 ```bash
 export LANGSMITH_PROFILE=prod
@@ -81,27 +86,24 @@ make run-langsmith-sandbox-smoke
 If you are not using a LangSmith profile, export `LANGSMITH_API_KEY` and
 optionally `LANGSMITH_ENDPOINT` instead.
 
-The smoke job lives at `examples/langsmith-sandbox-smoke.yaml`. It creates or
-reuses a sandbox snapshot from the task's `[environment].docker_image`, claims a
-box, runs DeepAgents, verifies the result, and deletes the box at teardown.
+The smoke job runs the task in `examples/tasks/langsmith-sandbox-smoke`: it
+creates or reuses a sandbox snapshot from the task's `[environment].docker_image`,
+claims a box, runs DeepAgents, verifies the result, and deletes the box at
+teardown.
 
 To evaluate DeepAgents against a benchmark on the same environment, run
-terminal-bench. The dataset is passed on the CLI so its registry resolves
-automatically:
+terminal-bench:
 
 ```bash
 make run-terminal-bench-langsmith
 # or set your own concurrency (-n) and task count (-l):
-uv run harbor run --config examples/terminal-bench-langsmith.yaml \
-  --dataset terminal-bench@2.0 -n 4 -l 10
+uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+  --dataset terminal-bench@2.0 -e langsmith -n 4 -l 10
 ```
 
-Current scope:
-
-- Supported: task configs with `[environment].docker_image`.
-- Supported: pre-created snapshots via `environment.kwargs.snapshot_name`.
-- Not yet supported: building/pushing a Harbor `environment/Dockerfile` before
-  snapshot creation.
+The environment supports tasks backed by `[environment].docker_image`, a
+pre-created snapshot (`environment.kwargs.snapshot_name`), or an
+`environment/Dockerfile` (built into a snapshot automatically).
 
 ## LangSmith Integration
 
@@ -189,8 +191,8 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 - `daytona` - Daytona cloud sandboxes (requires DAYTONA_API_KEY)
 - `modal` - Modal cloud compute
 - `runloop` - Runloop sandboxes
-- `deepagents_harbor:LangSmithSandboxEnvironment` - LangSmith production
-  sandboxes via a Harbor config file with `environment.import_path`
+- `langsmith` - LangSmith production sandboxes (requires the `harbor[langsmith]`
+  extra, which this package installs)
 
 Makefile shortcuts are available for common workflows:
 

@@ -18,8 +18,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    # Harbor runtime
-    "harbor>=0.1.12",
+    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`).
+    # The env ships in the harbor release that includes harbor-framework/harbor#1610
+    # (merged after 0.13.1); refresh the lock once that release is on PyPI.
+    "harbor[langsmith]>=0.13.1",
     "langchain-anthropic>=1.0.0",
     "langchain-openai>=1.0.0",
     "deepagents>=0.2.5",

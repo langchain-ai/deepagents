@@ -5192,9 +5192,8 @@ class DeepAgentsApp(App):
             HIDDEN_COMMANDS,
         )
 
-        # Hidden commands are recovery / power-user escape hatches and
-        # must work even when the app is busy or wedged — treat them as
-        # always-immediate.
+        # Hidden commands are power-user escape hatches and must work even
+        # when the app is busy or wedged — treat them as always-immediate.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
@@ -5765,7 +5764,7 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /skill:<name>, /remember, "
+                "/notifications, /reload, /restart, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
@@ -6087,7 +6086,7 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-        # -- Hidden commands (not in COMMANDS / autocomplete) -----------------
+        # -- Debug commands (not in COMMANDS / autocomplete) ------------------
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -9927,7 +9926,7 @@ class DeepAgentsApp(App):
         )
 
     async def _handle_restart_command(self, command: str) -> None:
-        """Drive the hidden `/restart` slash command.
+        """Drive the `/restart` slash command.
 
         Superset of `/reload`: re-reads `.env` / environment, clears
         configuration caches, then respawns the app-owned LangGraph

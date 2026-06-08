@@ -10785,7 +10785,7 @@ class TestParseReconnectArgs:
 
 
 class TestRestartCommand:
-    """Hidden `/restart` slash command — config reload + server respawn."""
+    """`/restart` slash command — config reload + server respawn."""
 
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch

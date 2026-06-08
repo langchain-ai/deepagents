@@ -1548,8 +1548,8 @@ class TestSlashCompletionCursorMapping:
             assert [event.value for event in app.submitted] == [selected_label]
             assert app.submitted[0].mode == "command"
 
-    async def test_stale_enter_does_not_hide_exact_hidden_command(self) -> None:
-        """Exact hidden commands should still submit without autocomplete."""
+    async def test_stale_enter_submits_exact_restart_command(self) -> None:
+        """Exact restart command should submit without requiring autocomplete."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)

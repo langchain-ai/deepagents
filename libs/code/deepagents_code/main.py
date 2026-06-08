@@ -2736,13 +2736,18 @@ def cli_main() -> None:
                         format_installed_age_suffix,
                         format_release_age_parenthetical,
                         is_auto_update_enabled,
+                        is_installed_version_at_least,
                         mark_update_notified,
                         should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    if latest and should_notify_update(latest):
+                    if (
+                        latest
+                        and not is_installed_version_at_least(latest)
+                        and should_notify_update(latest)
+                    ):
                         console.print()
                         release_age = format_release_age_parenthetical(latest)
                         installed_age = format_installed_age_suffix(cli_version)

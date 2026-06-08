@@ -3219,6 +3219,7 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 is_auto_update_enabled,
+                is_installed_version_at_least,
                 is_update_available,
                 upgrade_command,
             )
@@ -3231,6 +3232,9 @@ class DeepAgentsApp(App):
                 bypass_cache=periodic,
             )
             if not available or latest is None:
+                return
+            if await asyncio.to_thread(is_installed_version_at_least, latest):
+                self._update_available = (False, None)
                 return
 
             self._update_available = (True, latest)

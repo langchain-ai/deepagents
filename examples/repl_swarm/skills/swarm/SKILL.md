@@ -1,88 +1,72 @@
 ---
 name: swarm
-description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency. Returns a summary object with {total, completed, failed, results[]} — iterate `.results` for per-task output.
+description: Dispatch a batch of tasks to subagents in parallel with bounded concurrency. Returns a summary with {total, completed, failed, results[]}.
 metadata:
-  entrypoint: scripts/index.ts
+  required-ptc-tools: task read_file
 ---
 
 # Swarm
 
-Fan out a list of tasks to subagents with bounded
-concurrency, collect results, and return a compact summary.
+Fan out a list of tasks to subagents in parallel, collect results, and return a summary.
 
-## Loading
+## How to use
 
-**The REPL's `eval` tool supports ES module imports from `@/skills/*`.**
-Use `await import("@/skills/swarm")` to load this skill — the REPL
-installs a custom module loader that resolves those paths against the
-skills backend. Do **not** inline `index.ts` into your eval body.
-Importing is the supported, tested path; copying the source is an
-anti-pattern that duplicates logic and drifts on skill updates.
-
-## When to use
-
-You have many independent tasks (e.g. "summarize each of these 20
-files", "classify each of these 50 tickets", "research these 15
-topics") and want them to run concurrently rather than sequentially.
-
-## Usage
-
-`runSwarm(...)` returns a **summary object**, not an array. Destructure
-`.results` for the per-task output — the summary itself is not iterable.
+Read the reference script first, then write your own eval block based on it.
+Do **not** try to `import` this skill — there is no module to load.
 
 ```javascript
-const { runSwarm } = await import("@/skills/swarm");
+// eval 1: read the reference
+const script = await tools.readFile({ file_path: "/skills/swarm/scripts/index.ts" });
+console.log(script);
+```
 
-const { results, completed, failed } = await runSwarm({
+Then write a second eval that implements the same `runSwarm` pattern with your tasks.
+
+## Example
+
+```javascript
+// Define runSwarm inline (from reading index.ts)
+async function runSwarm({ tasks, concurrency = 5, subagentType = "general-purpose" }) {
+  const results = new Array(tasks.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const i = next++;
+      const t = tasks[i];
+      try {
+        const out = await tools.task({
+          description: t.description,
+          subagent_type: t.subagentType ?? subagentType,
+        });
+        results[i] = { id: i, status: "completed", output: String(out) };
+      } catch (err) {
+        results[i] = { id: i, status: "failed", error: String(err) };
+      }
+    }
+  };
+  const workers = [];
+  for (let w = 0; w < Math.min(concurrency, tasks.length); w++) workers.push(worker());
+  await Promise.all(workers);
+  const completed = results.filter(r => r.status === "completed").length;
+  return { total: tasks.length, completed, failed: tasks.length - completed, results };
+}
+
+// Use it
+const { completed, failed, results } = await runSwarm({
   tasks: [
-    { description: "Summarize /notes/alpha.md" },
-    { description: "Summarize /notes/beta.md" },
-    { description: "Summarize /notes/gamma.md" },
+    { description: "Write the number 1 to /tmp_swarm/a" },
+    { description: "Write the number 2 to /tmp_swarm/b" },
+    { description: "Write the number 3 to /tmp_swarm/c" },
   ],
-  concurrency: 3,           // optional, defaults to 5, capped at 10
-  subagentType: "general-purpose",  // optional; per-task override wins
+  concurrency: 3,
 });
 
 console.log(`${completed} ok, ${failed} failed`);
-for (const r of results) {
-  console.log(r.id, r.status, r.output ?? r.error);
-}
+for (const r of results) console.log(r.id, r.status, r.output ?? r.error);
 ```
 
-## Contract
+## Notes
 
-The `runSwarm(opts)` function accepts:
-
-- `tasks` (required): an array of `{ description: string, subagentType?: string }`.
-- `concurrency` (optional, default `5`, capped at `10`): max parallel
-  subagent invocations.
-- `subagentType` (optional, default `"general-purpose"`): the default
-  subagent to dispatch each task to. A task's own `subagentType`
-  takes precedence.
-
-Returns a summary object:
-
-```typescript
-{
-  total: number;          // tasks.length
-  completed: number;      // subagents that returned a result
-  failed: number;         // subagents that threw
-  results: {              // one entry per task, in input order
-    id: number;           // 0-indexed position in `tasks`
-    status: "completed" | "failed";
-    output?: string;      // on success — subagent's final message
-    error?: string;       // on failure — error message
-  }[];
-}
-```
-
-## Design notes
-
-- Dispatch goes through `tools.task`, which the REPL's PTC layer
-  exposes for us. The skill does not register any subagent itself —
-  it's a fan-out pattern on top of what the agent already has.
-- Failures are caught per-task: one failed subagent does not abort
-  the swarm. Check the `failed` count and the per-task `status`.
-- Concurrency is bounded with a semaphore-style pool rather than
-  `Promise.all` on everything. For 100 tasks with `concurrency=5`,
-  this keeps memory and tool-call rate predictable.
+- Failures are caught per-task — one failure does not abort the swarm.
+- `tools.task` is the only PTC dispatch primitive needed.
+- Check `failed` count and retry specific tasks if needed.

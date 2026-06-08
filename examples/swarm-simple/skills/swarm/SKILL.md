@@ -4,85 +4,65 @@ description: >-
   Dispatches many independent items in parallel: build a row table, fan out
   to subagents via tools.task(), merge results back. One row = one unit of work.
 compatibility: >-
-  Requires @langchain/quickjs code interpreter with task PTC tool
+  Requires @langchain/quickjs code interpreter with task, read_file, glob PTC tools
 metadata:
   required-ptc-tools: task read_file write_file glob
 ---
 
 # Swarm
 
-Process many independent items in parallel by writing a single eval block
-that defines the table and dispatch helpers inline — no import needed.
+Process many independent items in parallel. Read the reference scripts, then write
+a single eval block that defines the helpers inline and uses them.
+
+**Do not** try to `import` this skill — there is no module to load.
 
 ## Flow
 
 1. **Read the scripts.** Use `read_file` to load `scripts/table.ts` and
-   `scripts/executor.ts`. Understand the `create`, `rows`, `mergeResults`,
-   and `run` helper signatures.
-2. **Write one eval block.** Define those helpers inline, build your row table
-   with `create()`, dispatch with `run()`, and log the results.
+   `scripts/executor.ts`. Understand `create`/`createFromGlob`/`createFromFiles`,
+   `rows`, `run`, and `validate`.
+2. **Write one eval block.** Define those helpers inline, build your table,
+   dispatch with `run()`, filter and retry if needed.
 
-Everything lives in a single eval — no state to carry across blocks.
-
-## Reading the reference scripts
+## Reading the scripts
 
 ```javascript
 const tableTs = await tools.readFile({ file_path: "/skills/swarm/scripts/table.ts" });
 const executorTs = await tools.readFile({ file_path: "/skills/swarm/scripts/executor.ts" });
-console.log(tableTs, executorTs);
+console.log(tableTs, "\n---\n", executorTs);
 ```
 
-Then write a second eval that implements the pattern with your data.
+## Sources for `create`
 
-## Example
+**`create(tasks)`** — pass pre-built records. Each must include a string `id`.
 
 ```javascript
-// Define table helpers (from table.ts)
-function create(tasks) {
-  return tasks.map((t) => ({ ...t }));
-}
-function rows(table, filter) {
-  return filter ? table.filter(filter) : [...table];
-}
-function mergeResults(table, results) {
-  const byId = new Map(results.map((r) => [r.id, r]));
-  for (const row of table) {
-    const result = byId.get(row.id);
-    if (result) Object.assign(row, result);
-  }
-}
-
-// Define dispatch helper (from executor.ts)
-async function run(table, opts) {
-  const { instruction, responseSchema, subagentType, concurrency = 10 } = opts;
-  const schemaHint = responseSchema
-    ? `\n\nRespond with JSON matching: ${JSON.stringify(responseSchema)}`
-    : "";
-  const out = [];
-  for (let i = 0; i < table.length; i += concurrency) {
-    const chunk = table.slice(i, i + concurrency);
-    const results = await Promise.all(chunk.map(async (row) => {
-      const prompt = instruction.replace(/\{(\w+)\}/g, (_, k) => String(row[k] ?? "")) + schemaHint;
-      try {
-        const raw = await tools.task({ description: prompt });
-        const match = raw.match(/\{[\s\S]*\}/);
-        return { id: row.id, result: match ? JSON.parse(match[0]) : { output: raw } };
-      } catch (err) {
-        return { id: row.id, error: String(err) };
-      }
-    }));
-    out.push(...results);
-  }
-  return out;
-}
-
-// Use them
 const table = create([
   { id: "r1", text: "Love this product!" },
   { id: "r2", text: "Terrible experience." },
 ]);
+```
 
-const results = await run(table, {
+**`createFromGlob(pattern)`** — one file = one row with `{ id, file }`. Requires `glob` PTC.
+
+```javascript
+const table = await createFromGlob("src/**/*.ts");
+// → [{ id: "src_auth_ts", file: "src/auth.ts" }, ...]
+```
+
+**`createFromFiles(paths)`** — explicit file list, same row shape as glob.
+
+```javascript
+const table = createFromFiles(["/notes/a.md", "/notes/b.md"]);
+```
+
+## Dispatching with `run()`
+
+`run()` dispatches each row, merges results onto rows in place, and returns
+`{ completed, failed, failures }`.
+
+```javascript
+const summary = await run(table, {
   instruction: 'Classify the sentiment of: "{text}"',
   responseSchema: {
     type: "object",
@@ -90,27 +70,93 @@ const results = await run(table, {
     required: ["sentiment"],
   },
 });
-
-mergeResults(table, results);
-console.log(JSON.stringify(table, null, 2));
+console.log(summary);
+// → { completed: 2, failed: 0, failures: [] }
+// Rows are mutated: [{ id: "r1", text: "...", sentiment: "positive" }, ...]
 ```
 
-## Retrying failures
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `instruction` | required | Template with `{column}` placeholders |
+| `responseSchema` | — | JSON Schema — used as prompt hint and for validation |
+| `context` | — | Prose prepended to every subagent prompt |
+| `subagentType` | — | Named subagent. Omit for default general-purpose |
+| `concurrency` | `10` | Max parallel dispatches |
+
+### Using `context`
 
 ```javascript
-const failed = rows(table, (r) => r.error != null);
+await run(table, {
+  instruction: "Review {file} for security issues.",
+  context: "TypeScript Express backend using Prisma ORM. Focus on injection and auth bypass.",
+  subagentType: "reviewer",
+  responseSchema: { type: "object", properties: { review: { type: "string" } }, required: ["review"] },
+});
+```
+
+## Querying rows
+
+Use `rows()` with a plain JS predicate for aggregation and retry targeting:
+
+```javascript
+const failed   = rows(table, r => !!r.error);
+const negative = rows(table, r => r.sentiment === "negative");
+const all      = rows(table);
+```
+
+## Retry pattern
+
+```javascript
+// First pass
+await run(table, { instruction: "...", responseSchema: { ... } });
+
+// Retry only failed rows
+const failed = rows(table, r => !!r.error);
 if (failed.length > 0) {
-  const retries = await run(failed, { instruction: "...", responseSchema: { ... } });
-  mergeResults(table, retries);
+  await run(failed, { instruction: "...", responseSchema: { ... } });
+}
+```
+
+## Chaining passes
+
+`run()` mutates rows in place — chain calls to accumulate columns:
+
+```javascript
+await run(table, {
+  instruction: "Classify sentiment of {text}",
+  responseSchema: { type: "object", properties: { sentiment: { type: "string" } }, required: ["sentiment"] },
+});
+
+const negative = rows(table, r => r.sentiment === "negative");
+await run(negative, {
+  instruction: "Summarize why {text} had negative sentiment.",
+  responseSchema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] },
+});
+```
+
+## Action-only tasks (no structured output)
+
+```javascript
+const table = await createFromGlob("src/**/*.ts");
+await run(table, {
+  subagentType: "fixer",
+  instruction: "Add missing JSDoc to all exported functions in {file}.",
+  responseSchema: { type: "object", properties: { fixed: { type: "string" } }, required: ["fixed"] },
+});
+// Retry any that failed
+const failed = rows(table, r => !!r.error);
+if (failed.length > 0) {
+  await run(failed, { subagentType: "fixer", instruction: "Add missing JSDoc to all exported functions in {file}.", responseSchema: { type: "object", properties: { fixed: { type: "string" } }, required: ["fixed"] } });
 }
 ```
 
 ## Technical notes
 
-- **All helpers defined inline.** Copy the function bodies from the scripts into your
-  eval block — do not try to import them.
-- **`tools.task` is the only PTC dispatch primitive.** It accepts `description` and
-  an optional `subagent_type`. Ask for JSON in the description to get structured output.
+- **All helpers defined inline.** Copy function bodies from the scripts into your eval block.
+- **`tools.task` is the only dispatch primitive.** Accepts `description` and optional `subagent_type`.
+- **`run()` mutates rows in place.** Results are merged as top-level columns; errors set `row.error`.
+- **`responseSchema` drives both prompt hint and validation.** Invalid responses are marked as failures with `validationErrors` detail in `failures[]`.
 - **Console output is capped at ~5 KB.** Log counts and short samples, not raw data.
-- **Parallel dispatches are capped at 10 by default.** The `run()` helper chunks
-  larger tables automatically.
+- **Everything the subagent needs must be in `instruction` + `context`.** Subagents cannot see the agent's context.

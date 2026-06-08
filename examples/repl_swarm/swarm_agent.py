@@ -1,14 +1,8 @@
 """Swarm example — fan out subagent tasks from inside the REPL.
 
-This example bundles a single skill, `swarm`, that ships a TypeScript
-entrypoint. When the agent runs `await import("@/skills/swarm")`, the
-REPL middleware installs the skill as an ES module and the model can
-call `runSwarm({ tasks: [...] })` to dispatch many `tools.task(...)`
-calls in parallel with bounded concurrency.
-
-Nothing in the Python driver here is swarm-specific — the whole pattern
-lives inside `skills/swarm/index.ts`. That's the point: a skill is just
-code the agent pulls in when it needs it.
+The agent reads the swarm skill scripts via read_file, understands the
+runSwarm pattern, and writes its own eval block that calls tools.task()
+in parallel. No skill module is bundled into the REPL.
 
 Usage:
     uv run python swarm_agent.py
@@ -32,16 +26,15 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 def _build_agent(model: str) -> object:
-    """Build a Deep Agent with a subagent + the swarm skill.
+    """Build a Deep Agent with the swarm skill.
 
-    Backend shape: ``CompositeBackend`` that sends ``/skills/*`` to a
-    ``FilesystemBackend`` rooted at this example's ``skills/`` dir, and
-    everything else to ``StateBackend``. Task files the model writes
-    (``/tmp_swarm/a`` in the default demo) land in agent state rather
-    than on the host — avoiding SIP/read-only-root issues on macOS and
-    keeping the demo self-cleaning across runs. The skills backend is
-    still a real filesystem because ``SkillsMiddleware`` scans for
-    SKILL.md at agent-build time, before any graph state exists.
+    Backend: ``CompositeBackend`` routing ``/skills/*`` to a real filesystem
+    (so ``SkillsMiddleware`` can scan SKILL.md at build time) and everything
+    else to ``StateBackend`` (keeps demo self-cleaning, avoids macOS SIP).
+
+    No ``skills_backend`` is passed to ``CodeInterpreterMiddleware`` — the
+    REPL has no bundled skill modules. The agent reads the skill scripts via
+    ``read_file`` and synthesizes its own eval code.
     """
     skill_backend = FilesystemBackend(root_dir=SKILLS_DIR, virtual_mode=True)
     backend = CompositeBackend(
@@ -54,8 +47,7 @@ def _build_agent(model: str) -> object:
         skills=["/skills/"],
         middleware=[
             CodeInterpreterMiddleware(
-                ptc=["task"],
-                skills_backend=backend,
+                ptc=["task", "read_file"],
                 timeout=None,
             )
         ],

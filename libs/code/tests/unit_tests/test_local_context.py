@@ -22,6 +22,7 @@ from deepagents_code.local_context import (
     _build_mcp_context,
     _ExecutableBackend,
     _section_files,
+    _section_gh_cli,
     _section_git,
     _section_header,
     _section_makefile,
@@ -1098,6 +1099,61 @@ class TestSectionGit:
     def test_no_output_outside_git(self, tmp_path: Path) -> None:
         out = _run_section(_section_git(), tmp_path, with_header=True)
         assert "**Git**" not in out
+
+
+class TestSectionGhCli:
+    """Tests for _section_gh_cli."""
+
+    def test_skips_when_gh_missing(self, tmp_path: Path) -> None:
+        script = _section_gh_cli()
+        result = subprocess.run(
+            ["/bin/bash", "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": "/nonexistent"},
+            check=False,
+        )
+        assert "**GitHub CLI**" not in result.stdout
+
+    def test_reports_search_json_fields_from_gh_help(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = search ] && [ "$3" = --help ]; then\n'
+            "  cat <<'EOF'\n"
+            "JSON FIELDS\n"
+            "  number, title, url,\n"
+            "  closedAt, updatedAt\n"
+            "\n"
+            "EXAMPLES\n"
+            "EOF\n"
+            "fi\n"
+        )
+        gh.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", _section_gh_cli()],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            check=False,
+        )
+
+        assert result.stderr == ""
+        assert "**GitHub CLI**:" in result.stdout
+        assert (
+            "`gh search prs --json` fields: number, title, url, closedAt, updatedAt"
+            in result.stdout
+        )
+        assert (
+            "`gh search issues --json` fields: number, title, url, closedAt, updatedAt"
+            in result.stdout
+        )
+        assert "does not expose `mergedAt`" in result.stdout
 
 
 class TestSectionTestCommand:

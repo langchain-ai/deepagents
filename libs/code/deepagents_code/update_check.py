@@ -123,6 +123,18 @@ def _parse_version(v: str) -> Version:
     return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
+def is_installed_version_at_least(version: str) -> bool:
+    """Return whether installed package metadata is at least `version`."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version as pkg_version
+
+        installed = _parse_version(pkg_version("deepagents-code"))
+        target = _parse_version(version)
+    except (InvalidVersion, PackageNotFoundError):
+        return False
+    return installed >= target
+
+
 def _latest_from_releases(
     releases: dict[str, list[object]],
     *,

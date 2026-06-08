@@ -44,6 +44,7 @@ from deepagents_code.update_check import (
     install_extras_command,
     install_package_command,
     is_auto_update_enabled,
+    is_installed_version_at_least,
     is_update_available,
     is_valid_extra_name,
     is_valid_package_name,
@@ -140,6 +141,20 @@ class TestParseVersion:
         assert _parse_version("1.0.0a2") < _parse_version("1.0.0b1")
         assert _parse_version("1.0.0b1") < _parse_version("1.0.0rc1")
         assert _parse_version("1.0.0rc1") < _parse_version("1.0.0")
+
+
+class TestInstalledVersionAtLeast:
+    def test_true_when_distribution_metadata_matches_target(self) -> None:
+        with patch("importlib.metadata.version", return_value="2.0.0"):
+            assert is_installed_version_at_least("2.0.0") is True
+
+    def test_true_when_distribution_metadata_is_newer(self) -> None:
+        with patch("importlib.metadata.version", return_value="2.0.1"):
+            assert is_installed_version_at_least("2.0.0") is True
+
+    def test_false_when_distribution_metadata_is_older(self) -> None:
+        with patch("importlib.metadata.version", return_value="1.9.9"):
+            assert is_installed_version_at_least("2.0.0") is False
 
 
 class TestLatestFromReleases:

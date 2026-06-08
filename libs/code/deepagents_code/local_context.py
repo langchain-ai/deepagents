@@ -328,6 +328,43 @@ if $IN_GIT; then
 fi"""
 
 
+def _section_gh_cli() -> str:
+    """GitHub CLI search JSON-field affordances from the installed `gh`.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- GitHub CLI ---
+if command -v gh >/dev/null 2>&1; then
+  _gh_json_fields() {
+    gh search "$1" --help 2>/dev/null \
+      | awk '
+        /^JSON FIELDS/ { in_fields = 1; next }
+        in_fields && /^$/ { exit }
+        in_fields { gsub(/^  /, ""); print }
+      ' \
+      | tr '\n' ' ' \
+      | sed 's/  */ /g; s/^ //; s/ $//'
+  }
+
+  GH_PRS_FIELDS="$(_gh_json_fields prs)"
+  GH_ISSUES_FIELDS="$(_gh_json_fields issues)"
+  if [ -n "$GH_PRS_FIELDS" ] || [ -n "$GH_ISSUES_FIELDS" ]; then
+    echo "**GitHub CLI**:"
+    [ -n "$GH_PRS_FIELDS" ] \
+      && echo "- \`gh search prs --json\` fields: ${GH_PRS_FIELDS}"
+    [ -n "$GH_ISSUES_FIELDS" ] \
+      && echo "- \`gh search issues --json\` fields: ${GH_ISSUES_FIELDS}"
+    case ",$GH_PRS_FIELDS," in
+      *mergedAt*) ;;
+      *) echo "- \`gh search prs --json\` does not expose \`mergedAt\`;"
+         echo "  use \`gh pr view --json mergedAt\` per PR for merge timestamps." ;;
+    esac
+    echo ""
+  fi
+fi"""
+
+
 def _section_test_command() -> str:
     """Test command detection (make test / pytest / npm test).
 
@@ -462,10 +499,11 @@ def build_detect_script() -> str:
         ("02_pkgmgr", _section_package_managers()),
         ("03_runtimes", _section_runtimes()),
         ("04_git", _section_git()),
-        ("05_testcmd", _section_test_command()),
-        ("06_files", _section_files()),
-        ("07_tree", _section_tree()),
-        ("08_makefile", _section_makefile()),
+        ("05_gh_cli", _section_gh_cli()),
+        ("06_testcmd", _section_test_command()),
+        ("07_files", _section_files()),
+        ("08_tree", _section_tree()),
+        ("09_makefile", _section_makefile()),
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a

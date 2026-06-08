@@ -78,11 +78,7 @@ pytest /foo/bar/tests
 cd /foo/bar && pytest tests
 </bad-example>
 
-#### gh CLI `--json` fields
-
-`gh search prs` and `gh search issues` do NOT accept `mergedAt` in `--json` — only `gh pr view --json` exposes merge timestamps. For search, request fields from its own schema (`closedAt`, `createdAt`, `updatedAt`, `state`, `number`, `title`, `url`, `author`, `repository`, etc.) and follow up with `gh pr view <number> --json mergedAt` per-PR if merge times are needed.
-
-When a single tool call in a parallel fanout fails with `Unknown JSON field`, do NOT submit additional parallel calls with the same field — drop the offending field and retry as a single corrected call before fanning out again.
+When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
 
 ### web_search
 

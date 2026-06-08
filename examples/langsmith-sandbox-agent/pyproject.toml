@@ -1,0 +1,19 @@
+[project]
+name = "langsmith-sandbox-agent-example"
+version = "0.1.0"
+description = "Run a DeepAgent inside a LangSmith sandbox, with the auth proxy injecting the model key"
+readme = "README.md"
+requires-python = ">=3.11"
+# Host-side driver dependencies. The agent runtime (deepagents, langchain-anthropic,
+# truststore) is installed inside the sandbox via the Dockerfile, not here.
+dependencies = [
+    "langsmith[sandbox]>=0.8.9",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/langsmith-sandbox-agent"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

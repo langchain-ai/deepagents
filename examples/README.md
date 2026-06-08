@@ -19,6 +19,7 @@
 | [text-to-sql-agent](text-to-sql-agent/) | Natural language to SQL agent with planning, skill-based workflows, and the Chinook demo database |
 | [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
+| [langsmith-sandbox-agent](langsmith-sandbox-agent/) | Runs a DeepAgent inside a LangSmith sandbox, with the auth proxy injecting the model key so the box never holds a real key |
 
 Each example has its own README with setup instructions.
 

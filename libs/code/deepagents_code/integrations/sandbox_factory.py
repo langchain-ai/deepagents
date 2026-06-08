@@ -738,7 +738,7 @@ class _E2BProvider(SandboxProvider):
         self,
         *,
         sandbox_id: str | None = None,
-        timeout: int = 180,  # noqa: ARG002  # E2B create/connect return a usable sandbox.
+        timeout: int = 180,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
         """Get or create an E2B sandbox.

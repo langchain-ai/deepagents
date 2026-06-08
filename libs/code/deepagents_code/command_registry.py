@@ -191,7 +191,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/install",
-        description="Install an optional extra (e.g. quickjs, daytona, e2b)",
+        description="Install an optional extra (e.g. quickjs, daytona, fireworks)",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="extra extras add provider sandbox dependency",
         argument_hint="<extra> [--force]",

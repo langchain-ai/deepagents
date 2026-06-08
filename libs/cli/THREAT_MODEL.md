@@ -44,7 +44,7 @@
 - `scripts/`, `examples/` — developer tooling, not shipped
 - Deployment infrastructure, CI/CD pipelines
 - LLM provider behavior (model outputs, jailbreaks) — user-controlled
-- Sandbox provider internals (Daytona, E2B, LangSmith, Modal, Runloop, AgentCore) — third-party
+- Sandbox provider internals (Daytona, LangSmith, Modal, Runloop, AgentCore) — third-party
 - LangGraph server internals — consumed as a subprocess dependency
 
 ### Assumptions
@@ -103,7 +103,7 @@
 │   ▼          ▼         ▼            ▼          ▼              ▼     │
 │  C4:Tools  C5:MCP   C6:Hooks     C8:Sessions C7:Sandbox  C14:Async  │
 │  (file,    (procs/  (subprocs    (SQLite)    (Daytona/   Subagents   │
-│  shell,    remote)  hooks.json)             E2B/etc.)   (LangGraph   │
+│  shell,    remote)  hooks.json)             Modal/etc.) (LangGraph   │
 │  HTTP)                                                   remotes)   │
 │   │          │                     │          │              │       │
 │ - │ - - - - -│- - - - TB3 - - - - -│- - - - - │ - - - - - - -│ - -  │
@@ -134,7 +134,7 @@
 | C4  | Built-in Tools              | `http_request`, `web_search` (Tavily), `fetch_url` (HTML→markdown)                                                 | framework-controlled | Partial¹ | `tools.http_request`, `tools.web_search`, `tools.fetch_url`                                       |
 | C5  | MCP Loader & Trust          | Discovers/loads `.mcp.json`, validates server configs, manages trust store                                          | framework-controlled | No²      | `mcp_tools.resolve_and_load_mcp_tools`, `mcp_trust.compute_config_fingerprint`                   |
 | C6  | Hook Dispatcher             | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.dispatch_hook`, `hooks._run_single_hook`                                                   |
-| C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, E2B, LangSmith, Modal, Runloop, AgentCore)                             | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
+| C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, LangSmith, Modal, Runloop, AgentCore)                                  | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
 | C8  | Session Persistence         | SQLite checkpoint store for LangGraph thread state                                                                  | framework-controlled | Yes      | `sessions.get_db_path`, `sessions.generate_thread_id`                                             |
 | C9  | Configuration System        | TOML config, env vars, `AGENTS.md` system prompts, model config                                                    | user-controlled      | N/A      | `config.settings`, `model_config.ModelConfig`, `~/.deepagents/config.toml`                        |
 | C10 | Unicode/URL Safety          | Detects hidden Unicode, checks URL domain spoofing for approval UI warnings                                         | framework-controlled | Yes      | `unicode_security.detect_dangerous_unicode`, `unicode_security.check_url_safety`                  |
@@ -448,7 +448,7 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | API key exfiltration via LLM-directed `http_request`                   | `http_request` requires HITL in interactive mode. Keys it could exfiltrate are user-supplied env vars. In non-interactive mode, user has opted into autonomous operation.             | Providing HITL gate for HTTP tools. Users control which env vars are in scope.                                      |
 | Malicious MCP server injecting prompt instructions                     | Users configure MCP servers and explicitly trust project-level configs. Once trusted, MCP tool outputs are data from a system the user controls.                                     | Fingerprint-based trust prompts for project-level stdio configs (`mcp_trust.compute_config_fingerprint`).           |
 | LLM jailbreak / safety bypass                                          | Model selection and safety configuration are user-controlled. The project routes prompts to the configured LLM but cannot guarantee model behavior.                                   | Correctly routing prompts to the configured LLM; applying the system prompt from `agent.get_system_prompt`.         |
-| Sandbox provider security vulnerabilities                              | Daytona, E2B, LangSmith, Modal, Runloop, and AgentCore are third-party services. Their internal security is not this project's responsibility.                                       | Correctly initializing sandbox sessions via `integrations.sandbox_factory.create_sandbox`.                          |
+| Sandbox provider security vulnerabilities                              | Daytona, LangSmith, Modal, Runloop, and AgentCore are third-party services. Their internal security is not this project's responsibility.                                            | Correctly initializing sandbox sessions via `integrations.sandbox_factory.create_sandbox`.                          |
 | Hook commands doing harmful things                                     | Hooks in `~/.deepagents/hooks.json` are 100% user-authored. The payload is data-only (JSON on stdin).                                                                               | JSON structure validation (`hooks._load_hooks`); 5-second timeout.                                                 |
 | Async subagent traffic interception / MitM                             | Async subagents connect to user-configured LangGraph deployment URLs. The project does not control those endpoints or their TLS certificates.                                        | Accepting URL/headers from user config and passing them to the LangGraph SDK (`agent.load_async_subagents`).        |
 | LangGraph dev server port enumeration / discovery                     | Discovering the local dev server port requires local access. Port scanning localhost is a general OS security concern, not a framework vulnerability.                                 | Binding to `127.0.0.1` by default (`server._DEFAULT_HOST`); ephemeral server lifetime.                              |

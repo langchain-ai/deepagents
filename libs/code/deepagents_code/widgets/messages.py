@@ -1234,9 +1234,8 @@ class ToolCallMessage(Vertical):
         if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
             # The outer size threshold is necessary but not sufficient: only
             # treat output as expandable if the formatter actually hides
-            # content. Formatters that truncate by line count (e.g. grep/glob)
-            # leave long single-line output fully visible, so expanding it
-            # would reveal nothing.
+            # content. Some formatters can render the full content even when the
+            # raw output crosses a size threshold.
             return self._format_output(output, is_preview=True).truncation is not None
 
         return False
@@ -1616,7 +1615,7 @@ class ToolCallMessage(Vertical):
             return f"{hidden_chars} more chars"
         return None
 
-    def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_search_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format grep/glob search output.
@@ -1628,41 +1627,68 @@ class ToolCallMessage(Vertical):
         try:
             items = ast.literal_eval(output.strip())
             if isinstance(items, list):
-                parts: list[Content] = []
-                max_items = 5 if is_preview else len(items)
-                for item in items[:max_items]:
+                lines: list[str] = []
+                for item in items:
                     path = Path(str(item))
                     try:
                         rel = path.relative_to(Path.cwd())
                         display = str(rel)
                     except ValueError:
                         display = path.name
-                    parts.append(Content(display))
-
-                truncation = None
-                if is_preview and len(items) > max_items:
-                    truncation = f"{len(items) - max_items} more files"
-
-                return FormattedOutput(
-                    content=Content("\n").join(parts), truncation=truncation
+                    lines.append(display)
+                return self._format_search_lines(
+                    lines, is_preview=is_preview, line_unit="files"
                 )
         except (ValueError, SyntaxError):
             pass
 
         # Fallback: line-based output (grep results)
-        lines = output.split("\n")
-        max_lines = 5 if is_preview else len(lines)
-
-        parts = [
-            Content(raw_line.strip())
-            for raw_line in lines[:max_lines]
-            if raw_line.strip()
+        lines = [
+            raw_line.strip() for raw_line in output.split("\n") if raw_line.strip()
         ]
+        return self._format_search_lines(
+            lines, is_preview=is_preview, line_unit="lines"
+        )
+
+    def _format_search_lines(
+        self, lines: list[str], *, is_preview: bool, line_unit: str
+    ) -> FormattedOutput:
+        """Format search result rows with line and character preview caps.
+
+        Returns:
+            FormattedOutput with search rows and optional truncation info.
+        """
+        max_lines = 5 if is_preview else len(lines)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
+        parts: list[Content] = []
+        chars_used = 0
+        char_truncated = False
+
+        for line in lines[:max_lines]:
+            display_line = line
+            if char_budget is not None:
+                separator_cost = 1 if parts else 0
+                remaining = char_budget - chars_used - separator_cost
+                if remaining <= 0:
+                    char_truncated = True
+                    break
+                if len(line) > remaining:
+                    display_line = line[:remaining]
+                    char_truncated = True
+                chars_used += separator_cost + len(display_line)
+            parts.append(Content(display_line))
+            if char_truncated:
+                break
 
         content = Content("\n").join(parts) if parts else Content("")
         truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more"
+        if is_preview:
+            hidden_lines = len(lines) - len(parts)
+            if hidden_lines > 0:
+                truncation = f"{hidden_lines} more {line_unit}"
+            elif char_truncated:
+                hidden_chars = len("\n".join(lines)) - chars_used
+                truncation = f"{hidden_chars} more chars"
 
         return FormattedOutput(content=content, truncation=truncation)
 
@@ -1904,10 +1930,8 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = True
 
             # Offer expansion only when the formatter actually hid content.
-            # The raw size threshold can trip without anything being hidden
-            # (e.g. a long single-line grep/glob result, which only truncates
-            # by line count), and promising an expansion that reveals nothing
-            # is misleading.
+            # The raw size threshold can trip without anything being hidden, and
+            # promising an expansion that reveals nothing is misleading.
             if result.truncation:
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(

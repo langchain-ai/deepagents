@@ -630,22 +630,36 @@ class TestToolCallMessageSearchOutput:
             "file.py:2:match two",
         ]
 
+    def test_grep_preview_truncates_long_single_line(self) -> None:
+        """Grep previews should cap long single-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "file.py:1:" + "x" * ToolCallMessage._PREVIEW_CHARS
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_long_multiline_by_chars(self) -> None:
+        """Grep previews should cap long multi-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        lines = [f"file.py:{index}:" + "x" * 120 for index in range(4)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
 
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 
-    async def test_long_single_line_search_output_has_no_expand_hint(self) -> None:
-        """Long-but-single-line grep/glob output should not offer expansion.
-
-        The outer collapse threshold counts characters, but `_format_search_output`
-        only truncates by line count. A long single-line result (e.g. a glob
-        error string returned as normal output) trips the char threshold while
-        leaving nothing hidden, so the preview must not promise an expansion
-        that would reveal identical content.
-        """
+    async def test_long_single_line_search_output_truncates_and_expands(self) -> None:
+        """Long single-line grep/glob output should use the shared char cap."""
         from textual.app import App, ComposeResult
 
-        # Single line, no newlines, comfortably over the character threshold.
         output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
         assert "\n" not in output
         assert len(output) > ToolCallMessage._PREVIEW_CHARS
@@ -665,15 +679,18 @@ class TestToolCallMessageExpandHint:
             await pilot.pause()
 
             assert app.msg._hint_widget is not None
-            # Nothing is hidden, so no expand affordance and no toggle.
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
+            assert app.msg._hint_widget.display is True
+            assert app.msg._has_expandable_output() is True
+            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert len(preview.plain) == ToolCallMessage._PREVIEW_CHARS
 
             app.msg.toggle_output()
             await pilot.pause()
 
-            assert app.msg._expanded is False
-            assert app.msg._hint_widget.display is False
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is True
+            full = app.msg._full_widget._Static__content  # type: ignore[attr-defined]
+            assert full.plain == output
 
     async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
         """A short force-expanded error must not show a collapse affordance.

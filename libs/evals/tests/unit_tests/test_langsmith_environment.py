@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from harbor.models.task.config import EnvironmentConfig
+from harbor.models.task.config import EnvironmentConfig, NetworkMode, NetworkPolicy
 from harbor.models.trial.paths import TrialPaths
 
 from deepagents_harbor.langsmith_environment import (
@@ -72,6 +72,7 @@ def _make_env(
     cpus: int = 1,
     memory_mb: int = 2048,
     storage_mb: int = 10240,
+    network_policy: NetworkPolicy | None = None,
 ) -> LangSmithEnvironment:
     """Create a LangSmithEnvironment with a temp directory.
 
@@ -108,6 +109,7 @@ def _make_env(
         session_id="test-session-001",
         trial_paths=trial_paths,
         task_env_config=config,
+        network_policy=network_policy,
     )
 
 
@@ -191,7 +193,7 @@ class TestValidation:
                 task_env_config=config,
             )
 
-    def test_internet_disabled_raises(self, tmp_path: Path) -> None:
+    def test_internet_disabled_is_accepted(self, tmp_path: Path) -> None:
         env_dir = tmp_path / "environment"
         env_dir.mkdir()
         (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
@@ -202,14 +204,15 @@ class TestValidation:
         trial_paths = TrialPaths(trial_dir=trial_dir)
         trial_paths.mkdir()
 
-        with pytest.raises(ValueError, match="internet"):
-            LangSmithEnvironment(
-                environment_dir=env_dir,
-                environment_name="test",
-                session_id="s1",
-                trial_paths=trial_paths,
-                task_env_config=config,
-            )
+        env = LangSmithEnvironment(
+            environment_dir=env_dir,
+            environment_name="test",
+            session_id="s1",
+            trial_paths=trial_paths,
+            task_env_config=config,
+        )
+
+        assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
 
     def test_accepts_factory_kwargs(self, tmp_path: Path) -> None:
         """Harbor's EnvironmentFactory passes logger, override_* kwargs."""
@@ -279,7 +282,35 @@ class TestProperties:
 
     def test_can_disable_internet(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        assert env.can_disable_internet is False
+        assert env.can_disable_internet is True
+        assert env.capabilities.disable_internet is True
+        assert env.capabilities.network_allowlist is True
+
+    def test_no_network_policy_builds_deny_all_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
+        )
+
+        assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
+
+    def test_allowlist_policy_builds_allowlist_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(
+                network_mode=NetworkMode.ALLOWLIST,
+                allowed_hosts=["api.openai.com", "github.com"],
+            ),
+        )
+
+        assert env._network_proxy_config() == {
+            "access_control": {"allow_list": ["api.openai.com", "github.com"]}
+        }
+
+    def test_public_network_policy_omits_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        assert env._network_proxy_config() is None
 
     def test_type_raises(self, tmp_path: Path) -> None:
         with pytest.raises(NotImplementedError):
@@ -488,8 +519,44 @@ class TestStartSnapshotProvisioning:
             assert kwargs["mem_bytes"] == 2048 * 1024 * 1024
             assert kwargs["fs_capacity_bytes"] == 10240 * 1024 * 1024
             assert kwargs["timeout"] == 120
+            assert "proxy_config" not in kwargs
             assert "template_name" not in kwargs
             assert "snapshot_id" not in kwargs
+
+    async def test_create_sandbox_passes_no_network_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
+        )
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            assert mock_client.create_sandbox.call_args.kwargs["proxy_config"] == {
+                "access_control": {"deny_list": ["*"]}
+            }
+
+    async def test_create_sandbox_passes_allowlist_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(
+            tmp_path,
+            network_policy=NetworkPolicy(
+                network_mode=NetworkMode.ALLOWLIST,
+                allowed_hosts=["api.openai.com", "github.com"],
+            ),
+        )
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            assert mock_client.create_sandbox.call_args.kwargs["proxy_config"] == {
+                "access_control": {"allow_list": ["api.openai.com", "github.com"]}
+            }
 
     async def test_force_build_is_noop(self, tmp_path: Path) -> None:
         """force_build accepted for interface compat but does not change calls."""
@@ -548,7 +615,7 @@ class TestExec:
     async def test_exec_delegates_to_sandbox(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         result = await env.exec("echo hello")
 
@@ -558,7 +625,7 @@ class TestExec:
     async def test_exec_passes_cwd_and_env(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("ls", cwd="/app", env={"FOO": "bar"})
 
@@ -573,7 +640,7 @@ class TestExec:
         """
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
         env._default_cwd = "/app"
 
         await env.exec("ls")
@@ -584,7 +651,7 @@ class TestExec:
     async def test_exec_explicit_cwd_overrides_default(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
         env._default_cwd = "/app"
 
         await env.exec("ls", cwd="/tmp")
@@ -595,7 +662,7 @@ class TestExec:
     async def test_exec_uses_default_timeout(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("echo hello")
 
@@ -604,7 +671,7 @@ class TestExec:
     async def test_exec_forwards_custom_timeout(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         await env.exec("echo hello", timeout_sec=10)
 
@@ -648,7 +715,7 @@ class TestWorkdirDetection:
                 return _FakeExecResult(stdout=dir_probe_stdout)
             return _FakeExecResult()
 
-        sandbox.run = _run  # type: ignore[assignment]
+        sandbox.run = _run  # ty: ignore[invalid-assignment]
         mock_client.create_sandbox.return_value = sandbox
         return sandbox
 
@@ -715,7 +782,7 @@ class TestWorkdirDetection:
                     raise RuntimeError(msg)
                 return _FakeExecResult()
 
-            sandbox.run = _run  # type: ignore[assignment]
+            sandbox.run = _run  # ty: ignore[invalid-assignment]
             mock_client.create_sandbox.return_value = sandbox
             mock_cls.return_value = mock_client
 
@@ -743,7 +810,7 @@ class TestWorkdirDetection:
 
     async def test_stop_clears_default_cwd(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox()  # ty: ignore[invalid-assignment]
         env._client = AsyncMock()
         env._snapshot_name = "snap-tmpl"
         env._default_cwd = "/app"
@@ -759,7 +826,7 @@ class TestFileOps:
     async def test_upload_file(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         src = tmp_path / "local.txt"
         src.write_text("hello world")
@@ -772,7 +839,7 @@ class TestFileOps:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
         sandbox._read_files["/app/data.txt"] = b"file content"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded.txt"
         await env.download_file("/app/data.txt", dest)
@@ -782,7 +849,7 @@ class TestFileOps:
     async def test_upload_dir(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         src_dir = tmp_path / "mydir"
         src_dir.mkdir()
@@ -801,12 +868,12 @@ class TestFileOps:
         sandbox = _FakeSandbox()
         sandbox._read_files["/remote/a.txt"] = b"aaa"
         sandbox._read_files["/remote/sub/b.txt"] = b"bbb"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(stdout="/remote/a.txt\n/remote/sub/b.txt\n")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/remote", dest)
@@ -819,12 +886,12 @@ class TestFileOps:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
         sandbox._read_files["/remote/good.txt"] = b"ok"
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(stdout="/remote/good.txt\n/remote/bad.txt\n")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         # bad.txt is not in _read_files, so download_file → sandbox.read
         # returns b"" by default, but we override read to raise for bad.txt.
@@ -836,7 +903,7 @@ class TestFileOps:
                 raise FileNotFoundError(msg)
             return await original_read(path)
 
-        sandbox.read = _failing_read  # type: ignore[assignment]
+        sandbox.read = _failing_read  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/remote", dest)
@@ -854,12 +921,12 @@ class TestFileOps:
     async def test_download_dir_empty(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         sandbox = _FakeSandbox()
-        env._sandbox = sandbox  # type: ignore[assignment]
+        env._sandbox = sandbox  # ty: ignore[invalid-assignment]
 
         async def _fake_run(_cmd: str, **_kw: Any) -> _FakeExecResult:
             return _FakeExecResult(exit_code=1, stderr="No such file or directory")
 
-        sandbox.run = _fake_run  # type: ignore[assignment]
+        sandbox.run = _fake_run  # ty: ignore[invalid-assignment]
 
         dest = tmp_path / "downloaded"
         await env.download_dir("/nonexistent", dest)
@@ -879,7 +946,7 @@ class TestStop:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_sandbox = _FakeSandbox(name="my-sandbox")
-        env._sandbox = mock_sandbox  # type: ignore[assignment]
+        env._sandbox = mock_sandbox  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "harbor-ubuntu-24-04"
 
@@ -895,7 +962,7 @@ class TestStop:
     async def test_stop_no_delete_skips_cleanup(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
-        env._sandbox = _FakeSandbox()  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox()  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "snap-tmpl"
 
@@ -910,7 +977,7 @@ class TestStop:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_client.delete_sandbox.side_effect = RuntimeError("API timeout")
-        env._sandbox = _FakeSandbox(name="my-sandbox")  # type: ignore[assignment]
+        env._sandbox = _FakeSandbox(name="my-sandbox")  # ty: ignore[invalid-assignment]
         env._client = mock_client
         env._snapshot_name = "harbor-my-image"
 

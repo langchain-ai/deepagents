@@ -231,6 +231,20 @@ on:
         options:
           - ""
           - quickjs
+      pytest_k:
+        description: "pytest -k expression to select/deselect tests by name (e.g.
+          'not (test_write_todos_sequential_updates_returns_text or
+          test_write_todos_three_steps_returns_text)'). Allowed chars: letters,
+          digits, underscore, space, parentheses. Empty = no filter."
+        required: false
+        default: ""
+        type: string
+      temperature:
+        description: "Sampling temperature passed to the model (e.g. 1.0). Empty =
+          provider default."
+        required: false
+        default: ""
+        type: string
       notes:
         description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
           retry reason). Shown on the run summary; does not affect eval
@@ -291,6 +305,8 @@ jobs:
           OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
+          PYTEST_K: ${{ inputs.pytest_k || '(none)' }}
+          TEMPERATURE: ${{ inputs.temperature || '(provider default)' }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
           NOTES: ${{ inputs.notes }}
@@ -599,6 +615,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-baseten:
@@ -623,6 +641,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-fireworks:
@@ -647,6 +667,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-google-genai:
@@ -671,6 +693,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-groq:
@@ -695,6 +719,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-nvidia:
@@ -719,6 +745,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-ollama:
@@ -743,6 +771,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-openai:
@@ -767,6 +797,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-openrouter:
@@ -791,6 +823,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-xai:
@@ -815,6 +849,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   eval-other:
@@ -839,6 +875,8 @@ jobs:
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
+      pytest_k: ${{ inputs.pytest_k }}
+      temperature: ${{ inputs.temperature }}
     secrets: inherit
 
   aggregate:

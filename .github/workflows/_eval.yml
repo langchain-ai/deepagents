@@ -72,6 +72,11 @@ on:
         required: false
         default: ""
         type: string
+      temperature:
+        description: "Sampling temperature passed to the model. Empty = provider default."
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -269,6 +274,20 @@ jobs:
               ;;
           esac
           printf 'PYTEST_ADDOPTS=%s --repl %s\n' "${PYTEST_ADDOPTS}" "${repl}" >> "$GITHUB_ENV"
+
+      - name: "🌡️ Apply temperature"
+        if: inputs.temperature != ''
+        env:
+          TEMPERATURE: ${{ inputs.temperature }}
+        run: |
+          temp=$(echo "$TEMPERATURE" | xargs)
+          # Numeric guard: accept only a plain decimal (e.g. 0, 0.7, 1.0) before
+          # embedding it in PYTEST_ADDOPTS, which pytest parses with shlex.
+          if ! printf '%s' "$temp" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::Unsafe temperature value: ${temp}. Expected a non-negative decimal, e.g. 1.0."
+            exit 1
+          fi
+          printf 'PYTEST_ADDOPTS=%s --temperature %s\n' "${PYTEST_ADDOPTS}" "${temp}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

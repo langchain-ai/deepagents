@@ -13,6 +13,11 @@ from deepagents import (
     HarnessProfileConfig,
 )
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from deepagents.profiles.harness._minimax import _MINIMAX_MODEL_SPECS
+from deepagents.profiles.harness.harness_profiles import (
+    _ensure_harness_profiles_loaded,
+    _get_harness_profile,
+)
 
 
 class TestGeneralPurposeSubagentProfileSerde:
@@ -407,3 +412,28 @@ class TestMaterializeExtraMiddleware:
         b = profile.materialize_extra_middleware()
         assert a == b
         assert a is not b
+
+
+class TestMiniMaxBuiltinProfile:
+    """The built-in MiniMax profile resolves and shapes the stack as intended."""
+
+    def test_all_specs_resolve_with_expected_shape(self) -> None:
+        _ensure_harness_profiles_loaded()
+        for spec in _MINIMAX_MODEL_SPECS:
+            profile = _get_harness_profile(spec)
+            assert profile is not None, spec
+            # write_todos is dropped via excluding TodoListMiddleware.
+            assert "TodoListMiddleware" in profile.excluded_middleware, spec
+            # Behavioral suffix is present with all three sections.
+            assert profile.system_prompt_suffix is not None, spec
+            assert "<completing_state_changes>" in profile.system_prompt_suffix, spec
+            assert "<find_a_permitted_path>" in profile.system_prompt_suffix, spec
+            assert "<report_back>" in profile.system_prompt_suffix, spec
+            assert "<manage_context>" in profile.system_prompt_suffix, spec
+
+    def test_non_minimax_spec_is_unaffected(self) -> None:
+        _ensure_harness_profiles_loaded()
+        profile = _get_harness_profile("openrouter:z-ai/glm-5.1")
+        # No MiniMax-style todo exclusion leaks onto other openrouter models.
+        if profile is not None:
+            assert "TodoListMiddleware" not in profile.excluded_middleware

@@ -132,6 +132,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests bind their tools directly instead of routing through a REPL.",
     )
+    parser.addoption(
+        "--temperature",
+        action="store",
+        type=float,
+        default=None,
+        help="Sampling temperature passed to the model. If omitted, the provider default is used. E.g. --temperature 1.0",
+    )
 
 
 def _filter_by_marker(
@@ -277,4 +284,7 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
             msg = "--openai-reasoning-effort requires an openai: model prefix"
             raise ValueError(msg)
         kwargs["reasoning_effort"] = reasoning_effort
+    temperature = request.config.getoption("--temperature")
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     return init_chat_model(model_name, **kwargs)

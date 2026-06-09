@@ -290,6 +290,33 @@ class TestServerProcess:
         # Overrides cleared after successful restart
         assert server._env_overrides == {}
 
+    async def test_restart_offloads_blocking_stop_to_thread(
+        self, tmp_path: Path
+    ) -> None:
+        """restart() must not run the blocking subprocess stop on the event loop.
+
+        `_stop_process` blocks up to `_SHUTDOWN_TIMEOUT` on `process.wait`; if
+        called directly on the loop it freezes the Textual reactor so `/restart`
+        wedges the TUI input. It must be offloaded via `asyncio.to_thread`.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._process = MagicMock()
+
+        with (
+            patch.object(server, "start", new=AsyncMock()),
+            patch(
+                "deepagents_code.server.asyncio.to_thread",
+                new=AsyncMock(),
+            ) as to_thread,
+        ):
+            await server.restart()
+
+        to_thread.assert_awaited_once_with(server._stop_process)
+
     async def test_restart_rollback_on_failure(self, tmp_path: Path) -> None:
         """Env overrides are rolled back when restart fails."""
         config_dir = tmp_path / "runtime"

@@ -1127,6 +1127,7 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
             ModelConfig,
             get_credential_env_var,
             resolve_env_var,
+            resolved_env_var_name,
         )
 
         base_url = ModelConfig.load().get_base_url(provider)
@@ -1141,7 +1142,7 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
         return None
     if not key or key.startswith(_LANGSMITH_KEY_PREFIX):
         return None
-    return key_env
+    return resolved_env_var_name(key_env)
 
 
 def _agent_error_type(exc: BaseException) -> str:

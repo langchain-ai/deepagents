@@ -3424,6 +3424,20 @@ class TestLangsmithGatewayKeyMismatch:
         )
         assert _langsmith_gateway_key_mismatch("openai") == "OPENAI_API_KEY"
 
+    def test_detects_prefixed_non_langsmith_key_on_gateway(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-proj-abc")
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="sk-proj-abc",
+        )
+        assert (
+            _langsmith_gateway_key_mismatch("openai")
+            == "DEEPAGENTS_CODE_OPENAI_API_KEY"
+        )
+
     def test_langsmith_key_is_not_flagged(self, monkeypatch) -> None:
         from deepagents_code.app import _langsmith_gateway_key_mismatch
 

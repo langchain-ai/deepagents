@@ -148,7 +148,7 @@ class TestOnboardingState:
             if self.name == ONBOARDING_MARKER_FILENAME:
                 msg = "simulated read-only filesystem"
                 raise PermissionError(msg)
-            return original_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_write_text(self, *args, **kwargs)  # ty: ignore
 
         monkeypatch.setattr(_Path, "write_text", boom)
 
@@ -201,7 +201,7 @@ class TestOnboardingState:
             if self == memory_path:
                 msg = "simulated full disk"
                 raise OSError(msg)
-            return original_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_write_text(self, *args, **kwargs)  # ty: ignore
 
         monkeypatch.setattr(_Path, "write_text", boom)
 

@@ -10,6 +10,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
+| `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
@@ -152,6 +153,7 @@ Tracks the current version of each package. Automatically updated by release-ple
   "libs/cli": "0.0.35",
   "libs/deepagents": "0.5.1",
   "libs/acp": "0.0.5",
+  "libs/talon": "0.0.1",
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",

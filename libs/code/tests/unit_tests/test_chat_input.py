@@ -286,7 +286,7 @@ async def _pause_for_strip(pilot: Pilot[None]) -> None:
 
 def _prompt_text(prompt: Static) -> str:
     """Read the current text content of a Static widget."""
-    return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
+    return str(prompt._Static__content)  # ty: ignore  # accessing internal content store
 
 
 def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
@@ -2373,8 +2373,8 @@ class TestPathPayloadDetectionGating:
                 replace_calls += 1
                 return original_replace(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
-            chat._apply_inline_dropped_path_replacement = counting_replace  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
+            chat._apply_inline_dropped_path_replacement = counting_replace  # ty: ignore
 
             for char in "hello":
                 await pilot.press(char)
@@ -2404,7 +2404,7 @@ class TestPathPayloadDetectionGating:
                 detect_calls += 1
                 return original_detect(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
 
             ta.text = str(target)
             await pilot.pause()

@@ -23,6 +23,10 @@ _tavily_client: TavilyClient | object | None = _UNSET
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
 
+# Maintainer note: `deepagents-talon` imports `web_search` and `fetch_url`
+# directly from this module. Keep their names, signatures, and return/error dict
+# shapes stable unless `deepagents-talon` is migrated in the same change.
+
 # Module-level lock guarding the urllib3 connection-factory monkeypatch used by
 # `_pinned_dns`. The patch is process-global, so serializing fetches keeps
 # concurrent calls from clobbering each other's pinned IP set.
@@ -186,7 +190,7 @@ def _pinned_dns(hostname: str, allowed_ips: list[str]) -> Iterator[None]:
             assert last_exc is not None  # noqa: S101  # loop body guarantees this
             raise last_exc
 
-        urllib3_connection.create_connection = patched  # type: ignore[assignment]  # signature matches at runtime
+        urllib3_connection.create_connection = patched  # ty: ignore[invalid-assignment]  # signature matches at runtime
         try:
             yield
         finally:
@@ -201,7 +205,7 @@ def _get_tavily_client() -> TavilyClient | None:
     """
     global _tavily_client  # noqa: PLW0603  # Module-level cache requires global statement
     if _tavily_client is not _UNSET:
-        return _tavily_client  # type: ignore[return-value]  # narrowed by sentinel check
+        return _tavily_client  # ty: ignore[invalid-return-type]  # narrowed by sentinel check
 
     from deepagents_code.config import settings
 

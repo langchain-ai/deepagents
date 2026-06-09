@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 
+import pytest
 from textual.app import App, ComposeResult
 
 from deepagents_code.widgets.loading import LoadingWidget
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class LoadingWidgetApp(App[None]):
@@ -88,7 +85,7 @@ class TestLoadingWidget:
         now = 145.0
         widget.resume()
 
-        assert widget._start_time == 132.5
+        assert widget._start_time == pytest.approx(132.5)
         assert not widget._paused
 
     def test_resume_when_not_paused_leaves_start_time_unchanged(
@@ -111,7 +108,7 @@ class TestLoadingWidget:
 
         widget.resume()
 
-        assert widget._start_time == 100.0
+        assert widget._start_time == pytest.approx(100.0)
         assert not widget._paused
 
     def test_pause_without_start_time_does_not_raise(self) -> None:
@@ -122,7 +119,7 @@ class TestLoadingWidget:
         widget.pause()
 
         assert widget._paused
-        assert widget._paused_elapsed == 0.0
+        assert widget._paused_elapsed == pytest.approx(0.0)
 
     async def test_pause_hint_renders_whole_seconds(
         self,

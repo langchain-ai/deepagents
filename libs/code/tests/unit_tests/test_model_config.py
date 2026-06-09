@@ -108,7 +108,7 @@ class TestModelSpec:
         """ModelSpec is immutable (frozen dataclass)."""
         spec = ModelSpec(provider="openai", model="gpt-5.5")
         with pytest.raises(AttributeError):
-            spec.provider = "anthropic"  # type: ignore[misc]
+            spec.provider = "anthropic"  # ty: ignore
 
     def test_validates_empty_provider(self) -> None:
         """ModelSpec raises on empty provider."""
@@ -3209,7 +3209,7 @@ class TestIsLocalEndpoint:
 
     def test_non_string_input_returns_false(self) -> None:
         """Non-string input must not raise (defensive against TOML drift)."""
-        assert _is_local_endpoint(123) is False  # type: ignore[arg-type]
+        assert _is_local_endpoint(123) is False  # ty: ignore
 
 
 class TestProviderAuthStatusBranches:

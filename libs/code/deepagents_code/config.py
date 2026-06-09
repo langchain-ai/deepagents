@@ -2573,7 +2573,7 @@ def _apply_profile_overrides(
     profile = getattr(model, "profile", None)
     merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
     try:
-        model.profile = merged  # type: ignore[union-attr]
+        model.profile = merged  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError, ValueError) as exc:
         if raise_on_failure:
             msg = (

@@ -67,7 +67,7 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -76,6 +76,7 @@ from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
+from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
@@ -401,7 +402,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+            return _resolve_backend(self._backend, tool_runtime)
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -666,7 +667,7 @@ A condensed summary follows:
 
         return len(messages)
 
-    def _truncate_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+    def _truncate_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """Truncate large arguments in a single tool call.
 
         Args:
@@ -735,7 +736,7 @@ A condensed summary follows:
 
                 for tool_call in msg.tool_calls:
                     if tool_call["name"] in {"write_file", "edit_file"}:
-                        truncated_call = self._truncate_tool_call(tool_call)  # ty: ignore[invalid-argument-type]
+                        truncated_call = self._truncate_tool_call(tool_call)
                         if truncated_call != tool_call:
                             msg_modified = True
                         truncated_tool_calls.append(truncated_call)
@@ -1398,7 +1399,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         backend = self._summarization._backend
         if callable(backend):
-            return backend(runtime)  # ty: ignore[call-top-callable]
+            return _resolve_backend(backend, runtime)
         return backend
 
     def _create_compact_tool(self) -> BaseTool:

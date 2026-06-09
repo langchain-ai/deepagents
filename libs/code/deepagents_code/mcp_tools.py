@@ -18,10 +18,10 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -30,6 +30,11 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+# Maintainer note: `deepagents-talon` imports `MCPConfigError`,
+# `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
+# `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
+# shapes stable unless `deepagents-talon` is migrated in the same change.
 
 
 @dataclass(frozen=True, slots=True)
@@ -1193,11 +1198,27 @@ def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
     return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
 
 
+@overload
 def _apply_tool_filter(
     tools: list[BaseTool],
     server_name: str,
     server_config: dict[str, Any],
-) -> list[BaseTool]:
+) -> list[BaseTool]: ...
+
+
+@overload
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]: ...
+
+
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]:
     """Filter a server's loaded tools by its `allowedTools` / `disabledTools`.
 
     Entries may be literal tool names or `fnmatch`-style glob patterns

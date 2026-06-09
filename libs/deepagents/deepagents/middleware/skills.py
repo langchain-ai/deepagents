@@ -129,7 +129,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.prebuilt import ToolRuntime
 
-from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
+from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult, _resolve_backend
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
 
@@ -852,7 +852,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+            backend = _resolve_backend(self._backend, tool_runtime)
             if backend is None:
                 msg = "SkillsMiddleware requires a valid backend instance"
                 raise AssertionError(msg)

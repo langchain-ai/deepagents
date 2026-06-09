@@ -1410,7 +1410,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 "Compact the conversation by summarizing older messages "
                 "into a concise summary. Use this proactively when the "
                 "conversation is getting long to free up context window "
-                "space. This tool takes no arguments."
+                "space, or when the user explicitly shifts to a different, unrelated topic. "
+                "This tool takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,

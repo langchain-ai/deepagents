@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents import (
     AsyncSubAgentMiddleware,
@@ -16,6 +17,7 @@ from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddlewa
 from deepagents.profiles.harness._glm import _GLM_MODEL_SPECS
 from deepagents.profiles.harness._kimi import _KIMI_MODEL_SPECS
 from deepagents.profiles.harness._minimax import _MINIMAX_MODEL_SPECS, _SYSTEM_PROMPT_SUFFIX
+from deepagents.profiles.harness._precompletion import PreCompletionVerificationMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     _ensure_harness_profiles_loaded,
     _get_harness_profile,
@@ -424,14 +426,16 @@ class TestMiniMaxBuiltinProfile:
         for spec in _MINIMAX_MODEL_SPECS:
             profile = _get_harness_profile(spec)
             assert profile is not None, spec
-            # Suffix-only profile: it must not strip any middleware (write_todos stays).
+            # write_todos stays (no middleware stripped).
             assert "TodoListMiddleware" not in profile.excluded_middleware, spec
-            # Behavioral suffix is present with all four sections.
+            # V3: track_and_verify prompt framework ...
             assert profile.system_prompt_suffix is not None, spec
-            assert "<completing_state_changes>" in profile.system_prompt_suffix, spec
-            assert "<find_a_permitted_path>" in profile.system_prompt_suffix, spec
-            assert "<report_back>" in profile.system_prompt_suffix, spec
-            assert "<manage_context>" in profile.system_prompt_suffix, spec
+            assert "<track_and_verify>" in profile.system_prompt_suffix, spec
+            # ... paired with the pre-completion verification hook.
+            mws = profile.materialize_extra_middleware()
+            assert any(
+                type(m).__name__ == "PreCompletionVerificationMiddleware" for m in mws
+            ), spec
 
     def test_unprofiled_spec_is_unaffected(self) -> None:
         _ensure_harness_profiles_loaded()
@@ -461,3 +465,40 @@ class TestGlmBuiltinProfile:
             assert profile is not None, spec
             assert "TodoListMiddleware" not in profile.excluded_middleware, spec
             assert profile.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX, spec
+
+
+class TestPreCompletionVerificationMiddleware:
+    """Unit-level logic for the pre-completion verification hook."""
+
+    def test_forces_pass_on_tool_using_turn(self) -> None:
+        mw = PreCompletionVerificationMiddleware()
+        state = {
+            "messages": [
+                HumanMessage("do X"),
+                AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}]),
+            ],
+            "_precompletion_baseline": 0,
+        }
+        out = mw.after_agent(state, None)
+        assert out is not None
+        assert out["jump_to"] == "model"
+        assert out["_precompletion_verified"] is True
+        assert out["messages"]
+
+    def test_fires_at_most_once(self) -> None:
+        mw = PreCompletionVerificationMiddleware()
+        state = {
+            "messages": [HumanMessage("do X"), AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}])],
+            "_precompletion_baseline": 0,
+            "_precompletion_verified": True,
+        }
+        assert mw.after_agent(state, None) is None
+
+    def test_skips_pure_conversational_turn(self) -> None:
+        mw = PreCompletionVerificationMiddleware()
+        state = {
+            "messages": [HumanMessage("hi"), AIMessage(content="hello")],
+            "_precompletion_baseline": 0,
+        }
+        out = mw.after_agent(state, None)
+        assert out == {"_precompletion_verified": True}

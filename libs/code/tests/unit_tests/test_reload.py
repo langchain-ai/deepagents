@@ -430,6 +430,55 @@ class TestReloadFromEnvironment:
 
         assert settings.openai_api_key == "sk-override"
 
+    def test_preview_dotenv_shell_beats_project(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview env mirrors `_load_dotenv`: a shell var beats a project `.env`."""
+        from deepagents_code.config import _preview_dotenv_environ
+
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        (tmp_path / ".env").write_text("TEST_PREVIEW_KEY=project-value\n")
+        monkeypatch.setenv("TEST_PREVIEW_KEY", "shell-value")
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert env["TEST_PREVIEW_KEY"] == "shell-value"
+
+    def test_preview_dotenv_project_beats_global(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview env mirrors `_load_dotenv`: project `.env` beats global `.env`."""
+        from deepagents_code.config import _preview_dotenv_environ
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("TEST_PREVIEW_KEY2=global-value\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        (tmp_path / ".env").write_text("TEST_PREVIEW_KEY2=project-value\n")
+        monkeypatch.delenv("TEST_PREVIEW_KEY2", raising=False)
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert env["TEST_PREVIEW_KEY2"] == "project-value"
+
+    def test_preview_reports_api_key_masked_without_mutating(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Previewing an API-key change reports it masked and mutates nothing."""
+        settings = Settings.from_environment(start_path=tmp_path)
+        assert settings.openai_api_key is None
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-preview-secret")
+        changes = settings.preview_reload_from_environment(start_path=tmp_path)
+
+        assert "openai_api_key: unset -> set" in changes
+        assert "sk-preview-secret" not in "\n".join(changes)
+        assert settings.openai_api_key is None
+
 
 class TestReloadErrorPaths:
     """Tests for error handling during reload."""
@@ -507,6 +556,31 @@ class TestReloadErrorPaths:
         assert settings.openai_api_key == "sk-updated"
         assert settings.shell_allow_list == ["ls"]
         assert any(c.startswith("openai_api_key:") for c in changes)
+
+    def test_invalid_extra_skills_dirs_keeps_previous(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failure resolving extra skills dirs falls back to the previous value.
+
+        Guards the cwd-switch path: `reload_from_environment` runs after
+        `os.chdir`, so an unhandled resolution error would strand the process in
+        a half-applied cwd.
+        """
+        import deepagents_code.config as config_mod
+
+        settings = Settings.from_environment(start_path=tmp_path)
+        sentinel = [tmp_path / "skills"]
+        settings.extra_skills_dirs = sentinel
+
+        def boom(*_args: object, **_kwargs: object) -> list[Path] | None:
+            msg = "broken symlink loop"
+            raise OSError(msg)
+
+        monkeypatch.setattr(config_mod, "_parse_extra_skills_dirs", boom)
+        changes = settings.reload_from_environment(start_path=tmp_path)
+
+        assert settings.extra_skills_dirs == sentinel
+        assert not any(change.startswith("extra_skills_dirs:") for change in changes)
 
 
 class TestReloadInAutocomplete:

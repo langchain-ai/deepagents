@@ -1227,6 +1227,9 @@ async def get_thread_agent(thread_id: str) -> str | None:
 async def get_thread_cwd(thread_id: str) -> str | None:
     """Get the most recently stored cwd for a thread.
 
+    Args:
+        thread_id: The thread whose stored cwd to look up.
+
     Returns:
         Most recent cwd for the thread, or None if not found.
     """

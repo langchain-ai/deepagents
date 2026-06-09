@@ -1172,7 +1172,10 @@ _API_KEY_FIELDS = frozenset(
         "tavily_api_key",
     }
 )
-"""Reloadable fields that hold API keys and must be masked in reports."""
+"""Reloadable fields that hold API keys and must be masked in reports.
+
+Subset of `_RELOADABLE_FIELDS`; keep the two in sync when adding API-key fields.
+"""
 
 _RELOADABLE_FIELDS = (
     "openai_api_key",
@@ -1186,7 +1189,12 @@ _RELOADABLE_FIELDS = (
     "shell_allow_list",
     "extra_skills_dirs",
 )
-"""Fields refreshed on `/reload` and cwd switches."""
+"""Fields refreshed on `/reload` and cwd switches.
+
+Runtime model state (`model_name`, `model_provider`, `model_context_limit`) and
+the original user LangSmith project are intentionally excluded -- they are set
+once and should not change across reloads.
+"""
 
 
 @dataclass
@@ -1414,6 +1422,23 @@ class Settings:
             )
             project_root = previous["project_root"]
 
+        try:
+            extra_skills_dirs = _parse_extra_skills_dirs(
+                env.get(EXTRA_SKILLS_DIRS),
+                _read_config_toml_skills_dirs(),
+            )
+        except (OSError, ValueError):
+            # Path resolution can fail (e.g. broken symlink loop). Keep the
+            # previous value rather than letting the failure escape reload --
+            # callers such as the cwd switch run this after `os.chdir`, where an
+            # uncaught error would strand the process in a half-applied cwd.
+            logger.warning(
+                "Could not resolve %s during reload; keeping previous value",
+                EXTRA_SKILLS_DIRS,
+                exc_info=True,
+            )
+            extra_skills_dirs = previous["extra_skills_dirs"]
+
         return {
             "openai_api_key": _resolve_env_var_from(env, "OPENAI_API_KEY"),
             "anthropic_api_key": _resolve_env_var_from(env, "ANTHROPIC_API_KEY"),
@@ -1427,10 +1452,7 @@ class Settings:
             ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
-            "extra_skills_dirs": _parse_extra_skills_dirs(
-                env.get(EXTRA_SKILLS_DIRS),
-                _read_config_toml_skills_dirs(),
-            ),
+            "extra_skills_dirs": extra_skills_dirs,
         }
 
     @staticmethod

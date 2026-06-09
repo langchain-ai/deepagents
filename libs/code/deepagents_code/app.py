@@ -10354,10 +10354,28 @@ class DeepAgentsApp(App):
         )
 
     def _switch_process_cwd(self, cwd: Path) -> None:
-        """Change process cwd and synchronize cwd-aware app state."""
+        """Change process cwd and synchronize cwd-aware app state.
+
+        Kept atomic with respect to the process cwd: if a post-`chdir` step
+        fails, the `os.chdir` is undone and any partial UI update is reverted so
+        the real cwd and the cached `self._cwd` never diverge. Rollback logic in
+        `_restore_cwd_after_failed_thread_switch` compares the two, and a
+        half-applied switch (process moved, `self._cwd` stale) would make that
+        comparison report a false match and silently skip the restore.
+        """
+        previous_cwd = Path(self._cwd)
         os.chdir(cwd)
-        self._refresh_project_context_after_cwd_switch(cwd)
-        self._apply_cwd_to_ui(cwd)
+        try:
+            self._refresh_project_context_after_cwd_switch(cwd)
+            self._apply_cwd_to_ui(cwd)
+        except BaseException:
+            with suppress(OSError):
+                os.chdir(previous_cwd)
+            # Re-sync UI state to the restored cwd. Best-effort: a failure here
+            # must not mask the original exception.
+            with suppress(Exception):
+                self._apply_cwd_to_ui(previous_cwd)
+            raise
         self._schedule_skill_discovery_after_cwd_switch()
 
     @staticmethod
@@ -10423,6 +10441,17 @@ class DeepAgentsApp(App):
             current = Path(current_cwd).expanduser().resolve()
             resolved = target.resolve()
         except OSError:
+            # Symlink resolution failed (e.g. ELOOP, permission on a path
+            # component). Fall back to a non-resolving comparison, which can
+            # report a spurious mismatch for symlinked-but-equal paths; log so
+            # the degraded comparison is traceable.
+            logger.debug(
+                "Could not resolve cwd paths for mismatch check (%r vs %r); "
+                "falling back to non-resolving comparison",
+                current_cwd,
+                raw,
+                exc_info=True,
+            )
             current = Path(current_cwd).expanduser().absolute()
             resolved = target.absolute()
         if current == resolved:
@@ -10465,7 +10494,9 @@ class DeepAgentsApp(App):
         unpacked as a bogus success tuple.
 
         Returns:
-            The successful `start_server_and_get_agent` result.
+            The successful `start_server_and_get_agent` result. The third slot
+                (the session manager) is typed `object | None` rather than its source
+                type because this caller discards it.
         """
         if isinstance(result, BaseException):
             raise result
@@ -10521,6 +10552,22 @@ class DeepAgentsApp(App):
                     _preload_session_mcp_server_info(**self._mcp_preload_kwargs)
                 )
             results = await asyncio.gather(*coros, return_exceptions=True)
+            if (
+                isinstance(results[0], BaseException)
+                and len(results) > 1
+                and isinstance(results[1], BaseException)
+            ):
+                # The server startup (results[0]) is about to be re-raised below.
+                # Surface the concurrent MCP-preload failure too so it is not
+                # silently dropped as an unretrieved gather result.
+                logger.warning(
+                    "MCP metadata preload also failed during cwd switch",
+                    exc_info=(
+                        type(results[1]),
+                        results[1],
+                        results[1].__traceback__,
+                    ),
+                )
             server_result = self._unwrap_cwd_switch_server_result(results[0])
 
             mcp_info: list[Any] | None = None
@@ -10601,7 +10648,9 @@ class DeepAgentsApp(App):
             )
             return "abort"
         else:
-            previous_server.stop()
+            # `stop()` joins the subprocess synchronously; keep the UI loop
+            # responsive while the old server drains.
+            await asyncio.to_thread(previous_server.stop)
             self.on_deep_agents_app_server_ready(event)
             return "continue"
 
@@ -10615,7 +10664,11 @@ class DeepAgentsApp(App):
                 settings.preview_reload_from_environment,
                 start_path=cwd,
             )
-        except (OSError, ValueError, KeyError, TypeError, ImportError):
+        except (OSError, ValueError):
+            # Environmental failures (unreadable dotenv, malformed values) are
+            # expected and non-fatal for a best-effort preview. Programming
+            # errors (KeyError/TypeError/ImportError) are left to propagate so a
+            # broken preview is not silently reported as "no settings change."
             logger.warning(
                 "Could not preview project settings changes for cwd switch",
                 exc_info=True,
@@ -10681,6 +10734,15 @@ class DeepAgentsApp(App):
             current = Path(current_cwd).expanduser().resolve()
             previous = previous_cwd.expanduser().resolve()
         except OSError:
+            # See `_resolve_thread_cwd_mismatch`: a resolve failure downgrades to
+            # a non-resolving comparison that may misjudge symlinked paths.
+            logger.debug(
+                "Could not resolve cwd paths for equality check (%r vs %r); "
+                "falling back to non-resolving comparison",
+                current_cwd,
+                str(previous_cwd),
+                exc_info=True,
+            )
             current = Path(current_cwd).expanduser().absolute()
             previous = previous_cwd.expanduser().absolute()
         return current == previous
@@ -10691,7 +10753,17 @@ class DeepAgentsApp(App):
             return
 
         if self._server_kwargs is not None and self._server_proc is not None:
-            await self._replace_server_after_cwd_switch(previous_cwd)
+            outcome = await self._replace_server_after_cwd_switch(previous_cwd)
+            if outcome == "abort":
+                # The restore restart itself failed. `_replace_server_after_cwd_switch`
+                # has already notified the user and rolled back its own state, but
+                # the recovery did not fully succeed -- record it so the worse
+                # state ("rollback failed") is distinguishable in logs.
+                logger.warning(
+                    "Restoring server in previous cwd %s failed during thread-switch "
+                    "rollback",
+                    previous_cwd,
+                )
             return
 
         try:
@@ -10701,6 +10773,14 @@ class DeepAgentsApp(App):
                 "Failed to restore cwd after failed thread switch to %s",
                 previous_cwd,
                 exc_info=True,
+            )
+            self.notify(
+                "Could not restore the previous working directory after a failed "
+                "thread switch. The session may be in the wrong directory — please "
+                "restart dcode.",
+                severity="error",
+                timeout=15,
+                markup=False,
             )
 
     async def _resume_thread(self, thread_id: str) -> None:

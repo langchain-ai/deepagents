@@ -68,7 +68,7 @@ DEFAULT_READONLY_ROOTS: tuple[str, ...] = (
 # is included for tool compatibility (many tools write scratch files there), but
 # it is shared across processes; pass ``extra_writable_roots=[]`` for stricter
 # isolation.
-DEFAULT_EXTRA_WRITABLE_ROOTS: tuple[str, ...] = ("/tmp",)  # noqa: S108  # opt-in scratch root, documented and overridable
+DEFAULT_EXTRA_WRITABLE_ROOTS: tuple[str, ...] = ()  # noqa: S108  # opt-in scratch root, documented and overridable
 
 # Device roots granted read+write to existing nodes (no exec/create). Required
 # for a usable shell: ``>/dev/null``, ``/dev/urandom``, ttys, ``/dev/std*``.

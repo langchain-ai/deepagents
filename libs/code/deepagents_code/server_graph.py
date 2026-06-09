@@ -90,9 +90,9 @@ def _build_tools(
         RuntimeError: If MCP tool loading fails.
     """
     from deepagents_code.config import settings
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
-    tools: list[Any] = [fetch_url]
+    tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
         tools.append(web_search)
 

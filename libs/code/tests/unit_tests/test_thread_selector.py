@@ -2620,7 +2620,7 @@ class TestResumeThread:
             side_effect=lambda w: mounted.append(w)
         )
 
-        async def offer_cwd_switch(
+        async def offer_cwd_switch(  # noqa: RUF029  # must be async: awaited as _offer_thread_cwd_switch
             thread_id: str,
             *,
             restart_server: bool,

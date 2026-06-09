@@ -13,7 +13,9 @@ from deepagents import (
     HarnessProfileConfig,
 )
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
-from deepagents.profiles.harness._minimax import _MINIMAX_MODEL_SPECS
+from deepagents.profiles.harness._glm import _GLM_MODEL_SPECS
+from deepagents.profiles.harness._kimi import _KIMI_MODEL_SPECS
+from deepagents.profiles.harness._minimax import _MINIMAX_MODEL_SPECS, _SYSTEM_PROMPT_SUFFIX
 from deepagents.profiles.harness.harness_profiles import (
     _ensure_harness_profiles_loaded,
     _get_harness_profile,
@@ -431,9 +433,31 @@ class TestMiniMaxBuiltinProfile:
             assert "<report_back>" in profile.system_prompt_suffix, spec
             assert "<manage_context>" in profile.system_prompt_suffix, spec
 
-    def test_non_minimax_spec_is_unaffected(self) -> None:
+    def test_unprofiled_spec_is_unaffected(self) -> None:
         _ensure_harness_profiles_loaded()
-        profile = _get_harness_profile("openrouter:z-ai/glm-5.1")
-        # No MiniMax-style todo exclusion leaks onto other openrouter models.
-        if profile is not None:
-            assert "TodoListMiddleware" not in profile.excluded_middleware
+        # A model with no harness profile resolves to no profile at all.
+        assert _get_harness_profile("openai:gpt-4.1") is None
+
+
+class TestKimiBuiltinProfile:
+    """The Kimi profile mirrors MiniMax: same suffix, no tool changes."""
+
+    def test_all_specs_resolve_and_share_minimax_suffix(self) -> None:
+        _ensure_harness_profiles_loaded()
+        for spec in _KIMI_MODEL_SPECS:
+            profile = _get_harness_profile(spec)
+            assert profile is not None, spec
+            assert "TodoListMiddleware" not in profile.excluded_middleware, spec
+            assert profile.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX, spec
+
+
+class TestGlmBuiltinProfile:
+    """The GLM profile mirrors MiniMax: same suffix, no tool changes."""
+
+    def test_all_specs_resolve_and_share_minimax_suffix(self) -> None:
+        _ensure_harness_profiles_loaded()
+        for spec in _GLM_MODEL_SPECS:
+            profile = _get_harness_profile(spec)
+            assert profile is not None, spec
+            assert "TodoListMiddleware" not in profile.excluded_middleware, spec
+            assert profile.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX, spec

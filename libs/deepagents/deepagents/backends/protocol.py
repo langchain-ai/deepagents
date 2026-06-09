@@ -91,7 +91,7 @@ class FileDownloadResponse:
     content: bytes | None = None
     """File contents as bytes on success, `None` on failure."""
 
-    error: FileOperationError | None = None
+    error: str | None = None
     """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -123,7 +123,7 @@ class FileUploadResponse:
     error messages.
     """
 
-    error: FileOperationError | None = None
+    error: str | None = None
     """error: A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -878,5 +878,14 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return "timeout" in sig.parameters
 
 
-BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
+BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]
 BACKEND_TYPES = BackendProtocol | BackendFactory
+
+
+def _resolve_backend(backend: BACKEND_TYPES, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
+    """Resolve a backend instance or deprecated backend factory."""
+    if isinstance(backend, BackendProtocol):
+        return backend
+    # Use the nominal backend ABC for narrowing instead of `callable()` because
+    # `ty` does not narrow callable unions to the factory return type.
+    return backend(runtime)

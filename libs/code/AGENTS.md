@@ -49,6 +49,14 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
 
+### Typing and test doubles
+
+When fixing `ty` diagnostics, do not mechanically replace `# type: ignore[...]` with `cast(...)`. First try to improve the actual type shape: narrower annotations, typed futures/callbacks, covariant read-only types such as `Mapping`/`Sequence`, local mock variables, or `monkeypatch.setattr(...)`. Treat `cast("Any", ...)` as a last resort.
+
+For Textual tests that intentionally replace concrete app methods with `MagicMock` or `AsyncMock`, prefer `monkeypatch.setattr(...)` or one small documented dynamic helper over repeated `cast("Any", app)` expressions. Assert on local mock variables instead of re-reading mocked methods from the concrete object when possible.
+
+Casts are acceptable when the type violation is the point of the test (for example, passing a wrong runtime type to exercise defensive validation) or when a third-party overload is narrower than verified runtime behavior. In those cases, keep the cast narrowly scoped and add a short comment explaining why it is intentional.
+
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).

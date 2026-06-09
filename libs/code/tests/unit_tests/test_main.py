@@ -416,7 +416,7 @@ class TestAppResult:
 
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
-            result.return_code = 1  # type: ignore[misc]
+            result.return_code = 1  # ty: ignore
 
 
 class TestRunTextualAppReturnType:
@@ -558,7 +558,7 @@ class TestServerCleanupLifecycle:
             "run_async",
             new_callable=AsyncMock,
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 
@@ -575,7 +575,7 @@ class TestServerCleanupLifecycle:
             ),
             pytest.raises(RuntimeError, match="boom"),
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 

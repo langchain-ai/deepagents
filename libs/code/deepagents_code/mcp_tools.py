@@ -18,10 +18,10 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -1198,11 +1198,27 @@ def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
     return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
 
 
+@overload
 def _apply_tool_filter(
     tools: list[BaseTool],
     server_name: str,
     server_config: dict[str, Any],
-) -> list[BaseTool]:
+) -> list[BaseTool]: ...
+
+
+@overload
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]: ...
+
+
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]:
     """Filter a server's loaded tools by its `allowedTools` / `disabledTools`.
 
     Entries may be literal tool names or `fnmatch`-style glob patterns

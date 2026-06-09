@@ -316,7 +316,7 @@ class CompletionPopup(VerticalScroll):
         """Hide the popup."""
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
-        self.styles.display = "none"  # type: ignore[assignment]  # Textual accepts string display values at runtime
+        self.styles.display = "none"  # ty: ignore  # Textual accepts string display values at runtime
 
     def show(self) -> None:
         """Show the popup."""
@@ -866,14 +866,14 @@ class ChatTextArea(TextArea):
         if not self.text or not self.selection.is_empty:
             return False
 
-        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore  # Document has this method; DocumentBase stub is narrower
         span = self._find_image_placeholder_span(cursor_offset, backwards=backwards)
         if span is None:
             return False
 
         start, end = span
-        start_location = self.document.get_location_from_index(start)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
-        end_location = self.document.get_location_from_index(end)  # type: ignore[attr-defined]
+        start_location = self.document.get_location_from_index(start)  # ty: ignore  # Document has this method; DocumentBase stub is narrower
+        end_location = self.document.get_location_from_index(end)  # ty: ignore
         self.delete(start_location, end_location)
         self.move_cursor(start_location)
         return True
@@ -1205,7 +1205,7 @@ class ChatInput(Vertical):
             [
                 self._slash_controller,
                 self._file_controller,
-            ]  # type: ignore[list-item]  # Controller types are compatible at runtime
+            ]  # ty: ignore  # Controller types are compatible at runtime
         )
 
         self._rebuild_argument_hints(SLASH_COMMANDS)

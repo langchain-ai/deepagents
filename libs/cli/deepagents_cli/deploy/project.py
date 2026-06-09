@@ -384,10 +384,12 @@ def _read_tools_json(root: Path) -> tuple[dict[str, Any] | None, str | None]:
         if not isinstance(tool, dict):
             msg = f"{path}: tools[{idx}] must be an object."
             raise ProjectError(msg)
-        if not isinstance(tool.get("name"), str) or not tool["name"]:
+        tool_data = cast("dict[str, Any]", tool)
+        name = tool_data.get("name")
+        if not isinstance(name, str) or not name:
             msg = f"{path}: tools[{idx}].name is required."
             raise ProjectError(msg)
-        url_val = tool.get("mcp_server_url")
+        url_val = tool_data.get("mcp_server_url")
         if not isinstance(url_val, str) or not url_val:
             msg = f"{path}: tools[{idx}].mcp_server_url is required."
             raise ProjectError(msg)

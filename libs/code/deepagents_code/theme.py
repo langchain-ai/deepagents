@@ -758,7 +758,7 @@ def _resolve_app(widget_or_app: object) -> object:
         The resolved App instance.
     """
     return (
-        widget_or_app.app  # type: ignore[attr-defined]
+        widget_or_app.app  # ty: ignore
         if hasattr(type(widget_or_app), "app")
         else widget_or_app
     )
@@ -780,7 +780,7 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     Returns:
         `ThemeColors` derived from the active theme.
     """
-    ct = app.current_theme  # type: ignore[attr-defined]
+    ct = app.current_theme  # ty: ignore
     dark: bool = ct.dark
     base = DARK_COLORS if dark else LIGHT_COLORS
 
@@ -852,7 +852,7 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
         except (ImportError, LookupError):
             return DARK_COLORS
     app = _resolve_app(widget_or_app)
-    entry = get_registry().get(app.theme)  # type: ignore[attr-defined]
+    entry = get_registry().get(app.theme)  # ty: ignore
     # Custom themes (LC-branded / user-defined) use pre-built colors.
     if entry is not None and entry.custom:
         return entry.colors

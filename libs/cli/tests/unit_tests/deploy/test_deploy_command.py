@@ -27,7 +27,7 @@ def _make_transport(handler: Handler) -> httpx.MockTransport:
 
 
 def _ns(dir_: Path, **overrides: object) -> argparse.Namespace:
-    base = {
+    base: dict[str, object] = {
         "dir": str(dir_),
         "dry_run": False,
         "detach": True,

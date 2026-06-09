@@ -193,14 +193,14 @@ class TestValidation:
                 task_env_config=config,
             )
 
-    def test_internet_disabled_is_accepted(self, tmp_path: Path) -> None:
+    def test_no_network_config_is_accepted(self, tmp_path: Path) -> None:
         env_dir = tmp_path / "environment"
         env_dir.mkdir()
         (env_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
 
         trial_dir = tmp_path / "trial"
         trial_dir.mkdir()
-        config = EnvironmentConfig(allow_internet=False)
+        config = EnvironmentConfig()
         trial_paths = TrialPaths(trial_dir=trial_dir)
         trial_paths.mkdir()
 
@@ -210,6 +210,7 @@ class TestValidation:
             session_id="s1",
             trial_paths=trial_paths,
             task_env_config=config,
+            network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
         )
 
         assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
@@ -238,7 +239,6 @@ class TestValidation:
             override_memory_mb=8192,
             override_storage_mb=20480,
             override_gpus=0,
-            suppress_override_warnings=True,
         )
         assert env is not None
         assert env.task_env_config.cpus == 4
@@ -272,17 +272,10 @@ class TestResolveImage:
 class TestProperties:
     """Tests for static properties."""
 
-    def test_is_mounted(self, tmp_path: Path) -> None:
+    def test_capabilities(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
-        assert env.is_mounted is False
-
-    def test_supports_gpus(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path)
-        assert env.supports_gpus is False
-
-    def test_can_disable_internet(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path)
-        assert env.can_disable_internet is True
+        assert env.capabilities.mounted is False
+        assert env.capabilities.gpus is False
         assert env.capabilities.disable_internet is True
         assert env.capabilities.network_allowlist is True
 

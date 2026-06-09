@@ -225,6 +225,7 @@ class AgentServerACP(ACPAgent):
     async def new_session(
         self,
         cwd: str,
+        additional_directories: list[str] | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:

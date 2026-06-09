@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_code import config as config_module
+from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 from deepagents_code.config import build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
@@ -203,7 +204,7 @@ class TestInterruptCleanup:
             await _handle_interrupt_cleanup(
                 adapter=adapter,
                 agent=agent,
-                config=config,  # type: ignore[arg-type]
+                config=config,  # ty: ignore
                 pending_text_by_namespace={},
                 captured_input_tokens=0,
                 captured_output_tokens=0,
@@ -1719,7 +1720,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_interrupt_mounts_tool_call_row(self) -> None:
         """ask_user interrupts should mount the tool row before the prompt."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1727,8 +1728,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1779,12 +1780,12 @@ class TestExecuteTaskTextualAskUser:
             msg = "mount failed"
             raise RuntimeError(msg)
 
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1824,7 +1825,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_duplicate_interrupt_only_mounts_once(self) -> None:
         """Re-emitting the same `tool_call_id` should not double-mount."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1832,8 +1833,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1873,7 +1874,7 @@ class TestExecuteTaskTextualAskUser:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
         async def mount_message(widget: object) -> None:
@@ -1881,8 +1882,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -2064,11 +2065,11 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
+            _questions: list[Question],
         ) -> asyncio.Future[object] | None:
             await asyncio.sleep(0)
             return future
@@ -2091,7 +2092,8 @@ class TestExecuteTaskTextualAskUser:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
+            # This test intentionally returns a malformed widget payload.
+            request_ask_user=cast("Any", request_ask_user),
         )
 
         await execute_task_textual(
@@ -2127,7 +2129,7 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         agent = _SequencedAgent(
@@ -2167,8 +2169,8 @@ class TestExecuteTaskTextualAskUser:
         """A `None` callback result should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2214,8 +2216,8 @@ class TestExecuteTaskTextualAskUser:
         """UI mount failures should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             msg = "boom"
             raise RuntimeError(msg)
@@ -2309,8 +2311,8 @@ class TestExecuteTaskTextualAskUser:
             statuses.append(status)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2413,7 +2415,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # type: ignore[override]
+    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -2432,7 +2434,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # type: ignore[override]
+    def values(self) -> Generator[Any, None, None]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)

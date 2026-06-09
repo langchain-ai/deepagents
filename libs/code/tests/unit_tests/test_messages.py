@@ -107,7 +107,7 @@ class TestErrorMessageMarkupSafety:
         with patch(
             "deepagents_code.widgets.messages.open_style_link"
         ) as mock_open_link:
-            msg.on_click(event)  # type: ignore[arg-type]
+            msg.on_click(event)  # ty: ignore
 
         mock_open_link.assert_called_once_with(event)
 
@@ -124,7 +124,7 @@ class TestErrorMessageMarkupSafety:
         with patch(
             "deepagents_code.widgets.messages.open_style_link"
         ) as mock_open_link:
-            msg.on_click(event)  # type: ignore[arg-type]
+            msg.on_click(event)  # ty: ignore
 
         mock_open_link.assert_not_called()
 
@@ -147,7 +147,7 @@ class TestAppMessageMarkupSafety:
     def test_app_message_str_gets_dim_italic(self) -> None:
         """String input should be rendered as dim italic `Content`."""
         msg = AppMessage("hello")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, Content)
         assert rendered.plain == "hello"
 
@@ -155,13 +155,13 @@ class TestAppMessageMarkupSafety:
         """Pre-styled `Content` should pass through unchanged."""
         pre = Content.styled("styled", "bold cyan")
         msg = AppMessage(pre)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
     def test_app_message_markdown_uses_muted_wrapper(self) -> None:
         """`markdown=True` should route through `_MutedRichMarkdown`."""
         msg = AppMessage("### heading", markdown=True)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, _MutedRichMarkdown)
 
     def test_app_message_markdown_requires_string(self) -> None:
@@ -196,7 +196,7 @@ class TestMutedRichMarkdown:
             legacy_windows=False,
         )
         console.print(renderable)
-        return console.file.getvalue()  # type: ignore[attr-defined]
+        return console.file.getvalue()  # ty: ignore
 
     def test_strips_heading_and_table_colors(self) -> None:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
@@ -303,7 +303,7 @@ class TestSummarizationMessage:
     def test_summarization_message_str_input(self) -> None:
         """String input should be rendered as bold cyan `Content`."""
         msg = SummarizationMessage("custom text")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, Content)
         assert rendered.plain == "custom text"
 
@@ -311,7 +311,7 @@ class TestSummarizationMessage:
         """Pre-styled `Content` should pass through unchanged."""
         pre = Content.styled("pre-styled", "bold cyan")
         msg = SummarizationMessage(pre)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
 
@@ -342,7 +342,7 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         # Second widget is the task description line (Static with dim style).
         # Content.styled() produces a Content object stored on the Static.
-        content = widgets[1]._Static__content  # type: ignore[attr-defined]
+        content = widgets[1]._Static__content  # ty: ignore
         assert "[/dim]" in content.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
@@ -354,7 +354,7 @@ class TestToolCallMessageMarkupSafety:
 
         widgets = list(msg.compose())
         args_widget = widgets[1]
-        content = args_widget._Static__content  # type: ignore[attr-defined]
+        content = args_widget._Static__content  # ty: ignore
         assert isinstance(content, Content)
         assert "[foo]" in content.plain
         assert "[/dim]" in content.plain
@@ -377,7 +377,7 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         visible = []
         for widget in widgets[:3]:
-            content = widget._Static__content  # type: ignore[attr-defined]
+            content = widget._Static__content  # ty: ignore
             visible.append(content.plain if isinstance(content, Content) else content)
         visible_plain = "\n".join(visible)
 
@@ -428,7 +428,7 @@ class TestToolCallMessageTodos:
 
             assert app.msg._preview_widget is not None
             assert app.msg._hint_widget is not None
-            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            content = app.msg._preview_widget._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert "..." in content.plain
             assert long not in content.plain
@@ -553,7 +553,7 @@ class TestToolCallMessageOutputGutter:
 
             glyph = get_glyphs().output_prefix
             assert app.msg._preview_widget is not None
-            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            content = app.msg._preview_widget._Static__content  # ty: ignore
 
             # Content is bare: no glyph, and no hand-rolled hanging indent on
             # any logical line (alignment is owned by the gutter layout).
@@ -565,7 +565,7 @@ class TestToolCallMessageOutputGutter:
             assert app.msg._preview_row.display is True
             gutters = app.msg._preview_row.query(".tool-output-gutter")
             assert len(gutters) == 1
-            gutter_content = gutters.first()._Static__content  # type: ignore[attr-defined]
+            gutter_content = gutters.first()._Static__content  # ty: ignore
             assert gutter_content == glyph
 
     async def test_collapsed_preview_preserves_uniform_leading_indent(self) -> None:
@@ -589,7 +589,7 @@ class TestToolCallMessageOutputGutter:
 
             assert app.msg._preview_widget is not None
             assert app.msg._expanded is False
-            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            content = app.msg._preview_widget._Static__content  # ty: ignore
 
             preview_lines = content.plain.split("\n")
             # Every visible row — including the first — keeps git's two-space
@@ -734,7 +734,7 @@ class TestToolCallMessageExpandHint:
             assert app.msg._has_expandable_output() is True
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is True
-            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
             assert "collapse" in hint.plain
 
             app.msg.toggle_output()
@@ -762,10 +762,10 @@ class TestToolCallMessageExpandHint:
             assert app.msg._full_widget is not None
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is True
-            hint = app.msg._hint_widget._Static__content  # type: ignore[attr-defined]
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
             assert "expand" in hint.plain
             # The preview hides the trailing lines.
-            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            preview = app.msg._preview_widget._Static__content  # ty: ignore
             assert "hit 7" not in preview.plain
 
             app.msg.toggle_output()
@@ -800,7 +800,7 @@ class TestToolCallMessageExpandHint:
             assert app.msg._preview_widget is not None
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is False
-            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            preview = app.msg._preview_widget._Static__content  # ty: ignore
             assert "line 0" in preview.plain
             assert "line 4" in preview.plain
 

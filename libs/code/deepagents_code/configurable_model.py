@@ -40,7 +40,7 @@ def _is_anthropic_model(model: object) -> bool:
         `True` if the model's `ls_provider` is `'anthropic'`.
     """
     try:
-        ls_params = model._get_ls_params()  # type: ignore[attr-defined]
+        ls_params = model._get_ls_params()  # ty: ignore
     except (AttributeError, TypeError, RuntimeError):
         logger.debug(
             "_get_ls_params raised for %s; assuming non-Anthropic",

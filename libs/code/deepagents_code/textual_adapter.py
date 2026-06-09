@@ -1032,7 +1032,7 @@ async def execute_task_textual(
                     if adapter._request_ask_user:
                         if adapter._set_spinner:
                             await adapter._set_spinner(None)
-                        result: dict[str, Any] = {
+                        result: AskUserWidgetResult | dict[str, str] = {
                             "type": "error",
                             "error": "ask_user callback returned no response",
                         }

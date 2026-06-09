@@ -1,6 +1,7 @@
 """Tests for RemoteAgent, _convert_message_data, and helpers."""
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -228,7 +229,7 @@ class TestConvertInterrupts:
 
 
 def _make_agent(
-    events: list[tuple[tuple[str, ...], str, Any]],
+    events: Sequence[tuple[tuple[str, ...], str, Any]],
 ) -> RemoteAgent:
     """Create a RemoteAgent with a mock RemoteGraph yielding events."""
     agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")

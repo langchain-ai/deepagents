@@ -50,9 +50,9 @@ _DEEPAGENTS_WORD_SELECT_ACTIVE = "_deepagents_word_select_active"
 
 try:
     from textual import events
-    from textual._ansi_sequences import (
-        ANSI_SEQUENCES_KEYS,  # noqa: PLC2701
-        IGNORE_SEQUENCE,  # noqa: PLC2701
+    from textual._ansi_sequences import (  # noqa: PLC2701
+        ANSI_SEQUENCES_KEYS,
+        IGNORE_SEQUENCE,
     )
     from textual._xterm_parser import XTermParser  # noqa: PLC2701
 
@@ -88,7 +88,7 @@ else:
         yield from _original(self, sequence, alt=alt)
 
     try:
-        XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore[invalid-assignment]
+        XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning("Textual keyboard parser patch assignment rejected: %s", exc)
 
@@ -276,9 +276,9 @@ else:
         await _original_widget_on_click(self, event)
 
     try:
-        _Screen._forward_event = _forward_event_with_word_select  # ty: ignore[invalid-assignment]
-        _Screen._watch__select_state = _watch_select_state_with_word_select  # ty: ignore[invalid-assignment]
-        _Widget._on_click = _on_click_with_word_select  # ty: ignore[invalid-assignment]
+        _Screen._forward_event = _forward_event_with_word_select  # ty: ignore
+        _Screen._watch__select_state = _watch_select_state_with_word_select  # ty: ignore
+        _Widget._on_click = _on_click_with_word_select  # ty: ignore
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",

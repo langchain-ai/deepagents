@@ -11590,6 +11590,8 @@ class TestResumeThreadCwdSwitch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Accepting the prompt switches process and UI cwd before startup."""
+        from deepagents_code.config import settings
+
         current = tmp_path / "current"
         target = tmp_path / "target"
         current.mkdir()
@@ -11603,8 +11605,22 @@ class TestResumeThreadCwdSwitch:
         status_bar = MagicMock()
         status_bar.cwd = str(current)
         app._status_bar = status_bar
+        reload_calls: list[Path | None] = []
 
-        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            reload_calls.append(start_path)
+            return ["project_root: old -> new"]
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        with (
+            patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
+            patch("deepagents_code.model_config.clear_caches") as clear_caches,
+        ):
             ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
 
         assert ok is True
@@ -11612,6 +11628,57 @@ class TestResumeThreadCwdSwitch:
         assert app._cwd == str(target)
         chat_input.set_cwd.assert_called_once_with(target)
         assert status_bar.cwd == str(target)
+        assert reload_calls == [target]
+        clear_caches.assert_called_once_with()
+
+    async def test_live_cwd_switch_rediscovers_skills(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A live cwd switch refreshes the cached skill metadata."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            del start_path
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scheduled_groups: list[str | None] = []
+
+            async def discover_skills() -> bool:  # noqa: RUF029
+                return True
+
+            def run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+                del args
+                group = kwargs.get("group")
+                assert group is None or isinstance(group, str)
+                scheduled_groups.append(group)
+                if inspect.iscoroutine(work):
+                    work.close()
+                return MagicMock()
+
+            monkeypatch.setattr(app, "_discover_skills", discover_skills)
+            monkeypatch.setattr(app, "run_worker", run_worker)
+
+            with patch("deepagents_code.model_config.clear_caches"):
+                app._switch_process_cwd(target)
+
+        assert scheduled_groups == ["startup-skill-discovery"]
 
     async def test_offer_stay_warns_without_switching(
         self,

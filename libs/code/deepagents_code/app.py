@@ -10315,10 +10315,36 @@ class DeepAgentsApp(App):
         if self._status_bar is not None:
             self._status_bar.cwd = cwd_text
 
+    @staticmethod
+    def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:
+        """Refresh project-scoped settings and caches after a cwd change."""
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        changes = settings.reload_from_environment(start_path=cwd)
+        clear_caches()
+        if changes:
+            logger.debug("Refreshed project context after cwd switch: %s", changes)
+
+    def _schedule_skill_discovery_after_cwd_switch(self) -> None:
+        """Refresh skill autocomplete after a cwd-dependent project switch."""
+        if not self.is_running:
+            logger.debug(
+                "Skipped skill rediscovery after cwd switch because app is not running"
+            )
+            return
+        self.run_worker(
+            self._discover_skills(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
+
     def _switch_process_cwd(self, cwd: Path) -> None:
-        """Change process cwd and synchronize cwd-aware widgets."""
+        """Change process cwd and synchronize cwd-aware app state."""
         os.chdir(cwd)
+        self._refresh_project_context_after_cwd_switch(cwd)
         self._apply_cwd_to_ui(cwd)
+        self._schedule_skill_discovery_after_cwd_switch()
 
     @staticmethod
     def _resolve_thread_cwd_mismatch(

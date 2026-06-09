@@ -11638,6 +11638,50 @@ class TestResumeThreadCwdSwitch:
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
 
+    async def test_offer_switch_preserves_launch_relative_server_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Launch-time cwd switches keep CLI paths rooted at launch cwd."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._server_kwargs = {
+            "assistant_id": "agent",
+            "mcp_config_path": "./mcp.json",
+            "sandbox_setup": "./setup.sh",
+        }
+        app._mcp_preload_kwargs = {"mcp_config_path": "./mcp.json"}
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            lambda **_kwargs: [],
+        )
+
+        with (
+            patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok == "continue"
+        assert Path.cwd() == target
+        assert app._server_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert app._server_kwargs["sandbox_setup"] == str(current / "setup.sh")
+        assert app._mcp_preload_kwargs["mcp_config_path"] == str(current / "mcp.json")
+
     async def test_live_cwd_switch_rediscovers_skills(
         self,
         tmp_path: Path,

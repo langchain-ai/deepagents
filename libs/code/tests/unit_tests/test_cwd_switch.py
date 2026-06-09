@@ -29,8 +29,8 @@ class TestCwdSwitchPromptScreen:
             project_settings_change_detected=True,
         )
 
-        assert "Project settings will refresh" not in unchanged._body_text()
-        assert "Project settings will refresh" in changed._body_text()
+        assert "project-specific config" not in unchanged._body_text()
+        assert "project-specific config" in changed._body_text()
 
     def test_action_switch_dismisses_switch(self) -> None:
         """Enter / switch resolves the prompt to `switch`."""

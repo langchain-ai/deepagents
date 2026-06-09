@@ -80,18 +80,20 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         current = format_path(self._current_cwd)
         target = format_path(self._thread_cwd)
         settings_note = (
-            " Project settings will refresh too."
+            "\n\nSwitching may also reload project-specific config like .env, "
+            "MCP, skills, and AGENTS.md."
             if self._project_settings_change_detected
             else ""
         )
         return (
-            "This thread was last used in:\n"
+            "This thread was last used from:\n"
             f"  {target}\n\n"
-            "You are currently in:\n"
+            "You're currently in:\n"
             f"  {current}\n\n"
-            "Switching uses the thread's original project for tools and "
-            f"commands.{settings_note} Stay only if you want to keep working "
-            "in the current project."
+            "Switch if you want local context, project instructions, skills, "
+            "MCP config, and env files to match the original directory. Stay "
+            "here if you intentionally want to continue this thread against "
+            f"the current directory.{settings_note}"
         )
 
     def compose(self) -> ComposeResult:
@@ -102,7 +104,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """
         with Vertical():
             yield Static(
-                "Resume from a different working directory?",
+                "Resume from the thread's original directory?",
                 classes="cwd-switch-title",
                 markup=False,
             )
@@ -112,7 +114,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 markup=False,
             )
             yield Static(
-                "Enter to switch cwd, Esc to stay here",
+                "Enter: switch · Esc: stay here",
                 classes="cwd-switch-help",
                 markup=False,
             )

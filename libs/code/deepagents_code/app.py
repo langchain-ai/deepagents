@@ -10715,6 +10715,7 @@ class DeepAgentsApp(App):
         if choice == "switch":
             if restart_server:
                 return await self._replace_server_after_cwd_switch(target)
+            self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
             return "continue"
 

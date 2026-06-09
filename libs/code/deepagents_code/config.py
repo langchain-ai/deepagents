@@ -53,6 +53,25 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
 
+_DOTENV_DENIED_ENV_KEYS = frozenset(
+    {
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "GIT_ASKPASS",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PATH",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "SSH_ASKPASS",
+    }
+)
+"""Environment keys that project `.env` files must not inject."""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -209,7 +228,7 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ:
+            if value is None or key in os.environ or key in _DOTENV_DENIED_ENV_KEYS:
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value

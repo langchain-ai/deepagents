@@ -3,7 +3,7 @@
 import logging
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import dotenv as _dotenv_module
 import pytest
@@ -171,20 +171,18 @@ class TestReloadFromEnvironment:
         assert settings.shell_allow_list == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
 
-    def test_calls_dotenv_load(
+    def test_loads_project_dotenv_from_explicit_start_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should anchor dotenv loading to the explicit start path."""
         settings = Settings.from_environment(start_path=tmp_path)
-        mock_load = MagicMock(return_value=False)
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
-        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        # Project .env loads first (before global) with override=False.
-        mock_load.assert_any_call(dotenv_path=env_file, override=False)
+        assert os.environ["OPENAI_API_KEY"] == "sk-test"
 
     def test_loads_global_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -199,19 +197,13 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text("ANTHROPIC_API_KEY=sk-project\n")
-
-        mock_load = MagicMock(return_value=True)
-        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         settings.reload_from_environment(start_path=tmp_path)
 
-        assert mock_load.call_count == 2
-        mock_load.assert_has_calls(
-            [
-                call(dotenv_path=project_env, override=False),
-                call(dotenv_path=global_env, override=False),
-            ]
-        )
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-project"
+        assert os.environ["OPENAI_API_KEY"] == "sk-global"
 
     def test_global_dotenv_oserror_does_not_crash(
         self,
@@ -231,15 +223,13 @@ class TestReloadFromEnvironment:
         project_env = tmp_path / ".env"
         project_env.write_text("OPENAI_API_KEY=sk-fallback\n")
 
-        mock_load = MagicMock(return_value=True)
-        monkeypatch.setattr("dotenv.load_dotenv", mock_load)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             settings.reload_from_environment(start_path=tmp_path)
 
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
-        # Project .env loads first; global failed via is_file OSError
-        mock_load.assert_called_once_with(dotenv_path=project_env, override=False)
+        assert os.environ["OPENAI_API_KEY"] == "sk-fallback"
 
     def test_project_dotenv_beats_global(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -356,13 +346,13 @@ class TestReloadFromEnvironment:
         assert os.environ.get("TEST_GLOBAL_ONLY") == "global-value"
         monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
 
-    def test_global_load_dotenv_raises_oserror(
+    def test_global_dotenv_values_raises_oserror(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """OSError from `dotenv.load_dotenv` itself (not `is_file`) is caught."""
+        """OSError from `dotenv.dotenv_values` itself is caught."""
         settings = Settings.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
@@ -372,25 +362,51 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text("OPENAI_API_KEY=sk-ok\n")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
+        original_dotenv_values = _dotenv_module.dotenv_values
         call_count = 0
 
-        def _fail_on_global(*_args: object, **_kwargs: object) -> bool:
+        def _fail_on_global(*, dotenv_path: Path) -> dict[str, str | None]:
             nonlocal call_count
             call_count += 1
-            # Project loads first; global is the second call
             if call_count == 2:
                 msg = "read error"
                 raise OSError(msg)
-            return True
+            return dict(original_dotenv_values(dotenv_path=dotenv_path))
 
-        monkeypatch.setattr("dotenv.load_dotenv", _fail_on_global)
+        monkeypatch.setattr("dotenv.dotenv_values", _fail_on_global)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             settings.reload_from_environment(start_path=tmp_path)
 
         assert call_count == 2
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
+
+    def test_project_dotenv_denies_environment_hijack_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Project `.env` must not inject keys that alter subprocess startup."""
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "LD_PRELOAD=/tmp/evil.so\n"
+            "PYTHONPATH=/tmp/evil\n"
+            "PATH=/tmp/evil\n"
+            "NODE_OPTIONS=--require /tmp/evil.js\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        for key in ("LD_PRELOAD", "PYTHONPATH", "NODE_OPTIONS", "OPENAI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "LD_PRELOAD" not in os.environ
+        assert "PYTHONPATH" not in os.environ
+        assert "NODE_OPTIONS" not in os.environ
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -428,9 +428,10 @@ class TestMiniMaxBuiltinProfile:
             assert profile is not None, spec
             # write_todos stays (no middleware stripped).
             assert "TodoListMiddleware" not in profile.excluded_middleware, spec
-            # V3: track_and_verify prompt framework ...
+            # V3: track_and_verify + report_back prompt framework ...
             assert profile.system_prompt_suffix is not None, spec
             assert "<track_and_verify>" in profile.system_prompt_suffix, spec
+            assert "<report_back>" in profile.system_prompt_suffix, spec
             # ... paired with the pre-completion verification hook.
             mws = profile.materialize_extra_middleware()
             assert any(

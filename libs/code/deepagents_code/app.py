@@ -10519,6 +10519,35 @@ class DeepAgentsApp(App):
         )
         return True
 
+    @staticmethod
+    def _cwd_paths_equal(current_cwd: str, previous_cwd: Path) -> bool:
+        """Return whether two cwd paths resolve to the same directory."""
+        try:
+            current = Path(current_cwd).expanduser().resolve()
+            previous = previous_cwd.expanduser().resolve()
+        except OSError:
+            current = Path(current_cwd).expanduser().absolute()
+            previous = previous_cwd.expanduser().absolute()
+        return current == previous
+
+    async def _restore_cwd_after_failed_thread_switch(self, previous_cwd: Path) -> None:
+        """Restore cwd-dependent state after a failed in-session thread switch."""
+        if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, previous_cwd):
+            return
+
+        if self._server_kwargs is not None and self._server_proc is not None:
+            await self._replace_server_after_cwd_switch(previous_cwd)
+            return
+
+        try:
+            self._switch_process_cwd(previous_cwd)
+        except OSError:
+            logger.warning(
+                "Failed to restore cwd after failed thread switch to %s",
+                previous_cwd,
+                exc_info=True,
+            )
+
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
@@ -10550,12 +10579,14 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Thread switch already in progress."))
             return
 
-        if not await self._offer_thread_cwd_switch(thread_id, restart_server=True):
-            return
-
         # Save previous state for rollback on failure
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
+        prev_cwd = Path(self._cwd)
+
+        if not await self._offer_thread_cwd_switch(thread_id, restart_server=True):
+            return
+
         self._thread_switching = True
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
@@ -10597,6 +10628,7 @@ class DeepAgentsApp(App):
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
+                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                 await self._mount_message(
                     AppMessage(
                         f"Failed to switch to thread {thread_id}: {exc}. "
@@ -10616,6 +10648,7 @@ class DeepAgentsApp(App):
                 ),
                 warn_if_missing=True,
             )
+            await self._restore_cwd_after_failed_thread_switch(prev_cwd)
             rollback_restore_failed = False
             # Attempt to restore the previous thread's visible history
             try:

@@ -11597,7 +11597,7 @@ class TestResumeThreadCwdSwitch:
         monkeypatch.chdir(current)
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
         push_wait = AsyncMock(return_value="switch")
-        app._push_screen_wait = push_wait  # type: ignore[method-assign]
+        app._push_screen_wait = push_wait  # ty: ignore[invalid-assignment]
         chat_input = MagicMock()
         app._chat_input = chat_input
         status_bar = MagicMock()
@@ -11625,9 +11625,9 @@ class TestResumeThreadCwdSwitch:
         target.mkdir()
         monkeypatch.chdir(current)
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
-        app._push_screen_wait = AsyncMock(return_value="stay")  # type: ignore[method-assign]
+        app._push_screen_wait = AsyncMock(return_value="stay")  # ty: ignore[invalid-assignment]
         notify = MagicMock()
-        app.notify = notify  # type: ignore[method-assign]
+        app.notify = notify  # ty: ignore[invalid-assignment]
 
         with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
             ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
@@ -11647,7 +11647,7 @@ class TestResumeThreadCwdSwitch:
         monkeypatch.chdir(tmp_path)
         app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
         push_wait = AsyncMock(return_value="switch")
-        app._push_screen_wait = push_wait  # type: ignore[method-assign]
+        app._push_screen_wait = push_wait  # ty: ignore[invalid-assignment]
 
         with patch(
             "deepagents_code.sessions.get_thread_cwd", return_value=str(tmp_path)
@@ -11656,3 +11656,49 @@ class TestResumeThreadCwdSwitch:
 
         assert ok is True
         push_wait.assert_not_called()
+
+    async def test_resume_prefetch_failure_restores_server_backed_cwd_switch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Failed `/threads` prefetch restores cwd/server after accepted switch."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        app._lc_thread_id = "old-thread"
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        app._fetch_thread_history_data = AsyncMock(  # ty: ignore[invalid-assignment]
+            side_effect=RuntimeError("history unavailable")
+        )
+        load_thread_history = AsyncMock()
+        app._load_thread_history = load_thread_history  # ty: ignore[invalid-assignment]
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
+        replace_calls: list[Path] = []
+
+        def replace_server(cwd: Path) -> bool:
+            replace_calls.append(cwd)
+            app._switch_process_cwd(cwd)
+            return True
+
+        app._replace_server_after_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+            side_effect=replace_server
+        )
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            await app._resume_thread("new-thread")
+
+        assert replace_calls == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        load_thread_history.assert_not_awaited()

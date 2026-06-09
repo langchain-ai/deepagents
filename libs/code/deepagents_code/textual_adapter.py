@@ -793,11 +793,12 @@ async def execute_task_textual(
 
                     # Process content blocks
                     blocks = message.content_blocks
-                    logger.debug(
-                        "content_blocks count=%d blocks=%s",
-                        len(blocks),
-                        repr(blocks)[:500],
-                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "content_blocks count=%d blocks=%s",
+                            len(blocks),
+                            repr(blocks)[:500],
+                        )
                     for block in blocks:
                         block_type = block.get("type")
 

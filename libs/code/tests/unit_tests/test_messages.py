@@ -1,5 +1,6 @@
 """Unit tests for message widgets markup safety."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -285,6 +286,72 @@ class TestAssistantMessageMarkdownRendering:
         markdown.update.assert_awaited_once_with("```python\nnew content\n```")
         assert msg._stream is None
         assert msg._content == "```python\nnew content\n```"
+
+
+class _AssistantMessageApp(App[None]):
+    """Minimal app that mounts an AssistantMessage for timer-based tests."""
+
+    def compose(self) -> ComposeResult:
+        widget = AssistantMessage()
+        widget.id = "assistant"
+        yield widget
+
+
+class TestAssistantMessageStreamCoalescing:
+    """Tests for the throttled streaming flush that keeps input responsive."""
+
+    async def test_append_buffers_until_flush(self) -> None:
+        """Tokens accumulate in `_content` but defer the markdown write."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("hello ")
+            await msg.append_content("world")
+
+            # No immediate write — tokens are buffered for the timer.
+            stream.write.assert_not_awaited()
+            assert msg._content == "hello world"
+            assert msg._pending_append == "hello world"
+            assert msg._flush_timer is not None
+
+    async def test_timer_flushes_coalesced_text_once(self) -> None:
+        """The throttled timer writes buffered tokens as a single fragment."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("foo")
+            await msg.append_content("bar")
+            await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
+            await pilot.pause()
+
+            stream.write.assert_awaited_once_with("foobar")
+            assert msg._pending_append == ""
+
+    async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
+        """Stopping the stream drains buffered text and clears the timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            markdown = MagicMock()
+            markdown.update = AsyncMock()
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            stream.stop = AsyncMock()
+            msg._markdown = markdown
+            msg._stream = stream
+
+            await msg.append_content("partial")
+            await msg.stop_stream()
+
+            stream.write.assert_awaited_once_with("partial")
+            stream.stop.assert_awaited_once_with()
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
 
 
 class TestSummarizationMessage:

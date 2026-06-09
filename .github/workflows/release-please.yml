@@ -150,7 +150,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
             echo "talon-release=true" >> "$GITHUB_OUTPUT"
-            echo "DeepAgents Talon release detected: $COMMIT_MSG"
+            echo "Deep Agents Talon release detected: $COMMIT_MSG"
           else
             echo "talon-release=false" >> "$GITHUB_OUTPUT"
           fi

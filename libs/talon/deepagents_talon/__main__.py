@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Run the Talon host with the placeholder runtime."""
-    parser = argparse.ArgumentParser(description="Run the DeepAgents Talon host.")
+    parser = argparse.ArgumentParser(description="Run the Deep Agents Talon host.")
     parser.add_argument(
         "--once",
         action="store_true",

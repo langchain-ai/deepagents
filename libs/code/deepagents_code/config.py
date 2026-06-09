@@ -79,6 +79,83 @@ except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
 
+def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
+    """Return the environment after dotenv loading without mutating `os.environ`.
+
+    Args:
+        start_path: Directory to use for project `.env` discovery.
+
+    Returns:
+        Environment mapping with project and global dotenv values applied using
+        the same first-write-wins precedence as `_load_dotenv`.
+    """
+    import dotenv
+
+    env = dict(os.environ)
+
+    def apply_dotenv(dotenv_path: Path | None) -> None:
+        if dotenv_path is None:
+            return
+        try:
+            values = dotenv.dotenv_values(dotenv_path=dotenv_path)
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read dotenv at %s; previewed project env vars may be "
+                "incomplete",
+                dotenv_path,
+                exc_info=True,
+            )
+            return
+        for key, value in values.items():
+            if value is not None and key not in env:
+                env[key] = value
+
+    project_dotenv: Path | None = None
+    try:
+        project_dotenv = (
+            _find_dotenv_from_start_path(start_path)
+            if start_path is not None
+            else _find_dotenv_from_start_path(Path.cwd())
+        )
+    except OSError:
+        logger.warning(
+            "Could not inspect project dotenv at %s; previewed project env vars may "
+            "be incomplete",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    apply_dotenv(project_dotenv)
+
+    try:
+        global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
+    except OSError:
+        logger.warning(
+            "Could not inspect global dotenv at %s; previewed global defaults may "
+            "be incomplete",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+        global_dotenv = None
+    apply_dotenv(global_dotenv)
+
+    return env
+
+
+def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
+    """Resolve an env var from a mapping using app prefix precedence.
+
+    Returns:
+        The resolved value, or `None` when absent or empty.
+    """
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    if not name.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{name}"
+        if prefixed in env:
+            return env[prefixed] or None
+    return env.get(name) or None
+
+
 def _load_dotenv(*, start_path: Path | None = None) -> bool:
     """Load environment variables from project and global `.env` files.
 
@@ -1060,6 +1137,32 @@ def _parse_extra_skills_dirs(
     return None
 
 
+_API_KEY_FIELDS = frozenset(
+    {
+        "openai_api_key",
+        "anthropic_api_key",
+        "google_api_key",
+        "nvidia_api_key",
+        "tavily_api_key",
+    }
+)
+"""Reloadable fields that hold API keys and must be masked in reports."""
+
+_RELOADABLE_FIELDS = (
+    "openai_api_key",
+    "anthropic_api_key",
+    "google_api_key",
+    "nvidia_api_key",
+    "tavily_api_key",
+    "google_cloud_project",
+    "deepagents_langchain_project",
+    "project_root",
+    "shell_allow_list",
+    "extra_skills_dirs",
+)
+"""Fields refreshed on `/reload` and cwd switches."""
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-code.
@@ -1248,64 +1351,18 @@ class Settings:
             **interpreter_kwargs,
         )
 
-    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
-        """Reload selected settings from environment variables and project files.
-
-        This refreshes only fields that are expected to change at runtime
-        (API keys, Google Cloud project, project root, shell allow-list, and
-        LangSmith tracing project).
-
-        Runtime model state (`model_name`, `model_provider`,
-        `model_context_limit`) and the original user LangSmith project
-        (`user_langchain_project`) are intentionally preserved -- they are
-        not in `reloadable_fields` and are never touched by this method.
-
-        !!! note
-
-            `.env` files are loaded with `override=False`, so shell-exported
-            variables always take precedence.  To override a shell-exported key
-            from `.env`, use the `DEEPAGENTS_CODE_` prefix (e.g.
-            `DEEPAGENTS_CODE_OPENAI_API_KEY`).
-
-        Args:
-            start_path: Directory to start project detection from (defaults to cwd).
+    @staticmethod
+    def _reload_values(
+        *,
+        start_path: Path | None,
+        env: dict[str, str],
+        previous: dict[str, object],
+    ) -> dict[str, object]:
+        """Resolve reloadable settings from an environment mapping.
 
         Returns:
-            A list of human-readable change descriptions.
+            Reloadable setting values keyed by field name.
         """
-        _load_dotenv(start_path=start_path)
-
-        api_key_fields = {
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-        }
-        """Fields that hold API keys — used to mask values in change reports
-        so secrets are not logged as plaintext."""
-
-        reloadable_fields = (
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-            "google_cloud_project",
-            "deepagents_langchain_project",
-            "project_root",
-            "shell_allow_list",
-            "extra_skills_dirs",
-        )
-        """Fields refreshed on `/reload`.
-
-        Runtime model state (`model_name`, `model_provider`, `model_context_limit`)
-        and the original user LangSmith project are intentionally excluded —
-        they are set once and should not change across reloads.
-        """
-
-        previous = {field: getattr(self, field) for field in reloadable_fields}
-
         from deepagents_code._env_vars import (
             EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
@@ -1313,7 +1370,7 @@ class Settings:
         )
 
         try:
-            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
+            shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
         except ValueError:
             logger.warning(
                 "Invalid %s during reload; keeping previous value",
@@ -1331,23 +1388,105 @@ class Settings:
             )
             project_root = previous["project_root"]
 
-        from deepagents_code.model_config import resolve_env_var
-
-        refreshed = {
-            "openai_api_key": resolve_env_var("OPENAI_API_KEY"),
-            "anthropic_api_key": resolve_env_var("ANTHROPIC_API_KEY"),
-            "google_api_key": resolve_env_var("GOOGLE_API_KEY"),
-            "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
-            "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
-            "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
-            "deepagents_langchain_project": resolve_env_var(LANGSMITH_PROJECT),
+        return {
+            "openai_api_key": _resolve_env_var_from(env, "OPENAI_API_KEY"),
+            "anthropic_api_key": _resolve_env_var_from(env, "ANTHROPIC_API_KEY"),
+            "google_api_key": _resolve_env_var_from(env, "GOOGLE_API_KEY"),
+            "nvidia_api_key": _resolve_env_var_from(env, "NVIDIA_API_KEY"),
+            "tavily_api_key": _resolve_env_var_from(env, "TAVILY_API_KEY"),
+            "google_cloud_project": _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": _resolve_env_var_from(
+                env,
+                LANGSMITH_PROJECT,
+            ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
             "extra_skills_dirs": _parse_extra_skills_dirs(
-                os.environ.get(EXTRA_SKILLS_DIRS),
+                env.get(EXTRA_SKILLS_DIRS),
                 _read_config_toml_skills_dirs(),
             ),
         }
+
+    @staticmethod
+    def _format_reload_changes(
+        previous: dict[str, object], refreshed: dict[str, object]
+    ) -> list[str]:
+        """Format changed reloadable settings for logs and messages.
+
+        Returns:
+            Human-readable change descriptions.
+        """
+
+        def display(field: str, value: object) -> str:
+            if field in _API_KEY_FIELDS:
+                return "set" if value else "unset"
+            return str(value)
+
+        changes: list[str] = []
+        for field in _RELOADABLE_FIELDS:
+            old_value = previous[field]
+            new_value = refreshed[field]
+            if old_value != new_value:
+                changes.append(
+                    f"{field}: {display(field, old_value)} -> "
+                    f"{display(field, new_value)}"
+                )
+        return changes
+
+    def preview_reload_from_environment(
+        self, *, start_path: Path | None = None
+    ) -> list[str]:
+        """Preview runtime settings changes without applying them.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions that would be produced by
+            `reload_from_environment`.
+        """
+        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        env = _preview_dotenv_environ(start_path=start_path)
+        refreshed = self._reload_values(
+            start_path=start_path,
+            env=env,
+            previous=previous,
+        )
+        return self._format_reload_changes(previous, refreshed)
+
+    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
+        """Reload selected settings from environment variables and project files.
+
+        This refreshes only fields that are expected to change at runtime
+        (API keys, Google Cloud project, project root, shell allow-list, and
+        LangSmith tracing project).
+
+        Runtime model state (`model_name`, `model_provider`,
+        `model_context_limit`) and the original user LangSmith project
+        (`user_langchain_project`) are intentionally preserved -- they are
+        not in `_RELOADABLE_FIELDS` and are never touched by this method.
+
+        !!! note
+
+            `.env` files are loaded with `override=False`, so shell-exported
+            variables always take precedence.  To override a shell-exported key
+            from `.env`, use the `DEEPAGENTS_CODE_` prefix (e.g.
+            `DEEPAGENTS_CODE_OPENAI_API_KEY`).
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions.
+        """
+        _load_dotenv(start_path=start_path)
+
+        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        refreshed = self._reload_values(
+            start_path=start_path,
+            env=dict(os.environ),
+            previous=previous,
+        )
 
         for field, value in refreshed.items():
             setattr(self, field, value)
@@ -1356,7 +1495,7 @@ class Settings:
         # the change
         new_project = refreshed["deepagents_langchain_project"]
         if new_project:
-            os.environ["LANGSMITH_PROJECT"] = new_project
+            os.environ["LANGSMITH_PROJECT"] = str(new_project)
         elif previous["deepagents_langchain_project"]:
             # Override was previously active but new value is unset; restore.
             if _original_langsmith_project:
@@ -1364,21 +1503,7 @@ class Settings:
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
 
-        def _display(field: str, value: object) -> str:
-            if field in api_key_fields:
-                return "set" if value else "unset"
-            return str(value)
-
-        changes: list[str] = []
-        for field in reloadable_fields:
-            old_value = previous[field]
-            new_value = refreshed[field]
-            if old_value != new_value:
-                changes.append(
-                    f"{field}: {_display(field, old_value)} -> "
-                    f"{_display(field, new_value)}"
-                )
-        return changes
+        return self._format_reload_changes(previous, refreshed)
 
     @property
     def has_openai(self) -> bool:

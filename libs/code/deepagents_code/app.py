@@ -17,7 +17,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from textual import on
 from textual.app import App, ScreenStackError
@@ -255,8 +255,6 @@ def _as_toml_table(value: object) -> dict[str, object] | None:
     # `tomllib` parses TOML tables as string-keyed dicts; `ty` cannot infer
     # that from a runtime `dict` check. Keep the cast at this boundary so it
     # does not become a general-purpose escape hatch.
-    from typing import cast
-
     return cast("dict[str, object]", value)
 
 
@@ -2777,10 +2775,26 @@ class DeepAgentsApp(App):
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
             if resumed_thread_id is not None:
-                await self._offer_thread_cwd_switch(
-                    resumed_thread_id,
-                    restart_server=False,
-                )
+                # The cwd-switch offer is a post-resolution convenience. Isolate
+                # its failures so they can't fall into the resume-resolution
+                # handler below, which would discard the already-resolved thread
+                # and misleadingly report "Could not look up thread history."
+                try:
+                    await self._offer_thread_cwd_switch(
+                        resumed_thread_id,
+                        restart_server=False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "cwd switch offer failed for resumed thread %s",
+                        resumed_thread_id,
+                    )
+                    self.notify(
+                        "Resumed the thread, but could not check its working "
+                        "directory. Local context may be stale.",
+                        severity="warning",
+                        markup=False,
+                    )
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -10349,24 +10363,38 @@ class DeepAgentsApp(App):
     @staticmethod
     def _resolve_thread_cwd_mismatch(
         raw: str, current_cwd: str
-    ) -> tuple[Path | None, bool]:
-        """Resolve a stored thread cwd and whether it is unavailable.
+    ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
+        """Classify a stored thread cwd against the current app cwd.
+
+        Args:
+            raw: The cwd recorded in the thread's checkpoint metadata. May be
+                relative or use `~`; both are normalized here.
+            current_cwd: The app's current working directory.
 
         Returns:
-            Mismatched cwd and whether the stored absolute path is unavailable.
+            A `(status, path)` pair. `path` is only set when `status` is
+            `"mismatch"`; it is `None` otherwise. `status` is one of:
+
+            - `"match"`: the stored cwd resolves to the current cwd; no action.
+            - `"unavailable"`: the stored cwd is relative/malformed, or names an
+                absolute directory that no longer exists — it cannot be honored,
+                so the caller should warn and stay put.
+            - `"mismatch"`: the stored cwd is a real directory that differs from
+                the current cwd — the caller should offer to switch.
         """
         target = Path(raw).expanduser()
-        if not target.is_absolute():
-            return None, False
-        if not target.is_dir():
-            return None, True
+        if not target.is_absolute() or not target.is_dir():
+            # Relative/malformed or missing directory: cannot be honored.
+            return "unavailable", None
         try:
             current = Path(current_cwd).expanduser().resolve()
             resolved = target.resolve()
         except OSError:
             current = Path(current_cwd).expanduser().absolute()
             resolved = target.absolute()
-        return (None, False) if current == resolved else (resolved, False)
+        if current == resolved:
+            return "match", None
+        return "mismatch", resolved
 
     async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
         """Return the thread cwd when it differs from the current app cwd."""
@@ -10376,12 +10404,12 @@ class DeepAgentsApp(App):
         if not raw:
             return None
 
-        target, unavailable = await asyncio.to_thread(
+        status, target = await asyncio.to_thread(
             self._resolve_thread_cwd_mismatch,
             raw,
             self._cwd,
         )
-        if unavailable:
+        if status == "unavailable":
             self.notify(
                 f"Thread {thread_id} was last used in {raw!r}, but that directory "
                 "is not available. Staying in the current directory; local "
@@ -10395,23 +10423,34 @@ class DeepAgentsApp(App):
     @staticmethod
     def _unwrap_cwd_switch_server_result(
         result: object,
-    ) -> tuple[object, object, object | None]:
-        """Return a server startup result or raise its exception.
+    ) -> tuple[RemoteAgent, ServerProcess, object | None]:
+        """Return a gathered server-startup result or raise its exception.
+
+        `asyncio.gather(..., return_exceptions=True)` yields the raised object
+        in place of a result. Any `BaseException` (not just `Exception`) is
+        re-raised so a `CancelledError` surfaces as itself instead of being
+        unpacked as a bogus success tuple.
 
         Returns:
-            The successful server startup result.
+            The successful `start_server_and_get_agent` result.
         """
-        from typing import cast
-
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             raise result
-        return cast("tuple[object, object, object | None]", result)
+        return cast("tuple[RemoteAgent, ServerProcess, object | None]", result)
 
-    async def _replace_server_after_cwd_switch(self, cwd: Path) -> bool:
+    async def _replace_server_after_cwd_switch(
+        self, cwd: Path
+    ) -> Literal["continue", "abort"]:
         """Switch cwd and replace the app-owned server process.
 
         Returns:
-            True when the session can continue, False when restart failed.
+            `"continue"` when the session can proceed (including the graceful
+                no-owned-server case), or `"abort"` when a requested restart
+                failed and the previous state was rolled back.
+
+        A non-`Exception` failure (e.g. `CancelledError`) is re-raised after
+        rolling back, so cancellation propagates rather than being reported as
+        a failed switch.
         """
         if self._server_kwargs is None or self._server_proc is None:
             self.notify(
@@ -10422,7 +10461,7 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             self._switch_process_cwd(cwd)
-            return True
+            return "continue"
 
         from deepagents_code.main import _preload_session_mcp_server_info
         from deepagents_code.server_manager import start_server_and_get_agent
@@ -10449,7 +10488,6 @@ class DeepAgentsApp(App):
                 )
             results = await asyncio.gather(*coros, return_exceptions=True)
             server_result = self._unwrap_cwd_switch_server_result(results[0])
-            from typing import cast
 
             mcp_info: list[Any] | None = None
             if len(results) > 1:
@@ -10470,6 +10508,9 @@ class DeepAgentsApp(App):
                         timeout=8,
                         markup=False,
                     )
+                    # Keep the prior tool metadata so the banner does not falsely
+                    # drop to zero tools — the MCP servers themselves are fine.
+                    mcp_info = previous_mcp_info
                 else:
                     mcp_info = cast("list[Any] | None", mcp_result)
 
@@ -10479,21 +10520,31 @@ class DeepAgentsApp(App):
                 server_proc=server_proc,
                 mcp_server_info=mcp_info,
             )
-        except Exception as exc:
+        except BaseException as exc:
             logger.exception("Failed to restart server after cwd switch")
-            with suppress(OSError):
+            # Roll back regardless of exception type so a cancelled restart does
+            # not strand the app mid-switch.
+            try:
                 self._switch_process_cwd(previous_cwd)
+            except OSError:
+                logger.warning(
+                    "Failed to restore cwd to %s after failed server restart; "
+                    "process cwd and app state are now inconsistent",
+                    previous_cwd,
+                    exc_info=True,
+                )
+                self.notify(
+                    "Server restart failed and the previous directory could not "
+                    "be restored. The session may be in the wrong directory — "
+                    "please restart dcode.",
+                    severity="error",
+                    timeout=15,
+                    markup=False,
+                )
             self._agent = previous_agent
             self._server_proc = previous_server
             self._mcp_server_info = previous_mcp_info
             self._connecting = False
-            self.notify(
-                f"Could not switch to the thread cwd ({type(exc).__name__}: {exc}). "
-                "Staying in the current directory.",
-                severity="error",
-                timeout=10,
-                markup=False,
-            )
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(
@@ -10504,37 +10555,81 @@ class DeepAgentsApp(App):
                 )
             except NoMatches:
                 pass
-            return False
+            if not isinstance(exc, Exception):
+                # Cancellation / SystemExit: state is restored; let it propagate.
+                raise
+            self.notify(
+                f"Could not switch to the thread cwd ({type(exc).__name__}: {exc}). "
+                "Staying in the current directory.",
+                severity="error",
+                timeout=10,
+                markup=False,
+            )
+            return "abort"
         else:
             previous_server.stop()
             self.on_deep_agents_app_server_ready(event)
-            return True
+            return "continue"
+
+    @staticmethod
+    async def _preview_project_settings_change(cwd: Path) -> bool:
+        """Return whether switching cwd would refresh project settings."""
+        from deepagents_code.config import settings
+
+        try:
+            changes = await asyncio.to_thread(
+                settings.preview_reload_from_environment,
+                start_path=cwd,
+            )
+        except (OSError, ValueError, KeyError, TypeError, ImportError):
+            logger.warning(
+                "Could not preview project settings changes for cwd switch",
+                exc_info=True,
+            )
+            return False
+        return bool(changes)
 
     async def _offer_thread_cwd_switch(
         self,
         thread_id: str,
         *,
         restart_server: bool,
-    ) -> bool:
+    ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
+        Args:
+            thread_id: The thread being resumed.
+            restart_server: When True (in-session thread switch), an accepted
+                switch replaces the app-owned server so the backend runs in the
+                new cwd. When False (launch-time resume), the server has not
+                started yet, so only the process cwd is changed.
+
         Returns:
-            True when resume can continue, False when a requested switch failed.
+            `"continue"` when resume may proceed, or `"abort"` when a requested
+                switch was accepted but failed (the caller should stop
+                the resume).
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
-            return True
+            return "continue"
 
         from deepagents_code.widgets.cwd_switch import CwdSwitchPromptScreen
 
+        project_settings_change_detected = await self._preview_project_settings_change(
+            target
+        )
         choice = await self._push_screen_wait(
-            CwdSwitchPromptScreen(current_cwd=self._cwd, thread_cwd=str(target))
+            CwdSwitchPromptScreen(
+                current_cwd=self._cwd,
+                thread_cwd=str(target),
+                project_settings_change_detected=project_settings_change_detected,
+            )
         )
         if choice == "switch":
             if restart_server:
                 return await self._replace_server_after_cwd_switch(target)
             self._switch_process_cwd(target)
-            return True
+            return "continue"
 
         self.notify(
             "Continuing in the current directory. Cached local context may be "
@@ -10543,7 +10638,7 @@ class DeepAgentsApp(App):
             timeout=10,
             markup=False,
         )
-        return True
+        return "continue"
 
     @staticmethod
     def _cwd_paths_equal(current_cwd: str, previous_cwd: Path) -> bool:
@@ -10610,7 +10705,8 @@ class DeepAgentsApp(App):
         prev_session_thread = self._session_state.thread_id
         prev_cwd = Path(self._cwd)
 
-        if not await self._offer_thread_cwd_switch(thread_id, restart_server=True):
+        cwd_choice = await self._offer_thread_cwd_switch(thread_id, restart_server=True)
+        if cwd_choice == "abort":
             return
 
         self._thread_switching = True

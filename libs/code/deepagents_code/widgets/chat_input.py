@@ -1218,7 +1218,11 @@ class ChatInput(Vertical):
         self._text_area.focus()
 
     def set_cwd(self, cwd: str | Path) -> None:
-        """Update file completion to use a new cwd."""
+        """Update file completion to use a new cwd.
+
+        Re-roots the file controller and schedules a background cache warm so
+        the project-root walk runs off the event loop.
+        """
         self._cwd = Path(cwd)
         file_controller = getattr(self, "_file_controller", None)
         if file_controller is not None:

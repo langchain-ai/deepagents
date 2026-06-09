@@ -74,6 +74,23 @@ class TestReloadFromEnvironment:
         assert settings.openai_api_key == "sk-new-key"
         assert "openai_api_key: unset -> set" in changes
 
+    def test_preview_reload_reports_changes_without_mutating(
+        self, tmp_path: Path
+    ) -> None:
+        """Previewing reload changes should not update settings or `os.environ`."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (target / ".env").write_text("DEEPAGENTS_CODE_SHELL_ALLOW_LIST=ls\n")
+        settings = Settings.from_environment(start_path=current)
+
+        changes = settings.preview_reload_from_environment(start_path=target)
+
+        assert any(change.startswith("shell_allow_list:") for change in changes)
+        assert settings.shell_allow_list is None
+        assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
+
     def test_preserves_model_state(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

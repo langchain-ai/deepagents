@@ -272,6 +272,21 @@ class TestThreadFunctions:
             cwd = asyncio.run(sessions.get_thread_cwd("thread3"))
             assert cwd is None
 
+    def test_get_thread_cwd_ignores_empty_string(self, temp_db):
+        """An empty stored cwd is treated as missing rather than returned."""
+        conn = sqlite3.connect(str(temp_db))
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            ("thread-empty", "c1", json.dumps({"cwd": ""})),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread-empty"))
+            assert cwd is None
+
     def test_delete_thread(self, temp_db):
         """Delete thread removes thread."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):

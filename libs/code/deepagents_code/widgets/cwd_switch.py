@@ -62,11 +62,37 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     }
     """
 
-    def __init__(self, *, current_cwd: str, thread_cwd: str) -> None:
+    def __init__(
+        self,
+        *,
+        current_cwd: str,
+        thread_cwd: str,
+        project_settings_change_detected: bool = False,
+    ) -> None:
         """Initialize the prompt."""
         super().__init__()
         self._current_cwd = current_cwd
         self._thread_cwd = thread_cwd
+        self._project_settings_change_detected = project_settings_change_detected
+
+    def _body_text(self) -> str:
+        """Return the prompt body text."""
+        current = format_path(self._current_cwd)
+        target = format_path(self._thread_cwd)
+        settings_note = (
+            " Project settings will refresh too."
+            if self._project_settings_change_detected
+            else ""
+        )
+        return (
+            "This thread was last used in:\n"
+            f"  {target}\n\n"
+            "You are currently in:\n"
+            f"  {current}\n\n"
+            "Switching uses the thread's original project for tools and "
+            f"commands.{settings_note} Stay only if you want to keep working "
+            "in the current project."
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -74,8 +100,6 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         Yields:
             Widgets for the cwd switch prompt.
         """
-        current = format_path(self._current_cwd)
-        target = format_path(self._thread_cwd)
         with Vertical():
             yield Static(
                 "Resume from a different working directory?",
@@ -83,13 +107,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 markup=False,
             )
             yield Static(
-                "This thread was last used in:\n"
-                f"  {target}\n\n"
-                "You are currently in:\n"
-                f"  {current}\n\n"
-                "Switching keeps tools and cached local context aligned. Staying "
-                "here can reuse stale LocalContextMiddleware data and make tools "
-                "operate in the wrong project.",
+                self._body_text(),
                 classes="cwd-switch-body",
                 markup=False,
             )

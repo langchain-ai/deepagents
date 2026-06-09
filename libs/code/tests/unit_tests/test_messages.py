@@ -792,22 +792,98 @@ class TestToolCallMessageSearchOutput:
             "file.py:2:match two",
         ]
 
+    def test_grep_preview_truncates_long_single_line(self) -> None:
+        """Grep previews should cap long single-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "file.py:1:" + "x" * ToolCallMessage._PREVIEW_CHARS
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        # The visible slice is exactly the leading char budget of the input,
+        # not just any string of the right length.
+        assert result.content.plain == output[: ToolCallMessage._PREVIEW_CHARS]
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_long_multiline_by_chars(self) -> None:
+        """Grep previews should cap long multi-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        # Two wide lines, each under the budget but together over it, so both
+        # become rows (no hidden line) and the second is char-sliced — forcing
+        # the char hint over the line hint. Width derives from the budget.
+        char_run = ToolCallMessage._PREVIEW_CHARS // 2
+        lines = [f"file.py:{index}:" + "x" * char_run for index in range(2)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_glob_preview_truncates_long_paths_by_chars(self) -> None:
+        """Glob previews cap wide path lists by characters with a file hint."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        # Two paths that each fit under the budget but together overflow it, so
+        # both become rows (no hidden line) and the second is char-sliced —
+        # forcing the char hint rather than the file-count hint.
+        long_path = "/tmp/" + "z" * (ToolCallMessage._PREVIEW_CHARS // 2) + ".py"
+        output = repr([long_path, long_path])
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_by_line_count(self) -> None:
+        """Grep previews over the line cap report hidden lines, not chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:hit" for index in range(8))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        # 8 short lines, preview cap is 5 → 3 hidden, counted as lines.
+        assert result.truncation == "3 more lines"
+
+    def test_glob_preview_truncates_by_file_count(self) -> None:
+        """Glob previews over the line cap report hidden files, not lines."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        paths = [f"/tmp/result_{index}.py" for index in range(8)]
+
+        result = msg._format_search_output(repr(paths), is_preview=True)
+
+        # The "files" unit is what distinguishes the glob path from grep.
+        assert result.truncation == "3 more files"
+
+    def test_grep_preview_prefers_line_count_when_both_caps_hit(self) -> None:
+        """When both caps trip, the hidden-line count wins over chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:" + "y" * 100 for index in range(10))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert result.truncation.endswith("more lines")
+
+    def test_search_full_output_is_untruncated(self) -> None:
+        """Non-preview formatting returns every row with no truncation hint."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        lines = [f"file.py:{index}:" + "z" * 200 for index in range(10)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain.split("\n") == lines
+
 
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 
-    async def test_long_single_line_search_output_has_no_expand_hint(self) -> None:
-        """Long-but-single-line grep/glob output should not offer expansion.
-
-        The outer collapse threshold counts characters, but `_format_search_output`
-        only truncates by line count. A long single-line result (e.g. a glob
-        error string returned as normal output) trips the char threshold while
-        leaving nothing hidden, so the preview must not promise an expansion
-        that would reveal identical content.
-        """
+    async def test_long_single_line_search_output_truncates_and_expands(self) -> None:
+        """Long single-line grep/glob output should use the shared char cap."""
         from textual.app import App, ComposeResult
 
-        # Single line, no newlines, comfortably over the character threshold.
         output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
         assert "\n" not in output
         assert len(output) > ToolCallMessage._PREVIEW_CHARS
@@ -827,15 +903,18 @@ class TestToolCallMessageExpandHint:
             await pilot.pause()
 
             assert app.msg._hint_widget is not None
-            # Nothing is hidden, so no expand affordance and no toggle.
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
+            assert app.msg._hint_widget.display is True
+            assert app.msg._has_expandable_output() is True
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert len(preview.plain) == ToolCallMessage._PREVIEW_CHARS
 
             app.msg.toggle_output()
             await pilot.pause()
 
-            assert app.msg._expanded is False
-            assert app.msg._hint_widget.display is False
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == output
 
     async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
         """A short force-expanded error must not show a collapse affordance.

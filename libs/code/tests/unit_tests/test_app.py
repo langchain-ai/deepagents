@@ -4593,8 +4593,8 @@ class TestShellCommandInterrupt:
             for msg in messages
         )
 
-    async def test_non_incognito_shell_output_written_to_model_context(self) -> None:
-        """A `!` command/output must be written into the graph checkpoint."""
+    async def test_non_incognito_shell_buffers_for_model_context(self) -> None:
+        """A `!` command/output is buffered, not written immediately."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         app = DeepAgentsApp()
@@ -4621,19 +4621,49 @@ class TestShellCommandInterrupt:
                 await app._run_shell_task("echo hello world", incognito=False)
                 await pilot.pause()
 
+        # Deferred: nothing written to graph state until the next user send.
+        app._agent.aupdate_state.assert_not_awaited()
+        buffered = app._pending_shell_messages
+        assert isinstance(buffered[0], HumanMessage)
+        assert buffered[0].content == "!echo hello world"
+        assert isinstance(buffered[1], AIMessage)
+        assert "hello world" in buffered[1].content
+
+    async def test_pending_shell_flushed_on_next_user_send(self) -> None:
+        """Buffered `!` output is written to graph state on the next send."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo hi"),
+            AIMessage(content="```\nhi\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("what did that print?")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
         app._agent.aupdate_state.assert_awaited_once()
         call = app._agent.aupdate_state.await_args
         assert call is not None
-        config = call.args[0]
-        assert config["configurable"]["thread_id"] == "thread-123"
+        assert call.args[0]["configurable"]["thread_id"] == "thread-123"
         sent = call.args[1]["messages"]
-        assert isinstance(sent[0], HumanMessage)
-        assert sent[0].content == "!echo hello world"
-        assert isinstance(sent[1], AIMessage)
-        assert "hello world" in sent[1].content
+        assert sent[0].content == "!echo hi"
+        # Buffer is drained so it is not replayed onto a later turn.
+        assert app._pending_shell_messages == []
 
-    async def test_incognito_shell_output_not_written_to_model_context(self) -> None:
-        """A `!!` command/output must never reach the graph checkpoint."""
+    async def test_incognito_shell_output_not_buffered(self) -> None:
+        """A `!!` command/output must never be buffered for the model."""
         app = DeepAgentsApp()
         app._agent = MagicMock()
         app._agent.aupdate_state = AsyncMock()
@@ -4664,10 +4694,11 @@ class TestShellCommandInterrupt:
                 await app._run_shell_task("echo secret", incognito=True)
                 await pilot.pause()
 
+        assert app._pending_shell_messages == []
         app._agent.aupdate_state.assert_not_awaited()
 
-    async def test_non_incognito_shell_nonzero_exit_recorded(self) -> None:
-        """A failing `!` command should record its exit code for the model."""
+    async def test_non_incognito_shell_nonzero_exit_buffered(self) -> None:
+        """A failing `!` command should buffer its exit code for the model."""
         app = DeepAgentsApp()
         app._agent = MagicMock()
         app._agent.aupdate_state = AsyncMock()
@@ -4692,12 +4723,25 @@ class TestShellCommandInterrupt:
                 await app._run_shell_task("falsey", incognito=False)
                 await pilot.pause()
 
-        app._agent.aupdate_state.assert_awaited_once()
-        call = app._agent.aupdate_state.await_args
-        assert call is not None
-        sent = call.args[1]["messages"]
-        assert "boom" in sent[1].content
-        assert "exited with code 2" in sent[1].content
+        buffered = app._pending_shell_messages
+        assert "boom" in buffered[1].content
+        assert "exited with code 2" in buffered[1].content
+
+    async def test_clear_messages_drops_pending_shell_buffer(self) -> None:
+        """`_clear_messages` must drop buffered `!` output (no cross-thread leak)."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo secret"),
+            AIMessage(content="```\nsecret\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._clear_messages()
+
+        assert app._pending_shell_messages == []
 
     async def test_unknown_input_mode_does_not_dispatch_to_agent(self) -> None:
         """An unrecognized mode must surface an error rather than reach the LLM.

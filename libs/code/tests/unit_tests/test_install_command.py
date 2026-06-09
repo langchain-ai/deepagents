@@ -6,7 +6,7 @@ this module focuses on the in-app slash dispatch in `DeepAgentsApp`.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
@@ -355,3 +355,152 @@ async def test_install_slash_package_editable_install_refuses() -> None:
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert any("Editable install detected" in str(m._content) for m in app_msgs)
+
+
+async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
+    """A provider extra prompts to restart and runs it on accept when idle."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value="restart")
+            ) as prompt,
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        restart.assert_awaited_once()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert any("Restart complete." in m for m in app_msgs)
+
+
+async def test_install_restart_capable_extra_defer_skips_restart() -> None:
+    """Declining the restart prompt leaves the server untouched."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value="later")
+            ) as prompt,
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        restart.assert_not_called()
+
+
+async def test_install_standalone_extra_does_not_offer_restart() -> None:
+    """Standalone extras (e.g. `quickjs`) never prompt to restart."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        prompt.assert_not_called()
+
+
+async def test_install_restart_prompt_skipped_in_remote_server_mode() -> None:
+    """Remote-server mode (no owned subprocess) must not offer a restart."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = None
+        app._server_kwargs = None
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_not_called()
+
+
+async def test_install_restart_prompt_skipped_while_agent_running() -> None:
+    """A restart cancels in-flight work, so don't prompt mid-run."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = True
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_not_called()
+
+
+async def test_install_package_offers_restart_when_idle() -> None:
+    """A `--package` install prompts to restart and runs it on accept."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "custom_provider:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value="restart")
+            ) as prompt,
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            await app._handle_command("/install langchain-custom --package --force")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        restart.assert_awaited_once()

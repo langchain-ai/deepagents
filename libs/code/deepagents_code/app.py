@@ -10133,17 +10133,17 @@ class DeepAgentsApp(App):
             )
             return
 
-        await self._restart_server_manual()
+        await self._mount_message(AppMessage("Restarting server..."))
+        if await self._restart_server_manual():
+            await self._mount_message(AppMessage("Restart complete."))
 
-    async def _restart_server_manual(self) -> None:
+    async def _restart_server_manual(self) -> bool:
         """Respawn the app-owned LangGraph server for `/restart`.
 
-        Shares the respawn/preload sequence with
-        `_restart_server_for_mcp_refresh` via `_respawn_server`. Failures
-        surface via `ServerStartFailed` so the existing recovery UI takes
-        over.
+        Returns:
+            Whether the server was restarted successfully.
         """
-        await self._respawn_server(
+        return await self._respawn_server(
             log_message="Manual /restart of server failed",
             mcp_failure_log="MCP metadata preload after /restart failed",
             mcp_failure_toast=(
@@ -10158,7 +10158,7 @@ class DeepAgentsApp(App):
         mcp_failure_log: str,
         mcp_failure_toast: str,
         restart_timeout: float = 30.0,
-    ) -> None:
+    ) -> bool:
         """Stop the app-owned server subprocess and rebuild the agent.
 
         Used by `_restart_server_manual` (the `/restart` command) and
@@ -10176,10 +10176,13 @@ class DeepAgentsApp(App):
                 before giving up. Bounded so a wedged shutdown — the very
                 condition `/restart` exists to recover from — cannot
                 deadlock the handler.
+
+        Returns:
+            Whether the server was restarted successfully.
         """
         server_proc = self._server_proc
         if self._server_kwargs is None or server_proc is None:
-            return
+            return False
 
         try:
             self._connecting = True
@@ -10196,7 +10199,7 @@ class DeepAgentsApp(App):
                 self._connecting = False
                 logger.exception(log_message)
                 self.post_message(self.ServerStartFailed(error=exc))
-                return
+                return False
 
             from deepagents_code.main import _preload_session_mcp_server_info
             from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
@@ -10228,6 +10231,8 @@ class DeepAgentsApp(App):
         except BaseException:
             self._connecting = False
             raise
+        else:
+            return True
         finally:
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)

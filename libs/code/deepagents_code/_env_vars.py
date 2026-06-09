@@ -134,6 +134,16 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
+"""Internal sentinel recording the target version immediately before the
+startup auto-update re-execs the process.
+
+Not user-facing. The re-exec'd process consumes it and, if that same version
+still reports as available (a no-op upgrade that did not change the running
+version), skips auto-updating to break out of an otherwise endless
+upgrade/restart loop. Set and read internally across `os.execv`.
+"""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 

@@ -19,6 +19,7 @@ completed, an error is still returned so the failure is never silent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from enum import Enum
 from pathlib import Path
@@ -283,14 +284,16 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The tool result, or an error `ToolMessage` when the managed block
                 was altered.
         """
-        path = self._guarded_path(request)
+        path = await asyncio.to_thread(self._guarded_path, request)
         if path is None:
             return await handler(request)
-        before = self._read(path)
+        before = await asyncio.to_thread(self._read, path)
         before_block = (
             extract_onboarding_name_block(before) if before is not None else None
         )
         result = await handler(request)
         if before_block is None:
             return result
-        return self._result_after_restore(request, path, before_block, result)
+        return await asyncio.to_thread(
+            self._result_after_restore, request, path, before_block, result
+        )

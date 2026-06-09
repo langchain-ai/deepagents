@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import ToolMessage
@@ -16,6 +17,8 @@ from deepagents_code.onboarding import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from langgraph.types import Command
 
 
 def _managed_file(path: Path, name: str = "Ada", *, extra: str = "") -> None:
@@ -325,3 +328,53 @@ async def test_async_edit_outside_block_passes_through(tmp_path) -> None:
     content = path.read_text(encoding="utf-8")
     assert "New note." in content
     assert extract_onboarding_name_block(content) is not None
+
+
+async def test_async_guard_filesystem_helpers_run_off_event_loop(
+    tmp_path, monkeypatch
+) -> None:
+    """The async wrapper offloads guard filesystem work to worker threads."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+    event_loop_thread = threading.get_ident()
+    helper_threads: list[int] = []
+
+    original_guarded_path = middleware._guarded_path
+    original_read = middleware._read
+    original_result_after_restore = middleware._result_after_restore
+
+    def guarded_path(request: ToolCallRequest) -> Path | None:
+        helper_threads.append(threading.get_ident())
+        return original_guarded_path(request)
+
+    def read(path: Path) -> str | None:
+        helper_threads.append(threading.get_ident())
+        return original_read(path)
+
+    def result_after_restore(
+        request: ToolCallRequest,
+        path: Path,
+        before_block: str,
+        result: ToolMessage | Command[Any],
+    ) -> ToolMessage | Command[Any]:
+        helper_threads.append(threading.get_ident())
+        return original_result_after_restore(request, path, before_block, result)
+
+    monkeypatch.setattr(middleware, "_guarded_path", guarded_path)
+    monkeypatch.setattr(middleware, "_read", read)
+    monkeypatch.setattr(middleware, "_result_after_restore", result_after_restore)
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Ada", "Mallory"),
+            encoding="utf-8",
+        )
+        return _success()
+
+    result = await middleware.awrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert helper_threads
+    assert all(thread != event_loop_thread for thread in helper_threads)

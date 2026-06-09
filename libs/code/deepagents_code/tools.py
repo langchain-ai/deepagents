@@ -23,6 +23,10 @@ _tavily_client: TavilyClient | object | None = _UNSET
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
 
+# Maintainer note: `deepagents-talon` imports `web_search` and `fetch_url`
+# directly from this module. Keep their names, signatures, and return/error dict
+# shapes stable unless `deepagents-talon` is migrated in the same change.
+
 # Module-level lock guarding the urllib3 connection-factory monkeypatch used by
 # `_pinned_dns`. The patch is process-global, so serializing fetches keeps
 # concurrent calls from clobbering each other's pinned IP set.

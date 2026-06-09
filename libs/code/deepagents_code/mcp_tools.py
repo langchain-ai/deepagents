@@ -31,6 +31,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Maintainer note: `deepagents-talon` imports `MCPConfigError`,
+# `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
+# `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
+# shapes stable unless `deepagents-talon` is migrated in the same change.
+
 
 @dataclass(frozen=True, slots=True)
 class MCPToolInfo:

@@ -56,6 +56,7 @@
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
     "deepagents-code": "dcode",
+    "deepagents-talon": "talon",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
@@ -70,7 +71,8 @@
     "modal": "modal",
     "quickjs": "quickjs",
     "runloop": "runloop",
-    "sdk": "deepagents"
+    "sdk": "deepagents",
+    "talon": "talon"
   },
   "branchRules": [
     {
@@ -97,6 +99,11 @@
     {
       "label": "dcode",
       "prefix": "libs/code/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "talon",
+      "prefix": "libs/talon/",
       "skipExcludedFiles": true
     },
     {

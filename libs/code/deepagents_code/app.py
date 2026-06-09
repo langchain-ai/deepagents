@@ -6277,8 +6277,9 @@ class DeepAgentsApp(App):
             from langchain_core.messages import HumanMessage
 
             # Use the shared helper so the thread is registered first
-            # (`aensure_thread`) in server mode — otherwise the dev server
-            # returns empty state for a thread it has not seen this session.
+            # (`aensure_thread`, remote agents only) in server mode — otherwise
+            # the dev server returns empty state for a thread it has not seen
+            # this session.
             state_values = await self._get_thread_state_values(self._lc_thread_id)
             messages = state_values.get("messages", [])
             # `RemoteGraph.aget_state` returns messages as raw JSON dicts, so an

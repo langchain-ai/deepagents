@@ -10,6 +10,9 @@ import threading
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin, urlparse
 
+from langchain_core.runnables import RunnableConfig  # noqa: TC002  # runtime hint
+from langchain_core.tools import tool
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -216,6 +219,22 @@ def _get_tavily_client() -> TavilyClient | None:
     else:
         _tavily_client = None
     return _tavily_client
+
+
+@tool
+def get_current_thread_id(config: RunnableConfig) -> str:
+    """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
+
+    Args:
+        config: Runtime config injected by LangChain.
+
+    Returns:
+        The current `configurable.thread_id`, or an explanatory message if missing.
+    """
+    thread_id = config.get("configurable", {}).get("thread_id")
+    if isinstance(thread_id, str) and thread_id:
+        return thread_id
+    return "No current thread ID is available."
 
 
 def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configuration

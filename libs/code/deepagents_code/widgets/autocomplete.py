@@ -510,6 +510,10 @@ class FuzzyFileController:
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None
+        # When True, `_project_root` is a provisional value (set synchronously by
+        # `set_cwd`) and the real project root is resolved off the event loop in
+        # `warm_cache`. See `set_cwd` for why discovery is deferred.
+        self._project_root_pending = False
 
     def _get_files(self) -> list[str]:
         """Get cached file list or refresh.
@@ -525,8 +529,36 @@ class FuzzyFileController:
         """Force refresh of file cache."""
         self._file_cache = None
 
+    def set_cwd(self, cwd: Path) -> None:
+        """Switch completion roots to a new cwd.
+
+        Roots completion at `cwd` immediately and invalidates the file cache.
+        Project-root discovery (`find_project_root`) walks the filesystem, so it
+        is deferred to `warm_cache` (which runs in a worker thread) rather than
+        run here on the event loop. Until then `cwd` is used as a provisional
+        root, which is a safe narrower scope.
+        """
+        self._cwd = cwd
+        self._project_root = cwd
+        self._project_root_pending = True
+        self._file_cache = None
+        self.reset()
+
     async def warm_cache(self) -> None:
-        """Pre-populate the file cache off the event loop."""
+        """Pre-populate the file cache off the event loop.
+
+        Also resolves a project root deferred by `set_cwd`, so the blocking
+        filesystem walk runs in a worker thread instead of on the event loop.
+        """
+        if self._project_root_pending:
+            root = await asyncio.to_thread(find_project_root, self._cwd)
+            resolved = root or self._cwd
+            if resolved != self._project_root:
+                # The real root differs from the provisional `cwd`; drop any
+                # cache built against the narrower scope.
+                self._file_cache = None
+            self._project_root = resolved
+            self._project_root_pending = False
         if self._file_cache is not None:
             return
         # Best-effort; _get_files() falls back to sync on failure.

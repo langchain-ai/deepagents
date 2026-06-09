@@ -46,6 +46,32 @@ def _require_thread_id(config: dict[str, Any] | None) -> str:
     return thread_id
 
 
+def agent_error_type(exc: BaseException) -> str:
+    """Best-effort error-type name for an exception from `RemoteAgent.astream`.
+
+    The LangGraph server serializes non-allowlisted exceptions as
+    `{"error": <ExceptionType>, "message": ...}` wrapped in
+    `RemoteException(payload)` (see `langgraph_api.serde`). The server-reported
+    `"error"` type is the authoritative name when present; otherwise the
+    exception's own class name is used. This is the single source of truth for
+    "what error did the stream report" — both `format_agent_exception` (display
+    string) and the UI's error-enrichment path (error-type dispatch) read it.
+
+    Args:
+        exc: The exception caught from the agent stream.
+
+    Returns:
+        The serialized error type from a `RemoteException` dict payload, else
+        the exception's class name.
+    """
+    payload = exc.args[0] if exc.args else None
+    if isinstance(payload, dict):
+        err_type = payload.get("error")
+        if isinstance(err_type, str) and err_type:
+            return err_type
+    return type(exc).__name__
+
+
 def format_agent_exception(exc: BaseException) -> str:
     """Render an exception from `RemoteAgent.astream` for the UI.
 
@@ -65,12 +91,11 @@ def format_agent_exception(exc: BaseException) -> str:
     """
     payload = exc.args[0] if exc.args else None
     if isinstance(payload, dict):
-        err_type = payload.get("error") or type(exc).__name__
+        err_type = agent_error_type(exc)
         message = payload.get("message")
-        if isinstance(err_type, str) and isinstance(message, str) and message:
+        if isinstance(message, str) and message:
             return f"{err_type}: {message}"
-        if isinstance(err_type, str):
-            return err_type
+        return err_type
     text = str(exc)
     return text or type(exc).__name__
 

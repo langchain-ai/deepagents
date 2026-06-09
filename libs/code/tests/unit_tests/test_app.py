@@ -11142,7 +11142,7 @@ class TestRestartCommand:
             assert clear_called
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting LangGraph server" in m for m in app_msgs)
+            assert any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
     async def test_failed_restart_suppresses_completion_message(
@@ -11185,7 +11185,7 @@ class TestRestartCommand:
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting LangGraph server" in m for m in app_msgs)
+            assert any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(

@@ -10133,7 +10133,7 @@ class DeepAgentsApp(App):
             )
             return
 
-        await self._mount_message(AppMessage("Restarting LangGraph server..."))
+        await self._mount_message(AppMessage("Restarting server..."))
         if await self._restart_server_manual():
             await self._mount_message(AppMessage("Restart complete."))
 

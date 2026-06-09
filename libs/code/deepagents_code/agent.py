@@ -1306,6 +1306,18 @@ def create_cli_agent(
             middleware.append(ConfigurableModelMiddleware())
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        # Subagents share the on-disk filesystem backend and can edit the user
+        # AGENTS.md, so they get the same managed onboarding-name block guard as
+        # the main agent. Gated on memory because the block only exists when
+        # memory is enabled.
+        if enable_memory:
+            from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+            middleware.append(
+                ManagedMemoryGuardMiddleware(
+                    [settings.get_user_agent_md_path(assistant_id)]
+                )
+            )
         # Recovery sits last so it is the innermost tool-call wrapper, matching
         # the main agent stack: it then wraps tool execution as tightly as
         # possible and only intercepts `ToolException`s from the tool itself,
@@ -1399,7 +1411,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             ManagedMemoryGuardMiddleware(
-                [str(settings.get_user_agent_md_path(assistant_id))]
+                [settings.get_user_agent_md_path(assistant_id)]
             )
         )
 

@@ -10,64 +10,111 @@ block.
 
 This middleware intercepts `write_file`/`edit_file` calls targeting the guarded
 file(s). When a call would change or remove the managed block, the model's other
-edits are kept but the managed block is restored to its prior content, and an
-error is returned so the model learns the region is machine-managed.
+edits are kept (though surrounding whitespace may be normalized, and a fully
+removed block is re-appended rather than restored in place) while the managed
+block is restored, and an error is returned so the model learns the region is
+machine-managed. When the block was altered but the restore could not be
+completed, an error is still returned so the failure is never silent.
 """
 
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import ToolMessage
 
 from deepagents_code.onboarding import (
     _upsert_onboarding_name_memory,
     extract_onboarding_name_block,
+    strip_onboarding_name_markers,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
-    from langchain_core.messages import ToolMessage
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
 _GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
+"""Tool names whose calls can mutate a guarded file and must be inspected."""
 
 _REJECTION_MESSAGE = (
-    "The region between the `deepagents:onboarding-name` markers in "
-    "{path} is machine-managed and must not be edited. Your other changes "
-    "to the file were kept, but the managed block was restored to its "
-    "previous content. Do not modify content between those markers."
+    "The region between the `deepagents:onboarding-name:start` and "
+    "`deepagents:onboarding-name:end` markers in {path} is machine-managed and "
+    "must not be edited. Your other changes to the file were kept, but the "
+    "managed block was restored to its previous content. Do not modify content "
+    "between those markers."
 )
+"""Error returned when a managed-block edit was reverted (`{path}` formatted in)."""
+
+_RESTORE_FAILED_MESSAGE = (
+    "The region between the `deepagents:onboarding-name:start` and "
+    "`deepagents:onboarding-name:end` markers in {path} is machine-managed and "
+    "must not be edited. Your edit changed it and the previous content could "
+    "not be restored, so the managed block may now be corrupted. Do not modify "
+    "content between those markers, and do not rely on this edit having "
+    "succeeded."
+)
+"""Error returned when a managed-block edit could not be reverted."""
+
+
+class _RestoreOutcome(Enum):
+    """Result of attempting to restore a managed block after a tool call."""
+
+    UNCHANGED = "unchanged"
+    """The managed block was not altered; nothing to restore."""
+
+    RESTORED = "restored"
+    """The managed block was altered and successfully restored."""
+
+    FAILED = "failed"
+    """The managed block was altered but could not be restored."""
 
 
 class ManagedMemoryGuardMiddleware(AgentMiddleware):
     """Revert agent edits to the managed onboarding-name memory block.
 
-    Guards a fixed set of memory files. A `write_file`/`edit_file` that leaves
-    the managed block untouched passes through; one that alters or drops it has
-    the block restored (other edits preserved) and returns an error.
+    Guards the managed onboarding-name block in a fixed set of memory files. A
+    `write_file`/`edit_file` that leaves the managed block untouched passes
+    through; one that alters or drops it has the block restored (other edits
+    kept) and returns an error. If the restore itself fails, an error is still
+    returned so the failure is never silent.
     """
 
-    def __init__(self, guarded_paths: list[str]) -> None:
+    def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
         """Initialize the guard with the memory files to protect.
 
         Args:
-            guarded_paths: Absolute paths whose managed onboarding-name block
-                must be protected from agent edits.
+            guarded_paths: Paths whose managed onboarding-name block must be
+                protected from agent edits. Resolved to absolute form for
+                matching; unresolvable entries are skipped.
         """
         super().__init__()
-        self._guarded: set[Path] = set()
-        for raw in guarded_paths:
+        requested = list(guarded_paths)
+        resolved: set[Path] = set()
+        for raw in requested:
             try:
-                self._guarded.add(Path(raw).expanduser().resolve())
+                resolved.add(Path(raw).expanduser().resolve())
             except (OSError, RuntimeError, ValueError):
-                logger.debug("Could not resolve guarded memory path %r", raw)
+                logger.warning(
+                    "Could not resolve guarded memory path %r", raw, exc_info=True
+                )
+        self._guarded: frozenset[Path] = frozenset(resolved)
+        if requested and not self._guarded:
+            # Every configured path failed to resolve, so this guard now
+            # protects nothing. That nullifies an integrity control, so surface
+            # it loudly rather than letting protection silently disappear.
+            logger.error(
+                "ManagedMemoryGuardMiddleware resolved no guarded paths from %r; "
+                "managed memory-block protection is disabled",
+                requested,
+            )
 
     def _guarded_path(self, request: ToolCallRequest) -> Path | None:
         """Return the resolved guarded path targeted by the call, if any.
@@ -84,6 +131,14 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         try:
             resolved = Path(file_path).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
+            # A guarded-tool call whose path won't resolve could be an attempt
+            # to slip past the set-membership match, so leave a trail.
+            logger.warning(
+                "Could not resolve target path %r for %s",
+                file_path,
+                request.tool_call["name"],
+                exc_info=True,
+            )
             return None
         return resolved if resolved in self._guarded else None
 
@@ -96,46 +151,102 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         """
         try:
             return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Expected when the guarded file has not been created yet.
+            return None
         except (OSError, UnicodeDecodeError):
+            # An existing-but-unreadable guarded file would otherwise silently
+            # disable protection for this call, so make it visible.
+            logger.warning("Could not read guarded memory file %s", path, exc_info=True)
             return None
 
-    def _restore(self, path: Path, before_block: str) -> bool:
+    def _restore(self, path: Path, before_block: str) -> _RestoreOutcome:
         """Re-apply `before_block` into `path`, preserving other edits.
 
+        The restored content is verified before it is written, so a malformed
+        re-insertion (for example from a partially deleted block) is reported as
+        a failure instead of being persisted.
+
         Returns:
-            `True` when the managed block was restored, otherwise `False`.
+            `UNCHANGED` when the block was untouched, `RESTORED` when it was
+                altered and successfully restored, or `FAILED` when it was
+                altered but could not be restored.
         """
         after = self._read(path)
         if after is None:
-            return False
-        if extract_onboarding_name_block(after) == before_block:
-            return False
-        try:
-            path.write_text(
-                _upsert_onboarding_name_memory(after, before_block),
-                encoding="utf-8",
+            # The file vanished or became unreadable after the edit, so the
+            # block cannot be restored. Treat as a failure rather than passing
+            # the clobbering edit through as a success.
+            logger.warning(
+                "Guarded memory file %s is unreadable after edit; "
+                "cannot restore managed block",
+                path,
             )
+            return _RestoreOutcome.FAILED
+        block_after = extract_onboarding_name_block(after)
+        if block_after == before_block:
+            return _RestoreOutcome.UNCHANGED
+        if block_after is not None:
+            # Markers are intact but the content between them changed; let the
+            # upsert replace the block in place so the edit is fully reverted.
+            source = after
+        else:
+            # The markers were altered or dropped. Strip any fragments the edit
+            # left behind so the re-inserted block can't collide with an
+            # orphaned marker, then re-append a clean block.
+            source = strip_onboarding_name_markers(after)
+        restored = _upsert_onboarding_name_memory(source, before_block)
+        if extract_onboarding_name_block(restored) != before_block:
+            logger.error(
+                "Restored content for %s did not reproduce the managed block; "
+                "leaving the edited file untouched",
+                path,
+            )
+            return _RestoreOutcome.FAILED
+        try:
+            path.write_text(restored, encoding="utf-8")
         except OSError:
             logger.warning(
                 "Could not restore managed memory block at %s", path, exc_info=True
             )
-            return False
-        return True
+            return _RestoreOutcome.FAILED
+        return _RestoreOutcome.RESTORED
 
     @staticmethod
-    def _error(request: ToolCallRequest, path: Path) -> ToolMessage:
-        """Build the error result returned after a reverted managed-block edit.
+    def _error(
+        request: ToolCallRequest, path: Path, *, restore_failed: bool
+    ) -> ToolMessage:
+        """Build the error result returned after a managed-block edit.
 
         Returns:
             An error-status `ToolMessage` explaining the managed region.
         """
-        from langchain_core.messages import ToolMessage as LCToolMessage
-
-        return LCToolMessage(
-            content=_REJECTION_MESSAGE.format(path=path),
+        template = _RESTORE_FAILED_MESSAGE if restore_failed else _REJECTION_MESSAGE
+        return ToolMessage(
+            content=template.format(path=path),
             name=request.tool_call["name"],
             tool_call_id=request.tool_call["id"],
             status="error",
+        )
+
+    def _result_after_restore(
+        self,
+        request: ToolCallRequest,
+        path: Path,
+        before_block: str,
+        result: ToolMessage | Command[Any],
+    ) -> ToolMessage | Command[Any]:
+        """Restore the managed block and pick the result to return.
+
+        Returns:
+            The original `result` when the block was untouched, otherwise an
+                error `ToolMessage` describing the restore.
+        """
+        outcome = self._restore(path, before_block)
+        if outcome is _RestoreOutcome.UNCHANGED:
+            return result
+        return self._error(
+            request, path, restore_failed=outcome is _RestoreOutcome.FAILED
         )
 
     def wrap_tool_call(
@@ -147,7 +258,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
 
         Returns:
             The tool result, or an error `ToolMessage` when the managed block
-                was altered and restored.
+                was altered.
         """
         path = self._guarded_path(request)
         if path is None:
@@ -159,9 +270,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         result = handler(request)
         if before_block is None:
             return result
-        if self._restore(path, before_block):
-            return self._error(request, path)
-        return result
+        return self._result_after_restore(request, path, before_block, result)
 
     async def awrap_tool_call(
         self,
@@ -172,7 +281,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
 
         Returns:
             The tool result, or an error `ToolMessage` when the managed block
-                was altered and restored.
+                was altered.
         """
         path = self._guarded_path(request)
         if path is None:
@@ -184,6 +293,4 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         result = await handler(request)
         if before_block is None:
             return result
-        if self._restore(path, before_block):
-            return self._error(request, path)
-        return result
+        return self._result_after_restore(request, path, before_block, result)

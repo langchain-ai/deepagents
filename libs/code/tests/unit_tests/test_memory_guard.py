@@ -191,3 +191,137 @@ async def test_async_edit_inside_managed_block_is_reverted(tmp_path) -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert "Mallory" not in path.read_text(encoding="utf-8")
+
+
+def test_edit_removing_block_is_restored(tmp_path) -> None:
+    """Dropping the managed block entirely restores it and reports an error."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada", extra="\nKeep this note.\n")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        text = path.read_text(encoding="utf-8")
+        block = extract_onboarding_name_block(text)
+        assert block is not None
+        path.write_text(text.replace(block, "").rstrip() + "\n", encoding="utf-8")
+        return _success()
+
+    result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    content = path.read_text(encoding="utf-8")
+    assert extract_onboarding_name_block(content) is not None
+    assert '- The user\'s preferred name is "Ada".' in content
+    assert "Keep this note." in content
+
+
+def test_partial_marker_edit_is_restored(tmp_path) -> None:
+    """Deleting one marker still restores a clean block without orphan markers."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        # Drop only the end marker, leaving a dangling start marker behind.
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                f"{ONBOARDING_NAME_MEMORY_END}\n", ""
+            ),
+            encoding="utf-8",
+        )
+        return _success()
+
+    result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    content = path.read_text(encoding="utf-8")
+    assert extract_onboarding_name_block(content) is not None
+    assert content.count(ONBOARDING_NAME_MEMORY_START) == 1
+    assert content.count(ONBOARDING_NAME_MEMORY_END) == 1
+
+
+def test_write_file_altering_block_is_reverted(tmp_path) -> None:
+    """`write_file` clobbering the block is reverted like `edit_file`."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Ada", "Mallory"),
+            encoding="utf-8",
+        )
+        return _success("write_file")
+
+    result = middleware.wrap_tool_call(
+        _request("write_file", str(path), content="ignored"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    content = path.read_text(encoding="utf-8")
+    assert "Mallory" not in content
+    assert '- The user\'s preferred name is "Ada".' in content
+
+
+def test_file_created_with_block_passes_through(tmp_path) -> None:
+    """Creating the guarded file with a fresh block is not treated as an edit."""
+    path = tmp_path / "agent" / "AGENTS.md"  # does not exist yet
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        _managed_file(path, "Ada")
+        return _success("write_file")
+
+    result = middleware.wrap_tool_call(
+        _request("write_file", str(path), content="ignored"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+    assert '- The user\'s preferred name is "Ada".' in path.read_text(encoding="utf-8")
+
+
+def test_error_message_propagates_call_metadata(tmp_path) -> None:
+    """The error result carries the originating tool name and call id."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Ada", "Mallory"),
+            encoding="utf-8",
+        )
+        return _success()
+
+    result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert result.name == "edit_file"
+    assert result.tool_call_id == "call-1"
+
+
+async def test_async_edit_outside_block_passes_through(tmp_path) -> None:
+    """The async wrapper passes through edits that leave the block intact."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    _managed_file(path, "Ada", extra="\nOld note.\n")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:  # noqa: RUF029
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("Old note.", "New note."),
+            encoding="utf-8",
+        )
+        return _success()
+
+    result = await middleware.awrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+    content = path.read_text(encoding="utf-8")
+    assert "New note." in content
+    assert extract_onboarding_name_block(content) is not None

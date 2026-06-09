@@ -5,8 +5,12 @@ from __future__ import annotations
 import io
 import logging
 import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 from deepagents_code import terminal_escape
 from deepagents_code.terminal_escape import (
@@ -36,7 +40,12 @@ class _FakeTTY(io.StringIO):
     def __enter__(self) -> _FakeTTY:  # noqa: PYI034  # _FakeTTY is a test helper
         return self
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         pass
 
 
@@ -181,7 +190,7 @@ class TestValidateProgress:
     ) -> None:
         """Bad types are logged + treated as zero, never raised."""
         with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
-            assert _validate_progress("nope", TerminalProgressState.NORMAL) == 0  # type: ignore[arg-type]
+            assert _validate_progress("nope", TerminalProgressState.NORMAL) == 0  # ty: ignore
         assert any("non-numeric" in record.message for record in caplog.records)
 
     def test_clear_with_nonzero_progress_is_logged(

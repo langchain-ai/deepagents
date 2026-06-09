@@ -293,7 +293,7 @@ async def perform_offload(
                 else {"max_input_tokens": context_limit}
             )
             try:
-                model.profile = merged  # type: ignore[union-attr]
+                model.profile = merged  # ty: ignore[invalid-assignment]
             except (AttributeError, TypeError, ValueError):
                 logger.warning(
                     "Could not patch context limit (%d) into model profile; "

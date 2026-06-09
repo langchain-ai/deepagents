@@ -11473,8 +11473,7 @@ class TestRespawnServer:
 
             assert result is False
             assert not any(
-                isinstance(m, (app.ServerReady, app.ServerStartFailed))
-                for m in posted
+                isinstance(m, (app.ServerReady, app.ServerStartFailed)) for m in posted
             )
 
 

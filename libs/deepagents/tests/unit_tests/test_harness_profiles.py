@@ -422,9 +422,9 @@ class TestMiniMaxBuiltinProfile:
         for spec in _MINIMAX_MODEL_SPECS:
             profile = _get_harness_profile(spec)
             assert profile is not None, spec
-            # write_todos is dropped via excluding TodoListMiddleware.
-            assert "TodoListMiddleware" in profile.excluded_middleware, spec
-            # Behavioral suffix is present with all three sections.
+            # Suffix-only profile: it must not strip any middleware (write_todos stays).
+            assert "TodoListMiddleware" not in profile.excluded_middleware, spec
+            # Behavioral suffix is present with all four sections.
             assert profile.system_prompt_suffix is not None, spec
             assert "<completing_state_changes>" in profile.system_prompt_suffix, spec
             assert "<find_a_permitted_path>" in profile.system_prompt_suffix, spec

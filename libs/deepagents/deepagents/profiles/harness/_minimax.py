@@ -33,10 +33,6 @@ be too broad (it would capture every ollama model), so ollama is left on stock
 defaults.
 """
 
-_EXCLUDED_MIDDLEWARE: frozenset[str] = frozenset({"TodoListMiddleware"})
-"""Middleware stripped from MiniMax stacks, by `AgentMiddleware.name`.
-"""
-
 _SYSTEM_PROMPT_SUFFIX: str = """\
 <completing_state_changes>
 When a task asks you to change something — create, edit, delete, submit, or update state through tools — confirm the change actually took effect before you end your turn. Verify against the system's real state rather than assuming a tool call succeeded, and don't stop after only part of the requested change is done. A correct plan with incomplete or unverified execution is still an incomplete task.
@@ -58,9 +54,6 @@ If a compact_conversation tool is available, call it when starting an unrelated 
 
 def register() -> None:
     """Register the built-in MiniMax harness profile for each MiniMax spec."""
-    profile = HarnessProfile(
-        system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-        excluded_middleware=_EXCLUDED_MIDDLEWARE,
-    )
+    profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
     for spec in _MINIMAX_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

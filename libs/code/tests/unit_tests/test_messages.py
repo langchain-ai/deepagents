@@ -799,6 +799,9 @@ class TestToolCallMessageSearchOutput:
 
         result = msg._format_search_output(output, is_preview=True)
 
+        # The visible slice is exactly the leading char budget of the input,
+        # not just any string of the right length.
+        assert result.content.plain == output[: ToolCallMessage._PREVIEW_CHARS]
         assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
         assert result.truncation is not None
         assert result.truncation.endswith("more chars")
@@ -806,13 +809,72 @@ class TestToolCallMessageSearchOutput:
     def test_grep_preview_truncates_long_multiline_by_chars(self) -> None:
         """Grep previews should cap long multi-line output by characters."""
         msg = ToolCallMessage("grep", {"pattern": "x"})
-        lines = [f"file.py:{index}:" + "x" * 120 for index in range(4)]
+        # Two wide lines, each under the budget but together over it, so both
+        # become rows (no hidden line) and the second is char-sliced — forcing
+        # the char hint over the line hint. Width derives from the budget.
+        char_run = ToolCallMessage._PREVIEW_CHARS // 2
+        lines = [f"file.py:{index}:" + "x" * char_run for index in range(2)]
 
         result = msg._format_search_output("\n".join(lines), is_preview=True)
 
         assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
         assert result.truncation is not None
         assert result.truncation.endswith("more chars")
+
+    def test_glob_preview_truncates_long_paths_by_chars(self) -> None:
+        """Glob previews cap wide path lists by characters with a file hint."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        # Two paths that each fit under the budget but together overflow it, so
+        # both become rows (no hidden line) and the second is char-sliced —
+        # forcing the char hint rather than the file-count hint.
+        long_path = "/tmp/" + "z" * (ToolCallMessage._PREVIEW_CHARS // 2) + ".py"
+        output = repr([long_path, long_path])
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_by_line_count(self) -> None:
+        """Grep previews over the line cap report hidden lines, not chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:hit" for index in range(8))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        # 8 short lines, preview cap is 5 → 3 hidden, counted as lines.
+        assert result.truncation == "3 more lines"
+
+    def test_glob_preview_truncates_by_file_count(self) -> None:
+        """Glob previews over the line cap report hidden files, not lines."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        paths = [f"/tmp/result_{index}.py" for index in range(8)]
+
+        result = msg._format_search_output(repr(paths), is_preview=True)
+
+        # The "files" unit is what distinguishes the glob path from grep.
+        assert result.truncation == "3 more files"
+
+    def test_grep_preview_prefers_line_count_when_both_caps_hit(self) -> None:
+        """When both caps trip, the hidden-line count wins over chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:" + "y" * 100 for index in range(10))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert result.truncation.endswith("more lines")
+
+    def test_search_full_output_is_untruncated(self) -> None:
+        """Non-preview formatting returns every row with no truncation hint."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        lines = [f"file.py:{index}:" + "z" * 200 for index in range(10)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain.split("\n") == lines
 
 
 class TestToolCallMessageExpandHint:

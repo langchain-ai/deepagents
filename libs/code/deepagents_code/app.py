@@ -1084,6 +1084,63 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
     return f"Failed to switch model: {exc}"
 
 
+_GATEWAY_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/code/configuration"
+    "#endpoints-keys-and-gateways"
+)
+"""Docs section on how a provider's API key and endpoint resolve together.
+
+Linked from `PermissionDeniedError` guidance: a common cause is a provider key
+that does not match the endpoint it is sent to — e.g. an `OPENAI_API_KEY`
+exported in the shell while a gateway overrides the provider base URL, so the
+key is sent to the gateway, which rejects it."""
+
+
+def _agent_error_type(exc: BaseException) -> str:
+    """Best-effort error-type name for an agent-stream exception.
+
+    Args:
+        exc: The exception caught from the agent stream.
+
+    Returns:
+        The serialized error type from a `RemoteException` dict payload, else
+        the exception's class name.
+    """
+    payload = exc.args[0] if exc.args else None
+    if isinstance(payload, dict):
+        err_type = payload.get("error")
+        if isinstance(err_type, str) and err_type:
+            return err_type
+    return type(exc).__name__
+
+
+def _build_agent_error_body(text: str, exc: BaseException) -> str | Content:
+    """Format an agent-stream exception for `ErrorMessage`.
+
+    Appends a docs link for `PermissionDeniedError`, whose most common cause is
+    a provider API key that does not match the endpoint it is sent to (e.g. a
+    gateway overriding the provider base URL). Returns `text` unchanged for any
+    other error.
+
+    Args:
+        text: The already-formatted error string (e.g. `"Agent error: ..."`).
+        exc: The exception caught from the agent stream.
+
+    Returns:
+        A `Content` with a clickable docs link for `PermissionDeniedError`;
+        otherwise the plain `text`.
+    """
+    if _agent_error_type(exc) == "PermissionDeniedError":
+        return Content.assemble(
+            text,
+            "\n\nThis usually means your API key does not match the endpoint it "
+            "is sent to — for example a gateway overriding the provider base "
+            "URL, so the key is rejected. See ",
+            (_GATEWAY_DOCS_URL, TStyle(underline=True, link=_GATEWAY_DOCS_URL)),
+        )
+    return text
+
+
 def _build_whats_new_message(heading: str) -> Content:
     """Build the post-upgrade banner with a clickable changelog URL.
 
@@ -6623,7 +6680,9 @@ class DeepAgentsApp(App):
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(error_text)
             try:
-                await self._mount_message(ErrorMessage(error_text))
+                await self._mount_message(
+                    ErrorMessage(_build_agent_error_body(error_text, e))
+                )
             except Exception:
                 logger.debug(
                     "Could not mount error message (app closing?)",

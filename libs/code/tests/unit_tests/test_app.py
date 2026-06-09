@@ -3316,6 +3316,50 @@ class TestRunAgentTaskMediaTracker:
                 "{'error': 'ToolException'" in str(w._content) for w in errors
             )
 
+    async def test_run_agent_task_permission_denied_links_docs(self) -> None:
+        """`PermissionDeniedError` errors append a clickable gateway docs link."""
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _GATEWAY_DOCS_URL
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            exc = RemoteException(
+                {"error": "PermissionDeniedError", "message": "An internal error"}
+            )
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+                side_effect=exc,
+            ):
+                await app._run_agent_task("hello")
+                await pilot.pause()
+
+            errors = app.query(ErrorMessage)
+            assert any(_GATEWAY_DOCS_URL in str(w._content) for w in errors)
+
+
+class TestBuildAgentErrorBody:
+    """Cover the docs-link augmentation for agent-stream errors."""
+
+    def test_permission_denied_appends_docs_link(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _GATEWAY_DOCS_URL, _build_agent_error_body
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = _build_agent_error_body("Agent error: x", exc)
+        assert _GATEWAY_DOCS_URL in str(body)
+
+    def test_other_errors_unchanged(self) -> None:
+        from deepagents_code.app import _build_agent_error_body
+
+        body = _build_agent_error_body("Agent error: boom", RuntimeError("boom"))
+        assert body == "Agent error: boom"
+
 
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""

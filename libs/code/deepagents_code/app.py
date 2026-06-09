@@ -6391,19 +6391,25 @@ class DeepAgentsApp(App):
             `True` so that `/remember` is not blocked with a misleading
             "nothing to remember" message.
         """
-        if not self._agent:
+        if not self._agent or not self._lc_thread_id:
             return False
         try:
             from langchain_core.messages import HumanMessage
 
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return False
-            messages = state.values.get("messages", [])
-            return any(isinstance(m, HumanMessage) for m in messages)
+            # Use the shared helper so the thread is registered first
+            # (`aensure_thread`, remote agents only) in server mode — otherwise
+            # the dev server returns empty state for a thread it has not seen
+            # this session.
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            messages = state_values.get("messages", [])
+            # `RemoteGraph.aget_state` returns messages as raw JSON dicts, so an
+            # `isinstance(m, HumanMessage)` check alone misses them and wrongly
+            # reports "nothing to remember". Detect both object and dict forms.
+            return any(
+                isinstance(m, HumanMessage)
+                or (isinstance(m, dict) and m.get("type") == "human")
+                for m in messages
+            )
         except Exception:
             logger.warning(
                 "Failed to check conversation messages; allowing /remember to proceed",

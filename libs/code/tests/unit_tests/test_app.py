@@ -6589,6 +6589,17 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_no_thread_id(self) -> None:
+        """Should return False when no thread id is resolved yet."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            agent = AsyncMock()
+            app._agent = agent
+            app._lc_thread_id = None
 
             assert await app._has_conversation_messages() is False
 
@@ -6603,6 +6614,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is False
 
@@ -6617,8 +6629,35 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
+
+    async def test_returns_true_when_human_message_is_dict(self) -> None:
+        """Should detect human messages returned as raw dicts (RemoteGraph)."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [{"type": "human", "content": "hi"}]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_false_when_only_non_human_dicts(self) -> None:
+        """Should not treat every raw dict as human; non-human dicts are False."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [{"type": "ai", "content": "hello"}]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
 
     async def test_returns_true_on_aget_state_exception(self) -> None:
         """Should return True on transient errors so /remember is not blocked."""
@@ -6627,6 +6666,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(side_effect=RuntimeError("connection lost"))
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
 
@@ -6639,6 +6679,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is False
 

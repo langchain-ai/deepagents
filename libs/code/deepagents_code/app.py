@@ -10123,7 +10123,7 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._server_proc is None or self._server_kwargs is None:
+        if self._server_kwargs is None:
             await self._mount_message(
                 AppMessage(
                     "Cannot restart: this app is connected to a remote "
@@ -10131,6 +10131,30 @@ class DeepAgentsApp(App):
                     "was reloaded; relaunch dcode to fully restart.",
                 ),
             )
+            return
+
+        # We own a server (`_server_kwargs is not None`) but `_server_proc`
+        # is only assigned once `ServerReady` fires. A `None` proc here means
+        # the server is still coming up — not remote-server mode. There's no
+        # subprocess to respawn yet, and config was already reloaded above, so
+        # the pending startup will use it.
+        if self._server_proc is None:
+            if self._server_startup_deferred:
+                await self._mount_message(
+                    AppMessage(
+                        "Server startup is waiting for a model. Configuration "
+                        "was reloaded; set credentials with `/auth` or pick a "
+                        "model with `/model` to start the server.",
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        "The server is still starting. Configuration was "
+                        "reloaded and will apply once it finishes connecting; "
+                        "run `/restart` again afterward if needed.",
+                    ),
+                )
             return
 
         await self._mount_message(AppMessage("Restarting server..."))

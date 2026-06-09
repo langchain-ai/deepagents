@@ -1155,7 +1155,7 @@ def _agent_error_type(exc: BaseException) -> str:
 
     Returns:
         The serialized error type from a `RemoteException` dict payload, else
-        the exception's class name.
+            the exception's class name.
     """
     payload = exc.args[0] if exc.args else None
     if isinstance(payload, dict):
@@ -1184,7 +1184,7 @@ def _build_agent_error_body(
 
     Returns:
         A `Content` with a clickable docs link for `PermissionDeniedError`;
-        otherwise the plain `text`.
+            otherwise the plain `text`.
     """
     if _agent_error_type(exc) != "PermissionDeniedError":
         return text

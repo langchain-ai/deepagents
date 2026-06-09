@@ -10140,9 +10140,36 @@ class DeepAgentsApp(App):
             return
 
         if choice == "restart":
+            if not await self._reload_configuration_for_restart():
+                return
             await self._mount_message(AppMessage("Restarting server..."))
             if await self._restart_server_manual():
                 await self._mount_message(AppMessage("Restart complete."))
+
+    async def _reload_configuration_for_restart(self) -> bool:
+        """Reload config state before respawning the owned server.
+
+        Returns:
+            Whether reload completed and restart should continue.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+            logger.exception("Failed to reload configuration during restart")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration "
+                    f"({type(exc).__name__}: {exc}). Check your .env "
+                    "file and environment variables for syntax errors, "
+                    "then try again.",
+                ),
+            )
+            return False
+        return True
 
     async def _handle_restart_command(self, command: str) -> None:
         """Drive the `/restart` slash command.
@@ -10160,9 +10187,6 @@ class DeepAgentsApp(App):
         Args:
             command: Raw command string for echoing back to chat.
         """
-        from deepagents_code.config import settings
-        from deepagents_code.model_config import clear_caches
-
         await self._mount_message(UserMessage(command))
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
@@ -10174,19 +10198,7 @@ class DeepAgentsApp(App):
         else:
             self._discard_queue()
 
-        try:
-            settings.reload_from_environment()
-            clear_caches()
-        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
-            logger.exception("Failed to reload configuration during /restart")
-            await self._mount_message(
-                AppMessage(
-                    "Failed to reload configuration "
-                    f"({type(exc).__name__}: {exc}). Check your .env "
-                    "file and environment variables for syntax errors, "
-                    "then try again.",
-                ),
-            )
+        if not await self._reload_configuration_for_restart():
             return
 
         if self._server_proc is None or self._server_kwargs is None:

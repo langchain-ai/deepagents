@@ -364,6 +364,19 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
         await pilot.pause()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "fireworks:fake"}
+        calls: list[str] = []
+
+        def _reload() -> list[str]:
+            calls.append("reload")
+            return []
+
+        def _clear() -> None:
+            calls.append("clear")
+
+        async def _restart() -> bool:  # noqa: RUF029  # patched async app hook
+            calls.append("restart")
+            return True
+
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
@@ -374,14 +387,19 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
+            patch("deepagents_code.config.settings.reload_from_environment", _reload),
+            patch("deepagents_code.model_config.clear_caches", _clear),
             patch.object(
-                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+                app,
+                "_restart_server_manual",
+                new=AsyncMock(side_effect=_restart),
             ) as restart,
         ):
             await app._handle_command("/install fireworks")
             await pilot.pause()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
+        assert calls == ["reload", "clear", "restart"]
         app_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
@@ -486,6 +504,19 @@ async def test_install_package_offers_restart_when_idle() -> None:
         await pilot.pause()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "custom_provider:fake"}
+        calls: list[str] = []
+
+        def _reload() -> list[str]:
+            calls.append("reload")
+            return []
+
+        def _clear() -> None:
+            calls.append("clear")
+
+        async def _restart() -> bool:  # noqa: RUF029  # patched async app hook
+            calls.append("restart")
+            return True
+
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
@@ -496,11 +527,16 @@ async def test_install_package_offers_restart_when_idle() -> None:
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
+            patch("deepagents_code.config.settings.reload_from_environment", _reload),
+            patch("deepagents_code.model_config.clear_caches", _clear),
             patch.object(
-                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+                app,
+                "_restart_server_manual",
+                new=AsyncMock(side_effect=_restart),
             ) as restart,
         ):
             await app._handle_command("/install langchain-custom --package --force")
             await pilot.pause()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
+        assert calls == ["reload", "clear", "restart"]

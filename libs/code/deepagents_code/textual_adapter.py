@@ -1368,6 +1368,18 @@ async def execute_task_textual(
             start_time=start_time,
         )
         return turn_stats
+    finally:
+        # Streamed text is coalesced in each AssistantMessage's `_pending_append`
+        # buffer and flushed on a throttled timer, so up to one flush interval of
+        # tokens can be in flight at any moment. Normal completion (the flush loop
+        # above) and interrupt cleanup both clear the namespace dict, leaving this
+        # a no-op there. The path that matters is a non-cancel mid-stream error
+        # propagating to the caller: without this drain those buffered tokens are
+        # never written and the user sees a silently truncated reply.
+        try:
+            await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain assistant streams on exit")
 
     # Update token count and return stats. Persistence is handled inside the
     # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.

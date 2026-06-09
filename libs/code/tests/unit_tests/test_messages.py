@@ -353,6 +353,101 @@ class TestAssistantMessageStreamCoalescing:
             assert msg._flush_timer is None
             assert msg._pending_append == ""
 
+    async def test_set_content_drains_and_cancels_active_timer(self) -> None:
+        """`set_content` cancels a live flush timer and drops the buffer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            markdown = MagicMock()
+            markdown.update = AsyncMock()
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            stream.stop = AsyncMock()
+            msg._markdown = markdown
+            msg._stream = stream
+
+            await msg.append_content("buffered")
+            assert msg._flush_timer is not None
+
+            await msg.set_content("replacement")
+            # Give a stale timer the chance to fire if it was not cancelled.
+            await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
+            await pilot.pause()
+
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
+            # Buffered token must not bleed into the replacement render.
+            stream.write.assert_not_awaited()
+            markdown.update.assert_awaited_once_with("replacement")
+
+    async def test_timer_created_once_across_appends(self) -> None:
+        """Repeated appends reuse a single flush timer rather than spawning many."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("a")
+            timer = msg._flush_timer
+            assert timer is not None
+
+            await msg.append_content("b")
+            await msg.append_content("c")
+
+            assert msg._flush_timer is timer
+
+    async def test_flush_drains_successive_batches(self) -> None:
+        """Each flush writes the latest batch; an empty buffer is a no-op."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("first")
+            await msg._flush_pending_append()
+            stream.write.assert_awaited_once_with("first")
+
+            # Idle tick with nothing buffered must not write again.
+            await msg._flush_pending_append()
+            assert stream.write.await_count == 1
+
+            await msg.append_content("second")
+            await msg._flush_pending_append()
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("second")
+
+    async def test_append_empty_text_is_noop(self) -> None:
+        """Empty tokens neither buffer text nor arm the flush timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            await msg.append_content("")
+
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
+            assert msg._content == ""
+
+    async def test_flush_restores_buffer_when_write_fails(self) -> None:
+        """A failed write keeps the buffer for retry and never escapes the timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock(side_effect=RuntimeError("render boom"))
+            msg._stream = stream
+
+            await msg.append_content("kept")
+            # Must not raise: an escaping exception here would crash the app
+            # via the Textual timer's exception handler.
+            await msg._flush_pending_append()
+
+            stream.write.assert_awaited_once_with("kept")
+            assert msg._pending_append == "kept"
+
+            # Text arriving after the failure queues behind the retried fragment.
+            await msg.append_content(" more")
+            assert msg._pending_append == "kept more"
+
 
 class TestSummarizationMessage:
     """Tests for summarization notification widget."""

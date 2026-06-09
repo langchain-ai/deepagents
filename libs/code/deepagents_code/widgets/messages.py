@@ -656,13 +656,24 @@ class AssistantMessage(Vertical):
             )
 
     async def _flush_pending_append(self) -> None:
-        """Write any buffered streamed text to the markdown stream."""
+        """Write any buffered streamed text to the markdown stream.
+
+        Runs from a Textual timer callback, where an unhandled exception
+        escalates to `App._handle_exception` and tears down the whole REPL.
+        On a transient write failure the buffer is restored (re-prepended
+        ahead of any text that arrived in the meantime) so the next tick
+        retries instead of silently dropping the fragment.
+        """
         if not self._pending_append:
             return
         pending = self._pending_append
         self._pending_append = ""
-        stream = self._ensure_stream()
-        await stream.write(pending)
+        try:
+            stream = self._ensure_stream()
+            await stream.write(pending)
+        except Exception:  # a render hiccup must not crash the app
+            self._pending_append = pending + self._pending_append
+            logger.exception("Failed to flush streamed markdown fragment")
 
     def _stop_flush_timer(self) -> None:
         """Cancel the coalescing flush timer if it is running."""

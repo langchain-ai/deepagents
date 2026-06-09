@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -161,7 +162,96 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             logger.warning("Could not read guarded memory file %s", path, exc_info=True)
             return None
 
-    def _restore(self, path: Path, before_block: str) -> _RestoreOutcome:
+    @staticmethod
+    def _line_range_for_block(before: str, before_block: str) -> tuple[int, int] | None:
+        """Return the line range occupied by `before_block` in `before`.
+
+        Returns:
+            A `(start, end)` line range, or `None` when the block is absent.
+        """
+        block_start = before.find(before_block)
+        if block_start == -1:
+            return None
+        block_end = block_start + len(before_block)
+        start_line: int | None = None
+        end_line: int | None = None
+        offset = 0
+        for line_number, line in enumerate(before.splitlines(keepends=True)):
+            line_end = offset + len(line)
+            if start_line is None and offset <= block_start < line_end:
+                start_line = line_number
+            if offset < block_end <= line_end:
+                end_line = line_number + 1
+                break
+            offset = line_end
+        if start_line is None or end_line is None:
+            return None
+        return start_line, end_line
+
+    @staticmethod
+    def _without_managed_block_edits(
+        before: str, after: str, before_block: str
+    ) -> str | None:
+        """Remove post-edit lines that originated from the managed block.
+
+        Returns:
+            `after` with lines mapped from `before_block` removed, or `None` when
+                the old block cannot be located in `before`.
+        """
+        block_range = ManagedMemoryGuardMiddleware._line_range_for_block(
+            before, before_block
+        )
+        if block_range is None:
+            return None
+        block_start, block_end = block_range
+        # Use line-level matching so a damaged marker cannot leave the old
+        # managed memory body behind as regular user-editable memory.
+        before_lines = before.splitlines(keepends=True)
+        after_lines = after.splitlines(keepends=True)
+        ranges: list[tuple[int, int]] = []
+        matcher = SequenceMatcher(None, before_lines, after_lines, autojunk=False)
+        for (
+            tag,
+            before_start,
+            before_end,
+            after_start,
+            after_end,
+        ) in matcher.get_opcodes():
+            overlaps = before_start < block_end and block_start < before_end
+            if tag == "insert":
+                if block_start < before_start < block_end:
+                    ranges.append((after_start, after_end))
+                continue
+            if not overlaps or tag == "delete":
+                continue
+            if tag == "equal":
+                start = max(before_start, block_start)
+                end = min(before_end, block_end)
+                ranges.append(
+                    (
+                        after_start + start - before_start,
+                        after_start + end - before_start,
+                    )
+                )
+            else:
+                ranges.append((after_start, after_end))
+
+        if not ranges:
+            return after
+        parts: list[str] = []
+        cursor = 0
+        for start, end in sorted(ranges):
+            range_start = start
+            range_end = end
+            if range_start < cursor:
+                range_end = max(range_end, cursor)
+                range_start = cursor
+            parts.extend(after_lines[cursor:range_start])
+            cursor = range_end
+        parts.extend(after_lines[cursor:])
+        return "".join(parts)
+
+    def _restore(self, path: Path, before: str, before_block: str) -> _RestoreOutcome:
         """Re-apply `before_block` into `path`, preserving other edits.
 
         The restored content is verified before it is written, so a malformed
@@ -188,14 +278,17 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if block_after == before_block:
             return _RestoreOutcome.UNCHANGED
         if block_after is not None:
-            # Markers are intact but the content between them changed; let the
-            # upsert replace the block in place so the edit is fully reverted.
             source = after
         else:
-            # The markers were altered or dropped. Strip any fragments the edit
-            # left behind so the re-inserted block can't collide with an
-            # orphaned marker, then re-append a clean block.
-            source = strip_onboarding_name_markers(after)
+            source = self._without_managed_block_edits(before, after, before_block)
+            if source is None:
+                logger.error(
+                    "Could not locate previous managed block in %s; leaving the "
+                    "edited file untouched",
+                    path,
+                )
+                return _RestoreOutcome.FAILED
+            source = strip_onboarding_name_markers(source)
         restored = _upsert_onboarding_name_memory(source, before_block)
         if extract_onboarding_name_block(restored) != before_block:
             logger.error(
@@ -234,6 +327,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         self,
         request: ToolCallRequest,
         path: Path,
+        before: str,
         before_block: str,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage | Command[Any]:
@@ -243,7 +337,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The original `result` when the block was untouched, otherwise an
                 error `ToolMessage` describing the restore.
         """
-        outcome = self._restore(path, before_block)
+        outcome = self._restore(path, before, before_block)
         if outcome is _RestoreOutcome.UNCHANGED:
             return result
         return self._error(
@@ -269,9 +363,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             extract_onboarding_name_block(before) if before is not None else None
         )
         result = handler(request)
-        if before_block is None:
+        if before is None or before_block is None:
             return result
-        return self._result_after_restore(request, path, before_block, result)
+        return self._result_after_restore(request, path, before, before_block, result)
 
     async def awrap_tool_call(
         self,
@@ -292,8 +386,8 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             extract_onboarding_name_block(before) if before is not None else None
         )
         result = await handler(request)
-        if before_block is None:
+        if before is None or before_block is None:
             return result
         return await asyncio.to_thread(
-            self._result_after_restore, request, path, before_block, result
+            self._result_after_restore, request, path, before, before_block, result
         )

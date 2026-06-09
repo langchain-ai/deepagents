@@ -222,17 +222,15 @@ def test_edit_removing_block_is_restored(tmp_path) -> None:
 def test_partial_marker_edit_is_restored(tmp_path) -> None:
     """Deleting one marker still restores a clean block without orphan markers."""
     path = tmp_path / "agent" / "AGENTS.md"
-    _managed_file(path, "Ada")
+    _managed_file(path, "Ada", extra="\nOld note.\n")
     middleware = ManagedMemoryGuardMiddleware([str(path)])
 
     def handler(_request: ToolCallRequest) -> ToolMessage:
-        # Drop only the end marker, leaving a dangling start marker behind.
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                f"{ONBOARDING_NAME_MEMORY_END}\n", ""
-            ),
-            encoding="utf-8",
-        )
+        text = path.read_text(encoding="utf-8")
+        text = text.replace(f"{ONBOARDING_NAME_MEMORY_END}\n", "")
+        text = text.replace("Ada", "Mallory")
+        text = text.replace("Old note.", "New note.")
+        path.write_text(text, encoding="utf-8")
         return _success()
 
     result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
@@ -243,6 +241,9 @@ def test_partial_marker_edit_is_restored(tmp_path) -> None:
     assert extract_onboarding_name_block(content) is not None
     assert content.count(ONBOARDING_NAME_MEMORY_START) == 1
     assert content.count(ONBOARDING_NAME_MEMORY_END) == 1
+    assert content.count('- The user\'s preferred name is "Ada".') == 1
+    assert "Mallory" not in content
+    assert "New note." in content
 
 
 def test_write_file_altering_block_is_reverted(tmp_path) -> None:
@@ -355,11 +356,14 @@ async def test_async_guard_filesystem_helpers_run_off_event_loop(
     def result_after_restore(
         request: ToolCallRequest,
         path: Path,
+        before: str,
         before_block: str,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage | Command[Any]:
         helper_threads.append(threading.get_ident())
-        return original_result_after_restore(request, path, before_block, result)
+        return original_result_after_restore(
+            request, path, before, before_block, result
+        )
 
     monkeypatch.setattr(middleware, "_guarded_path", guarded_path)
     monkeypatch.setattr(middleware, "_read", read)

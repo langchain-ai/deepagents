@@ -5548,6 +5548,15 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
+            # Non-incognito `!` commands are part of the conversation the model
+            # can see; `!!` (incognito) stays local-only. Mounting widgets only
+            # updates the UI store, so without this write the command/output
+            # would never reach the graph checkpoint the model reads.
+            if not incognito:
+                await self._record_shell_in_model_context(
+                    command, output, proc.returncode
+                )
+
             # Anchor to bottom so shell output stays visible
             with suppress(NoMatches, ScreenStackError):
                 self.query_one("#chat", VerticalScroll).anchor()
@@ -5574,6 +5583,46 @@ class DeepAgentsApp(App):
             raise
         finally:
             await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
+
+    async def _record_shell_in_model_context(
+        self, command: str, output: str, returncode: int | None
+    ) -> None:
+        """Persist a non-incognito `!` command and its output to graph state.
+
+        `!` commands run as local subprocesses that bypass the agent graph, so
+        their command/output never reach the checkpoint the model reads on the
+        next turn. This writes a `HumanMessage`/`AIMessage` pair into thread
+        state so the model sees them, matching the documented `!` vs `!!`
+        contract. `!!` (incognito) callers skip this and stay local-only.
+
+        Args:
+            command: The shell command that was run (without the `!` prefix).
+            output: Combined stdout/stderr captured from the command.
+            returncode: Process exit code, or `None` if unavailable.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return
+
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        body = output or "(no output)"
+        messages = [
+            HumanMessage(content=f"!{command}"),
+            AIMessage(content=f"```\n{body}\n```{status}"),
+        ]
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        try:
+            # Suppress the standalone `UpdateState` LangSmith run this write would
+            # otherwise emit — it's bookkeeping, not a user-driven agent turn.
+            from langsmith import tracing_context
+
+            with tracing_context(enabled=False):
+                await self._agent.aupdate_state(config, {"messages": messages})
+        except Exception:  # best-effort; UI already showed the output
+            logger.warning(
+                "Failed to record shell command in model context", exc_info=True
+            )
 
     async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
         """Clean up after shell command task completes or is cancelled.

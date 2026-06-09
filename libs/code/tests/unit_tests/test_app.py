@@ -4593,6 +4593,112 @@ class TestShellCommandInterrupt:
             for msg in messages
         )
 
+    async def test_non_incognito_shell_output_written_to_model_context(self) -> None:
+        """A `!` command/output must be written into the graph checkpoint."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello world\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("echo hello world", incognito=False)
+                await pilot.pause()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        call = app._agent.aupdate_state.await_args
+        assert call is not None
+        config = call.args[0]
+        assert config["configurable"]["thread_id"] == "thread-123"
+        sent = call.args[1]["messages"]
+        assert isinstance(sent[0], HumanMessage)
+        assert sent[0].content == "!echo hello world"
+        assert isinstance(sent[1], AIMessage)
+        assert "hello world" in sent[1].content
+
+    async def test_incognito_shell_output_not_written_to_model_context(self) -> None:
+        """A `!!` command/output must never reach the graph checkpoint."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ),
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        app._agent.aupdate_state.assert_not_awaited()
+
+    async def test_non_incognito_shell_nonzero_exit_recorded(self) -> None:
+        """A failing `!` command should record its exit code for the model."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"boom"))
+        mock_proc.returncode = 2
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("falsey", incognito=False)
+                await pilot.pause()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        call = app._agent.aupdate_state.await_args
+        assert call is not None
+        sent = call.args[1]["messages"]
+        assert "boom" in sent[1].content
+        assert "exited with code 2" in sent[1].content
+
     async def test_unknown_input_mode_does_not_dispatch_to_agent(self) -> None:
         """An unrecognized mode must surface an error rather than reach the LLM.
 

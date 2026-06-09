@@ -5399,6 +5399,25 @@ class TestSlashCommandBypass:
             pm.assert_called_once_with("/force-clear", "command")
             assert len(app._pending_messages) == 0
 
+    async def test_restart_bypasses_queue_when_agent_running(self) -> None:
+        """/restart should process immediately when the agent is running.
+
+        Guards the motivating behavior: as an `ALWAYS_IMMEDIATE` command,
+        `/restart` must reach `_process_message` rather than being parked in
+        the queue behind the in-flight work it is meant to recover from.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/restart", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/restart", "command")
+            assert len(app._pending_messages) == 0
+
     async def test_external_command_uses_same_bypass_policy(self) -> None:
         """External command events should route through normal command policy."""
         app = DeepAgentsApp()

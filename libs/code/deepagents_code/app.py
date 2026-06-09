@@ -5192,8 +5192,11 @@ class DeepAgentsApp(App):
             HIDDEN_COMMANDS,
         )
 
-        # Hidden commands are power-user escape hatches and must work even
-        # when the app is busy or wedged — treat them as always-immediate.
+        # Union of two always-immediate sets. ALWAYS_IMMEDIATE holds public
+        # urgent commands (/quit, /force-clear, /restart); HIDDEN_COMMANDS
+        # holds debug helpers (/debug-error) that aren't registered in
+        # COMMANDS and so carry no bypass tier. Both must run even when the
+        # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
@@ -6094,6 +6097,7 @@ class DeepAgentsApp(App):
                     " exited with code 3",
                 ),
             )
+        # -- /restart: public, but ALWAYS_IMMEDIATE so it runs even when wedged
         elif cmd == "/restart":
             await self._handle_restart_command(command)
         else:
@@ -9931,7 +9935,7 @@ class DeepAgentsApp(App):
         Superset of `/reload`: re-reads `.env` / environment, clears
         configuration caches, then respawns the app-owned LangGraph
         server subprocess. Used as a recovery escape hatch when the
-        server wedges; intentionally hidden from autocomplete and help.
+        server wedges.
 
         Cancels any in-flight agent work and drops the queued message
         backlog before respawning. The streaming HTTP connection to the

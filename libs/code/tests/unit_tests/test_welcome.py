@@ -437,6 +437,10 @@ class TestBuildWelcomeFooter:
         """The `/copy` command must have a discoverability tip."""
         assert "Use /copy to copy the latest assistant message" in _TIPS
 
+    def test_restart_command_tip_registered(self) -> None:
+        """The newly public `/restart` command must have a discoverability tip."""
+        assert any("/restart" in tip for tip in _TIPS)
+
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""
         seen = {build_welcome_footer().plain for _ in range(50)}

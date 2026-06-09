@@ -1361,6 +1361,7 @@ async def execute_task_textual(
             agent=agent,
             config=config,
             pending_text_by_namespace=pending_text_by_namespace,
+            assistant_message_by_namespace=assistant_message_by_namespace,
             captured_input_tokens=captured_input_tokens,
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
@@ -1379,12 +1380,34 @@ async def execute_task_textual(
     return turn_stats
 
 
+async def _stop_assistant_streams(
+    adapter: TextualUIAdapter,
+    assistant_message_by_namespace: dict[tuple, Any] | None,
+) -> None:
+    """Finalize active assistant streams during interrupt cleanup."""
+    if not assistant_message_by_namespace:
+        return
+
+    for current_msg in list(assistant_message_by_namespace.values()):
+        try:
+            await current_msg.stop_stream()
+        except Exception:
+            logger.warning("Failed to stop interrupted assistant stream", exc_info=True)
+            continue
+
+        if adapter._sync_message_content and current_msg.id:
+            adapter._sync_message_content(current_msg.id, current_msg._content)
+
+    assistant_message_by_namespace.clear()
+
+
 async def _handle_interrupt_cleanup(
     *,
     adapter: TextualUIAdapter,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
     config: RunnableConfig,
     pending_text_by_namespace: dict[tuple, str],
+    assistant_message_by_namespace: dict[tuple, Any] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
     turn_stats: SessionStats,
@@ -1397,6 +1420,7 @@ async def _handle_interrupt_cleanup(
         agent: The LangGraph agent.
         config: Runnable config with `thread_id`.
         pending_text_by_namespace: Accumulated text per namespace.
+        assistant_message_by_namespace: Active assistant message widgets per namespace.
         captured_input_tokens: Input tokens captured before interrupt.
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
@@ -1414,6 +1438,8 @@ async def _handle_interrupt_cleanup(
     # Hide spinner (may still show "Offloading" if interrupted mid-offload)
     if adapter._set_spinner:
         await adapter._set_spinner(None)
+
+    await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     await adapter._mount_message(AppMessage("Interrupted by user"))
 

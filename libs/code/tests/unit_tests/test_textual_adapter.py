@@ -224,6 +224,42 @@ class TestInterruptCleanup:
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
+    async def test_interrupt_stops_active_assistant_streams(self) -> None:
+        """Interrupted streaming messages should not leave flush timers running."""
+        sync_message_content = MagicMock()
+        assistant_msg = SimpleNamespace(
+            id="asst-1",
+            _content="partial response",
+            stop_stream=AsyncMock(),
+        )
+        assistant_messages = {(): assistant_msg}
+
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+            sync_message_content=sync_message_content,
+        )
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial response"},
+            assistant_message_by_namespace=assistant_messages,
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assistant_msg.stop_stream.assert_awaited_once_with()
+        sync_message_content.assert_called_once_with("asst-1", "partial response")
+        assert assistant_messages == {}
+
     async def test_disables_tracing_during_state_save(self) -> None:
         """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
 

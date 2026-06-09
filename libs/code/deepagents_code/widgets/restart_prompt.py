@@ -99,6 +99,7 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
                     name=self._label,
                 ),
                 classes="restart-prompt-title",
+                markup=False,
             )
             yield Static(
                 "Restart the server to load it now, or defer with `/restart`.",
@@ -120,13 +121,15 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
         self.dismiss("later")
 
     def action_cancel(self) -> None:
-        """Alias for `action_later` so the app-level Esc handler defers.
+        """Alias for `action_later` so Esc resolves to a deliberate defer.
 
         The app's `action_interrupt` (`escape` binding, `priority=True`)
         fires before this screen's own `escape` binding. When the active
         screen is a `ModalScreen`, it dispatches to `action_cancel` if
-        present, else falls through to `dismiss(None)`. Without this alias,
-        Esc would dismiss with `None`, which the caller treats as a
-        programmatic dismiss instead of an explicit defer.
+        present, else falls through to `dismiss(None)`. The current caller
+        no-ops on both `None` and `"later"`, but defining this alias pins Esc
+        to an explicit `"later"` — matching the sibling reconnect/cwd-switch
+        modals and keeping the outcome unambiguous for any future caller that
+        branches on a deliberate defer versus a programmatic dismiss.
         """
         self.action_later()

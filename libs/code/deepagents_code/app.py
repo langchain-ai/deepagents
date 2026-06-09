@@ -10111,9 +10111,11 @@ class DeepAgentsApp(App):
         app-owned LangGraph server subprocess, so a `/restart` loads them
         without exiting the TUI. When dcode owns that subprocess and is idle,
         prompt to run the restart immediately instead of making the user type
-        `/restart`. Skipped while a run is in flight (a restart cancels it) and
-        in remote-server mode (no subprocess to respawn) — both already carry
-        the manual-restart hint in the install message.
+        `/restart`. Skipped while a run is in flight or the server is still
+        connecting/restarting (a restart cancels in-flight work and a
+        connecting server has nothing to respawn into yet) and in
+        remote-server mode (no subprocess to respawn) — every skipped path
+        already carries the manual-restart hint in the install message.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
@@ -10130,7 +10132,22 @@ class DeepAgentsApp(App):
 
         choice: RestartChoice | None
         try:
-            choice = await self._push_screen_wait(RestartPromptScreen(label))
+            # Watchdog: bound the handler against a screen that never resolves
+            # (compose crash, programmatic teardown that skips the dismiss
+            # callback). 10 minutes is well past any human latency but stops a
+            # genuinely broken modal from wedging command handling. Mirrors the
+            # MCP reconnect prompt's watchdog.
+            choice = await asyncio.wait_for(
+                self._push_screen_wait(RestartPromptScreen(label)),
+                timeout=600.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Restart prompt after installing %r timed out; leaving the "
+                "manual /restart hint in place",
+                label,
+            )
+            return
         except Exception:
             # Modal could not be mounted (e.g. another modal hijacked the
             # stack). Leave the manual `/restart` hint in place.

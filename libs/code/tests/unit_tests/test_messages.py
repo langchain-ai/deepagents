@@ -843,7 +843,7 @@ class TestToolCallMessageExpandHint:
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is True
             assert app.msg._has_expandable_output() is True
-            preview = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
             assert len(preview.plain) == ToolCallMessage._PREVIEW_CHARS
 
             app.msg.toggle_output()
@@ -851,7 +851,7 @@ class TestToolCallMessageExpandHint:
 
             assert app.msg._expanded is True
             assert app.msg._hint_widget.display is True
-            full = app.msg._full_widget._Static__content  # type: ignore[attr-defined]
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
             assert full.plain == output
 
     async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:

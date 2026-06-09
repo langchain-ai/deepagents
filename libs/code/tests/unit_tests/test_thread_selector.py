@@ -1804,6 +1804,60 @@ class TestThreadSelectorPrefetchedRows:
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
 
+    async def test_empty_snapshot_shows_loading_until_disk_load_completes(
+        self,
+    ) -> None:
+        """An empty snapshot must not claim "No threads found" while loading."""
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "new12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "message_count": 6,
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return refreshed
+
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=_list_threads,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                        filter_cwd=None,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # While the disk load is in flight, show the loading placeholder
+                # rather than "No threads found".
+                assert not screen._disk_load_complete
+                screen.query_one("#thread-loading", Static)
+                assert not screen._option_widgets
+
+                gate.set()
+
+                for _ in range(10):
+                    if len(screen._threads) == 1:
+                        break
+                    await pilot.pause(0.05)
+
+                assert screen._disk_load_complete
+                assert len(screen._option_widgets) == 1
+
 
 class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""

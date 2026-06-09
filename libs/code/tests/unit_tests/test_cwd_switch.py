@@ -55,7 +55,7 @@ class TestCwdSwitchPromptScreen:
         """Mounting the modal claims focus from the dismissed thread selector."""
         screen, _ = self._screen()
         focus = MagicMock()
-        screen.focus = focus  # ty: ignore[method-assign]
+        screen.focus = focus  # ty: ignore[invalid-assignment]
 
         screen.on_mount()
 

@@ -1342,9 +1342,10 @@ class TestThreadCachePrewarm:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._chat_input = chat_input
-            app._resume_thread = resume_thread  # ty: ignore[method-assign]
-            app.call_after_refresh = MagicMock(side_effect=callbacks.append)  # ty: ignore[method-assign]
-            app.run_worker = MagicMock(side_effect=run_worker)  # ty: ignore[method-assign]
+            run_worker_mock = MagicMock(side_effect=run_worker)
+            app._resume_thread = resume_thread  # ty: ignore[invalid-assignment]
+            app.call_after_refresh = MagicMock(side_effect=callbacks.append)  # ty: ignore[invalid-assignment]
+            app.run_worker = run_worker_mock  # ty: ignore[invalid-assignment]
             with (
                 patch("deepagents_code.sessions.get_thread_limit", return_value=9),
                 patch("deepagents_code.sessions.get_cached_threads", return_value=[]),
@@ -1358,7 +1359,7 @@ class TestThreadCachePrewarm:
             assert len(callbacks) == 1
 
             callbacks[0]()
-            app.run_worker.assert_called_once()
+            run_worker_mock.assert_called_once()
             assert len(workers) == 1
             await workers[0]
 
@@ -11850,7 +11851,8 @@ class TestResumeThreadCwdSwitch:
         load_thread_history = AsyncMock()
         app._load_thread_history = load_thread_history  # ty: ignore[invalid-assignment]
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        app._set_spinner = AsyncMock()  # ty: ignore[method-assign]
+        set_spinner = AsyncMock()
+        app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
         replace_calls: list[Path] = []
 
@@ -11871,7 +11873,7 @@ class TestResumeThreadCwdSwitch:
         assert app._cwd == str(current)
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
-        app._set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
+        set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---

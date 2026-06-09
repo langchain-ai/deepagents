@@ -3360,6 +3360,93 @@ class TestBuildAgentErrorBody:
         body = _build_agent_error_body("Agent error: boom", RuntimeError("boom"))
         assert body == "Agent error: boom"
 
+    def test_gateway_key_mismatch_names_env_var(self, monkeypatch) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code import app as app_module
+        from deepagents_code.app import _build_agent_error_body
+
+        monkeypatch.setattr(
+            app_module,
+            "_langsmith_gateway_key_mismatch",
+            lambda _provider: "OPENAI_API_KEY",
+        )
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = str(_build_agent_error_body("Agent error: x", exc, provider="openai"))
+        assert "OPENAI_API_KEY" in body
+        assert "LANGCHAIN_DISABLE_GATEWAY=1" in body
+
+    def test_permission_denied_without_mismatch_is_generic(self, monkeypatch) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code import app as app_module
+        from deepagents_code.app import _GATEWAY_DOCS_URL, _build_agent_error_body
+
+        monkeypatch.setattr(
+            app_module, "_langsmith_gateway_key_mismatch", lambda _provider: None
+        )
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = str(_build_agent_error_body("Agent error: x", exc, provider="openai"))
+        assert _GATEWAY_DOCS_URL in body
+        assert "LANGCHAIN_DISABLE_GATEWAY" not in body
+
+
+class TestLangsmithGatewayKeyMismatch:
+    """Cover gateway/key mismatch detection without inspecting the secret."""
+
+    def _patch(
+        self,
+        monkeypatch,
+        *,
+        base_url: str,
+        key: str,
+        key_env: str = "OPENAI_API_KEY",
+    ) -> None:
+        from deepagents_code import model_config
+
+        class _Cfg:
+            def get_base_url(self, _provider: str) -> str:
+                return base_url
+
+        monkeypatch.setattr(model_config.ModelConfig, "load", staticmethod(_Cfg))
+        monkeypatch.setattr(
+            model_config, "get_credential_env_var", lambda _provider: key_env
+        )
+        monkeypatch.setattr(model_config, "resolve_env_var", lambda _name: key)
+
+    def test_detects_non_langsmith_key_on_gateway(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="sk-proj-abc",
+        )
+        assert _langsmith_gateway_key_mismatch("openai") == "OPENAI_API_KEY"
+
+    def test_langsmith_key_is_not_flagged(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="lsv2_pt_abc",
+        )
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_non_gateway_endpoint_is_not_flagged(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch, base_url="https://api.openai.com/v1", key="sk-proj-abc"
+        )
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_no_provider_is_not_flagged(self) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        assert _langsmith_gateway_key_mismatch(None) is None
+
 
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""

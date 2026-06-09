@@ -12022,6 +12022,74 @@ class TestResumeThreadCwdSwitch:
         assert app._connecting is False
         old_server.stop.assert_not_called()
 
+    async def test_replace_server_failure_rolls_back_project_dotenv(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed restart restores previous cwd-scoped dotenv settings."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _RELOADABLE_FIELDS, Settings, settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-current\n",
+        )
+        (target / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-target\n",
+        )
+        monkeypatch.chdir(current)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+        saved = {field: getattr(settings, field) for field in _RELOADABLE_FIELDS}
+
+        try:
+            app = DeepAgentsApp(thread_id="t", cwd=current)
+            self._arm_server_backed_app(app, monkeypatch)
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                Settings.reload_from_environment.__get__(settings, Settings),
+            )
+            settings.reload_from_environment(start_path=current)
+            assert settings.openai_api_key == "sk-current"
+            app._server_proc = MagicMock()
+            app._agent = MagicMock()
+            app._server_kwargs = {"assistant_id": "agent"}
+            app._mcp_preload_kwargs = None
+
+            async def boom(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+                msg = "server failed"
+                raise RuntimeError(msg)
+
+            with (
+                patch(
+                    "deepagents_code.server_manager.start_server_and_get_agent",
+                    side_effect=boom,
+                ),
+                patch("deepagents_code.model_config.clear_caches"),
+            ):
+                result = await app._replace_server_after_cwd_switch(target)
+
+            assert result == "abort"
+            assert Path.cwd() == current
+            assert settings.openai_api_key == "sk-current"
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-current"
+        finally:
+            for field, value in saved.items():
+                setattr(settings, field, value)
+            config_mod._dotenv_loaded_values.clear()
+
     async def test_replace_server_propagates_non_exception_after_rollback(
         self,
         tmp_path: Path,

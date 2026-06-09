@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
@@ -1300,7 +1300,7 @@ class TestThreadCachePrewarm:
                 patch(
                     "deepagents_code.widgets.thread_selector.ThreadSelectorScreen"
                 ) as mock_screen_cls,
-                patch.object(app, "push_screen") as mock_push_screen,
+                patch.object(app, "push_screen") as push_screen,
             ):
                 mock_screen = MagicMock()
                 mock_screen_cls.return_value = mock_screen
@@ -1312,7 +1312,51 @@ class TestThreadCachePrewarm:
                     thread_limit=9,
                     initial_threads=cached_threads,
                 )
-                mock_push_screen.assert_called_once()
+                push_screen.assert_called_once()
+
+    async def test_thread_selector_selection_refocuses_after_resume(self) -> None:
+        """Selecting a thread should not refocus chat before resume modals finish."""
+        app = DeepAgentsApp()
+        chat_input = MagicMock()
+        resume_order: list[str] = []
+        callbacks: list[Callable[[], None]] = []
+        selector_callback: Callable[[str | None], None] | None = None
+
+        async def resume_thread(thread_id: str) -> None:
+            chat_input.focus_input.assert_not_called()
+            await asyncio.sleep(0)
+            resume_order.append(thread_id)
+
+        def push_screen(
+            _screen: object,
+            callback: Callable[[str | None], None],
+        ) -> None:
+            nonlocal selector_callback
+            selector_callback = callback
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._chat_input = chat_input
+            app._resume_thread = resume_thread  # ty: ignore[method-assign]
+            app.call_after_refresh = MagicMock(side_effect=callbacks.append)  # ty: ignore[method-assign]
+            with (
+                patch("deepagents_code.sessions.get_thread_limit", return_value=9),
+                patch("deepagents_code.sessions.get_cached_threads", return_value=[]),
+                patch.object(app, "push_screen", side_effect=push_screen),
+            ):
+                await app._show_thread_selector()
+
+            assert selector_callback is not None
+            selector_callback("thread-abc")
+            chat_input.focus_input.assert_not_called()
+            assert len(callbacks) == 1
+
+            task = callbacks[0]()
+            assert isinstance(task, asyncio.Task)
+            await task
+
+            assert resume_order == ["thread-abc"]
+            chat_input.focus_input.assert_called_once_with()
 
 
 class TestAppBindings:

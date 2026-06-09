@@ -10271,14 +10271,28 @@ class DeepAgentsApp(App):
 
         initial_threads = get_cached_threads(limit=thread_limit)
 
+        async def resume_and_refocus(thread_id: str) -> None:
+            """Resume a selected thread, then restore focus to chat input."""
+            try:
+                await self._resume_thread(thread_id)
+            finally:
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
         def handle_result(result: str | None) -> None:
-            """Handle the thread selector result."""
-            if result is not None:
+            """Handle the thread selector result after the modal dismisses."""
+            if result is None:
+                if self._chat_input:
+                    self._chat_input.focus_input()
+                return
+
+            async def resume_later() -> None:
+                await asyncio.sleep(0)
                 if self._agent_running or self._shell_running or self._connecting:
                     self._defer_action(
                         DeferredAction(
                             kind="thread_switch",
-                            execute=partial(self._resume_thread, result),
+                            execute=partial(resume_and_refocus, result),
                         ),
                     )
                     self.notify(
@@ -10286,9 +10300,9 @@ class DeepAgentsApp(App):
                         timeout=3,
                     )
                 else:
-                    self.call_later(self._resume_thread, result)
-            if self._chat_input:
-                self._chat_input.focus_input()
+                    await resume_and_refocus(result)
+
+            self.call_after_refresh(lambda: asyncio.create_task(resume_later()))
 
         screen = ThreadSelectorScreen(
             current_thread=current,
@@ -10806,9 +10820,20 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Skip if already on this thread
         if self._session_state.thread_id == thread_id:
-            await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+            prev_cwd = Path(self._cwd)
+            cwd_choice = await self._offer_thread_cwd_switch(
+                thread_id,
+                restart_server=True,
+            )
+            if cwd_choice == "abort":
+                return
+            if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
+                await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+            else:
+                await self._mount_message(
+                    AppMessage(f"Switched to thread directory: {self._cwd}"),
+                )
             return
 
         if self._thread_switching:

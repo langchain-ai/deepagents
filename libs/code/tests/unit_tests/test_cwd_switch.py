@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from textual.binding import Binding
+
 from deepagents_code.widgets.cwd_switch import CwdSwitchPromptScreen
 
 
@@ -31,6 +33,33 @@ class TestCwdSwitchPromptScreen:
 
         assert "project-specific config" not in unchanged._body_text()
         assert "project-specific config" in changed._body_text()
+
+    def test_modal_binds_resume_and_quit_shortcuts(self) -> None:
+        """The modal handles resume keys and delegates quit shortcuts."""
+        bindings = [b for b in CwdSwitchPromptScreen.BINDINGS if isinstance(b, Binding)]
+        bindings_by_key = {b.key: b for b in bindings}
+
+        assert bindings_by_key["enter"].action == "switch"
+        assert bindings_by_key["escape"].action == "stay"
+        assert bindings_by_key["ctrl+c"].action == "quit_or_interrupt"
+        assert bindings_by_key["ctrl+d"].action == "quit_app"
+
+    def test_prompt_is_focusable(self) -> None:
+        """The modal must own focus so its key bindings work after /threads."""
+        screen, _ = self._screen()
+
+        assert screen.can_focus is True
+        assert screen.can_focus_children is False
+
+    def test_on_mount_focuses_screen(self) -> None:
+        """Mounting the modal claims focus from the dismissed thread selector."""
+        screen, _ = self._screen()
+        focus = MagicMock()
+        screen.focus = focus  # ty: ignore[method-assign]
+
+        screen.on_mount()
+
+        focus.assert_called_once_with()
 
     def test_action_switch_dismisses_switch(self) -> None:
         """Enter / switch resolves the prompt to `switch`."""

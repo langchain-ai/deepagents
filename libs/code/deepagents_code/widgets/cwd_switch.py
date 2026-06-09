@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -14,6 +14,8 @@ from deepagents_code.sessions import format_path
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+    from deepagents_code.app import DeepAgentsApp
+
 
 CwdSwitchChoice = Literal["switch", "stay"]
 """Outcome of the cwd switch prompt."""
@@ -22,9 +24,20 @@ CwdSwitchChoice = Literal["switch", "stay"]
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     """Modal asking whether to switch cwd before resuming a thread."""
 
+    can_focus = True
+    can_focus_children = False
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "switch", "Switch", show=False, priority=True),
         Binding("escape", "stay", "Stay", show=False, priority=True),
+        Binding(
+            "ctrl+c",
+            "quit_or_interrupt",
+            "Quit/Interrupt",
+            show=False,
+            priority=True,
+        ),
+        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -119,6 +132,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 markup=False,
             )
 
+    def on_mount(self) -> None:
+        """Focus the modal so screen bindings work after nested modal flows."""
+        self.focus()
+
     def action_switch(self) -> None:
         """Dismiss with `switch`."""
         self.dismiss("switch")
@@ -130,3 +147,11 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     def action_cancel(self) -> None:
         """Treat cancellation as staying in the current cwd."""
         self.action_stay()
+
+    def action_quit_or_interrupt(self) -> None:
+        """Delegate Ctrl+C to the app-level quit/interrupt handler."""
+        cast("DeepAgentsApp", self.app).action_quit_or_interrupt()
+
+    def action_quit_app(self) -> None:
+        """Delegate Ctrl+D to the app-level quit handler."""
+        cast("DeepAgentsApp", self.app).action_quit_app()

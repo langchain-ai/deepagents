@@ -48,6 +48,9 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+- For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
+- Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
+- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal.
 
 ### Typing and test doubles
 

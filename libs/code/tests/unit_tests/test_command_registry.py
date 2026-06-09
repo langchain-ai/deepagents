@@ -131,9 +131,6 @@ class TestSlashCommands:
 class TestHiddenCommands:
     """`HIDDEN_COMMANDS` membership and autocomplete absence."""
 
-    def test_restart_is_hidden(self) -> None:
-        assert "/restart" in HIDDEN_COMMANDS
-
     def test_debug_error_is_hidden(self) -> None:
         assert "/debug-error" in HIDDEN_COMMANDS
 
@@ -143,6 +140,21 @@ class TestHiddenCommands:
             assert hidden not in names, (
                 f"Hidden command {hidden!r} leaked into SLASH_COMMANDS"
             )
+
+
+class TestRestartCommand:
+    """Validate the `/restart` entry specifically."""
+
+    def test_restart_registered_for_autocomplete(self) -> None:
+        restart_entry = next(
+            entry for entry in SLASH_COMMANDS if entry.name == "/restart"
+        )
+
+        assert restart_entry.description == "Restart the app-owned LangGraph server"
+
+    def test_restart_classified_as_always_immediate(self) -> None:
+        assert "/restart" in ALWAYS_IMMEDIATE
+        assert "/restart" not in HIDDEN_COMMANDS
 
 
 class TestAgentsCommand:

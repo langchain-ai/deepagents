@@ -50,6 +50,9 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 `LANGSMITH_PROJECT` override, so `.env`-only values are visible.
 """
 
+_dotenv_loaded_values: dict[str, str] = {}
+"""Environment values injected by our dotenv loader and safe to refresh later."""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -92,6 +95,9 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     import dotenv
 
     env = dict(os.environ)
+    for key, value in _dotenv_loaded_values.items():
+        if env.get(key) == value:
+            env.pop(key)
 
     def apply_dotenv(dotenv_path: Path | None) -> None:
         if dotenv_path is None:
@@ -156,7 +162,9 @@ def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
     return env.get(name) or None
 
 
-def _load_dotenv(*, start_path: Path | None = None) -> bool:
+def _load_dotenv(
+    *, start_path: Path | None = None, refresh_loaded: bool = False
+) -> bool:
     """Load environment variables from project and global `.env` files.
 
     Loads in order (first write wins, `override=False`):
@@ -180,6 +188,9 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     Args:
         start_path: Directory to use for project `.env` discovery.
+        refresh_loaded: Remove values previously injected by this loader before
+            applying the current project/global dotenv stack. Values modified
+            after loading are preserved.
 
     Returns:
         `True` when at least one dotenv file was loaded, `False` otherwise.
@@ -188,19 +199,36 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     loaded = False
 
+    if refresh_loaded:
+        for key, value in list(_dotenv_loaded_values.items()):
+            if os.environ.get(key) == value:
+                os.environ.pop(key)
+        _dotenv_loaded_values.clear()
+
+    def apply_dotenv(dotenv_path: Path) -> bool:
+        values = dotenv.dotenv_values(dotenv_path=dotenv_path)
+        applied = False
+        for key, value in values.items():
+            if value is None or key in os.environ:
+                continue
+            os.environ[key] = value
+            _dotenv_loaded_values[key] = value
+            applied = True
+        return applied
+
     # 1. Project/CWD .env — loads first so project values are set before the
     # global file, which can only fill in vars not already present.
     dotenv_path: Path | str | None = None
     try:
         if start_path is None:
-            loaded = dotenv.load_dotenv(override=False) or loaded
+            found = dotenv.find_dotenv(usecwd=True)
+            if found:
+                dotenv_path = found
+                loaded = apply_dotenv(Path(found)) or loaded
         else:
             dotenv_path = _find_dotenv_from_start_path(start_path)
             if dotenv_path is not None:
-                loaded = (
-                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=False)
-                    or loaded
-                )
+                loaded = apply_dotenv(dotenv_path) or loaded
     except (OSError, ValueError):
         logger.warning(
             "Could not read project dotenv at %s; project env vars will not be loaded",
@@ -213,9 +241,7 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
-            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
-        ):
+        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(_GLOBAL_DOTENV_PATH):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
     except (OSError, ValueError):
@@ -1468,10 +1494,9 @@ class Settings:
 
         !!! note
 
-            `.env` files are loaded with `override=False`, so shell-exported
-            variables always take precedence.  To override a shell-exported key
-            from `.env`, use the `DEEPAGENTS_CODE_` prefix (e.g.
-            `DEEPAGENTS_CODE_OPENAI_API_KEY`).
+            Shell-exported variables always take precedence. Values previously
+            injected from `.env` files are refreshed so an accepted cwd switch
+            can pick up the resumed project's `.env`.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd).
@@ -1479,7 +1504,7 @@ class Settings:
         Returns:
             A list of human-readable change descriptions.
         """
-        _load_dotenv(start_path=start_path)
+        _load_dotenv(start_path=start_path, refresh_loaded=True)
 
         previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
         refreshed = self._reload_values(

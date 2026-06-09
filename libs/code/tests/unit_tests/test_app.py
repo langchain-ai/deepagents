@@ -11600,8 +11600,10 @@ class TestResumeThreadCwdSwitch:
         app = DeepAgentsApp(thread_id="thread-1", cwd=current)
         push_wait = AsyncMock(return_value="switch")
         app._push_screen_wait = push_wait  # ty: ignore[invalid-assignment]
-        app._preview_project_settings_change = AsyncMock(  # ty: ignore[method-assign]
-            return_value=True
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=True),
         )
         chat_input = MagicMock()
         app._chat_input = chat_input
@@ -11924,6 +11926,58 @@ class TestResumeThreadCwdSwitch:
         assert len(ready) == 1
         assert ready[0].agent is new_agent
         assert ready[0].server_proc is new_server
+
+    async def test_replace_server_preserves_launch_relative_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd switch does not re-resolve restart paths in the target cwd."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        app._server_proc = MagicMock()
+        app._server_kwargs = {
+            "assistant_id": "agent",
+            "mcp_config_path": "./mcp.json",
+            "sandbox_setup": "./setup.sh",
+        }
+        app._mcp_preload_kwargs = {"mcp_config_path": "./mcp.json"}
+        ready: list[Any] = []
+        app.on_deep_agents_app_server_ready = ready.append  # ty: ignore[invalid-assignment]
+
+        async def fake_start(**kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            assert kwargs["mcp_config_path"] == str(current / "mcp.json")
+            assert kwargs["sandbox_setup"] == str(current / "setup.sh")
+            return MagicMock(), MagicMock(), None
+
+        async def fake_preload(**kwargs: object) -> list[Any]:  # noqa: RUF029
+            assert kwargs["mcp_config_path"] == str(current / "mcp.json")
+            return []
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=fake_start,
+            ),
+            patch(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                side_effect=fake_preload,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "continue"
+        assert Path.cwd() == target
+        assert app._server_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert app._server_kwargs["sandbox_setup"] == str(current / "setup.sh")
+        assert app._mcp_preload_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert len(ready) == 1
 
     async def test_replace_server_failure_rolls_back_and_aborts(
         self,

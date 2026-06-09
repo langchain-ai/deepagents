@@ -11,17 +11,18 @@ class TestCwdSwitchPromptScreen:
     """Dismissal outcomes for the resume cwd-switch prompt."""
 
     @staticmethod
-    def _screen() -> CwdSwitchPromptScreen:
+    def _screen() -> tuple[CwdSwitchPromptScreen, MagicMock]:
         screen = CwdSwitchPromptScreen(
             current_cwd="/a/current",
             thread_cwd="/b/target",
         )
-        screen.dismiss = MagicMock()  # ty: ignore[invalid-assignment]
-        return screen
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+        return screen, dismiss
 
     def test_body_mentions_project_settings_only_when_detected(self) -> None:
         """Project settings copy is conditional on detected changes."""
-        unchanged = self._screen()
+        unchanged, _ = self._screen()
         changed = CwdSwitchPromptScreen(
             current_cwd="/a/current",
             thread_cwd="/b/target",
@@ -33,15 +34,15 @@ class TestCwdSwitchPromptScreen:
 
     def test_action_switch_dismisses_switch(self) -> None:
         """Enter / switch resolves the prompt to `switch`."""
-        screen = self._screen()
+        screen, dismiss = self._screen()
         screen.action_switch()
-        screen.dismiss.assert_called_once_with("switch")
+        dismiss.assert_called_once_with("switch")
 
     def test_action_stay_dismisses_stay(self) -> None:
         """Explicit stay resolves the prompt to `stay`."""
-        screen = self._screen()
+        screen, dismiss = self._screen()
         screen.action_stay()
-        screen.dismiss.assert_called_once_with("stay")
+        dismiss.assert_called_once_with("stay")
 
     def test_action_cancel_treated_as_stay(self) -> None:
         """Esc / cancel is the safe default and resolves to `stay`.
@@ -50,6 +51,6 @@ class TestCwdSwitchPromptScreen:
         `action_cancel` to control the cancel outcome rather than relying on a
         bare `escape` binding.
         """
-        screen = self._screen()
+        screen, dismiss = self._screen()
         screen.action_cancel()
-        screen.dismiss.assert_called_once_with("stay")
+        dismiss.assert_called_once_with("stay")

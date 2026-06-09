@@ -10361,6 +10361,39 @@ class DeepAgentsApp(App):
         self._schedule_skill_discovery_after_cwd_switch()
 
     @staticmethod
+    def _absolutize_launch_relative_path(raw: object, launch_cwd: Path) -> str | None:
+        """Resolve a CLI path before cwd changes can reinterpret it.
+
+        Returns:
+            Absolute path string, or `None` when `raw` is not a path.
+        """
+        if not isinstance(raw, str) or not raw:
+            return None
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            return str(path.resolve())
+        return str((launch_cwd / path).resolve())
+
+    def _preserve_launch_relative_server_paths(self, launch_cwd: Path) -> None:
+        """Freeze launch-relative restart paths before switching process cwd."""
+        if self._server_kwargs is not None:
+            for key in ("mcp_config_path", "sandbox_setup"):
+                resolved = self._absolutize_launch_relative_path(
+                    self._server_kwargs.get(key),
+                    launch_cwd,
+                )
+                if resolved is not None:
+                    self._server_kwargs[key] = resolved
+
+        if self._mcp_preload_kwargs is not None:
+            resolved = self._absolutize_launch_relative_path(
+                self._mcp_preload_kwargs.get("mcp_config_path"),
+                launch_cwd,
+            )
+            if resolved is not None:
+                self._mcp_preload_kwargs["mcp_config_path"] = resolved
+
+    @staticmethod
     def _resolve_thread_cwd_mismatch(
         raw: str, current_cwd: str
     ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
@@ -10479,6 +10512,7 @@ class DeepAgentsApp(App):
                 banner.set_connecting()
             except NoMatches:
                 pass
+            self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
 
             coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]

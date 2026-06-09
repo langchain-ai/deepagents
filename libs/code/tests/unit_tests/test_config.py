@@ -236,7 +236,7 @@ class TestProjectAgentMdFinding:
             if self.name == "AGENTS.md" and ".deepagents" in str(self):
                 msg = "Permission denied"
                 raise PermissionError(msg)
-            return original_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_resolve(self, *args, **kwargs)  # ty: ignore
 
         with patch.object(Path, "resolve", patched_resolve):
             result = _find_project_agent_md(project_root)
@@ -3188,7 +3188,7 @@ class TestInterpreterSettings:
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is False
-        assert settings_obj.interpreter_timeout_seconds == 5.0
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
@@ -3213,7 +3213,7 @@ ptc_acknowledge_unsafe = true
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == 12.5
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
         assert settings_obj.interpreter_memory_limit_mb == 128
         assert settings_obj.interpreter_max_ptc_calls == 64
         assert settings_obj.interpreter_max_result_chars == 8000

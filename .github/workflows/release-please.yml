@@ -65,6 +65,7 @@ jobs:
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
+      talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
@@ -145,6 +146,13 @@ jobs:
             echo "Deep Agents Code release detected: $COMMIT_MSG"
           else
             echo "code-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
+            echo "talon-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Talon release detected: $COMMIT_MSG"
+          else
+            echo "talon-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
@@ -524,6 +532,7 @@ jobs:
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
+      needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
@@ -541,6 +550,7 @@ jobs:
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
+      TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
@@ -611,6 +621,7 @@ jobs:
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
+          TALON_RELEASE="${TALON_RELEASE:-false}";     assert_bool TALON_RELEASE   "$TALON_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
@@ -639,6 +650,7 @@ jobs:
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
+          if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi

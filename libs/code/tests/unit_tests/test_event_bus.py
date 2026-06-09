@@ -36,7 +36,7 @@ class TestExternalEventInvariants:
 
     def test_rejects_unknown_kind(self) -> None:
         with pytest.raises(ValueError, match="Unknown external event kind"):
-            ExternalEvent(kind="reboot", payload="x", source="t")  # type: ignore[arg-type]
+            ExternalEvent(kind="reboot", payload="x", source="t")  # ty: ignore
 
     def test_rejects_empty_payload(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):

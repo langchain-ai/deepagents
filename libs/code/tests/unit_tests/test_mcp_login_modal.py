@@ -123,7 +123,7 @@ class TestMCPLoginScreen:
             # The link widget should be visible and contain the URL.
             assert screen._link_widget is not None
             assert screen._link_widget.display
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "https://example.test/auth" in link_text
 
     async def test_browser_opened_authorize_url_is_collapsed(self) -> None:
@@ -141,7 +141,7 @@ class TestMCPLoginScreen:
 
             assert screen._link_widget is not None
             assert screen._link_widget.display
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "Show manual authorization URL" in link_text
             assert "https://example.test/auth" not in link_text
 
@@ -160,13 +160,13 @@ class TestMCPLoginScreen:
             await pilot.pause()
 
             assert screen._link_widget is not None
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "Hide manual authorization URL" in link_text
             assert "https://example.test/auth" in link_text
 
             await pilot.press("enter")
             await pilot.pause()
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "Show manual authorization URL" in link_text
             assert "https://example.test/auth" not in link_text
 
@@ -183,12 +183,12 @@ class TestMCPLoginScreen:
             )
             assert screen._status_widget is not None
             assert screen._title_widget is not None
-            status_before = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
-            title_before = str(screen._title_widget._Static__content)  # type: ignore[attr-defined]
+            status_before = str(screen._status_widget._Static__content)  # ty: ignore
+            title_before = str(screen._title_widget._Static__content)  # ty: ignore
 
             screen._tick_spinner()
-            status_after = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
-            title_after = str(screen._title_widget._Static__content)  # type: ignore[attr-defined]
+            status_after = str(screen._status_widget._Static__content)  # ty: ignore
+            title_after = str(screen._title_widget._Static__content)  # ty: ignore
 
             assert status_before != status_after
             assert "Status:" in status_after
@@ -209,7 +209,7 @@ class TestMCPLoginScreen:
             )
             await pilot.pause()
             assert screen._link_widget is not None
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "https://github.com/login/device" in link_text
             assert "ABCD-1234" in link_text
 
@@ -230,7 +230,7 @@ class TestMCPLoginScreen:
             await pilot.pause()
             assert screen._link_widget is not None
             assert not screen._link_widget.display
-            link_text = str(screen._link_widget._Static__content)  # type: ignore[attr-defined]
+            link_text = str(screen._link_widget._Static__content)  # ty: ignore
             assert "Logged in" not in link_text
             assert screen._history_widget is not None
             assert not screen._history_widget.display
@@ -260,7 +260,7 @@ class TestMCPLoginScreen:
             assert screen._history_widget is not None
             assert not screen._history_widget.display
             assert screen._status_widget is not None
-            status_text = str(screen._status_widget._Static__content)  # type: ignore[attr-defined]
+            status_text = str(screen._status_widget._Static__content)  # ty: ignore
             assert "Reconnect required" in status_text
 
 

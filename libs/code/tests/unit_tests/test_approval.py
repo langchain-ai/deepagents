@@ -329,12 +329,12 @@ class TestOptionOrdering:
         menu.set_future(future)
         menu._selected = 1
         menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
-        menu._update_options = MagicMock()  # type: ignore[method-assign]
+        menu._update_options = MagicMock()  # ty: ignore
         getattr(menu, action)()
         assert future.result() == {"type": expected_type}
         assert menu._selected == 1
         assert menu.display is False
-        menu._update_options.assert_not_called()  # ty: ignore[unresolved-attribute]
+        menu._update_options.assert_not_called()  # ty: ignore
         loop.close()
 
     @pytest.mark.parametrize(
@@ -405,13 +405,13 @@ class TestRejectWithReason:
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         menu._selected = 2
         menu._reason_input_active = True
-        menu._update_options = MagicMock()  # type: ignore[method-assign]
+        menu._update_options = MagicMock()  # ty: ignore
 
         menu.action_move_up()
         menu.action_move_down()
 
         assert menu._selected == 2
-        menu._update_options.assert_not_called()  # type: ignore[attr-defined]
+        menu._update_options.assert_not_called()  # ty: ignore
 
     def test_no_op_when_reject_not_selected(self) -> None:
         """Tab is a no-op unless cursor is on the Reject option."""
@@ -469,10 +469,10 @@ class TestRejectWithReason:
         menu._help_widget = MagicMock()
         menu._selected = 2
         menu._reason_input_active = True
-        menu._handle_selection = MagicMock()  # type: ignore[method-assign]
+        menu._handle_selection = MagicMock()  # ty: ignore
         menu.action_select_reject()
         # First call: cancels the input, no decision posted.
-        menu._handle_selection.assert_not_called()  # type: ignore[attr-defined]
+        menu._handle_selection.assert_not_called()  # ty: ignore
         assert menu._reason_input_active is False
         assert reason_input.display is False
         # Second call: now it actually rejects.
@@ -630,12 +630,12 @@ class TestRejectWithReason:
         reason_input = MagicMock(value="late", display=False)
         menu._reason_input = reason_input
         menu._reason_input_active = False
-        menu._handle_selection = MagicMock()  # type: ignore[method-assign]
+        menu._handle_selection = MagicMock()  # ty: ignore
 
         event = SimpleNamespace(input=reason_input, value="late", stop=MagicMock())
-        menu.on_input_submitted(event)  # type: ignore[arg-type]
+        menu.on_input_submitted(event)  # ty: ignore
 
         event.stop.assert_called_once()
-        menu._handle_selection.assert_not_called()  # type: ignore[attr-defined]
+        menu._handle_selection.assert_not_called()  # ty: ignore
         assert not future.done()
         loop.close()

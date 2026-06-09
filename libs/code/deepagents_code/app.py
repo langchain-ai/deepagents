@@ -32,8 +32,8 @@ from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Header, Static
-from textual.widgets._toast import (
-    Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
+from textual.widgets._toast import (  # noqa: PLC2701
+    Toast as _Toast,  # for Toast click routing
 )
 
 # Applied as an import-time side effect; must come before any App is created.
@@ -1082,6 +1082,123 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
             (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
         )
     return f"Failed to switch model: {exc}"
+
+
+_GATEWAY_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/code/configuration"
+    "#endpoints-keys-and-gateways"
+)
+"""Docs section on how a provider's API key and endpoint resolve together.
+
+Linked from `PermissionDeniedError` guidance: a common cause is a provider key
+that does not match the endpoint it is sent to — e.g. an `OPENAI_API_KEY`
+exported in the shell while a gateway overrides the provider base URL, so the
+key is sent to the gateway, which rejects it.
+"""
+
+_LANGSMITH_KEY_PREFIX = "lsv2_"
+"""Prefix LangSmith API keys carry. Used as a heuristic to recognize when a
+provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
+the secret value is never logged or otherwise introspected.
+"""
+
+_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host substring identifying the LangSmith gateway endpoint."""
+
+
+def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
+    """Detect a non-LangSmith key being routed through the LangSmith gateway.
+
+    Returns the provider's API-key env var name when its resolved endpoint is
+    the LangSmith gateway but its key is not a LangSmith key (no `lsv2_`
+    prefix). Only the key prefix is checked; the secret value is never logged.
+    Returns `None` when there is no provider, no key, no gateway endpoint, or
+    the key already looks like a LangSmith key.
+
+    Performs blocking filesystem reads (config + credential store), so callers
+    on the event loop must invoke it via `asyncio.to_thread`.
+
+    Args:
+        provider: The active provider name, or `None` if undetected.
+
+    Returns:
+        The API-key env var name to mention in the error, or `None`.
+    """
+    if not provider:
+        return None
+    try:
+        from deepagents_code.model_config import (
+            ModelConfig,
+            get_credential_env_var,
+            resolve_env_var,
+            resolved_env_var_name,
+        )
+
+        base_url = ModelConfig.load().get_base_url(provider)
+        if not base_url or _LANGSMITH_GATEWAY_HOST not in base_url:
+            return None
+        key_env = get_credential_env_var(provider)
+        if not key_env:
+            return None
+        key = resolve_env_var(key_env)
+    except Exception:
+        # The wrapped config/credential reads are not expected to raise (they
+        # degrade to empty/None internally), so reaching here signals API drift
+        # worth surfacing — log louder than debug. Still degrade to the generic
+        # message rather than escalating on this best-effort diagnostic path.
+        logger.warning("gateway key-mismatch check failed", exc_info=True)
+        return None
+    if not key or key.startswith(_LANGSMITH_KEY_PREFIX):
+        return None
+    return resolved_env_var_name(key_env)
+
+
+def _build_agent_error_body(
+    text: str, exc: BaseException, *, key_env: str | None = None
+) -> str | Content:
+    """Format an agent-stream exception for `ErrorMessage`.
+
+    Pure synchronous formatter — all blocking detection happens in the caller
+    (see `_langsmith_gateway_key_mismatch`) so this can run on the event loop.
+
+    For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
+    `key_env` is supplied (a non-LangSmith key being routed through the
+    LangSmith gateway), the message names that env var and how to fix it.
+    Otherwise a generic "key does not match endpoint" message is shown. Returns
+    `text` unchanged for any other error.
+
+    Args:
+        text: The already-formatted error string (e.g. `"Agent error: ..."`).
+        exc: The exception caught from the agent stream.
+        key_env: The offending API-key env var name when a gateway/key mismatch
+            was detected, else `None`.
+
+    Returns:
+        A `Content` with a clickable docs link for `PermissionDeniedError`;
+            otherwise the plain `text`.
+    """
+    from deepagents_code.remote_client import agent_error_type
+
+    if agent_error_type(exc) != "PermissionDeniedError":
+        return text
+    if key_env:
+        detail = (
+            f"\n\nYour `{key_env}` is not a LangSmith key, but requests are "
+            "being routed through the LangSmith gateway, which rejects it. "
+            f"Unset `{key_env}` to use the gateway, or set "
+            "`LANGCHAIN_DISABLE_GATEWAY=1` to bypass the gateway. See "
+        )
+    else:
+        detail = (
+            "\n\nThis usually means your API key does not match the endpoint it "
+            "is sent to — for example a gateway overriding the provider base "
+            "URL, so the key is rejected. See "
+        )
+    return Content.assemble(
+        text,
+        detail,
+        (_GATEWAY_DOCS_URL, TStyle(underline=True, link=_GATEWAY_DOCS_URL)),
+    )
 
 
 def _build_whats_new_message(heading: str) -> Content:
@@ -2744,7 +2861,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.server_manager import start_server_and_get_agent
 
-        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # type: ignore[arg-type]
+        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -5192,9 +5309,11 @@ class DeepAgentsApp(App):
             HIDDEN_COMMANDS,
         )
 
-        # Hidden commands are recovery / power-user escape hatches and
-        # must work even when the app is busy or wedged — treat them as
-        # always-immediate.
+        # Union of two always-immediate sets. ALWAYS_IMMEDIATE holds public
+        # urgent commands (/quit, /force-clear, /restart); HIDDEN_COMMANDS
+        # holds debug helpers (/debug-error) that aren't registered in
+        # COMMANDS and so carry no bypass tier. Both must run even when the
+        # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
@@ -5244,7 +5363,7 @@ class DeepAgentsApp(App):
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+        mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
         # Reset quit pending state on any input
         self._quit_pending = False
@@ -5765,7 +5884,7 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /skill:<name>, /remember, "
+                "/notifications, /reload, /restart, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
@@ -6087,7 +6206,7 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-        # -- Hidden commands (not in COMMANDS / autocomplete) -----------------
+        # -- Debug commands (not in COMMANDS / autocomplete) ------------------
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -6095,6 +6214,7 @@ class DeepAgentsApp(App):
                     " exited with code 3",
                 ),
             )
+        # -- /restart: public, but ALWAYS_IMMEDIATE so it runs even when wedged
         elif cmd == "/restart":
             await self._handle_restart_command(command)
         else:
@@ -6271,19 +6391,25 @@ class DeepAgentsApp(App):
             `True` so that `/remember` is not blocked with a misleading
             "nothing to remember" message.
         """
-        if not self._agent:
+        if not self._agent or not self._lc_thread_id:
             return False
         try:
             from langchain_core.messages import HumanMessage
 
-            config: RunnableConfig = {
-                "configurable": {"thread_id": self._lc_thread_id},
-            }
-            state = await self._agent.aget_state(config)
-            if not state or not state.values:
-                return False
-            messages = state.values.get("messages", [])
-            return any(isinstance(m, HumanMessage) for m in messages)
+            # Use the shared helper so the thread is registered first
+            # (`aensure_thread`, remote agents only) in server mode — otherwise
+            # the dev server returns empty state for a thread it has not seen
+            # this session.
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+            messages = state_values.get("messages", [])
+            # `RemoteGraph.aget_state` returns messages as raw JSON dicts, so an
+            # `isinstance(m, HumanMessage)` check alone misses them and wrongly
+            # reports "nothing to remember". Detect both object and dict forms.
+            return any(
+                isinstance(m, HumanMessage)
+                or (isinstance(m, dict) and m.get("type") == "human")
+                for m in messages
+            )
         except Exception:
             logger.warning(
                 "Failed to check conversation messages; allowing /remember to proceed",
@@ -6564,6 +6690,20 @@ class DeepAgentsApp(App):
             return f"{provider}:{model}"
         return None
 
+    def _active_provider(self) -> str | None:
+        """Return the provider name in effect for the next invocation.
+
+        Derives the provider from the effective `provider:model` spec, falling
+        back to `settings.model_provider`. Used to diagnose gateway/key
+        mismatches when an error is rendered.
+        """
+        spec = self._effective_model_spec()
+        if spec and ":" in spec:
+            return spec.split(":", 1)[0] or None
+        from deepagents_code.config import settings
+
+        return settings.model_provider or None
+
     async def _run_agent_task(
         self,
         message: str,
@@ -6622,8 +6762,20 @@ class DeepAgentsApp(App):
             # when streaming aborts before tool results arrive.
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_with_error(error_text)
+            # Enrich the error body in its own guard so a bug here can never
+            # swallow the underlying error — the user must always see
+            # `error_text`. Gateway/key detection reads config + the credential
+            # store from disk, so run it off the event loop.
             try:
-                await self._mount_message(ErrorMessage(error_text))
+                key_env = await asyncio.to_thread(
+                    _langsmith_gateway_key_mismatch, self._active_provider()
+                )
+                body = _build_agent_error_body(error_text, e, key_env=key_env)
+            except Exception:
+                logger.exception("Failed to enrich agent error body")
+                body = error_text
+            try:
+                await self._mount_message(ErrorMessage(body))
             except Exception:
                 logger.debug(
                     "Could not mount error message (app closing?)",
@@ -9927,12 +10079,12 @@ class DeepAgentsApp(App):
         )
 
     async def _handle_restart_command(self, command: str) -> None:
-        """Drive the hidden `/restart` slash command.
+        """Drive the `/restart` slash command.
 
         Superset of `/reload`: re-reads `.env` / environment, clears
         configuration caches, then respawns the app-owned LangGraph
         server subprocess. Used as a recovery escape hatch when the
-        server wedges; intentionally hidden from autocomplete and help.
+        server wedges.
 
         Cancels any in-flight agent work and drops the queued message
         backlog before respawning. The streaming HTTP connection to the
@@ -10055,7 +10207,7 @@ class DeepAgentsApp(App):
             mcp_info = None
             try:
                 mcp_info = await _preload_session_mcp_server_info(
-                    **self._mcp_preload_kwargs,  # type: ignore[arg-type]
+                    **self._mcp_preload_kwargs,  # ty: ignore[invalid-argument-type]
                 )
             except Exception as exc:
                 logger.exception(mcp_failure_log)

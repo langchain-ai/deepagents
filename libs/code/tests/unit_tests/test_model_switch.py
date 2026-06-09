@@ -162,7 +162,7 @@ class TestModelSwitchNoOp:
         """
         app = DeepAgentsApp()
         # Replace method with mock to track calls (hence ignore)
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         # Set current model
@@ -188,7 +188,7 @@ class TestModelSwitchNoOp:
 
         # Should show "Already using" message, not "Switched to"
         # Type checker doesn't track that _mount_message was replaced with mock
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
         assert "Switched to" not in captured_messages[0]
@@ -197,7 +197,7 @@ class TestModelSwitchNoOp:
     async def test_duplicate_same_model_message_is_suppressed(self) -> None:
         """Repeated same-model switches should only emit one unchanged notice."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -220,14 +220,14 @@ class TestModelSwitchNoOp:
             await app._switch_model("anthropic:claude-opus-4-5")
             await app._switch_model("anthropic:claude-opus-4-5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert captured_messages == ["Already using anthropic:claude-opus-4-5"]
         assert app._model_switching is False
 
     async def test_same_model_changed_params_emit_new_message(self) -> None:
         """A changed same-model notice should still be shown to the user."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -253,7 +253,7 @@ class TestModelSwitchNoOp:
                 extra_kwargs={"temperature": 0.2},
             )
 
-        assert app._mount_message.call_count == 2  # type: ignore[union-attr]
+        assert app._mount_message.call_count == 2  # ty: ignore
         assert captured_messages == [
             "Already using anthropic:claude-opus-4-5",
             (
@@ -266,7 +266,7 @@ class TestModelSwitchNoOp:
     async def test_same_model_can_skip_unchanged_message(self) -> None:
         """Onboarding can re-select the active model without adding chat noise."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -282,7 +282,7 @@ class TestModelSwitchNoOp:
 
         assert app._model_override == "anthropic:claude-opus-4-5"
         assert app._model_params_override is None
-        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        app._mount_message.assert_not_called()  # ty: ignore
         assert app._model_switching is False
 
     async def test_same_model_with_new_params_applies_overrides(self) -> None:
@@ -293,7 +293,7 @@ class TestModelSwitchNoOp:
         leaving `_model_params_override` unset.
         """
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -337,7 +337,7 @@ class TestModelSwitchNoOp:
         the already-active branch left previously-set params in place.
         """
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -363,7 +363,7 @@ class TestModelSwitchErrorHandling:
     async def test_missing_credentials_shows_error(self) -> None:
         """_switch_model shows error when provider credentials are missing."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         # Set a different current model
@@ -390,7 +390,7 @@ class TestModelSwitchErrorHandling:
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
@@ -399,7 +399,7 @@ class TestModelSwitchErrorHandling:
     async def test_save_recent_model_failure_shows_warning(self) -> None:
         """Permission error saving recent model shows error, no success message."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -442,7 +442,7 @@ class TestModelSwitchErrorHandling:
     async def test_remote_agent_sets_model_override(self) -> None:
         """With remote agent, sets model override for ConfigurableModelMiddleware."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -479,7 +479,7 @@ class TestModelSwitchErrorHandling:
     ) -> None:
         """Switching models should refresh derived settings like context size."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
         app._profile_override = {"max_input_tokens": 180_000}
 
@@ -511,7 +511,7 @@ class TestModelSwitchErrorHandling:
     async def test_remote_agent_sets_model_params_override(self) -> None:
         """With remote agent, extra_kwargs are stored as _model_params_override."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -538,7 +538,7 @@ class TestModelSwitchErrorHandling:
     async def test_switched_to_message_echoes_params(self) -> None:
         """The 'Switched to' confirmation should echo `--model-params`."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -577,7 +577,7 @@ class TestModelSwitchConcurrencyGuard:
     async def test_concurrent_model_switch_blocked(self) -> None:
         """Second _switch_model call is rejected while first is in-flight."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._model_switching = True
 
         captured_messages: list[str] = []
@@ -590,14 +590,14 @@ class TestModelSwitchConcurrencyGuard:
         with patch.object(AppMessage, "__init__", capture_init):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_messages) == 1
         assert "already in progress" in captured_messages[0]
 
     async def test_model_switching_flag_reset_on_success(self) -> None:
         """_model_switching resets to False after a successful switch."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -621,9 +621,9 @@ class TestModelSwitchSessionReadiness:
     async def test_defers_switch_while_connecting(self) -> None:
         """A direct /model switch fired before `ServerReady` is queued, not failed."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         notify_mock = Mock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
         app._agent = None
         app._connecting = True
 
@@ -633,16 +633,16 @@ class TestModelSwitchSessionReadiness:
         action = app._deferred_actions[0]
         assert action.kind == "model_switch"
         notify_mock.assert_called_once()
-        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        app._mount_message.assert_not_called()  # ty: ignore
         # Guard flag cleared so the deferred retry isn't a no-op.
         assert app._model_switching is False
 
     async def test_errors_when_agent_missing_and_not_connecting(self) -> None:
         """Server-startup failure (no agent, not connecting) still errors."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         notify_mock = Mock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
         app._agent = None
         app._connecting = False
 
@@ -663,9 +663,9 @@ class TestModelSwitchSessionReadiness:
     async def test_deferred_switch_completes_after_server_ready(self) -> None:
         """End-to-end: defer during connect, drain after ready, switch completes."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         notify_mock = Mock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
         app._agent = None
         app._connecting = True
 
@@ -709,7 +709,7 @@ class TestModelSwitchFailedStartupRecovery:
         should now rewire deferred-startup state and re-run the worker.
         """
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = None
         app._connecting = False
         app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
@@ -725,7 +725,7 @@ class TestModelSwitchFailedStartupRecovery:
             "profile_overrides": None,
         }
         run_worker_mock = Mock()
-        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+        app.run_worker = run_worker_mock  # ty: ignore
 
         with patch(
             "deepagents_code.model_config.get_provider_auth_status",
@@ -758,7 +758,7 @@ class TestModelSwitchFailedStartupRecovery:
         re-launching the startup worker.
         """
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = None
         app._connecting = False
         app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
@@ -769,7 +769,7 @@ class TestModelSwitchFailedStartupRecovery:
             "interactive": True,
         }
         run_worker_mock = Mock()
-        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+        app.run_worker = run_worker_mock  # ty: ignore
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -810,13 +810,13 @@ class TestModelSwitchFailedStartupRecovery:
         no-op'ing.
         """
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = None
         app._connecting = False
         app._server_startup_error = "RuntimeError: connection refused"
         app._server_kwargs = None
         run_worker_mock = Mock()
-        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+        app.run_worker = run_worker_mock  # ty: ignore
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -852,7 +852,7 @@ models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -894,7 +894,7 @@ models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -914,7 +914,7 @@ api_key_env = "FIREWORKS_API_KEY"
         ):
             await app._switch_model("fireworks:llama-v3p1-70b")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
         assert "FIREWORKS_API_KEY" in captured_errors[0]
@@ -927,7 +927,7 @@ api_key_env = "FIREWORKS_API_KEY"
 models = ["llama3"]
 """)
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -962,7 +962,7 @@ class TestModelSwitchBareModelName:
     async def test_bare_model_name_auto_detects_provider(self) -> None:
         """Bare model name like 'gpt-5.5' auto-detects provider and switches."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
@@ -997,7 +997,7 @@ class TestModelSwitchBareModelName:
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-sonnet-4-5"
@@ -1024,7 +1024,7 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-5.5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
         assert "OPENAI_API_KEY" in captured_errors[0]
@@ -1032,7 +1032,7 @@ class TestModelSwitchBareModelName:
     async def test_bare_model_name_already_using(self) -> None:
         """Bare model name matching current model shows 'Already using'."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -1055,7 +1055,7 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-5.5")
 
-        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        app._mount_message.assert_called_once()  # ty: ignore
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
 
@@ -1152,7 +1152,7 @@ class TestModelCommandIntegration:
     async def test_invalid_model_params_shows_error(self) -> None:
         """/model with invalid --model-params JSON shows error."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -1171,7 +1171,7 @@ class TestModelCommandIntegration:
     async def test_model_params_with_default_rejected(self) -> None:
         """/model --model-params with --default shows error."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._mount_message = AsyncMock()  # ty: ignore
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__

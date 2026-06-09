@@ -99,7 +99,7 @@ class TestInitialPromptOnMount:
         async def capture(msg: str) -> None:  # noqa: RUF029
             submitted.append(msg)
 
-        app._handle_user_message = capture  # type: ignore[assignment]
+        app._handle_user_message = capture  # ty: ignore
 
         async with app.run_test() as pilot:
             # Give call_after_refresh time to fire
@@ -127,7 +127,7 @@ class TestInitialPromptOnMount:
         ) -> None:
             submitted.append((skill_name, args, command))
 
-        app._invoke_skill = capture  # type: ignore[assignment]
+        app._invoke_skill = capture  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -143,8 +143,8 @@ class TestInitialPromptOnMount:
             initial_skill="code-review",
         )
         app._connecting = True
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
-        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
+        app.call_after_refresh = lambda cb: cb()  # ty: ignore
         submitted: list[tuple[str, str, str | None]] = []
 
         async def capture(  # noqa: RUF029
@@ -155,7 +155,7 @@ class TestInitialPromptOnMount:
         ) -> None:
             submitted.append((skill_name, args, command))
 
-        app._invoke_skill = capture  # type: ignore[assignment]
+        app._invoke_skill = capture  # ty: ignore
 
         app.on_deep_agents_app_server_ready(
             app.ServerReady(
@@ -184,8 +184,8 @@ class TestInitialPromptOnMount:
 
         app = DeepAgentsApp(thread_id="thread-123")
         app._connecting = True
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
-        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
+        app.call_after_refresh = lambda cb: cb()  # ty: ignore
         status_bar = MagicMock(spec=StatusBar)
         app._status_bar = status_bar
 
@@ -216,8 +216,8 @@ class TestInitialPromptOnMount:
         """
         app = DeepAgentsApp(thread_id="thread-123")
         app._connecting = True
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
-        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
+        app.call_after_refresh = lambda cb: cb()  # ty: ignore
         app._status_bar = None
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
@@ -244,8 +244,8 @@ class TestInitialPromptOnMount:
 
         app = DeepAgentsApp(thread_id="thread-123")
         app._connecting = True
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
-        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
+        app.call_after_refresh = lambda cb: cb()  # ty: ignore
         status_bar = MagicMock(spec=StatusBar)
         app._status_bar = status_bar
 
@@ -289,7 +289,7 @@ class TestInitialPromptOnMount:
         async def capture(msg: str) -> None:  # noqa: RUF029
             submitted.append(msg)
 
-        app._handle_user_message = capture  # type: ignore[assignment]
+        app._handle_user_message = capture  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -327,8 +327,8 @@ class TestInitialPromptOnMount:
                 work.close()
             return MagicMock()
 
-        app._mount_message = capture  # type: ignore[assignment]
-        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+        app._mount_message = capture  # ty: ignore
+        app.run_worker = fake_run_worker  # ty: ignore
 
         with patch(
             "deepagents_code.update_check.is_update_check_enabled",
@@ -370,7 +370,7 @@ class TestStartupSequence:
             nonlocal call_count
             call_count += 1
 
-        app._load_thread_history = capture_history  # type: ignore[assignment]
+        app._load_thread_history = capture_history  # ty: ignore
 
         await app._run_session_start_sequence()
         await app._run_session_start_sequence()
@@ -391,9 +391,9 @@ class TestStartupSequence:
         load_history = AsyncMock()
         drain_deferred = AsyncMock()
         process_next = AsyncMock()
-        app._load_thread_history = load_history  # type: ignore[assignment]
-        app._maybe_drain_deferred = drain_deferred  # type: ignore[assignment]
-        app._process_next_from_queue = process_next  # type: ignore[assignment]
+        app._load_thread_history = load_history  # ty: ignore
+        app._maybe_drain_deferred = drain_deferred  # ty: ignore
+        app._process_next_from_queue = process_next  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -423,8 +423,8 @@ class TestStartupSequence:
             assert command == "echo hi"
             order.append("startup")
 
-        app._load_thread_history = capture_history  # type: ignore[assignment]
-        app._run_startup_command = capture_startup  # type: ignore[assignment]
+        app._load_thread_history = capture_history  # ty: ignore
+        app._run_startup_command = capture_startup  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -446,7 +446,7 @@ class TestStartupSequence:
         app = DeepAgentsApp(
             agent=MagicMock(),
             thread_id="thread-123",
-            **kwargs,  # type: ignore[invalid-argument-type]  # parametrized str kwargs
+            **kwargs,  # ty: ignore  # parametrized str kwargs
         )
         app._resume_thread_intent = None
         app._should_adopt_resumed_model = True
@@ -473,11 +473,11 @@ class TestStartupSequence:
         async def capture_initial_submission() -> None:  # noqa: RUF029
             order.append("initial")
 
-        app._get_thread_state_values = capture_state  # type: ignore[assignment]
-        app._switch_model = capture_switch  # type: ignore[assignment]
-        app._submit_initial_submission = capture_initial_submission  # type: ignore[assignment]
+        app._get_thread_state_values = capture_state  # ty: ignore
+        app._switch_model = capture_switch  # ty: ignore
+        app._submit_initial_submission = capture_initial_submission  # ty: ignore
         load_history = AsyncMock()
-        app._load_thread_history = load_history  # type: ignore[assignment]
+        app._load_thread_history = load_history  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -508,10 +508,10 @@ class TestStartupSequence:
         async def capture_initial_submission() -> None:  # noqa: RUF029
             order.append("initial")
 
-        app._get_thread_state_values = fail_state  # type: ignore[assignment]
-        app._submit_initial_submission = capture_initial_submission  # type: ignore[assignment]
+        app._get_thread_state_values = fail_state  # ty: ignore
+        app._submit_initial_submission = capture_initial_submission  # ty: ignore
         mount_message = AsyncMock()
-        app._mount_message = mount_message  # type: ignore[assignment]
+        app._mount_message = mount_message  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -543,11 +543,11 @@ class TestStartupSequence:
             app._agent_running = True
 
         queue_mock = AsyncMock()
-        app._run_startup_command = capture_startup  # type: ignore[assignment]
-        app._submit_initial_submission = (  # type: ignore[assignment]
+        app._run_startup_command = capture_startup  # ty: ignore
+        app._submit_initial_submission = (  # ty: ignore
             capture_initial_submission
         )
-        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -564,8 +564,8 @@ class TestStartupSequence:
         app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
         drain_mock = AsyncMock()
         queue_mock = AsyncMock()
-        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
-        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # ty: ignore
+        app._maybe_drain_deferred = drain_mock  # ty: ignore
 
         await app._cleanup_shell_task()
 
@@ -580,9 +580,9 @@ class TestStartupSequence:
         drain_mock = AsyncMock()
         queue_mock = AsyncMock()
         spinner_mock = AsyncMock()
-        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
-        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
-        app._set_spinner = spinner_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # ty: ignore
+        app._maybe_drain_deferred = drain_mock  # ty: ignore
+        app._set_spinner = spinner_mock  # ty: ignore
 
         await app._cleanup_agent_task()
 
@@ -596,10 +596,10 @@ class TestStartupSequence:
         queue_mock = AsyncMock()
         spinner_mock = AsyncMock()
         refresh_mock = MagicMock()
-        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
-        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
-        app._set_spinner = spinner_mock  # type: ignore[assignment]
-        app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
+        app._process_next_from_queue = queue_mock  # ty: ignore
+        app._maybe_drain_deferred = drain_mock  # ty: ignore
+        app._set_spinner = spinner_mock  # ty: ignore
+        app._schedule_git_branch_refresh = refresh_mock  # ty: ignore
 
         await app._cleanup_agent_task()
 
@@ -648,7 +648,7 @@ class TestStartupSequence:
         app._status_bar = status_bar
 
         fallback_mock = AsyncMock()
-        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+        app._refresh_git_branch_subprocess_fallback = (  # ty: ignore
             fallback_mock
         )
 
@@ -690,8 +690,8 @@ class TestStartupSequence:
         ) -> None:
             del thread_id, preloaded_payload
 
-        app._run_startup_command = capture_startup  # type: ignore[assignment]
-        app._load_thread_history = stub_history  # type: ignore[assignment]
+        app._run_startup_command = capture_startup  # ty: ignore
+        app._load_thread_history = stub_history  # ty: ignore
 
         await app._run_session_start_sequence()
 
@@ -717,8 +717,8 @@ class TestStartupSequence:
             order.append("initial")
             initial_submitted.set()
 
-        app._run_launch_init_sequence = capture_init  # type: ignore[assignment]
-        app._submit_initial_submission = (  # type: ignore[assignment]
+        app._run_launch_init_sequence = capture_init  # ty: ignore
+        app._submit_initial_submission = (  # ty: ignore
             capture_initial_submission
         )
 
@@ -731,8 +731,8 @@ class TestStartupSequence:
     async def test_launch_init_name_screen_focuses_on_mount(self) -> None:
         """The first launch modal should be active and typeable immediately."""
         app = DeepAgentsApp(launch_init=True)
-        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
-        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -753,8 +753,8 @@ class TestStartupSequence:
     async def test_server_ready_keeps_launch_name_screen_typeable(self) -> None:
         """Server-ready handling should not steal focus from the launch name field."""
         app = DeepAgentsApp(launch_init=True)
-        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
-        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -793,9 +793,9 @@ class TestStartupSequence:
     ) -> None:
         """The real post-connect startup task should not block name input."""
         app = DeepAgentsApp(launch_init=True)
-        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
-        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
-        app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -834,7 +834,7 @@ class TestStartupSequence:
             server_kwargs={"assistant_id": "agent", "model_name": None},
             model_kwargs={"model_spec": None},
         )
-        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
         started_groups: list[str | None] = []
 
         def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
@@ -845,7 +845,7 @@ class TestStartupSequence:
                 work.close()
             return MagicMock()
 
-        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+        app.run_worker = fake_run_worker  # ty: ignore
 
         with patch(
             "deepagents_code.update_check.is_update_check_enabled",
@@ -870,14 +870,14 @@ class TestStartupSequence:
             assistant_id="coder",
             thread_id="thread-123",
         )
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
         prompt_flow_mock = AsyncMock(return_value=(True, ("openai:gpt-5", "openai")))
         mount_message_mock = AsyncMock()
         events: list[str] = []
         switch_model_mock = AsyncMock(
             side_effect=lambda model_spec, **_: events.append(f"switch:{model_spec}")
         )
-        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
 
         async def track_mount_message(message: AppMessage) -> None:
             events.append("welcome")
@@ -887,9 +887,9 @@ class TestStartupSequence:
             events.append("mark")
             return True
 
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
-        app._mount_message = track_mount_message  # type: ignore[assignment]
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+        app._switch_model = switch_model_mock  # ty: ignore
+        app._mount_message = track_mount_message  # ty: ignore
+        app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
 
         with (
             patch(
@@ -904,7 +904,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         assert app._launch_user_name == "Ada"
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # ty: ignore
         prompt_flow_mock.assert_awaited_once_with()
         write_name.assert_called_once_with("Ada", "coder")
         switch_model_mock.assert_awaited_once_with(
@@ -917,13 +917,13 @@ class TestStartupSequence:
     async def test_launch_init_sequence_allows_empty_name(self) -> None:
         """Onboarding setup should continue to model selection without a name."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="")  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="")  # ty: ignore
         prompt_flow_mock = AsyncMock(return_value=(True, ("openai:gpt-5", "openai")))
         switch_model_mock = AsyncMock()
         mount_message_mock = AsyncMock()
-        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
+        app._switch_model = switch_model_mock  # ty: ignore
+        app._mount_message = mount_message_mock  # ty: ignore
 
         with (
             patch(
@@ -949,8 +949,8 @@ class TestStartupSequence:
     async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
         """Writing the optional name should not hold the dependency/model transition."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
 
         model_prompted = asyncio.Event()
         release_write = asyncio.Event()
@@ -962,8 +962,8 @@ class TestStartupSequence:
             model_prompted.set()
             return (True, None)
 
-        app._write_launch_name_memory = AsyncMock(side_effect=write_name)  # type: ignore[assignment]
-        app._prompt_launch_dependencies_then_model = AsyncMock(side_effect=prompt_flow)  # type: ignore[assignment]
+        app._write_launch_name_memory = AsyncMock(side_effect=write_name)  # ty: ignore
+        app._prompt_launch_dependencies_then_model = AsyncMock(side_effect=prompt_flow)  # ty: ignore
 
         with patch(
             "deepagents_code.onboarding.mark_onboarding_complete",
@@ -976,18 +976,18 @@ class TestStartupSequence:
             release_write.set()
             await asyncio.wait_for(task, timeout=1)
 
-        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # type: ignore[attr-defined]
-        app._prompt_launch_dependencies_then_model.assert_awaited_once_with()  # type: ignore[attr-defined]
+        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # ty: ignore
+        app._prompt_launch_dependencies_then_model.assert_awaited_once_with()  # ty: ignore
         mark_complete.assert_called_once_with()
 
     async def test_launch_init_sequence_skips_and_marks_complete(self) -> None:
         """Skipping the name screen should finish onboarding without model setup."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value=None)  # ty: ignore
         prompt_flow_mock = AsyncMock()
         switch_model_mock = AsyncMock()
-        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
+        app._switch_model = switch_model_mock  # ty: ignore
 
         with (
             patch(
@@ -1013,13 +1013,13 @@ class TestStartupSequence:
             assistant_id="coder",
             thread_id="thread-123",
         )
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
         prompt_flow_mock = AsyncMock(return_value=(False, None))
         switch_model_mock = AsyncMock()
-        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
+        app._switch_model = switch_model_mock  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
 
         with (
             patch(
@@ -1034,10 +1034,10 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # ty: ignore
         prompt_flow_mock.assert_awaited_once_with()
         switch_model_mock.assert_not_awaited()
-        app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
+        app._mount_message.assert_awaited_once()  # ty: ignore
         mark_complete.assert_called_once_with()
 
     async def test_launch_init_sequence_model_skip_remembers_name(self) -> None:
@@ -1047,14 +1047,14 @@ class TestStartupSequence:
             assistant_id="coder",
             thread_id="thread-123",
         )
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
-        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # ty: ignore
             return_value=(True, None)
         )
         switch_model_mock = AsyncMock()
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+        app._switch_model = switch_model_mock  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
 
         with (
             patch(
@@ -1069,24 +1069,24 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # ty: ignore
         switch_model_mock.assert_not_awaited()
-        app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
+        app._mount_message.assert_awaited_once()  # ty: ignore
         mark_complete.assert_called_once_with()
 
     async def test_launch_init_sequence_surfaces_switch_model_failure(self) -> None:
         """Failed onboarding model switch should toast and still mark complete."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
-        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # ty: ignore
             return_value=(True, ("openai:gpt-5", "openai"))
         )
         switch_failure = RuntimeError("missing credentials")
-        app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+        app._switch_model = AsyncMock(side_effect=switch_failure)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
         notify_mock = MagicMock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
 
         with (
             patch(
@@ -1100,7 +1100,7 @@ class TestStartupSequence:
         ):
             await app._run_launch_init_sequence()
 
-        app._switch_model.assert_awaited_once()  # type: ignore[attr-defined]
+        app._switch_model.assert_awaited_once()  # ty: ignore
         mark_complete.assert_called_once_with()
         notify_mock.assert_called_once()
         notify_kwargs = notify_mock.call_args.kwargs
@@ -1111,11 +1111,11 @@ class TestStartupSequence:
     async def test_launch_init_sequence_surfaces_marker_failure(self) -> None:
         """A failed onboarding-complete write should surface a warning toast."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
-        app._prompt_launch_dependencies_then_model = AsyncMock()  # type: ignore[assignment]
-        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value=None)  # ty: ignore
+        app._prompt_launch_dependencies_then_model = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
         notify_mock = MagicMock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
 
         with patch(
             "deepagents_code.onboarding.mark_onboarding_complete",
@@ -1191,19 +1191,19 @@ class TestStartupSequence:
         from deepagents_code import app as app_module
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
-        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # ty: ignore
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # ty: ignore
             return_value=(True, ("openai:gpt-5", "openai"))
         )
-        app._switch_model = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._switch_model = AsyncMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
         app._connecting = True
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+        app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()
         notify_mock = MagicMock()
-        app.notify = notify_mock  # type: ignore[method-assign]
+        app.notify = notify_mock  # ty: ignore
 
         with (
             patch.object(app_module, "_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS", 0.05),
@@ -1218,7 +1218,7 @@ class TestStartupSequence:
         ):
             await app._run_launch_init_sequence()
 
-        app._switch_model.assert_not_awaited()  # type: ignore[attr-defined]
+        app._switch_model.assert_not_awaited()  # ty: ignore
         mark_complete.assert_called_once_with()
         notify_mock.assert_called_once()
         notify_kwargs = notify_mock.call_args.kwargs
@@ -2032,7 +2032,7 @@ class TestQueuedMessage:
         """QueuedMessage should be immutable."""
         msg = QueuedMessage(text="hello", mode="normal")
         with pytest.raises(AttributeError):
-            msg.text = "changed"  # type: ignore[misc]
+            msg.text = "changed"  # ty: ignore
 
     def test_fields(self) -> None:
         """QueuedMessage should store text and mode."""
@@ -2140,7 +2140,7 @@ class TestMessageQueue:
             assert app._pending_messages[0].mode == "shell_incognito"
 
             handler = AsyncMock()
-            app._handle_shell_command = handler  # type: ignore[method-assign]
+            app._handle_shell_command = handler  # ty: ignore
             app._agent_running = False
 
             await app._process_next_from_queue()
@@ -3316,6 +3316,233 @@ class TestRunAgentTaskMediaTracker:
                 "{'error': 'ToolException'" in str(w._content) for w in errors
             )
 
+    async def test_run_agent_task_permission_denied_links_docs(self) -> None:
+        """`PermissionDeniedError` errors append a clickable gateway docs link."""
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _GATEWAY_DOCS_URL
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            exc = RemoteException(
+                {"error": "PermissionDeniedError", "message": "An internal error"}
+            )
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+                side_effect=exc,
+            ):
+                await app._run_agent_task("hello")
+                await pilot.pause()
+
+            errors = app.query(ErrorMessage)
+            assert any(_GATEWAY_DOCS_URL in str(w._content) for w in errors)
+
+    async def test_run_agent_task_permission_denied_names_env_var(self) -> None:
+        """A detected gateway/key mismatch names the offending env var in the UI."""
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code import app as app_module
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+
+            exc = RemoteException(
+                {"error": "PermissionDeniedError", "message": "An internal error"}
+            )
+            with (
+                patch.object(
+                    app_module,
+                    "_langsmith_gateway_key_mismatch",
+                    lambda _provider: "OPENAI_API_KEY",
+                ),
+                patch(
+                    "deepagents_code.textual_adapter.execute_task_textual",
+                    new_callable=AsyncMock,
+                    side_effect=exc,
+                ),
+            ):
+                await app._run_agent_task("hello")
+                await pilot.pause()
+
+            errors = app.query(ErrorMessage)
+            assert any("OPENAI_API_KEY" in str(w._content) for w in errors)
+
+
+class TestBuildAgentErrorBody:
+    """Cover the docs-link augmentation for agent-stream errors."""
+
+    def test_permission_denied_appends_docs_link(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _GATEWAY_DOCS_URL, _build_agent_error_body
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = _build_agent_error_body("Agent error: x", exc)
+        assert _GATEWAY_DOCS_URL in str(body)
+
+    def test_other_errors_unchanged(self) -> None:
+        from deepagents_code.app import _build_agent_error_body
+
+        body = _build_agent_error_body("Agent error: boom", RuntimeError("boom"))
+        assert body == "Agent error: boom"
+
+    def test_gateway_key_mismatch_names_env_var(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = str(
+            _build_agent_error_body("Agent error: x", exc, key_env="OPENAI_API_KEY")
+        )
+        assert "OPENAI_API_KEY" in body
+        assert "LANGCHAIN_DISABLE_GATEWAY=1" in body
+
+    def test_permission_denied_without_mismatch_is_generic(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _GATEWAY_DOCS_URL, _build_agent_error_body
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        body = str(_build_agent_error_body("Agent error: x", exc))
+        assert _GATEWAY_DOCS_URL in body
+        assert "LANGCHAIN_DISABLE_GATEWAY" not in body
+
+
+class TestLangsmithGatewayKeyMismatch:
+    """Cover gateway/key mismatch detection without inspecting the secret."""
+
+    def _patch(
+        self,
+        monkeypatch,
+        *,
+        base_url: str | None,
+        key: str | None,
+        key_env: str | None = "OPENAI_API_KEY",
+    ) -> None:
+        from deepagents_code import model_config
+
+        class _Cfg:
+            def get_base_url(self, _provider: str) -> str | None:
+                return base_url
+
+        monkeypatch.setattr(model_config.ModelConfig, "load", staticmethod(_Cfg))
+        monkeypatch.setattr(
+            model_config, "get_credential_env_var", lambda _provider: key_env
+        )
+        monkeypatch.setattr(model_config, "resolve_env_var", lambda _name: key)
+
+    def test_detects_non_langsmith_key_on_gateway(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="sk-proj-abc",
+        )
+        assert _langsmith_gateway_key_mismatch("openai") == "OPENAI_API_KEY"
+
+    def test_detects_prefixed_non_langsmith_key_on_gateway(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-proj-abc")
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="sk-proj-abc",
+        )
+        assert (
+            _langsmith_gateway_key_mismatch("openai")
+            == "DEEPAGENTS_CODE_OPENAI_API_KEY"
+        )
+
+    def test_langsmith_key_is_not_flagged(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="lsv2_pt_abc",
+        )
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_non_gateway_endpoint_is_not_flagged(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(
+            monkeypatch, base_url="https://api.openai.com/v1", key="sk-proj-abc"
+        )
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_no_provider_is_not_flagged(self) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        assert _langsmith_gateway_key_mismatch(None) is None
+
+    def test_no_base_url_is_not_flagged(self, monkeypatch) -> None:
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        self._patch(monkeypatch, base_url=None, key="sk-proj-abc")
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_unknown_provider_key_env_is_not_flagged(self, monkeypatch) -> None:
+        # A provider with no credential env var name cannot be diagnosed.
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key="sk-proj-abc",
+            key_env=None,
+        )
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+    def test_no_key_is_not_flagged(self, monkeypatch) -> None:
+        # Gateway endpoint, but the key env var resolves to nothing.
+        self._patch(
+            monkeypatch,
+            base_url="https://smith.langchain.com/openai",
+            key=None,
+        )
+        from deepagents_code.app import _langsmith_gateway_key_mismatch
+
+        assert _langsmith_gateway_key_mismatch("openai") is None
+
+
+class TestActiveProvider:
+    """Cover the provider derivation that feeds gateway/key-mismatch detection."""
+
+    def test_from_model_override(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        app._model_override = "openai:gpt-5.3-codex"
+        assert app._active_provider() == "openai"
+
+    def test_falls_back_to_settings_provider(self, monkeypatch) -> None:
+        from deepagents_code import config
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._model_override = None
+        # No model name → no full spec, so the settings fallback supplies the
+        # provider directly.
+        monkeypatch.setattr(config.settings, "model_provider", "anthropic")
+        monkeypatch.setattr(config.settings, "model_name", "")
+        assert app._active_provider() == "anthropic"
+
+    def test_none_when_unconfigured(self, monkeypatch) -> None:
+        from deepagents_code import config
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._model_override = None
+        monkeypatch.setattr(config.settings, "model_provider", "")
+        monkeypatch.setattr(config.settings, "model_name", "")
+        assert app._active_provider() is None
+
 
 class TestAppFocusRestoresChatInput:
     """Test `on_app_focus` restores chat input focus after terminal regains focus."""
@@ -3984,11 +4211,11 @@ class TestShellCommandInterrupt:
 
         # Force the subprocess fallback path so the test can observe whether
         # cleanup awaits the background task.
-        app._refresh_git_branch_subprocess_fallback = (  # type: ignore[assignment]
+        app._refresh_git_branch_subprocess_fallback = (  # ty: ignore
             block_refresh
         )
-        app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
-        app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+        app._maybe_drain_deferred = drain_mock  # ty: ignore
+        app._process_next_from_queue = queue_mock  # ty: ignore
         app._shell_running = True
         app._shell_worker = MagicMock()
         app._shell_worker.is_cancelled = False
@@ -4027,9 +4254,9 @@ class TestShellCommandInterrupt:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            app._schedule_git_branch_refresh = refresh_mock  # type: ignore[assignment]
-            app._maybe_drain_deferred = drain_mock  # type: ignore[assignment]
-            app._process_next_from_queue = queue_mock  # type: ignore[assignment]
+            app._schedule_git_branch_refresh = refresh_mock  # ty: ignore
+            app._maybe_drain_deferred = drain_mock  # ty: ignore
+            app._process_next_from_queue = queue_mock  # ty: ignore
 
             with (
                 patch(
@@ -4268,7 +4495,7 @@ class TestShellCommandInterrupt:
         """`shell_incognito` mode should strip `!!` and mark the shell run."""
         app = DeepAgentsApp()
         handler = AsyncMock()
-        app._handle_shell_command = handler  # type: ignore[method-assign]
+        app._handle_shell_command = handler  # ty: ignore
 
         await app._process_message("!!echo secret", "shell_incognito")
 
@@ -4307,9 +4534,9 @@ class TestShellCommandInterrupt:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            app._schedule_git_branch_refresh = MagicMock()  # type: ignore[assignment]
-            app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
-            app._process_next_from_queue = AsyncMock()  # type: ignore[assignment]
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
 
             with (
                 patch(
@@ -4348,9 +4575,9 @@ class TestShellCommandInterrupt:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            app._schedule_git_branch_refresh = MagicMock()  # type: ignore[assignment]
-            app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
-            app._process_next_from_queue = AsyncMock()  # type: ignore[assignment]
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
 
             with patch(
                 "asyncio.create_subprocess_shell",
@@ -4377,13 +4604,13 @@ class TestShellCommandInterrupt:
         app = DeepAgentsApp()
         user_handler = AsyncMock()
         shell_handler = AsyncMock()
-        app._handle_user_message = user_handler  # type: ignore[method-assign]
-        app._handle_shell_command = shell_handler  # type: ignore[method-assign]
+        app._handle_user_message = user_handler  # ty: ignore
+        app._handle_shell_command = shell_handler  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            await app._process_message("!!echo secret", "shell_incognto")  # type: ignore[arg-type]
+            await app._process_message("!!echo secret", "shell_incognto")  # ty: ignore
             await pilot.pause()
 
             user_handler.assert_not_awaited()
@@ -4626,7 +4853,7 @@ class TestRequestApprovalBranching:
             if isinstance(widget, Static):
                 mounted_classes.append(" ".join(widget.classes))
 
-        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
+        app._mount_before_queued = fake_mount_before_queued  # ty: ignore
 
         # Prevent actual worker from running; we just want to check branching.
         run_worker_calls: list[object] = []
@@ -4638,10 +4865,10 @@ class TestRequestApprovalBranching:
             run_worker_calls.append(coro)
             return MagicMock()
 
-        app.run_worker = _stub_worker  # type: ignore[method-assign]
+        app.run_worker = _stub_worker  # ty: ignore
 
         dummy_container = MagicMock()
-        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+        app.query_one = MagicMock(return_value=dummy_container)  # ty: ignore
 
         action_requests = [
             {"name": "write_file", "args": {"path": "/tmp/x.txt", "content": "hi"}}
@@ -4682,11 +4909,11 @@ class TestRequestApprovalBranching:
                 raise RuntimeError(msg)
             mounted_types.append(type(widget))
 
-        app._mount_before_queued = failing_then_ok_mount  # type: ignore[assignment]
-        app.call_after_refresh = MagicMock()  # type: ignore[method-assign]
+        app._mount_before_queued = failing_then_ok_mount  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
 
         dummy_container = MagicMock()
-        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+        app.query_one = MagicMock(return_value=dummy_container)  # ty: ignore
 
         action_requests = [
             {"name": "write_file", "args": {"path": "/tmp/z.txt", "content": "hi"}}
@@ -4718,11 +4945,11 @@ class TestRequestApprovalBranching:
         ) -> None:
             mounted_types.append(type(widget))
 
-        app._mount_before_queued = fake_mount_before_queued  # type: ignore[assignment]
-        app.call_after_refresh = MagicMock()  # type: ignore[method-assign]
+        app._mount_before_queued = fake_mount_before_queued  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
 
         dummy_container = MagicMock()
-        app.query_one = MagicMock(return_value=dummy_container)  # type: ignore[method-assign]
+        app.query_one = MagicMock(return_value=dummy_container)  # ty: ignore
 
         action_requests = [
             {"name": "write_file", "args": {"path": "/tmp/y.txt", "content": "hi"}}
@@ -4773,7 +5000,7 @@ class TestDeferredShowApproval:
             nonlocal mount_called
             mount_called = True
 
-        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+        app._mount_approval_widget = fake_mount_approval  # ty: ignore
 
         async def stop_typing() -> None:
             await asyncio.sleep(0.05)
@@ -4805,7 +5032,7 @@ class TestDeferredShowApproval:
             nonlocal mount_called
             mount_called = True
 
-        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+        app._mount_approval_widget = fake_mount_approval  # ty: ignore
 
         action_requests = [{"name": "shell", "args": {"command": "ls"}}]
         future = asyncio.get_running_loop().create_future()
@@ -4847,7 +5074,7 @@ class TestDeferredShowApproval:
             nonlocal mount_called
             mount_called = True
 
-        app._mount_approval_widget = fake_mount_approval  # type: ignore[method-assign]
+        app._mount_approval_widget = fake_mount_approval  # ty: ignore
 
         action_requests = [{"name": "write_file", "args": {}}]
         future = asyncio.get_running_loop().create_future()
@@ -5397,6 +5624,25 @@ class TestSlashCommandBypass:
                 await pilot.pause()
 
             pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_restart_bypasses_queue_when_agent_running(self) -> None:
+        """/restart should process immediately when the agent is running.
+
+        Guards the motivating behavior: as an `ALWAYS_IMMEDIATE` command,
+        `/restart` must reach `_process_message` rather than being parked in
+        the queue behind the in-flight work it is meant to recover from.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/restart", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/restart", "command")
             assert len(app._pending_messages) == 0
 
     async def test_external_command_uses_same_bypass_policy(self) -> None:
@@ -6030,8 +6276,8 @@ class TestDeferredActions:
                 package="langchain-fireworks",
             )
             app._server_startup_missing_credentials_provider = "stale"
-            app.query_one = MagicMock(side_effect=NoMatches("any"))  # type: ignore[assignment]
-            app.run_worker = MagicMock()  # type: ignore[assignment]
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # ty: ignore
+            app.run_worker = MagicMock()  # ty: ignore
 
             with patch(
                 "deepagents_code.model_config.get_provider_auth_status",
@@ -6343,6 +6589,17 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
+
+    async def test_returns_false_when_no_thread_id(self) -> None:
+        """Should return False when no thread id is resolved yet."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            agent = AsyncMock()
+            app._agent = agent
+            app._lc_thread_id = None
 
             assert await app._has_conversation_messages() is False
 
@@ -6357,6 +6614,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is False
 
@@ -6371,8 +6629,35 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
+
+    async def test_returns_true_when_human_message_is_dict(self) -> None:
+        """Should detect human messages returned as raw dicts (RemoteGraph)."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [{"type": "human", "content": "hi"}]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is True
+
+    async def test_returns_false_when_only_non_human_dicts(self) -> None:
+        """Should not treat every raw dict as human; non-human dicts are False."""
+        app = DeepAgentsApp()
+        async with app.run_test():
+            state = MagicMock()
+            state.values = {"messages": [{"type": "ai", "content": "hello"}]}
+            agent = AsyncMock()
+            agent.aget_state = AsyncMock(return_value=state)
+            app._agent = agent
+            app._lc_thread_id = "t1"
+
+            assert await app._has_conversation_messages() is False
 
     async def test_returns_true_on_aget_state_exception(self) -> None:
         """Should return True on transient errors so /remember is not blocked."""
@@ -6381,6 +6666,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(side_effect=RuntimeError("connection lost"))
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is True
 
@@ -6393,6 +6679,7 @@ class TestHasConversationMessages:
             agent = AsyncMock()
             agent.aget_state = AsyncMock(return_value=state)
             app._agent = agent
+            app._lc_thread_id = "t1"
 
             assert await app._has_conversation_messages() is False
 
@@ -6666,7 +6953,7 @@ class TestRestartServerForAgentSwap:
             assert app._agent is not None
             # RemoteAgent must target the URL that `server_proc.url` holds
             # *after* restart, not the original.
-            assert app._agent._url == "http://127.0.0.1:60000"  # type: ignore[union-attr]
+            assert app._agent._url == "http://127.0.0.1:60000"  # ty: ignore
             assert app._connecting is False
             assert app._agent_switching is False
             assert app._lc_thread_id != "old-thread"
@@ -7160,7 +7447,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7182,7 +7469,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         class _Dummy(ModalScreen[None]):
             def compose(self) -> ComposeResult:
@@ -7420,7 +7707,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch(
             "deepagents_code.model_config.suppress_warning",
@@ -7449,7 +7736,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with (
             patch.dict(
@@ -7505,7 +7792,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7570,7 +7857,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7623,7 +7910,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7659,7 +7946,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7725,7 +8012,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch(
             "deepagents_code.update_check.clear_update_notified",
@@ -7753,7 +8040,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch(
             "deepagents_code.update_check.mark_update_notified",
@@ -7784,7 +8071,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch(
             "deepagents_code.model_config.suppress_warning",
@@ -8068,7 +8355,7 @@ class TestNotificationCenterIntegration:
             bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
             original_notify_actionable(entry, **kwargs)
 
-        app._notify_actionable = capture_notify_actionable  # type: ignore[method-assign]
+        app._notify_actionable = capture_notify_actionable  # ty: ignore
 
         with (
             patch(
@@ -8129,7 +8416,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         class _Dummy(ModalScreen[None]):
             def compose(self) -> ComposeResult:
@@ -8275,7 +8562,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8351,7 +8638,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with (
             patch(
@@ -8483,7 +8770,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch.object(
             app, "copy_to_clipboard", side_effect=RuntimeError("no clipboard backend")
@@ -8514,7 +8801,7 @@ class TestNotificationCenterIntegration:
             notified.append(message)
             original_notify(message, **kwargs)
 
-        app.notify = capture_notify  # type: ignore[method-assign]
+        app.notify = capture_notify  # ty: ignore
 
         with patch(
             "webbrowser.open",
@@ -9806,7 +10093,7 @@ class TestMCPLoginCommand:
         )
         app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[ok, errored, target])
         banner = MagicMock(spec=WelcomeBanner)
-        app.query_one = MagicMock(return_value=banner)  # type: ignore[assignment]
+        app.query_one = MagicMock(return_value=banner)  # ty: ignore
 
         app._apply_optimistic_mcp_login_pending_state("github")
 
@@ -9841,7 +10128,7 @@ class TestMCPLoginCommand:
             error="needs re-authentication",
         )
         app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
             app._apply_optimistic_mcp_login_pending_state("notion")
@@ -9858,7 +10145,7 @@ class TestMCPLoginCommand:
     ) -> None:
         """MCP count refresh is best-effort before the welcome banner mounts."""
         app = DeepAgentsApp(agent=MagicMock())
-        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
 
         with caplog.at_level(logging.DEBUG, logger="deepagents_code.app"):
             app._refresh_welcome_banner_mcp_counts()
@@ -9904,8 +10191,8 @@ class TestMCPLoginCommand:
         assert app._mcp_awaiting_reconnect == 1
 
         banner = MagicMock(spec=WelcomeBanner)
-        app.query_one = MagicMock(return_value=banner)  # type: ignore[assignment]
-        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app.query_one = MagicMock(return_value=banner)  # ty: ignore
+        app.call_after_refresh = lambda cb: cb()  # ty: ignore
 
         loaded = MCPServerInfo(
             name="github",
@@ -10785,7 +11072,7 @@ class TestParseReconnectArgs:
 
 
 class TestRestartCommand:
-    """Hidden `/restart` slash command — config reload + server respawn."""
+    """`/restart` slash command — config reload + server respawn."""
 
     async def test_remote_server_mode_short_circuits(
         self, monkeypatch: pytest.MonkeyPatch
@@ -11187,8 +11474,8 @@ class TestCanBypassQueue:
         async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
             processed.append((value, mode))
 
-        app._process_message = _process  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._process_message = _process  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
 
         await app._submit_input("/install baseten", "command")
 
@@ -11205,8 +11492,8 @@ class TestCanBypassQueue:
         async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method; must stay async
             processed.append((value, mode))
 
-        app._process_message = _process  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._process_message = _process  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
 
         await app._submit_input("/clear", "command")
 

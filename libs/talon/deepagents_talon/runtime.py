@@ -1,4 +1,7 @@
-"""Deep Agents runtime used by the Talon host."""
+"""Deep Agents runtime used by the Talon host.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 

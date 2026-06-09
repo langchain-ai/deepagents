@@ -1,4 +1,7 @@
-"""Local runtime host for long-running Deep Agents."""
+"""Local runtime host for long-running Deep Agents.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from deepagents_talon._version import __version__
 from deepagents_talon.config import TalonConfig

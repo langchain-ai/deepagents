@@ -1,4 +1,7 @@
-"""Agent-facing cron job tool helpers."""
+"""Agent-facing cron job tool helpers.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 

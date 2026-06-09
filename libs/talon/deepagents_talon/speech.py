@@ -1,4 +1,7 @@
-"""Optional inbound voice transcription for Talon channels."""
+"""Optional inbound voice transcription for Talon channels.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 

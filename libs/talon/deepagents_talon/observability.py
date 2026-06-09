@@ -1,4 +1,7 @@
-"""Observability helpers for Talon runtime processes."""
+"""Observability helpers for Talon runtime processes.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 

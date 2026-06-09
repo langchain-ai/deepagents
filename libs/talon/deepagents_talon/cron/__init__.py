@@ -1,4 +1,7 @@
-"""Cron scheduling support for Talon."""
+"""Cron scheduling support for Talon.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from deepagents_talon.cron.jobs import (
     CronJob,

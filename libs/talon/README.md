@@ -2,6 +2,8 @@
 
 Deep Agents Talon is the local runtime host for long-running Deep Agents. It owns the process lifecycle for channel adapters, cron schedulers, and the agent runtime in a single event loop.
 
+> **Experimental:** Talon is an experimental runtime and is subject to change or removal at any time.
+
 Talon currently includes:
 
 - A host process with graceful shutdown, per-conversation serialization, and `/stop` cancellation.

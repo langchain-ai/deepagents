@@ -1,4 +1,7 @@
-"""MCP configuration and tool loading for Talon."""
+"""MCP configuration and tool loading for Talon.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 

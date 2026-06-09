@@ -1,4 +1,7 @@
-"""Command line entry point for the Talon runtime host."""
+"""Command line entry point for the Talon runtime host.
+
+Talon is an experimental runtime and is subject to change or removal at any time.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +20,11 @@ from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
-from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime, RuntimeAgentComponents
+from deepagents_talon.runtime import (
+    DeepAgentRuntime,
+    EchoAgentRuntime,
+    RuntimeAgentComponents,
+)
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -78,7 +85,9 @@ def main() -> None:
     asyncio.run(host.run_until_stopped())
 
 
-def _add_mcp_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_mcp_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     mcp = subparsers.add_parser("mcp", help="Manage MCP servers")
     mcp_sub = mcp.add_subparsers(dest="mcp_command")
 

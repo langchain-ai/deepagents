@@ -2,6 +2,8 @@
 
 This example runs one Talon host process with the WhatsApp bridge subprocess in the same container. The bridge binds to loopback inside the container and the host `~/agent-workspace/` directory is mounted at `/workspace`.
 
+> **Experimental:** Talon is an experimental runtime and is subject to change or removal at any time.
+
 ## Run
 
 ```bash

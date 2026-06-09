@@ -1558,7 +1558,7 @@ def test_skills_middleware_with_state_backend() -> None:
         stream_writer=lambda _: None,
     )
 
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
+    backend = middleware._resolve_backend_for_runtime(runtime)
     assert isinstance(backend, StateBackend)
 
 

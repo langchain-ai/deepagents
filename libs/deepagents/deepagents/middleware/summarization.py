@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -65,7 +65,7 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
-from langchain.tools import ToolRuntime
+from langchain.tools import ToolRuntime  # noqa: TC002  # needed at runtime for pydantic validate_arguments
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -84,11 +84,10 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.middleware.runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +233,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
         trigger: ContextSize | list[ContextSize] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -243,11 +241,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
-        """Initialize summarization middleware with backend support.
+        """Initialize summarization middleware.
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
             trigger: Threshold(s) that trigger summarization.
             keep: Context retention policy after summarization.
 
@@ -310,13 +307,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             **deprecated_kwargs,
         )
 
-        # Deep Agents specific attributes
-        self._backend = backend
-
-        artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
-        _root = artifacts_root.rstrip("/")
-        self._history_path_prefix = f"{_root}/conversation_history"
-        self._large_tool_results_prefix = f"{_root}/large_tool_results"
+        # Deep Agents specific attributes — backend injected via BackendMiddleware
+        # Path prefixes derived from backend at first wrap_model_call dispatch.
+        self._backend: BackendProtocol | None = None
+        self._history_path_prefix = "/conversation_history"
+        self._large_tool_results_prefix = "/large_tool_results"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
@@ -371,38 +366,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
-
-    def _get_backend(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
-
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
-        return self._backend
 
     def _get_thread_id(self) -> str:
         """Extract `thread_id` from langgraph config.
@@ -975,8 +938,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        da_runtime: AgentRuntime = request.runtime  # type: ignore[assignment]
+        backend = da_runtime.backend
+        if self._backend is None:
+            self._backend = backend
+            root = backend.artifacts_root.rstrip("/") if isinstance(backend, CompositeBackend) else ""
+            self._history_path_prefix = f"{root}/conversation_history"
+            self._large_tool_results_prefix = f"{root}/large_tool_results"
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = _clip_overflow_tail(
@@ -1096,8 +1064,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
-        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        da_runtime: AgentRuntime = request.runtime  # type: ignore[assignment]
+        backend = da_runtime.backend
+        if self._backend is None:
+            self._backend = backend
+            root = backend.artifacts_root.rstrip("/") if isinstance(backend, CompositeBackend) else ""
+            self._history_path_prefix = f"{root}/conversation_history"
+            self._large_tool_results_prefix = f"{root}/large_tool_results"
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
             preserved_messages, new_state_tail = await _aclip_overflow_tail(
@@ -1387,19 +1360,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        backend = self._summarization._backend
-        if callable(backend):
-            return backend(runtime)  # ty: ignore[call-top-callable]
-        return backend
+    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:  # noqa: ARG002
+        return self._summarization._backend  # type: ignore[return-value]
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.

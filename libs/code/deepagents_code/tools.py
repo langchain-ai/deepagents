@@ -190,7 +190,7 @@ def _pinned_dns(hostname: str, allowed_ips: list[str]) -> Iterator[None]:
             assert last_exc is not None  # noqa: S101  # loop body guarantees this
             raise last_exc
 
-        urllib3_connection.create_connection = patched  # ty: ignore  # signature matches at runtime
+        urllib3_connection.create_connection = patched  # ty: ignore[invalid-assignment]  # signature matches at runtime
         try:
             yield
         finally:
@@ -205,7 +205,7 @@ def _get_tavily_client() -> TavilyClient | None:
     """
     global _tavily_client  # noqa: PLW0603  # Module-level cache requires global statement
     if _tavily_client is not _UNSET:
-        return _tavily_client  # ty: ignore  # narrowed by sentinel check
+        return _tavily_client  # ty: ignore[invalid-return-type]  # narrowed by sentinel check
 
     from deepagents_code.config import settings
 

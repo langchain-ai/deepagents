@@ -343,7 +343,7 @@ class ServerProcess:
         self._owns_config_dir = owns_config_dir
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
-        self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore
+        self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
 
     @property

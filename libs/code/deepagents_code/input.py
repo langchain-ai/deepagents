@@ -131,12 +131,12 @@ class MediaTracker:
         if kind == "image":
             placeholder = f"[image {self.next_image_id}]"
             data.placeholder = placeholder
-            self.images.append(data)  # ty: ignore
+            self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
         else:
             placeholder = f"[video {self.next_video_id}]"
             data.placeholder = placeholder
-            self.videos.append(data)  # ty: ignore
+            self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
         return placeholder
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
 from acp import (
@@ -78,6 +78,48 @@ if TYPE_CHECKING:
 # options are now bare SessionConfigOptionSelect instances. Resolve dynamically
 # so the module imports cleanly under both v0.8.x and v0.9+.
 SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
+"""Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
+
+McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
+"""Type alias for ACP MCP server configuration variants."""
+
+_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
+"""Runtime MCP server classes used to detect legacy positional `new_session` calls."""
+
+
+def _normalize_new_session_args(
+    additional_directories: list[str] | list[McpServer] | None,
+    mcp_servers: list[McpServer] | None,
+) -> tuple[list[str] | None, list[McpServer]]:
+    """Normalize `new_session` arguments while preserving old positional calls."""
+    if mcp_servers is not None:
+        return (
+            additional_directories if _is_additional_directories(additional_directories) else None,
+            mcp_servers,
+        )
+    if additional_directories is None:
+        return None, []
+    if _is_additional_directories(additional_directories):
+        return additional_directories, []
+    if _is_mcp_servers(additional_directories):
+        return None, additional_directories
+    return None, []
+
+
+def _is_additional_directories(
+    additional_directories: list[str] | list[McpServer] | None,
+) -> TypeGuard[list[str]]:
+    """Return whether a value is the ACP `additional_directories` argument."""
+    return additional_directories is not None and all(
+        isinstance(directory, str) for directory in additional_directories
+    )
+
+
+def _is_mcp_servers(
+    mcp_servers: list[str] | list[McpServer],
+) -> TypeGuard[list[McpServer]]:
+    """Return whether a value is the ACP `mcp_servers` argument."""
+    return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +175,7 @@ class AgentServerACP(ACPAgent):
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
+        self._session_mcp_servers: dict[str, list[McpServer]] = {}
         self._allowed_command_types: dict[
             str, set[tuple[str, str | None]]
         ] = {}  # Track allowed command types per session
@@ -225,15 +268,15 @@ class AgentServerACP(ACPAgent):
     async def new_session(
         self,
         cwd: str,
-        additional_directories: list[str] | None = None,  # noqa: ARG002  # ACP protocol interface parameter
-        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        additional_directories: list[str] | list[McpServer] | None = None,
+        mcp_servers: list[McpServer] | None = None,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:
         """Create a new agent session with the given working directory."""
-        if mcp_servers is None:
-            mcp_servers = []
+        _, mcp_servers = _normalize_new_session_args(additional_directories, mcp_servers)
         session_id = uuid4().hex
         self._session_cwds[session_id] = cwd
+        self._session_mcp_servers[session_id] = mcp_servers
 
         # Initialize session state
         if self._modes is not None:

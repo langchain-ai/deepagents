@@ -293,7 +293,7 @@ async def perform_offload(
                 else {"max_input_tokens": context_limit}
             )
             try:
-                model.profile = merged  # ty: ignore
+                model.profile = merged  # ty: ignore[invalid-assignment]
             except (AttributeError, TypeError, ValueError):
                 logger.warning(
                     "Could not patch context limit (%d) into model profile; "
@@ -387,7 +387,7 @@ async def perform_offload(
 
     new_event: SummarizationEvent = {
         "cutoff_index": state_cutoff,
-        "summary_message": summary_msg,  # ty: ignore
+        "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
         "file_path": file_path,
     }
 

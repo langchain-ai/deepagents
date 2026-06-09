@@ -2744,7 +2744,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.server_manager import start_server_and_get_agent
 
-        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore
+        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -5244,7 +5244,7 @@ class DeepAgentsApp(App):
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode: InputMode = event.mode  # ty: ignore  # Textual event mode is str at type level but InputMode at runtime
+        mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
         # Reset quit pending state on any input
         self._quit_pending = False
@@ -10052,7 +10052,7 @@ class DeepAgentsApp(App):
             mcp_info = None
             try:
                 mcp_info = await _preload_session_mcp_server_info(
-                    **self._mcp_preload_kwargs,  # ty: ignore
+                    **self._mcp_preload_kwargs,  # ty: ignore[invalid-argument-type]
                 )
             except Exception as exc:
                 logger.exception(mcp_failure_log)

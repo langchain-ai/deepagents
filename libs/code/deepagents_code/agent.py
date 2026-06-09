@@ -1060,32 +1060,32 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_execute_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_write_file_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_write_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_edit_file_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_edit_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_fetch_url_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_task_description,  # ty: ignore  # Callable description narrower than TypedDict expects
+        "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
@@ -1525,7 +1525,7 @@ def create_cli_agent(
         interrupt_on = {}
     else:
         # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # ty: ignore  # InterruptOnConfig is compatible at runtime
+        interrupt_on = _add_interrupt_on()  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
 
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting

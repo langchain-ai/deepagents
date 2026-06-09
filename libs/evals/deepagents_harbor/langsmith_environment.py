@@ -150,8 +150,9 @@ class LangSmithEnvironment(BaseEnvironment):
         """Build LangSmith proxy_config for Harbor's network policy."""
         network_mode = self.network_policy.network_mode
         allowed_hosts = list(self.network_policy.allowed_hosts)
+        legacy_allow_internet = getattr(self.task_env_config, "allow_internet", None)
 
-        if network_mode == NetworkMode.NO_NETWORK:
+        if network_mode == NetworkMode.NO_NETWORK or legacy_allow_internet is False:
             return {"access_control": {"deny_list": ["*"]}}
         if network_mode == NetworkMode.ALLOWLIST:
             return {"access_control": {"allow_list": allowed_hosts}}

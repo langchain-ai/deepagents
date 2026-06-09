@@ -73,6 +73,7 @@ def _make_env(
     memory_mb: int = 2048,
     storage_mb: int = 10240,
     network_policy: NetworkPolicy | None = None,
+    allow_internet: bool | None = None,
 ) -> LangSmithEnvironment:
     """Create a LangSmithEnvironment with a temp directory.
 
@@ -83,6 +84,8 @@ def _make_env(
         cpus: CPU count for the task.
         memory_mb: Memory in MB for the task.
         storage_mb: Storage in MB for the task.
+        network_policy: Network policy to pass to the environment.
+        allow_internet: Deprecated Harbor internet access flag.
     """
     env_dir = tmp_path / "environment"
     env_dir.mkdir()
@@ -94,12 +97,15 @@ def _make_env(
     trial_dir = tmp_path / "trial"
     trial_dir.mkdir()
 
-    config = EnvironmentConfig(
-        docker_image=docker_image,
-        cpus=cpus,
-        memory_mb=memory_mb,
-        storage_mb=storage_mb,
-    )
+    config_kwargs: dict[str, Any] = {
+        "docker_image": docker_image,
+        "cpus": cpus,
+        "memory_mb": memory_mb,
+        "storage_mb": storage_mb,
+    }
+    if allow_internet is not None:
+        config_kwargs["allow_internet"] = allow_internet
+    config = EnvironmentConfig(**config_kwargs)
     trial_paths = TrialPaths(trial_dir=trial_dir)
     trial_paths.mkdir()
 
@@ -284,6 +290,11 @@ class TestProperties:
             tmp_path,
             network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
         )
+
+        assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
+
+    def test_legacy_allow_internet_false_builds_deny_all_proxy_config(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path, allow_internet=False)
 
         assert env._network_proxy_config() == {"access_control": {"deny_list": ["*"]}}
 
@@ -521,6 +532,21 @@ class TestStartSnapshotProvisioning:
             tmp_path,
             network_policy=NetworkPolicy(network_mode=NetworkMode.NO_NETWORK),
         )
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            assert mock_client.create_sandbox.call_args.kwargs["proxy_config"] == {
+                "access_control": {"deny_list": ["*"]}
+            }
+
+    async def test_create_sandbox_passes_legacy_allow_internet_proxy_config(
+        self, tmp_path: Path
+    ) -> None:
+        env = _make_env(tmp_path, allow_internet=False)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
             mock_client = _mock_async_client()

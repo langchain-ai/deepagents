@@ -349,7 +349,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # ty: ignore
+    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
     return value if isinstance(value, str) else None
 
 
@@ -868,13 +868,13 @@ async def _run_install_subprocess(
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
-                    proc.stdout,  # ty: ignore
+                    proc.stdout,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,
                 ),
                 _read_stream(
-                    proc.stderr,  # ty: ignore
+                    proc.stderr,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,

@@ -88,7 +88,7 @@ else:
         yield from _original(self, sequence, alt=alt)
 
     try:
-        XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore
+        XTermParser._sequence_to_key_events = _sequence_to_key_events_with_alt  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning("Textual keyboard parser patch assignment rejected: %s", exc)
 
@@ -276,9 +276,9 @@ else:
         await _original_widget_on_click(self, event)
 
     try:
-        _Screen._forward_event = _forward_event_with_word_select  # ty: ignore
-        _Screen._watch__select_state = _watch_select_state_with_word_select  # ty: ignore
-        _Widget._on_click = _on_click_with_word_select  # ty: ignore
+        _Screen._forward_event = _forward_event_with_word_select  # ty: ignore[invalid-assignment]
+        _Screen._watch__select_state = _watch_select_state_with_word_select  # ty: ignore[invalid-assignment]
+        _Widget._on_click = _on_click_with_word_select  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",

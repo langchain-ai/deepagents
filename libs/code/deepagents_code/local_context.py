@@ -643,7 +643,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
     # override - state parameter is intentionally narrowed from
     # AgentState to LocalContextState for type safety within this middleware.
-    def before_agent(  # ty: ignore
+    def before_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
@@ -738,7 +738,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return LocalContextMiddleware._handle_detect_result(result)
 
-    async def abefore_agent(  # ty: ignore
+    async def abefore_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context

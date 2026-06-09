@@ -2641,6 +2641,9 @@ class ThreadConfig(NamedTuple):
     sort_order: str
     """`'updated_at'` or `'created_at'`."""
 
+    scope: str
+    """`'cwd'` (current working directory) or `'all'` (all directories)."""
+
 
 _thread_config_cache: ThreadConfig | None = None
 
@@ -2669,10 +2672,11 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     columns = dict(THREAD_COLUMN_DEFAULTS)
     relative_time = True
     sort_order = "updated_at"
+    scope = "cwd"
 
     try:
         if not config_path.exists():
-            result = ThreadConfig(columns, relative_time, sort_order)
+            result = ThreadConfig(columns, relative_time, sort_order, scope)
             if use_default:
                 _thread_config_cache = result
             return result
@@ -2696,13 +2700,18 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         so_value = threads_section.get("sort_order")
         if so_value in {"updated_at", "created_at"}:
             sort_order = so_value
+
+        # scope
+        scope_value = threads_section.get("scope")
+        if scope_value in {"cwd", "all"}:
+            scope = scope_value
     except (OSError, tomllib.TOMLDecodeError):
         logger.warning("Could not read thread config; using defaults", exc_info=True)
         # Do not cache on error — allow retry on next call in case the
         # file is fixed or permissions are restored.
-        return ThreadConfig(columns, relative_time, sort_order)
+        return ThreadConfig(columns, relative_time, sort_order, scope)
 
-    result = ThreadConfig(columns, relative_time, sort_order)
+    result = ThreadConfig(columns, relative_time, sort_order, scope)
     if use_default:
         _thread_config_cache = result
     return result
@@ -2913,6 +2922,74 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread sort_order preference")
+        return False
+    invalidate_thread_config_cache()
+    return True
+
+
+def load_thread_scope(config_path: Path | None = None) -> str:
+    """Load the directory-scope preference for the thread selector.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"cwd"` (current working directory) or `"all"` (all directories).
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return "cwd"
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        value = data.get("threads", {}).get("scope")
+        if value in {"cwd", "all"}:
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read thread scope config", exc_info=True)
+    return "cwd"
+
+
+def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
+    """Save the directory-scope preference for the thread selector.
+
+    Args:
+        scope: `"cwd"` (current working directory) or `"all"` (all directories).
+        config_path: Path to config file.
+
+    Returns:
+        True if save succeeded, False on I/O error.
+
+    Raises:
+        ValueError: If `scope` is not a recognised value.
+    """
+    if scope not in {"cwd", "all"}:
+        msg = f"Invalid scope {scope!r}; expected 'cwd' or 'all'"
+        raise ValueError(msg)
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+        if "threads" not in data:
+            data["threads"] = {}
+        data["threads"]["scope"] = scope
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()
     return True

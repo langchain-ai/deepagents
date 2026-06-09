@@ -1093,6 +1093,7 @@ class TestPrewarmThreadMessageCounts:
                     },
                     relative_time=True,
                     sort_order="updated_at",
+                    scope="cwd",
                 ),
             ),
             patch.object(

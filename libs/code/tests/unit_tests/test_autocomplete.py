@@ -590,3 +590,37 @@ class TestSlashCommandControllerUpdateCommands:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/skill:code-review" in s[0] for s in suggestions)
+
+
+class TestFuzzyFileControllerSetCwd:
+    """Tests for FuzzyFileController.set_cwd switching completion roots."""
+
+    def test_set_cwd_defers_project_root_off_event_loop(self, tmp_path):
+        """set_cwd roots at cwd immediately and defers project-root discovery."""
+        proj = tmp_path / "proj"
+        (proj / ".git").mkdir(parents=True)
+        sub = proj / "sub"
+        sub.mkdir()
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub)
+
+        # No blocking filesystem walk here: cwd is the provisional root and the
+        # real root is resolved later in warm_cache().
+        assert controller._cwd == sub
+        assert controller._project_root == sub
+        assert controller._project_root_pending is True
+
+    async def test_warm_cache_resolves_pending_project_root(self, tmp_path):
+        """warm_cache resolves the deferred project root to the git root."""
+        proj = tmp_path / "proj"
+        (proj / ".git").mkdir(parents=True)
+        sub = proj / "sub"
+        sub.mkdir()
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+        controller.set_cwd(sub)
+
+        await controller.warm_cache()
+
+        assert controller._project_root == proj.resolve()
+        assert controller._project_root_pending is False

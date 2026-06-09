@@ -1468,6 +1468,36 @@ class TestThreadSelectorErrorHandling:
                 assert len(screen._threads) == 0
 
                 assert len(screen._option_widgets) == 0
+                # A failed load is still a completed load: the flag must flip so
+                # the picker never strands on the "Loading threads..." placeholder.
+                assert screen._disk_load_complete is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert app.dismissed is True
+                assert app.result is None
+
+    async def test_unexpected_load_error_surfaces_and_completes(self) -> None:
+        """A non-OSError/sqlite3 error must surface and not strand the UI."""
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=ValueError("malformed row"),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # The catch-all handler marks the load complete and replaces the
+                # loading placeholder with the error message instead of leaving a
+                # perpetual "Loading threads..." spinner.
+                assert screen._disk_load_complete is True
+                with pytest.raises(NoMatches):
+                    screen.query_one("#thread-loading", Static)
 
                 await pilot.press("escape")
                 await pilot.pause()
@@ -1803,6 +1833,125 @@ class TestThreadSelectorPrefetchedRows:
                 assert kw["sort_by"] in {"updated", "created"}
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
+
+    async def test_empty_snapshot_shows_loading_until_disk_load_completes(
+        self,
+    ) -> None:
+        """An empty snapshot must not claim "No threads found" while loading."""
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "new12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "message_count": 6,
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return refreshed
+
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=_list_threads,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                        filter_cwd=None,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # While the disk load is in flight, show the loading placeholder
+                # rather than "No threads found".
+                assert not screen._disk_load_complete
+                screen.query_one("#thread-loading", Static)
+                assert not screen._option_widgets
+
+                gate.set()
+
+                for _ in range(10):
+                    if len(screen._threads) == 1:
+                        break
+                    await pilot.pause(0.05)
+
+                assert screen._disk_load_complete
+                assert len(screen._option_widgets) == 1
+
+    async def test_empty_snapshot_resolves_to_no_threads_found(self) -> None:
+        """An empty disk load must flip the placeholder to "No threads found"."""
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return []
+
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=_list_threads,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                        filter_cwd=None,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert not screen._disk_load_complete
+                screen.query_one("#thread-loading", Static)
+
+                gate.set()
+
+                for _ in range(10):
+                    if screen._disk_load_complete:
+                        break
+                    await pilot.pause(0.05)
+
+                # Once the load completes with zero rows, the loading placeholder
+                # must resolve to the real empty state, not a perpetual spinner.
+                assert screen._disk_load_complete
+                assert not screen._option_widgets
+                with pytest.raises(NoMatches):
+                    screen.query_one("#thread-loading", Static)
+                empty = screen.query_one(".thread-empty", Static)
+                assert "No threads found" in str(empty.content)
+
+    def test_build_empty_state_reflects_disk_load_flag(self) -> None:
+        """`_build_empty_state` chooses its message from `_disk_load_complete`."""
+        screen = ThreadSelectorScreen(
+            current_thread="abc12345",
+            thread_limit=20,
+            initial_threads=[],
+            filter_cwd=None,
+        )
+
+        loading = screen._build_empty_state()
+        assert loading.id == "thread-loading"
+        assert "Loading threads..." in str(loading.content)
+
+        screen._disk_load_complete = True
+        resolved = screen._build_empty_state()
+        assert resolved.id is None
+        assert "No threads found" in str(resolved.content)
 
 
 class TestThreadSelectorInitialSortOrder:

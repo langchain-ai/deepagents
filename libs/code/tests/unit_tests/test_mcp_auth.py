@@ -61,7 +61,7 @@ class TestResolveHeaders:
     def test_non_string_value_raises(self) -> None:
         """Header values must be strings."""
         with pytest.raises(TypeError, match="must be a string"):
-            resolve_headers({"X-Bad": 123}, server_name="srv")  # type: ignore[dict-item]
+            resolve_headers({"X-Bad": 123}, server_name="srv")  # ty: ignore
 
     def test_unset_env_var_raises(self) -> None:
         """Unset placeholders fail with a helpful message."""

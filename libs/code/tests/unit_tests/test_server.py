@@ -309,7 +309,7 @@ class TestServerProcess:
             msg = "restart failed"
             raise RuntimeError(msg)
 
-        server.start = failing_start  # type: ignore[assignment]
+        server.start = failing_start  # ty: ignore
         server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="should-be-rolled-back")
 
         with pytest.raises(RuntimeError, match="restart failed"):

@@ -333,7 +333,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["local_context"] == ctx.strip()
@@ -353,7 +353,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         # Falls through to initial-detection guard; local_context set.
         assert result is None
@@ -371,7 +371,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         # Cutoff recorded to prevent retry loop.
@@ -393,7 +393,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["local_context"] == "refreshed again"
@@ -411,7 +411,7 @@ class TestLocalContextMiddleware:
             "local_context": "old A",
             "_summarization_event": _make_summarization_event(5),
         }
-        result_a = middleware.before_agent(state_a, runtime)  # type: ignore[invalid-argument-type]
+        result_a = middleware.before_agent(state_a, runtime)  # ty: ignore
         assert result_a is not None
         assert result_a["_local_context_refreshed_at_cutoff"] == 5
 
@@ -424,7 +424,7 @@ class TestLocalContextMiddleware:
             "_summarization_event": _make_summarization_event(5),
             "_local_context_refreshed_at_cutoff": 5,
         }
-        result_b = middleware.before_agent(state_b, runtime)  # type: ignore[invalid-argument-type]
+        result_b = middleware.before_agent(state_b, runtime)  # ty: ignore
         assert result_b is None
         backend._mock.assert_not_called()
 
@@ -433,7 +433,7 @@ class TestLocalContextMiddleware:
             "messages": [],
             "local_context": "existing C",
         }
-        result_c = middleware.before_agent(state_c, runtime)  # type: ignore[invalid-argument-type]
+        result_c = middleware.before_agent(state_c, runtime)  # ty: ignore
         assert result_c is None
         backend._mock.assert_not_called()
 
@@ -449,7 +449,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 7
@@ -467,7 +467,7 @@ class TestLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = middleware.before_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = middleware.before_agent(state, runtime)  # ty: ignore
 
         # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
         # is False. Falls through to initial-detection guard; local_context set.
@@ -588,7 +588,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["local_context"] == "refreshed context"
@@ -667,7 +667,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 10
@@ -684,7 +684,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 7
@@ -702,7 +702,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is None
         backend._mock.assert_not_called()
@@ -730,7 +730,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
         assert result["local_context"] == "refreshed again"
@@ -747,7 +747,7 @@ class TestAsyncLocalContextMiddleware:
         }
         runtime: Any = Mock()
 
-        result = await middleware.abefore_agent(state, runtime)  # type: ignore[invalid-argument-type]
+        result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
         # is False. Falls through to initial-detection guard; local_context set.

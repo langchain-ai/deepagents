@@ -1149,7 +1149,7 @@ class TestCreateCliAgentSkillsSources:
         )
 
         real_middleware = RealSkillsMiddleware(
-            backend=None,  # type: ignore[arg-type]
+            backend=None,  # ty: ignore
             sources=sources,
         )
         rendered = real_middleware._format_skills_locations()

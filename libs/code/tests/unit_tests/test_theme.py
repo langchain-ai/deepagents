@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import fields
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -84,7 +84,7 @@ class TestThemeColorsValidation:
     def test_frozen_immutability(self) -> None:
         tc = ThemeColors(**self._make_kwargs())
         with pytest.raises(AttributeError):
-            tc.primary = "#000000"  # type: ignore[misc]
+            cast("Any", tc).primary = "#000000"
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class TestThemeEntryRegistry:
     def test_registry_is_read_only(self) -> None:
         assert isinstance(get_registry(), MappingProxyType)
         with pytest.raises(TypeError):
-            get_registry()["bad"] = None  # type: ignore[index]
+            get_registry()["bad"] = None  # ty: ignore
 
     def test_default_theme_in_registry(self) -> None:
         assert DEFAULT_THEME in get_registry()
@@ -1838,10 +1838,11 @@ class TestSaveTerminalThemeMapping:
 
 def _register_lc_theme(app: object) -> None:
     """Register the LangChain theme on a test app so ThemeSelectorScreen works."""
+    app_any = cast("Any", app)
     from textual.theme import Theme as TextualTheme
 
     c = DARK_COLORS
-    app.register_theme(  # type: ignore[attr-defined]
+    app.register_theme(  # ty: ignore
         TextualTheme(
             name="langchain",
             primary=c.primary,
@@ -1857,7 +1858,7 @@ def _register_lc_theme(app: object) -> None:
             dark=True,
         )
     )
-    app.theme = "langchain"  # type: ignore[attr-defined]
+    app_any.theme = "langchain"
 
 
 class TestThemeSelectorScreen:

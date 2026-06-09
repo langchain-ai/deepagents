@@ -2094,7 +2094,7 @@ class TestBatchCheckpointSummaries:
         """Empty thread_ids list should return empty dict without querying."""
         serde = JsonPlusSerializer()
         result = await sessions._load_latest_checkpoint_summaries_batch(
-            None,  # type: ignore[arg-type]  # connection not used
+            None,  # ty: ignore  # connection not used
             [],
             serde,
         )
@@ -2240,7 +2240,7 @@ class TestLoadInitialPromptsFromWritesBatch:
         """Empty thread list should short-circuit without touching the connection."""
         serde = JsonPlusSerializer()
         result = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
-            None,  # type: ignore[arg-type]  # connection not used
+            None,  # ty: ignore  # connection not used
             [],
             serde,
         )
@@ -2547,7 +2547,7 @@ class TestLoadMessageCountsFromWritesBatch:
         """Empty thread list short-circuits without touching the connection."""
         serde = JsonPlusSerializer()
         result = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
-            None,  # type: ignore[arg-type]  # connection not used
+            None,  # ty: ignore  # connection not used
             [],
             serde,
         )

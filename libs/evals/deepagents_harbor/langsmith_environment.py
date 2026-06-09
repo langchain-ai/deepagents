@@ -108,21 +108,6 @@ class LangSmithEnvironment(BaseEnvironment):
         """Capabilities supported by LangSmith sandboxes."""
         return EnvironmentCapabilities(disable_internet=True, network_allowlist=True)
 
-    @property
-    def is_mounted(self) -> bool:
-        """Whether the environment mounts host logging directories."""
-        return False
-
-    @property
-    def supports_gpus(self) -> bool:
-        """Whether LangSmith sandboxes support GPU allocation."""
-        return False
-
-    @property
-    def can_disable_internet(self) -> bool:
-        """Whether LangSmith sandboxes support network isolation."""
-        return True
-
     # -- Validation overrides --------------------------------------------------
     # Override base-class validators so they never call self.type(), which
     # would raise NotImplementedError.
@@ -165,12 +150,9 @@ class LangSmithEnvironment(BaseEnvironment):
         """Build LangSmith proxy_config for Harbor's network policy."""
         network_mode = self.network_policy.network_mode
         allowed_hosts = list(self.network_policy.allowed_hosts)
+        legacy_allow_internet = getattr(self.task_env_config, "allow_internet", None)
 
-        if self.task_env_config.allow_internet is False:
-            network_mode = NetworkMode.NO_NETWORK
-            allowed_hosts = []
-
-        if network_mode == NetworkMode.NO_NETWORK:
+        if network_mode == NetworkMode.NO_NETWORK or legacy_allow_internet is False:
             return {"access_control": {"deny_list": ["*"]}}
         if network_mode == NetworkMode.ALLOWLIST:
             return {"access_control": {"allow_list": allowed_hosts}}

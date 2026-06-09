@@ -57,7 +57,7 @@ def _patch_aiosqlite() -> None:
         # Dynamically adding a method to aiosqlite.Connection at runtime.
         # Type checkers can't understand this monkey-patch, so we suppress the
         # "attr-defined" error that would otherwise be raised.
-        _aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
+        _aiosqlite.Connection.is_alive = _is_alive  # ty: ignore[unresolved-attribute]
 
     _aiosqlite_patched = True
 

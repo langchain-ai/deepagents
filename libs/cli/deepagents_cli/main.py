@@ -149,25 +149,29 @@ def cli_main() -> None:
     args = parse_args()
 
     try:
-        if args.command == "init":
-            from deepagents_cli.deploy import execute_init_command
-
-            execute_init_command(args)
-        elif args.command == "deploy":
-            from deepagents_cli.deploy import execute_deploy_command
-
-            execute_deploy_command(args)
-        elif args.command == "agents":
-            from deepagents_cli.deploy import execute_agents_command
-
-            execute_agents_command(args)
-        elif args.command == "mcp-servers":
-            from deepagents_cli.deploy import execute_mcp_servers_command
-
-            execute_mcp_servers_command(args)
-        else:
-            sys.stderr.write(_REPL_REDIRECT_MESSAGE + "\n")
-            raise SystemExit(1)
+        _dispatch_command(args)
     except KeyboardInterrupt:
         sys.stderr.write("\nInterrupted.\n")
         raise SystemExit(130) from None
+
+
+def _dispatch_command(args: argparse.Namespace) -> None:
+    if args.command == "init":
+        from deepagents_cli.deploy import execute_init_command
+
+        execute_init_command(args)
+    elif args.command == "deploy":
+        from deepagents_cli.deploy import execute_deploy_command
+
+        execute_deploy_command(args)
+    elif args.command == "agents":
+        from deepagents_cli.deploy import execute_agents_command
+
+        execute_agents_command(args)
+    elif args.command == "mcp-servers":
+        from deepagents_cli.deploy import execute_mcp_servers_command
+
+        execute_mcp_servers_command(args)
+    else:
+        sys.stderr.write(_REPL_REDIRECT_MESSAGE + "\n")
+        raise SystemExit(1)

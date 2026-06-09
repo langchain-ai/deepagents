@@ -12,6 +12,7 @@ from acp.schema import (
     AllowedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
+    McpServerStdio,
     PermissionOption,
     RequestPermissionResponse,
     ResourceContentBlock,
@@ -190,6 +191,21 @@ async def test_acp_agent_initialize_and_modes() -> None:
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
     assert session.session_id
     assert session.modes is None
+
+
+async def test_new_session_preserves_positional_mcp_servers_slot() -> None:
+    graph = create_deep_agent(
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="OK")])),
+        checkpointer=MemorySaver(),
+    )
+    agent = AgentServerACP(agent=graph)
+    mcp_servers = [
+        McpServerStdio(name="test-server", command="mcp-test", args=[], env=[]),
+    ]
+
+    session = await agent.new_session("/tmp", mcp_servers)
+
+    assert agent._session_mcp_servers[session.session_id] == mcp_servers
 
 
 @tool(description="Write a file")

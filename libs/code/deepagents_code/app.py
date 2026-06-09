@@ -3774,7 +3774,8 @@ class DeepAgentsApp(App):
         # STANDALONE_EXTRAS) are wired into the parent process at startup
         # (`verify_interpreter_deps` gates `--interpreter`), so a full
         # relaunch is required.
-        if extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS:
+        restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
+        if restart_capable:
             next_step = "Run `/restart` to load it now, or relaunch dcode."
         else:
             next_step = "Exit and relaunch dcode to use the new dependencies."
@@ -3782,6 +3783,8 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Installed extra '{extra}'. {next_step}"),
         )
+        if restart_capable:
+            await self._offer_restart_after_install(extra)
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
@@ -3870,6 +3873,7 @@ class DeepAgentsApp(App):
                 "now, or relaunch dcode.",
             ),
         )
+        await self._offer_restart_after_install(package)
 
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.
@@ -10100,6 +10104,90 @@ class DeepAgentsApp(App):
             ),
         )
 
+    async def _offer_restart_after_install(self, label: str) -> None:
+        """Offer a one-keypress restart after a restart-capable install.
+
+        Provider/sandbox extras and `--package` installs are imported by the
+        app-owned LangGraph server subprocess, so a `/restart` loads them
+        without exiting the TUI. When dcode owns that subprocess and is idle,
+        prompt to run the restart immediately instead of making the user type
+        `/restart`. Skipped while a run is in flight or the server is still
+        connecting/restarting (a restart cancels in-flight work and a
+        connecting server has nothing to respawn into yet) and in
+        remote-server mode (no subprocess to respawn) — every skipped path
+        already carries the manual-restart hint in the install message.
+
+        Args:
+            label: Installed extra/package name, surfaced in the prompt title.
+        """
+        if self._server_proc is None or self._server_kwargs is None:
+            return
+        if self._agent_running or self._connecting:
+            return
+
+        from deepagents_code.widgets.restart_prompt import (
+            RestartChoice,
+            RestartPromptScreen,
+        )
+
+        choice: RestartChoice | None
+        try:
+            # Watchdog: bound the handler against a screen that never resolves
+            # (compose crash, programmatic teardown that skips the dismiss
+            # callback). 10 minutes is well past any human latency but stops a
+            # genuinely broken modal from wedging command handling. Mirrors the
+            # MCP reconnect prompt's watchdog.
+            choice = await asyncio.wait_for(
+                self._push_screen_wait(RestartPromptScreen(label)),
+                timeout=600.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Restart prompt after installing %r timed out; leaving the "
+                "manual /restart hint in place",
+                label,
+            )
+            return
+        except Exception:
+            # Modal could not be mounted (e.g. another modal hijacked the
+            # stack). Leave the manual `/restart` hint in place.
+            logger.exception(
+                "Failed to mount restart prompt after installing %r", label
+            )
+            return
+
+        if choice == "restart":
+            if not await self._reload_configuration_for_restart():
+                return
+            await self._mount_message(AppMessage("Restarting server..."))
+            if await self._restart_server_manual():
+                await self._mount_message(AppMessage("Restart complete."))
+
+    async def _reload_configuration_for_restart(self) -> bool:
+        """Reload config state before respawning the owned server.
+
+        Returns:
+            Whether reload completed and restart should continue.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+            logger.exception("Failed to reload configuration during restart")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration "
+                    f"({type(exc).__name__}: {exc}). Check your .env "
+                    "file and environment variables for syntax errors, "
+                    "then try again.",
+                ),
+            )
+            return False
+        return True
+
     async def _handle_restart_command(self, command: str) -> None:
         """Drive the `/restart` slash command.
 
@@ -10116,9 +10204,6 @@ class DeepAgentsApp(App):
         Args:
             command: Raw command string for echoing back to chat.
         """
-        from deepagents_code.config import settings
-        from deepagents_code.model_config import clear_caches
-
         await self._mount_message(UserMessage(command))
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
@@ -10130,19 +10215,7 @@ class DeepAgentsApp(App):
         else:
             self._discard_queue()
 
-        try:
-            settings.reload_from_environment()
-            clear_caches()
-        except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
-            logger.exception("Failed to reload configuration during /restart")
-            await self._mount_message(
-                AppMessage(
-                    "Failed to reload configuration "
-                    f"({type(exc).__name__}: {exc}). Check your .env "
-                    "file and environment variables for syntax errors, "
-                    "then try again.",
-                ),
-            )
+        if not await self._reload_configuration_for_restart():
             return
 
         if self._server_proc is None or self._server_kwargs is None:

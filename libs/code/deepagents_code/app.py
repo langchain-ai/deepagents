@@ -1093,12 +1093,14 @@ _GATEWAY_DOCS_URL = (
 Linked from `PermissionDeniedError` guidance: a common cause is a provider key
 that does not match the endpoint it is sent to — e.g. an `OPENAI_API_KEY`
 exported in the shell while a gateway overrides the provider base URL, so the
-key is sent to the gateway, which rejects it."""
+key is sent to the gateway, which rejects it.
+"""
 
 _LANGSMITH_KEY_PREFIX = "lsv2_"
 """Prefix every LangSmith API key carries. Used to recognize when a provider
 key is *not* a LangSmith gateway key. Only the prefix is inspected — the secret
-value is never logged or otherwise introspected."""
+value is never logged or otherwise introspected.
+"""
 
 _LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
 """Host substring identifying the LangSmith gateway endpoint."""

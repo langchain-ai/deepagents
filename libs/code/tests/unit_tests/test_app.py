@@ -1320,6 +1320,7 @@ class TestThreadCachePrewarm:
         chat_input = MagicMock()
         resume_order: list[str] = []
         callbacks: list[Callable[[], None]] = []
+        workers: list[Awaitable[None]] = []
         selector_callback: Callable[[str | None], None] | None = None
 
         async def resume_thread(thread_id: str) -> None:
@@ -1334,11 +1335,16 @@ class TestThreadCachePrewarm:
             nonlocal selector_callback
             selector_callback = callback
 
+        def run_worker(work: Awaitable[None], **_kwargs: object) -> MagicMock:
+            workers.append(work)
+            return MagicMock()
+
         async with app.run_test() as pilot:
             await pilot.pause()
             app._chat_input = chat_input
             app._resume_thread = resume_thread  # ty: ignore[method-assign]
             app.call_after_refresh = MagicMock(side_effect=callbacks.append)  # ty: ignore[method-assign]
+            app.run_worker = MagicMock(side_effect=run_worker)  # ty: ignore[method-assign]
             with (
                 patch("deepagents_code.sessions.get_thread_limit", return_value=9),
                 patch("deepagents_code.sessions.get_cached_threads", return_value=[]),
@@ -1351,9 +1357,10 @@ class TestThreadCachePrewarm:
             chat_input.focus_input.assert_not_called()
             assert len(callbacks) == 1
 
-            task = callbacks[0]()
-            assert isinstance(task, asyncio.Task)
-            await task
+            callbacks[0]()
+            app.run_worker.assert_called_once()
+            assert len(workers) == 1
+            await workers[0]
 
             assert resume_order == ["thread-abc"]
             chat_input.focus_input.assert_called_once_with()
@@ -11843,6 +11850,7 @@ class TestResumeThreadCwdSwitch:
         load_thread_history = AsyncMock()
         app._load_thread_history = load_thread_history  # ty: ignore[invalid-assignment]
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        app._set_spinner = AsyncMock()  # ty: ignore[method-assign]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
         replace_calls: list[Path] = []
 
@@ -11863,6 +11871,7 @@ class TestResumeThreadCwdSwitch:
         assert app._cwd == str(current)
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
+        app._set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---

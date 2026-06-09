@@ -10302,7 +10302,13 @@ class DeepAgentsApp(App):
                 else:
                     await resume_and_refocus(result)
 
-            self.call_after_refresh(lambda: asyncio.create_task(resume_later()))
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    resume_later(),
+                    exclusive=False,
+                    group="thread-switch",
+                )
+            )
 
         screen = ThreadSelectorScreen(
             current_thread=current,
@@ -10856,12 +10862,15 @@ class DeepAgentsApp(App):
         prefetched_payload: _ThreadHistoryPayload | None = None
         try:
             self._update_status(f"Loading thread: {thread_id}")
+            await self._set_spinner("Loading thread")
             prefetched_payload = await self._fetch_thread_history_data(thread_id)
 
             # Clear conversation (similar to /clear, without creating a new thread)
+            await self._set_spinner(None)
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
+            await self._set_spinner("Loading thread")
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
@@ -10930,6 +10939,7 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(error_message))
         finally:
             self._thread_switching = False
+            await self._set_spinner(None)
             self._update_status("")
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)

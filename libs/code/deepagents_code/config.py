@@ -1163,20 +1163,6 @@ def _parse_extra_skills_dirs(
     return None
 
 
-_API_KEY_FIELDS = frozenset(
-    {
-        "openai_api_key",
-        "anthropic_api_key",
-        "google_api_key",
-        "nvidia_api_key",
-        "tavily_api_key",
-    }
-)
-"""Reloadable fields that hold API keys and must be masked in reports.
-
-Subset of `_RELOADABLE_FIELDS`; keep the two in sync when adding API-key fields.
-"""
-
 _RELOADABLE_FIELDS = (
     "openai_api_key",
     "anthropic_api_key",
@@ -1194,6 +1180,15 @@ _RELOADABLE_FIELDS = (
 Runtime model state (`model_name`, `model_provider`, `model_context_limit`) and
 the original user LangSmith project are intentionally excluded -- they are set
 once and should not change across reloads.
+"""
+
+_API_KEY_FIELDS = frozenset(
+    field for field in _RELOADABLE_FIELDS if field.endswith("_api_key")
+)
+"""Reloadable fields that hold API keys and must be masked in change reports.
+
+Derived from `_RELOADABLE_FIELDS` so new `*_api_key` fields are picked up
+automatically.
 """
 
 

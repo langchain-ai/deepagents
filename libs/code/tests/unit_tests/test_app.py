@@ -12352,10 +12352,8 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "thread-x"
         messages = [call.args[0] for call in notify.call_args_list]
         assert any(
-            "could not check its working directory" in message
-            for message in messages
+            "could not check its working directory" in message for message in messages
         )
         assert all(
-            "Could not look up thread history" not in message
-            for message in messages
+            "Could not look up thread history" not in message for message in messages
         )

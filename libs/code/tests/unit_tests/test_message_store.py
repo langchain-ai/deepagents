@@ -170,7 +170,7 @@ class TestMessageData:
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._is_markdown is True
-        rendered = restored._Static__content  # type: ignore[attr-defined]
+        rendered = restored._Static__content  # ty: ignore
         assert isinstance(rendered, _MutedRichMarkdown)
 
     def test_diff_message_roundtrip(self):

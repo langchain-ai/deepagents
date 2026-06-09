@@ -292,7 +292,7 @@ def test_agentcore_init_without_boto3_does_not_raise() -> None:
         for k in env_clear:
             os.environ.pop(k, None)
         provider = _get_provider("agentcore")
-    assert provider._region == "us-west-2"  # ty: ignore[unresolved-attribute]
+    assert provider._region == "us-west-2"  # ty: ignore
 
 
 @pytest.mark.parametrize(
@@ -325,7 +325,7 @@ def test_agentcore_region_resolution(env: dict[str, str], expected: str) -> None
             if k not in env:
                 os.environ.pop(k, None)
         provider = _get_provider("agentcore")
-    assert provider._region == expected  # ty: ignore[unresolved-attribute]
+    assert provider._region == expected  # ty: ignore
 
 
 def test_agentcore_get_or_create_happy_path() -> None:
@@ -357,7 +357,7 @@ def test_agentcore_get_or_create_happy_path() -> None:
 
     mock_interpreter.start.assert_called_once()
     assert result is mock_backend
-    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore[unresolved-attribute]
+    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore
 
 
 def test_agentcore_start_failure_cleans_up() -> None:
@@ -388,7 +388,7 @@ def test_agentcore_start_failure_cleans_up() -> None:
         provider.get_or_create()
 
     mock_interpreter.stop.assert_called_once()
-    assert not provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert not provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_stops_tracked_interpreter() -> None:
@@ -399,12 +399,12 @@ def test_agentcore_delete_stops_tracked_interpreter() -> None:
         provider = _get_provider("agentcore")
 
     mock_interpreter = MagicMock()
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
 
     provider.delete(sandbox_id="sess-1")
 
     mock_interpreter.stop.assert_called_once()
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_swallows_stop_exception() -> None:
@@ -416,10 +416,10 @@ def test_agentcore_delete_swallows_stop_exception() -> None:
 
     mock_interpreter = MagicMock()
     mock_interpreter.stop.side_effect = RuntimeError("network error")
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
 
     provider.delete(sandbox_id="sess-1")  # should not raise
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_untracked_session() -> None:
@@ -510,7 +510,7 @@ class TestVerifySandboxDeps:
     @pytest.mark.parametrize("provider", ["none", "langsmith", "", None])
     def test_skips_builtin_and_empty_providers(self, provider: str | None) -> None:
         """Built-in and empty providers should be silently accepted."""
-        verify_sandbox_deps(provider)  # type: ignore[arg-type]
+        verify_sandbox_deps(provider)  # ty: ignore
 
     def test_skips_unknown_provider(self) -> None:
         """Unknown providers are passed through for downstream handling."""

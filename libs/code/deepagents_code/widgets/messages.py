@@ -551,7 +551,16 @@ class AssistantMessage(Vertical):
     the first chunk, so any later recompose (click, focus change, theme
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
+
+    Streamed tokens are coalesced in `_pending_append` and flushed to the
+    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
+    every token immediately forced a markdown re-parse per chunk on the UI
+    event loop, which starved keyboard input while the model streamed.
+    Batching the writes keeps the event loop free so typing stays responsive.
     """
+
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+    """Seconds between coalesced flushes of streamed text to the markdown widget."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -584,6 +593,8 @@ class AssistantMessage(Vertical):
         self._content = content
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
+        self._pending_append = ""
+        self._flush_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -626,10 +637,11 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append content to the message (for streaming).
+        """Append streamed content, coalescing writes onto a throttled timer.
 
-        Uses MarkdownStream for smoother rendering instead of re-rendering
-        the full content on each chunk.
+        Tokens are buffered in `_pending_append` and written to the
+        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
+        event loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -637,8 +649,37 @@ class AssistantMessage(Vertical):
         if not text:
             return
         self._content += text
-        stream = self._ensure_stream()
-        await stream.write(text)
+        self._pending_append += text
+        if self._flush_timer is None:
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
+            )
+
+    async def _flush_pending_append(self) -> None:
+        """Write any buffered streamed text to the markdown stream.
+
+        Runs from a Textual timer callback, where an unhandled exception
+        escalates to `App._handle_exception` and tears down the whole REPL.
+        On a transient write failure the buffer is restored (re-prepended
+        ahead of any text that arrived in the meantime) so the next tick
+        retries instead of silently dropping the fragment.
+        """
+        if not self._pending_append:
+            return
+        pending = self._pending_append
+        self._pending_append = ""
+        try:
+            stream = self._ensure_stream()
+            await stream.write(pending)
+        except Exception:  # a render hiccup must not crash the app
+            self._pending_append = pending + self._pending_append
+            logger.exception("Failed to flush streamed markdown fragment")
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -647,6 +688,8 @@ class AssistantMessage(Vertical):
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
+        self._stop_flush_timer()
+        await self._flush_pending_append()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
@@ -662,6 +705,8 @@ class AssistantMessage(Vertical):
         Args:
             content: The markdown content to display
         """
+        self._stop_flush_timer()
+        self._pending_append = ""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None

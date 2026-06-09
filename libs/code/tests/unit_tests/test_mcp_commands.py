@@ -33,7 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     **kwargs,
                 )
 
-            def __call__(  # ty: ignore[invalid-method-override]
+            def __call__(  # ty: ignore
                 self,
                 parser: argparse.ArgumentParser,
                 _namespace: argparse.Namespace,

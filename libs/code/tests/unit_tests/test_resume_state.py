@@ -79,20 +79,20 @@ class TestExtractModelSpec:
 
     def test_returns_effective_model_from_context(self) -> None:
         runtime = _runtime({"effective_model": "anthropic:claude-sonnet-4-5"})
-        assert _extract_model_spec(runtime) == "anthropic:claude-sonnet-4-5"  # type: ignore[arg-type]
+        assert _extract_model_spec(runtime) == "anthropic:claude-sonnet-4-5"  # ty: ignore
 
     def test_returns_none_when_context_missing(self) -> None:
-        assert _extract_model_spec(_runtime(None)) is None  # type: ignore[arg-type]
+        assert _extract_model_spec(_runtime(None)) is None  # ty: ignore
 
     def test_returns_none_when_field_absent(self) -> None:
-        assert _extract_model_spec(_runtime({"model": "x"})) is None  # type: ignore[arg-type]
+        assert _extract_model_spec(_runtime({"model": "x"})) is None  # ty: ignore
 
     def test_returns_none_for_blank_or_nonstring(self) -> None:
-        assert _extract_model_spec(_runtime({"effective_model": ""})) is None  # type: ignore[arg-type]
-        assert _extract_model_spec(_runtime({"effective_model": None})) is None  # type: ignore[arg-type]
+        assert _extract_model_spec(_runtime({"effective_model": ""})) is None  # ty: ignore
+        assert _extract_model_spec(_runtime({"effective_model": None})) is None  # ty: ignore
 
     def test_returns_none_when_runtime_is_none(self) -> None:
-        assert _extract_model_spec(None) is None  # type: ignore[arg-type]
+        assert _extract_model_spec(None) is None  # ty: ignore
 
 
 class TestAfterModelHook:
@@ -113,7 +113,7 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result == {"_context_tokens": 1700}
 
     async def test_writes_model_spec_from_context(self) -> None:
@@ -132,7 +132,7 @@ class TestAfterModelHook:
             ],
         }
         runtime = _runtime({"effective_model": "openai:gpt-5.1"})
-        result = middleware.after_model(state, runtime)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime)  # ty: ignore
         assert result == {
             "_context_tokens": 1700,
             "_model_spec": "openai:gpt-5.1",
@@ -148,13 +148,13 @@ class TestAfterModelHook:
             ],
         }
         runtime = _runtime({"effective_model": "openai:gpt-5.1"})
-        result = middleware.after_model(state, runtime)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime)  # ty: ignore
         assert result == {"_model_spec": "openai:gpt-5.1"}
 
     async def test_returns_none_when_no_ai_message(self) -> None:
         middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {"messages": [HumanMessage(content="hi")]}
-        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result is None
 
     async def test_returns_none_when_last_ai_lacks_usage(self) -> None:
@@ -165,12 +165,12 @@ class TestAfterModelHook:
                 AIMessage(content="no usage info"),
             ],
         }
-        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result is None
 
     async def test_handles_empty_messages(self) -> None:
         middleware = ResumeStateMiddleware()
-        result = middleware.after_model({"messages": []}, _runtime(None))  # type: ignore[arg-type]
+        result = middleware.after_model({"messages": []}, _runtime(None))  # ty: ignore
         assert result is None
 
     async def test_skips_intervening_tool_messages(self) -> None:
@@ -200,7 +200,7 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = middleware.after_model(state, _runtime(None))  # type: ignore[arg-type]
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result == {"_context_tokens": 550}
 
 
@@ -259,7 +259,7 @@ class TestTokenDisplayCallbacks:
             _update_tokens=update_tokens,
         )
 
-        DeepAgentsApp._show_tokens(app, approximate=False)  # type: ignore[arg-type]
+        DeepAgentsApp._show_tokens(app, approximate=False)  # ty: ignore
 
         assert app._tokens_approximate is True
         assert display_calls == [(1500, True)]

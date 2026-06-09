@@ -50,9 +50,9 @@ _DEEPAGENTS_WORD_SELECT_ACTIVE = "_deepagents_word_select_active"
 
 try:
     from textual import events
-    from textual._ansi_sequences import (
-        ANSI_SEQUENCES_KEYS,  # noqa: PLC2701
-        IGNORE_SEQUENCE,  # noqa: PLC2701
+    from textual._ansi_sequences import (  # noqa: PLC2701
+        ANSI_SEQUENCES_KEYS,
+        IGNORE_SEQUENCE,
     )
     from textual._xterm_parser import XTermParser  # noqa: PLC2701
 

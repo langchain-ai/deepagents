@@ -1391,6 +1391,18 @@ def create_cli_agent(
             )
         )
 
+        # Protect the machine-managed onboarding-name block in the user
+        # AGENTS.md from being rewritten by agent file edits. The block's
+        # markers are HTML comments stripped before injection, so the model
+        # can't see the boundary and would otherwise clobber it.
+        from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+        agent_middleware.append(
+            ManagedMemoryGuardMiddleware(
+                [str(settings.get_user_agent_md_path(assistant_id))]
+            )
+        )
+
     # Add skills middleware
     if enable_skills:
         # Lowest to highest precedence:

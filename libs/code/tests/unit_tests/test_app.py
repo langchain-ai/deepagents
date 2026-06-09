@@ -11124,9 +11124,10 @@ class TestRestartCommand:
                 nonlocal clear_called
                 clear_called = True
 
-            async def _fake_restart() -> None:  # noqa: RUF029  # awaited by handler
+            async def _fake_restart() -> bool:  # noqa: RUF029  # awaited by handler
                 nonlocal restart_called
                 restart_called = True
+                return True
 
             from deepagents_code.config import settings
 
@@ -11140,6 +11141,52 @@ class TestRestartCommand:
             assert reload_called
             assert clear_called
             assert restart_called
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Restarting server" in m for m in app_msgs)
+            assert any("Restart complete" in m for m in app_msgs)
+
+    async def test_failed_restart_suppresses_completion_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed restart shows "Restarting..." but not "Restart complete.".
+
+        Guards the conditional gate in `_handle_restart_command`: the success
+        banner is only mounted when `_restart_server_manual()` returns `True`.
+        On failure the recovery UI (via `ServerStartFailed`) is the user's
+        feedback, so the misleading "Restart complete." must stay suppressed.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            restart_called = False
+
+            def _reload() -> list[str]:
+                return []
+
+            async def _fake_restart() -> bool:  # noqa: RUF029  # awaited by handler
+                nonlocal restart_called
+                restart_called = True
+                return False
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", _reload)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert restart_called
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Restarting server" in m for m in app_msgs)
+            assert not any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(
         self, monkeypatch: pytest.MonkeyPatch
@@ -11305,8 +11352,9 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            await app._restart_server_manual()
+            result = await app._restart_server_manual()
 
+            assert result is True
             proc.restart.assert_awaited_once()
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
@@ -11327,8 +11375,9 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            await app._restart_server_manual()
+            result = await app._restart_server_manual()
 
+            assert result is False
             failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
             assert len(failed) == 1
             assert isinstance(failed[0].error, RuntimeError)
@@ -11352,13 +11401,14 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            await app._respawn_server(
+            result = await app._respawn_server(
                 log_message="restart timed out",
                 mcp_failure_log="",
                 mcp_failure_toast="",
                 restart_timeout=0.01,
             )
 
+            assert result is False
             failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
             assert len(failed) == 1
             assert isinstance(failed[0].error, asyncio.TimeoutError)
@@ -11386,12 +11436,45 @@ class TestRespawnServer:
             posted: list[Any] = []
             monkeypatch.setattr(app, "post_message", posted.append)
 
-            await app._restart_server_manual()
+            result = await app._restart_server_manual()
 
+            # A non-fatal MCP preload error still counts as a successful
+            # restart — the server came up; only metadata refresh degraded.
+            assert result is True
             proc.restart.assert_awaited_once()
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
             assert ready[0].mcp_server_info is None
+
+    async def test_no_owned_subprocess_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns `False` without side effects when there is no owned server.
+
+        Defensive backstop: callers guard this upstream, but `_respawn_server`
+        must still report failure (and post nothing) when invoked with no
+        subprocess to restart.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = None
+
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            result = await app._respawn_server(
+                log_message="",
+                mcp_failure_log="",
+                mcp_failure_toast="",
+            )
+
+            assert result is False
+            assert not any(
+                isinstance(m, (app.ServerReady, app.ServerStartFailed)) for m in posted
+            )
 
 
 class TestCanBypassQueue:

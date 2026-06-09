@@ -1607,6 +1607,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._disk_load_complete = True
             await self._show_mount_error(str(exc))
             return
+        except Exception as exc:
+            # An unexpected error (e.g. a malformed row raising ValueError) must
+            # still mark the load complete and surface the failure; otherwise the
+            # picker stays stuck on the "Loading threads..." placeholder forever.
+            # CancelledError is a BaseException and is intentionally not caught
+            # here, so a superseding exclusive worker keeps ownership of the flag.
+            logger.exception("Unexpected error loading threads for thread selector")
+            self._disk_load_complete = True
+            await self._show_mount_error(str(exc))
+            return
 
         self._disk_load_complete = True
         apply_cached_thread_message_counts(self._threads)

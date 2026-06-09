@@ -11,13 +11,13 @@ import os
 import signal
 import time
 import webbrowser
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterator
-    from pathlib import Path
+    from collections.abc import Awaitable, Callable, Iterator
 
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
@@ -1300,7 +1300,7 @@ class TestThreadCachePrewarm:
                 patch(
                     "deepagents_code.widgets.thread_selector.ThreadSelectorScreen"
                 ) as mock_screen_cls,
-                patch.object(app, "push_screen") as mock_push_screen,
+                patch.object(app, "push_screen") as push_screen,
             ):
                 mock_screen = MagicMock()
                 mock_screen_cls.return_value = mock_screen
@@ -1312,7 +1312,59 @@ class TestThreadCachePrewarm:
                     thread_limit=9,
                     initial_threads=cached_threads,
                 )
-                mock_push_screen.assert_called_once()
+                push_screen.assert_called_once()
+
+    async def test_thread_selector_selection_refocuses_after_resume(self) -> None:
+        """Selecting a thread should not refocus chat before resume modals finish."""
+        app = DeepAgentsApp()
+        chat_input = MagicMock()
+        resume_order: list[str] = []
+        callbacks: list[Callable[[], None]] = []
+        workers: list[Awaitable[None]] = []
+        selector_callback: Callable[[str | None], None] | None = None
+
+        async def resume_thread(thread_id: str) -> None:
+            chat_input.focus_input.assert_not_called()
+            await asyncio.sleep(0)
+            resume_order.append(thread_id)
+
+        def push_screen(
+            _screen: object,
+            callback: Callable[[str | None], None],
+        ) -> None:
+            nonlocal selector_callback
+            selector_callback = callback
+
+        def run_worker(work: Awaitable[None], **_kwargs: object) -> MagicMock:
+            workers.append(work)
+            return MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._chat_input = chat_input
+            run_worker_mock = MagicMock(side_effect=run_worker)
+            app._resume_thread = resume_thread  # ty: ignore[invalid-assignment]
+            app.call_after_refresh = MagicMock(side_effect=callbacks.append)  # ty: ignore[invalid-assignment]
+            app.run_worker = run_worker_mock  # ty: ignore[invalid-assignment]
+            with (
+                patch("deepagents_code.sessions.get_thread_limit", return_value=9),
+                patch("deepagents_code.sessions.get_cached_threads", return_value=[]),
+                patch.object(app, "push_screen", side_effect=push_screen),
+            ):
+                await app._show_thread_selector()
+
+            assert selector_callback is not None
+            selector_callback("thread-abc")
+            chat_input.focus_input.assert_not_called()
+            assert len(callbacks) == 1
+
+            callbacks[0]()
+            run_worker_mock.assert_called_once()
+            assert len(workers) == 1
+            await workers[0]
+
+            assert resume_order == ["thread-abc"]
+            chat_input.focus_input.assert_called_once_with()
 
 
 class TestAppBindings:
@@ -11729,3 +11781,828 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class TestResumeThreadCwdSwitch:
+    """Tests for cwd mismatch handling while resuming threads."""
+
+    async def test_offer_switch_changes_process_cwd_and_widgets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Accepting the prompt switches process and UI cwd before startup."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        push_wait = AsyncMock(return_value="switch")
+        app._push_screen_wait = push_wait  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=True),
+        )
+        chat_input = MagicMock()
+        app._chat_input = chat_input
+        status_bar = MagicMock()
+        status_bar.cwd = str(current)
+        app._status_bar = status_bar
+        reload_calls: list[Path | None] = []
+
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            reload_calls.append(start_path)
+            return ["project_root: old -> new"]
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        with (
+            patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
+            patch("deepagents_code.model_config.clear_caches") as clear_caches,
+        ):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok == "continue"
+        assert Path.cwd() == target
+        assert app._cwd == str(target)
+        chat_input.set_cwd.assert_called_once_with(target)
+        assert status_bar.cwd == str(target)
+        assert reload_calls == [target]
+        clear_caches.assert_called_once_with()
+        screen = push_wait.call_args.args[0]
+        assert screen._project_settings_change_detected is True
+
+    async def test_offer_switch_preserves_launch_relative_server_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Launch-time cwd switches keep CLI paths rooted at launch cwd."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._server_kwargs = {
+            "assistant_id": "agent",
+            "mcp_config_path": "./mcp.json",
+            "sandbox_setup": "./setup.sh",
+        }
+        app._mcp_preload_kwargs = {"mcp_config_path": "./mcp.json"}
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            lambda **_kwargs: [],
+        )
+
+        with (
+            patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok == "continue"
+        assert Path.cwd() == target
+        assert app._server_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert app._server_kwargs["sandbox_setup"] == str(current / "setup.sh")
+        assert app._mcp_preload_kwargs["mcp_config_path"] == str(current / "mcp.json")
+
+    async def test_live_cwd_switch_rediscovers_skills(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A live cwd switch refreshes the cached skill metadata."""
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+
+        def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
+            del start_path
+            return []
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            reload_from_environment,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            scheduled_groups: list[str | None] = []
+
+            async def discover_skills() -> bool:  # noqa: RUF029
+                return True
+
+            def run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+                del args
+                group = kwargs.get("group")
+                assert group is None or isinstance(group, str)
+                scheduled_groups.append(group)
+                if inspect.iscoroutine(work):
+                    work.close()
+                return MagicMock()
+
+            monkeypatch.setattr(app, "_discover_skills", discover_skills)
+            monkeypatch.setattr(app, "run_worker", run_worker)
+
+            with patch("deepagents_code.model_config.clear_caches"):
+                app._switch_process_cwd(target)
+
+        assert scheduled_groups == ["startup-skill-discovery"]
+
+    async def test_offer_stay_warns_without_switching(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Declining the prompt leaves cwd unchanged and warns."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="stay")  # ty: ignore[invalid-assignment]
+        notify = MagicMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok == "continue"
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        notify.assert_called_once()
+        assert "Cached local context may be stale" in notify.call_args.args[0]
+
+    async def test_no_prompt_when_thread_cwd_matches_current(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Matching cwd resumes without prompting."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        push_wait = AsyncMock(return_value="switch")
+        app._push_screen_wait = push_wait  # ty: ignore[invalid-assignment]
+
+        with patch(
+            "deepagents_code.sessions.get_thread_cwd", return_value=str(tmp_path)
+        ):
+            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+
+        assert ok == "continue"
+        push_wait.assert_not_called()
+
+    async def test_resume_prefetch_failure_restores_server_backed_cwd_switch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Failed `/threads` prefetch restores cwd/server after accepted switch."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        app._lc_thread_id = "old-thread"
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        app._fetch_thread_history_data = AsyncMock(  # ty: ignore[invalid-assignment]
+            side_effect=RuntimeError("history unavailable")
+        )
+        load_thread_history = AsyncMock()
+        app._load_thread_history = load_thread_history  # ty: ignore[invalid-assignment]
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        set_spinner = AsyncMock()
+        app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
+        app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
+        replace_calls: list[Path] = []
+
+        def replace_server(cwd: Path) -> str:
+            replace_calls.append(cwd)
+            app._switch_process_cwd(cwd)
+            return "continue"
+
+        app._replace_server_after_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+            side_effect=replace_server
+        )
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            await app._resume_thread("new-thread")
+
+        assert replace_calls == [target, current]
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
+        load_thread_history.assert_not_awaited()
+
+    # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---
+
+    def test_resolve_relative_path_is_unavailable(self) -> None:
+        """A relative stored cwd cannot be honored and is flagged unavailable."""
+        status, path = DeepAgentsApp._resolve_thread_cwd_mismatch(
+            "relative/dir", "/abs/current"
+        )
+        assert status == "unavailable"
+        assert path is None
+
+    def test_resolve_missing_dir_is_unavailable(self, tmp_path: Path) -> None:
+        """An absolute stored cwd that no longer exists is flagged unavailable."""
+        missing = tmp_path / "gone"
+        status, path = DeepAgentsApp._resolve_thread_cwd_mismatch(
+            str(missing), str(tmp_path)
+        )
+        assert status == "unavailable"
+        assert path is None
+
+    def test_resolve_same_dir_is_match(self, tmp_path: Path) -> None:
+        """A stored cwd equal to the current cwd is a match (no path)."""
+        status, path = DeepAgentsApp._resolve_thread_cwd_mismatch(
+            str(tmp_path), str(tmp_path)
+        )
+        assert status == "match"
+        assert path is None
+
+    def test_resolve_different_dir_is_mismatch(self, tmp_path: Path) -> None:
+        """A real, different stored cwd is a mismatch and returns the path."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        status, path = DeepAgentsApp._resolve_thread_cwd_mismatch(
+            str(target), str(current)
+        )
+        assert status == "mismatch"
+        assert path == target.resolve()
+
+    def test_resolve_symlink_to_current_is_match(self, tmp_path: Path) -> None:
+        """A stored cwd that symlinks to the current cwd is not a mismatch."""
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        status, path = DeepAgentsApp._resolve_thread_cwd_mismatch(str(link), str(real))
+        assert status == "match"
+        assert path is None
+
+    # --- _unwrap_cwd_switch_server_result (pure staticmethod) ---
+
+    def test_unwrap_passes_through_success_tuple(self) -> None:
+        """A non-exception gathered result is returned unchanged."""
+        result = (MagicMock(), MagicMock(), None)
+        assert DeepAgentsApp._unwrap_cwd_switch_server_result(result) is result
+
+    def test_unwrap_reraises_exception(self) -> None:
+        """A gathered `Exception` is re-raised as itself."""
+        err = RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"):
+            DeepAgentsApp._unwrap_cwd_switch_server_result(err)
+
+    def test_unwrap_reraises_cancelled_error(self) -> None:
+        """A gathered `CancelledError` surfaces instead of being unpacked."""
+        with pytest.raises(asyncio.CancelledError):
+            DeepAgentsApp._unwrap_cwd_switch_server_result(asyncio.CancelledError())
+
+    # --- _thread_cwd_mismatch warning branch ---
+
+    async def test_thread_cwd_mismatch_warns_when_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing stored directory warns and yields no switch target."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="t", cwd=tmp_path)
+        notify = MagicMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        missing = tmp_path / "gone"
+
+        with patch(
+            "deepagents_code.sessions.get_thread_cwd", return_value=str(missing)
+        ):
+            result = await app._thread_cwd_mismatch("t")
+
+        assert result is None
+        notify.assert_called_once()
+        assert "is not available" in notify.call_args.args[0]
+
+    # --- _replace_server_after_cwd_switch (server lifecycle + rollback) ---
+
+    def _arm_server_backed_app(
+        self,
+        app: DeepAgentsApp,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Wire an app with an owned server and stub cwd-refresh side effects."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(
+            settings,
+            "reload_from_environment",
+            lambda **_kwargs: [],
+        )
+        app.notify = MagicMock()  # ty: ignore[invalid-assignment]
+        # The app is never mounted, so the welcome-banner lookup must miss.
+        app.query_one = MagicMock(side_effect=NoMatches("no banner"))  # ty: ignore[invalid-assignment]
+
+    async def test_replace_server_success_swaps_and_continues(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A successful restart stops the old server and emits ServerReady."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        old_server = MagicMock()
+        app._server_proc = old_server
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = None
+        new_agent = MagicMock()
+        new_server = MagicMock()
+        ready: list[Any] = []
+        app.on_deep_agents_app_server_ready = ready.append  # ty: ignore[invalid-assignment]
+
+        async def fake_start(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            return new_agent, new_server, None
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=fake_start,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "continue"
+        assert Path.cwd() == target
+        old_server.stop.assert_called_once_with()
+        assert len(ready) == 1
+        assert ready[0].agent is new_agent
+        assert ready[0].server_proc is new_server
+
+    async def test_replace_server_preserves_launch_relative_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd switch does not re-resolve restart paths in the target cwd."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        app._server_proc = MagicMock()
+        app._server_kwargs = {
+            "assistant_id": "agent",
+            "mcp_config_path": "./mcp.json",
+            "sandbox_setup": "./setup.sh",
+        }
+        app._mcp_preload_kwargs = {"mcp_config_path": "./mcp.json"}
+        ready: list[Any] = []
+        app.on_deep_agents_app_server_ready = ready.append  # ty: ignore[invalid-assignment]
+
+        async def fake_start(**kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            assert kwargs["mcp_config_path"] == str(current / "mcp.json")
+            assert kwargs["sandbox_setup"] == str(current / "setup.sh")
+            return MagicMock(), MagicMock(), None
+
+        async def fake_preload(**kwargs: object) -> list[Any]:  # noqa: RUF029
+            assert kwargs["mcp_config_path"] == str(current / "mcp.json")
+            return []
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=fake_start,
+            ),
+            patch(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                side_effect=fake_preload,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "continue"
+        assert Path.cwd() == target
+        assert app._server_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert app._server_kwargs["sandbox_setup"] == str(current / "setup.sh")
+        assert app._mcp_preload_kwargs["mcp_config_path"] == str(current / "mcp.json")
+        assert len(ready) == 1
+
+    async def test_replace_server_failure_rolls_back_and_aborts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed restart restores prior cwd/agent/server and returns abort."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        old_server = MagicMock()
+        old_agent = MagicMock()
+        app._server_proc = old_server
+        app._agent = old_agent
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = None
+        app._mcp_server_info = ["prev"]
+
+        async def boom(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            msg = "server failed"
+            raise RuntimeError(msg)
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=boom,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "abort"
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+        assert app._agent is old_agent
+        assert app._server_proc is old_server
+        assert app._mcp_server_info == ["prev"]
+        assert app._connecting is False
+        old_server.stop.assert_not_called()
+
+    async def test_replace_server_failure_rolls_back_project_dotenv(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed restart restores previous cwd-scoped dotenv settings."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _RELOADABLE_FIELDS, Settings, settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-current\n",
+        )
+        (target / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-target\n",
+        )
+        monkeypatch.chdir(current)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+        saved = {field: getattr(settings, field) for field in _RELOADABLE_FIELDS}
+
+        try:
+            app = DeepAgentsApp(thread_id="t", cwd=current)
+            self._arm_server_backed_app(app, monkeypatch)
+            monkeypatch.setattr(
+                settings,
+                "reload_from_environment",
+                Settings.reload_from_environment.__get__(settings, Settings),
+            )
+            settings.reload_from_environment(start_path=current)
+            assert settings.openai_api_key == "sk-current"
+            app._server_proc = MagicMock()
+            app._agent = MagicMock()
+            app._server_kwargs = {"assistant_id": "agent"}
+            app._mcp_preload_kwargs = None
+
+            async def boom(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+                msg = "server failed"
+                raise RuntimeError(msg)
+
+            with (
+                patch(
+                    "deepagents_code.server_manager.start_server_and_get_agent",
+                    side_effect=boom,
+                ),
+                patch("deepagents_code.model_config.clear_caches"),
+            ):
+                result = await app._replace_server_after_cwd_switch(target)
+
+            assert result == "abort"
+            assert Path.cwd() == current
+            assert settings.openai_api_key == "sk-current"
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-current"
+        finally:
+            for field, value in saved.items():
+                setattr(settings, field, value)
+            config_mod._dotenv_loaded_values.clear()
+
+    async def test_replace_server_propagates_non_exception_after_rollback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-`Exception` failure rolls back, then propagates (not 'abort')."""
+
+        class _CwdSwitchFatalError(BaseException):
+            """Test-only non-`Exception` signal."""
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        old_server = MagicMock()
+        old_agent = MagicMock()
+        app._server_proc = old_server
+        app._agent = old_agent
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = None
+
+        async def fatal(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            raise _CwdSwitchFatalError
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=fatal,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+            pytest.raises(_CwdSwitchFatalError),
+        ):
+            await app._replace_server_after_cwd_switch(target)
+
+        assert Path.cwd() == current
+        assert app._agent is old_agent
+        assert app._server_proc is old_server
+        assert app._connecting is False
+        old_server.stop.assert_not_called()
+
+    async def test_replace_server_preserves_mcp_info_on_preload_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An MCP preload failure keeps prior tool metadata, not None."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        self._arm_server_backed_app(app, monkeypatch)
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._mcp_preload_kwargs = {"mcp_config_path": None}
+        app._mcp_server_info = ["prev-mcp"]
+        ready: list[Any] = []
+        app.on_deep_agents_app_server_ready = ready.append  # ty: ignore[invalid-assignment]
+
+        async def fake_start(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
+            return MagicMock(), MagicMock(), None
+
+        async def boom_mcp(**_kwargs: object) -> list[Any]:  # noqa: RUF029
+            msg = "mcp down"
+            raise RuntimeError(msg)
+
+        with (
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=fake_start,
+            ),
+            patch(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                side_effect=boom_mcp,
+            ),
+            patch("deepagents_code.model_config.clear_caches"),
+        ):
+            result = await app._replace_server_after_cwd_switch(target)
+
+        assert result == "continue"
+        assert len(ready) == 1
+        assert ready[0].mcp_server_info == ["prev-mcp"]
+
+    # --- _switch_process_cwd atomicity ---
+
+    async def test_switch_process_cwd_restores_cwd_on_refresh_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed project refresh undoes the chdir so cwd state stays consistent.
+
+        Guards the rollback contract: if `self._cwd` and the real process cwd
+        diverged here, `_restore_cwd_after_failed_thread_switch` would see a
+        false match and silently skip restoring.
+        """
+        from deepagents_code.config import settings
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="t", cwd=current)
+        app._chat_input = None
+        app._status_bar = None
+
+        def boom(*, start_path: Path | None = None) -> list[str]:
+            del start_path
+            msg = "reload failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(settings, "reload_from_environment", boom)
+
+        with (
+            patch("deepagents_code.model_config.clear_caches"),
+            pytest.raises(RuntimeError, match="reload failed"),
+        ):
+            app._switch_process_cwd(target)
+
+        assert Path.cwd() == current
+        assert app._cwd == str(current)
+
+    # --- _cwd_paths_equal (pure staticmethod) ---
+
+    def test_cwd_paths_equal_matches_symlinked_paths(self, tmp_path: Path) -> None:
+        """Two paths that resolve to the same directory compare equal."""
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        assert DeepAgentsApp._cwd_paths_equal(str(link), real) is True
+
+    def test_cwd_paths_equal_distinguishes_different_dirs(self, tmp_path: Path) -> None:
+        """Genuinely different directories compare unequal."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        assert DeepAgentsApp._cwd_paths_equal(str(a), b) is False
+
+    # --- _restore_cwd_after_failed_thread_switch (branches) ---
+
+    async def test_restore_after_failed_switch_is_noop_when_cwd_unchanged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A declined switch (cwd never moved) restores nothing -- no server churn."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="t", cwd=tmp_path)
+        app._server_kwargs = {"assistant_id": "agent"}
+        app._server_proc = MagicMock()
+        replace = AsyncMock()
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+
+        await app._restore_cwd_after_failed_thread_switch(Path(app._cwd))
+
+        replace.assert_not_awaited()
+
+    async def test_restore_after_failed_switch_without_owned_server_switches_back(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without an owned server, restore changes the process cwd directly."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(target)
+        app = DeepAgentsApp(thread_id="t", cwd=target)
+        app._server_kwargs = None
+        app._server_proc = None
+        switch_calls: list[Path] = []
+        monkeypatch.setattr(
+            app,
+            "_switch_process_cwd",
+            switch_calls.append,
+        )
+
+        await app._restore_cwd_after_failed_thread_switch(current)
+
+        assert switch_calls == [current]
+
+    async def test_restore_after_failed_switch_notifies_on_oserror(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed direct cwd restore warns that the directory may be wrong."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(target)
+        app = DeepAgentsApp(thread_id="t", cwd=target)
+        app._server_kwargs = None
+        app._server_proc = None
+        notify = MagicMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+
+        def boom(cwd: Path) -> None:
+            del cwd
+            msg = "cannot chdir"
+            raise OSError(msg)
+
+        monkeypatch.setattr(app, "_switch_process_cwd", boom)
+
+        await app._restore_cwd_after_failed_thread_switch(current)
+
+        notify.assert_called_once()
+        assert "wrong directory" in notify.call_args.args[0]
+
+    # --- launch-time resume isolates cwd-switch failures ---
+
+    async def test_resolve_resume_isolates_cwd_switch_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed cwd-switch offer keeps the resolved thread and warns specifically.
+
+        Regression guard for the headline fix: the cwd-switch offer must not fall
+        into the resume-resolution handler, which would discard the already
+        resolved thread and report "Could not look up thread history."
+        """
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="agent",
+            server_kwargs=None,
+            server_proc=None,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "thread-x"
+            notify = MagicMock()
+            app.notify = notify  # ty: ignore[invalid-assignment]
+            monkeypatch.setattr(
+                app,
+                "_offer_thread_cwd_switch",
+                AsyncMock(side_effect=RuntimeError("offer boom")),
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+        assert app._lc_thread_id == "thread-x"
+        messages = [call.args[0] for call in notify.call_args_list]
+        assert any(
+            "could not check its working directory" in message for message in messages
+        )
+        assert all(
+            "Could not look up thread history" not in message for message in messages
+        )

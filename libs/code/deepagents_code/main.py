@@ -1402,7 +1402,7 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
         model_result = create_model(
@@ -1421,7 +1421,7 @@ async def _run_acp_cli_async(
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
 
-    tools: list[Any] = [fetch_url]
+    tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
         tools.append(web_search)
 

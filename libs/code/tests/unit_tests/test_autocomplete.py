@@ -677,9 +677,15 @@ class TestFuzzyFileControllerWarmCacheRace:
         controller.set_cwd(sub_b)
         await controller.warm_cache()
 
+        # The newer warmer fully resolved before the stale one is released.
+        assert controller._project_root == proj_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
         release_a.set()
         await task_a
 
+        # The stale warmer finished last but left the newer state untouched.
         assert controller._project_root == proj_b
         assert controller._project_root_pending is False
         assert controller._file_cache == ["b/file.py"]
@@ -715,10 +721,17 @@ class TestFuzzyFileControllerWarmCacheRace:
         controller.set_cwd(sub_b)
         await controller.warm_cache()
 
+        # The newer warmer fully resolved before the stale one is released.
+        assert controller._project_root == sub_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
         release_a.set()
         await task_a
 
+        # The stale warmer finished last but left the newer state untouched.
         assert controller._project_root == sub_b
+        assert controller._project_root_pending is False
         assert controller._file_cache == ["b/file.py"]
 
     async def test_aba_stale_warmer_does_not_overwrite_file_cache(
@@ -769,4 +782,5 @@ class TestFuzzyFileControllerWarmCacheRace:
         await old_task_a
 
         assert controller._project_root == sub_a
+        assert controller._project_root_pending is False
         assert controller._file_cache == ["a/new.py"]

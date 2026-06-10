@@ -554,9 +554,12 @@ class FuzzyFileController:
         filesystem walk runs in a worker thread instead of on the event loop.
 
         Warmers are scheduled non-exclusively, so quick cwd/cache invalidations
-        can run concurrently. A monotonic generation is snapshotted before each
-        await and re-checked after, so a warmer for a superseded state cannot
-        overwrite controller state belonging to a newer generation.
+        can run concurrently. The generation is snapshotted once before the first
+        await and re-checked after each await, so a warmer whose generation has
+        been superseded drops its results instead of overwriting controller state
+        belonging to a newer generation. (Snapshotting again before the second
+        await would defeat the guard: it would match the post-supersession
+        generation and let a stale-root file walk win.)
         """
         cwd = self._cwd
         generation = self._cache_generation

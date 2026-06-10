@@ -181,6 +181,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
+    from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
@@ -1841,6 +1842,14 @@ class DeepAgentsApp(App):
 
         self._shell_running = False
         """True while a `!` shell command is executing."""
+
+        self._pending_shell_messages: list[BaseMessage] = []
+        """Non-incognito `!` command/output messages awaiting flush.
+
+        `!` runs outside the agent graph, so its command/output are buffered
+        here and written into thread state on the next user send (see
+        `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
+        never appends here."""
 
         self._prewarm_worker: Worker[None] | None = None
         """Background worker that prewarms `deepagents`/LangChain imports.
@@ -4880,10 +4889,11 @@ class DeepAgentsApp(App):
     async def _run_startup_command(self, command: str) -> None:
         """Execute the `--startup-cmd` and render its output in the transcript.
 
-        Uses the same worker-backed subprocess path as the interactive `!`
-        shell prefix, with an app-style header (since the user did not type
-        the command). Non-zero exit is already rendered as an error by
-        `_run_shell_task` but does not abort the session.
+        Uses the same worker-backed subprocess path as the interactive shell
+        prefix, with an app-style header (since the user did not type the
+        command). Startup command output is local setup output and is not
+        buffered into model context. Non-zero exit is already rendered as an
+        error by `_run_shell_task` but does not abort the session.
 
         Raises:
             CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
@@ -4903,7 +4913,10 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         try:
-            worker = self.run_worker(self._run_shell_task(command), exclusive=False)
+            worker = self.run_worker(
+                self._run_shell_task(command, incognito=True),
+                exclusive=False,
+            )
         except Exception:
             # `run_worker` failed synchronously — `_run_shell_task`'s finally
             # never fires, so reset the busy flags here or the UI stays wedged.
@@ -5543,10 +5556,19 @@ class DeepAgentsApp(App):
                 )
             except TimeoutError:
                 await self._kill_shell_process()
-                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                err_msg = "Command timed out (60s limit)"
+                await self._mount_message(ErrorMessage(err_msg))
+                if not incognito:
+                    self._buffer_shell_for_model_context(command, err_msg, None)
                 return
             except asyncio.CancelledError:
                 await self._kill_shell_process()
+                if not incognito:
+                    self._buffer_shell_for_model_context(
+                        command,
+                        "Command interrupted",
+                        None,
+                    )
                 raise
 
             # Start branch refresh as soon as the shell exits so it can overlap
@@ -5574,6 +5596,11 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
+            # Non-incognito `!` only; `!!` stays local. Buffered, not written
+            # now — see `_buffer_shell_for_model_context` for the rationale.
+            if not incognito:
+                self._buffer_shell_for_model_context(command, output, proc.returncode)
+
             # Anchor to bottom so shell output stays visible
             with suppress(NoMatches, ScreenStackError):
                 self.query_one("#chat", VerticalScroll).anchor()
@@ -5582,6 +5609,8 @@ class DeepAgentsApp(App):
             logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
+            if not incognito:
+                self._buffer_shell_for_model_context(command, err_msg, None)
         except Exception:
             # Defense in depth: a crash between subprocess read and
             # `_mount_message` could leave the user with no signal that the
@@ -5600,6 +5629,81 @@ class DeepAgentsApp(App):
             raise
         finally:
             await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
+
+    def _buffer_shell_for_model_context(
+        self, command: str, output: str, returncode: int | None
+    ) -> None:
+        """Buffer a non-incognito `!` command/output for the next user send.
+
+        `!` commands run as local subprocesses that bypass the agent graph, so
+        their command/output never reach the checkpoint the model reads. Rather
+        than write to thread state immediately (which would spend a model turn
+        on output the user may never reference), the command/output are queued
+        here as a `HumanMessage`/`AIMessage` pair and flushed when the user
+        sends their next message (see `_flush_pending_shell_messages`). `!!`
+        (incognito) callers skip this and stay local-only.
+
+        Args:
+            command: The shell command that was run (without the `!` prefix).
+            output: Combined stdout/stderr captured from the command.
+            returncode: Process exit code, or `None` if unavailable.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        body = output or "(no output)"
+        self._pending_shell_messages.extend(
+            [
+                HumanMessage(content=f"!{command}"),
+                AIMessage(content=f"```\n{body}\n```{status}"),
+            ]
+        )
+
+    async def _flush_pending_shell_messages(self) -> None:
+        """Write buffered `!` command/output into thread state, then clear it.
+
+        Called right before a user-driven agent turn so the model sees any
+        `!` commands run since the last turn. Adopts the session thread id when
+        one has not been resolved yet (e.g. a `!` run before the first send).
+        Best-effort: a checkpoint write failure is logged and surfaced as a
+        toast, and the buffer is still cleared so stale output is not replayed
+        onto a later turn. Returns early when nothing is buffered; when output
+        is buffered but no agent/thread is active yet, the buffer is left intact
+        for a later send rather than dropped.
+        """
+        if not self._pending_shell_messages:
+            return
+        if not self._lc_thread_id and self._session_state:
+            self._lc_thread_id = self._session_state.thread_id
+        if not self._agent or not self._lc_thread_id:
+            return
+
+        messages = self._pending_shell_messages
+        self._pending_shell_messages = []
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        remote_config: dict[str, Any] = {
+            "configurable": {"thread_id": self._lc_thread_id}
+        }
+        try:
+            # Suppress the standalone `UpdateState` LangSmith run this write would
+            # otherwise emit — it's bookkeeping, not a user-driven agent turn.
+            from langsmith import tracing_context
+
+            with tracing_context(enabled=False):
+                if remote := self._remote_agent():
+                    await remote.aensure_thread(remote_config)
+                await self._agent.aupdate_state(config, {"messages": messages})
+        except Exception:  # best-effort; UI already showed the output
+            # Parity with the offload path's `aupdate_state` failure handling:
+            # log the traceback and surface a non-blocking toast, since the
+            # model silently lacking output the user expects is confusing.
+            logger.exception("Failed to flush shell command into model context")
+            with suppress(Exception):
+                self.notify(
+                    "Couldn't add ! output to the model's context.",
+                    severity="warning",
+                    markup=False,
+                )
 
     async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
         """Clean up after shell command task completes or is cancelled.
@@ -6672,6 +6776,10 @@ class DeepAgentsApp(App):
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
 
+            # Flush any buffered non-incognito `!` shell output into thread
+            # state so this turn's model sees commands run since the last turn.
+            await self._flush_pending_shell_messages()
+
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
 
@@ -7510,6 +7618,9 @@ class DeepAgentsApp(App):
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
+        # Drop buffered `!` shell output so it never leaks across a thread
+        # reset, switch, or resume.
+        self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
         try:
@@ -7553,7 +7664,7 @@ class DeepAgentsApp(App):
             return
 
         if not self._chat_input.value.strip():
-            self._chat_input.value = msg.text
+            self._chat_input.set_value_at_end(msg.text)
             self.notify("Queued message moved to input", timeout=2)
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)

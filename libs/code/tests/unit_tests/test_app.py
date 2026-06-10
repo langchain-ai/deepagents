@@ -4130,6 +4130,9 @@ class TestShellCommandInterrupt:
                 await app._run_shell_task("sleep 999")
 
             mock_killpg.assert_called()
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!sleep 999"
+            assert "Command interrupted" in buffered[1].content
 
     async def test_cleanup_clears_state(self) -> None:
         """_cleanup_shell_task should reset all shell state."""
@@ -4414,6 +4417,9 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             error_msgs = app.query(ErrorMessage)
             assert any("timed out" in w._content for w in error_msgs)
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!sleep 999"
+            assert "timed out" in buffered[1].content
 
     async def test_incognito_timeout_feedback_is_not_model_visible(self) -> None:
         """Incognito timeout feedback should stay out of user/assistant records."""
@@ -4525,6 +4531,9 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             error_msgs = app.query(ErrorMessage)
             assert any("Permission denied" in w._content for w in error_msgs)
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!forbidden"
+            assert "Permission denied" in buffered[1].content
 
     async def test_handle_shell_command_sets_running_state(self) -> None:
         """_handle_shell_command should set _shell_running and spawn worker."""
@@ -4644,6 +4653,347 @@ class TestShellCommandInterrupt:
             and "secret leak" in msg.content
             for msg in messages
         )
+
+    async def test_non_incognito_shell_buffers_for_model_context(self) -> None:
+        """A `!` command/output is buffered, not written immediately."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello world\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("echo hello world", incognito=False)
+                await pilot.pause()
+
+        # Deferred: nothing written to graph state until the next user send.
+        app._agent.aupdate_state.assert_not_awaited()
+        buffered = app._pending_shell_messages
+        assert isinstance(buffered[0], HumanMessage)
+        assert buffered[0].content == "!echo hello world"
+        assert isinstance(buffered[1], AIMessage)
+        assert "hello world" in buffered[1].content
+
+    async def test_pending_shell_flushed_on_next_user_send(self) -> None:
+        """Buffered `!` output is written to graph state on the next send."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo hi"),
+            AIMessage(content="```\nhi\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("what did that print?")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        call = app._agent.aupdate_state.await_args
+        assert call is not None
+        assert call.args[0]["configurable"]["thread_id"] == "thread-123"
+        sent = call.args[1]["messages"]
+        assert sent[0].content == "!echo hi"
+        # Buffer is drained so it is not replayed onto a later turn.
+        assert app._pending_shell_messages == []
+
+    async def test_pending_shell_first_message_uses_session_thread(self) -> None:
+        """A first-message `!` command should flush to the new session thread."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo before-chat"),
+            AIMessage(content="```\nbefore-chat\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._lc_thread_id = None
+            app._session_state.thread_id = "thread-first"
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("what did that print?")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        call = app._agent.aupdate_state.await_args
+        assert call is not None
+        assert call.args[0]["configurable"]["thread_id"] == "thread-first"
+        assert app._lc_thread_id == "thread-first"
+        assert app._pending_shell_messages == []
+
+    async def test_pending_shell_flush_ensures_remote_thread_first(self) -> None:
+        """Server mode must register a fresh thread before flushing shell output."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_code.remote_client import RemoteAgent
+
+        calls: list[str] = []
+        remote = MagicMock(spec=RemoteAgent)
+        remote.aensure_thread = AsyncMock(
+            side_effect=lambda _config: calls.append("ensure")
+        )
+        agent = MagicMock()
+        agent.aupdate_state = AsyncMock(
+            side_effect=lambda _config, _values: calls.append("update")
+        )
+
+        app = DeepAgentsApp(agent=agent, thread_id="thread-remote")
+        app._pending_shell_messages = [
+            HumanMessage(content="!pwd"),
+            AIMessage(content="```\n/tmp/project\n```"),
+        ]
+
+        with patch.object(app, "_remote_agent", return_value=remote):
+            await app._flush_pending_shell_messages()
+
+        remote.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "thread-remote"}}
+        )
+        agent.aupdate_state.assert_awaited_once()
+        assert calls == ["ensure", "update"]
+        assert app._pending_shell_messages == []
+
+    async def test_incognito_shell_output_not_buffered(self) -> None:
+        """A `!!` command/output must never be buffered for the model."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ),
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        assert app._pending_shell_messages == []
+        app._agent.aupdate_state.assert_not_awaited()
+
+    async def test_startup_command_output_not_buffered(self) -> None:
+        """`--startup-cmd` output is local setup output, not model context."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret-startup\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_startup_command("echo secret-startup")
+                await pilot.pause()
+
+        assert app._pending_shell_messages == []
+        app._agent.aupdate_state.assert_not_awaited()
+
+    async def test_non_incognito_shell_nonzero_exit_buffered(self) -> None:
+        """A failing `!` command should buffer its exit code for the model."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"boom"))
+        mock_proc.returncode = 2
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("falsey", incognito=False)
+                await pilot.pause()
+
+        buffered = app._pending_shell_messages
+        assert "boom" in buffered[1].content
+        assert "exited with code 2" in buffered[1].content
+
+    async def test_clear_messages_drops_pending_shell_buffer(self) -> None:
+        """`_clear_messages` must drop buffered `!` output (no cross-thread leak)."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo secret"),
+            AIMessage(content="```\nsecret\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._clear_messages()
+
+        assert app._pending_shell_messages == []
+
+    async def test_pending_shell_flush_failure_drops_buffer(self) -> None:
+        """A checkpoint-write failure must not raise and must clear the buffer."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock(
+            side_effect=RuntimeError("checkpoint down")
+        )
+        app._lc_thread_id = "thread-123"
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo hi"),
+            AIMessage(content="```\nhi\n```"),
+        ]
+
+        # Must not propagate; buffer is dropped so stale output is not replayed.
+        await app._flush_pending_shell_messages()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        assert app._pending_shell_messages == []
+
+    async def test_pending_shell_flush_without_agent_retains_buffer(self) -> None:
+        """With no agent/thread, the buffer is kept for a later send, not dropped."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = None
+        app._lc_thread_id = None
+        app._session_state = None
+        buffered = [
+            HumanMessage(content="!echo hi"),
+            AIMessage(content="```\nhi\n```"),
+        ]
+        app._pending_shell_messages = list(buffered)
+
+        await app._flush_pending_shell_messages()
+
+        # Retained verbatim for a later flush once an agent/thread exists.
+        assert app._pending_shell_messages == buffered
+
+    async def test_pending_shell_flush_precedes_agent_worker(self) -> None:
+        """The `!` flush must land before the user-message turn is spawned."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo hi"),
+            AIMessage(content="```\nhi\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            manager = MagicMock()
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                manager.attach_mock(app._agent.aupdate_state, "flush")
+                manager.attach_mock(mock_rw, "spawn")
+                await app._send_to_agent("what did that print?")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+        # Flush the `!` pair into state before spawning the turn, so the model
+        # sees the shell output ahead of this turn's user message.
+        names = [c[0] for c in manager.mock_calls if c[0] in {"flush", "spawn"}]
+        assert names == ["flush", "spawn"]
+
+    async def test_buffer_shell_appends_in_command_order(self) -> None:
+        """Multiple `!` commands buffer as ordered Human/AI pairs."""
+        app = DeepAgentsApp()
+        app._buffer_shell_for_model_context("cmd-a", "out-a", 0)
+        app._buffer_shell_for_model_context("cmd-b", "out-b", 0)
+
+        contents = [m.content for m in app._pending_shell_messages]
+        assert contents[0] == "!cmd-a"
+        assert "out-a" in contents[1]
+        assert contents[2] == "!cmd-b"
+        assert "out-b" in contents[3]
+
+    async def test_buffer_shell_empty_output_uses_placeholder(self) -> None:
+        """Empty output is buffered as `(no output)` so the pair is never blank."""
+        app = DeepAgentsApp()
+        app._buffer_shell_for_model_context("true", "", 0)
+
+        assert "(no output)" in app._pending_shell_messages[1].content
+
+    async def test_buffer_shell_zero_exit_omits_status_suffix(self) -> None:
+        """A successful `!` command must not annotate an exit code."""
+        app = DeepAgentsApp()
+        app._buffer_shell_for_model_context("echo ok", "ok", 0)
+
+        assert "exited with code" not in app._pending_shell_messages[1].content
 
     async def test_unknown_input_mode_does_not_dispatch_to_agent(self) -> None:
         """An unrecognized mode must surface an error rather than reach the LLM.

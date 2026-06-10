@@ -7799,12 +7799,14 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If a focused input has a non-empty selection, copy it
+        1. If a focused input has a non-empty selection, copy it (a failed
+            copy falls through to the branches below)
         2. If shell command is running, kill it
         3. If approval menu is active, reject it
-        4. If agent is running, interrupt it (preserve input)
-        5. If double press (quit_pending), quit
-        6. Otherwise show quit hint
+        4. If ask_user menu is active, cancel it
+        5. If agent is running, interrupt it (preserve input)
+        6. If double press (quit_pending), quit
+        7. Otherwise show quit hint
         """
         # If a focused input widget has selected text, copy it instead of
         # quitting/interrupting so Ctrl+C matches standard terminal behavior.
@@ -7850,8 +7852,12 @@ class DeepAgentsApp(App):
         """Copy the focused input's selection to the clipboard, if any.
 
         Returns:
-            `True` when a non-empty selection was copied (so the caller should
-            skip quit/interrupt), `False` otherwise.
+            `True` when a non-empty selection was copied to the clipboard, so
+                the caller should treat the keypress as handled and skip
+                quit/interrupt. `False` when there was nothing to copy or every
+                clipboard backend failed, so the caller should fall through to
+                its normal quit/interrupt handling (a failed copy already
+                notifies the user).
         """
         from textual.widgets import Input, TextArea
 
@@ -7877,7 +7883,7 @@ class DeepAgentsApp(App):
                 timeout=3,
                 markup=False,
             )
-        return True
+        return success
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.

@@ -1418,6 +1418,11 @@ class TestCtrlCCopySelection:
 
             assert text_area.selected_text == "hello world"
 
+            # Arm quit first so the post-copy assertion that `_quit_pending` is
+            # reset is load-bearing (it defaults to False, so without arming it
+            # the assertion would pass even if the reset were removed).
+            app._quit_pending = True
+
             with (
                 patch(
                     "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -1484,6 +1489,9 @@ class TestCtrlCCopySelection:
 
             assert test_input.selected_text == "abc123"
 
+            # Arm quit so the post-copy reset assertion is load-bearing.
+            app._quit_pending = True
+
             with (
                 patch(
                     "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -1530,6 +1538,142 @@ class TestCtrlCCopySelection:
                 timeout=3,
                 markup=False,
             )
+
+    async def test_ctrl_c_copy_takes_precedence_over_agent_interrupt(self) -> None:
+        """A successful copy wins over interrupting a running agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+            text_area.select_all()
+            await pilot.pause()
+
+            assert text_area.selected_text == "hello world"
+
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "hello world")
+            # Copy consumed the keypress, so the agent worker is left running.
+            mock_worker.cancel.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_copy_failure_falls_through_to_interrupt(self) -> None:
+        """When the copy fails, Ctrl+C still interrupts the running agent.
+
+        Returning `True` unconditionally would swallow the keypress and leave
+        the agent running with only a transient warning, making interrupt
+        unreachable while a selection lingers. The copy must degrade to the
+        safety-critical interrupt path on failure.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+            text_area.select_all()
+            await pilot.pause()
+
+            assert text_area.selected_text == "hello world"
+
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(False, "boom"),
+                ) as copy_mock,
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "hello world")
+            notify_mock.assert_called_once_with(
+                "Failed to copy selection: boom",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+            # Fell through to the agent-interrupt branch instead of quitting.
+            mock_worker.cancel.assert_called_once()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
+        """Ctrl+C with a non-Input/TextArea widget focused never copies."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            checkbox = Checkbox()
+            await app.mount(checkbox)
+            checkbox.focus()
+            await pilot.pause()
+
+            assert app.focused is checkbox
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
+
+    async def test_ctrl_c_no_focus_falls_through(self) -> None:
+        """Ctrl+C with nothing focused never copies and does not crash."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.set_focus(None)
+            await pilot.pause()
+            assert app.focused is None
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
 
 
 class TestModalScreenEscapeDismissal:

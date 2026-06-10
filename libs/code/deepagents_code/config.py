@@ -1158,6 +1158,7 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         IMPLICIT_AUTH_PROVIDERS,
         NO_AUTH_REQUIRED_PROVIDERS,
         PROVIDER_API_KEY_ENV,
+        RETRY_PARAM_BY_PROVIDER,
     )
 
     try:
@@ -1181,6 +1182,7 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         set(PROVIDER_API_KEY_ENV)
         | set(NO_AUTH_REQUIRED_PROVIDERS)
         | set(IMPLICIT_AUTH_PROVIDERS)
+        | set(RETRY_PARAM_BY_PROVIDER)
     )
     for key, value in section.items():
         if (
@@ -1311,6 +1313,52 @@ def _resolve_retry_kwargs(
     if resolved is None:
         return {}
     return {retry_param: resolved}
+
+
+CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
+"""Internal carrier key for the `--max-retries` CLI flag.
+
+`cli_main` stashes the flag value under this key in the `model_params` dict it
+forwards to the run, and `create_model` pops it before constructing the model.
+This lets the CLI value ride the existing `model_params`/`extra_kwargs` carrier
+to the one place that authoritatively resolves the provider, where it can be
+folded under the provider's *resolved* retry-param name (see
+`_resolve_retry_param_name`) rather than a hardcoded `max_retries`.
+
+The key is internal-only: it is popped before reaching any model constructor and
+is never serialized or surfaced to users. It is deliberately unlikely to collide
+with a real constructor kwarg name.
+"""
+
+
+def _resolve_retry_param_name(provider: str) -> str:
+    """Resolve the constructor kwarg name that sets `provider`'s retry count.
+
+    Honors a `[retries.<provider>].param` override in `config.toml`, then the
+    registered `RETRY_PARAM_BY_PROVIDER` mapping, and finally falls back to
+    `max_retries` -- the near-universal LangChain chat-model kwarg -- for
+    providers that are neither registered nor configured.
+
+    Args:
+        provider: Provider the retry kwarg name is being resolved for.
+
+    Returns:
+        The constructor kwarg name to use for the retry count.
+    """
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    section = _read_config_toml_retries()
+    if section:
+        provider_section = section.get(provider)
+        if isinstance(provider_section, dict) and "param" in provider_section:
+            configured = _coerce_retry_param(
+                provider_section["param"],
+                source=f"[retries.{provider}].param",
+            )
+            if configured is not None:
+                return configured
+
+    return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
 
 
 def _read_config_toml_skills_dirs() -> list[str] | None:
@@ -3014,6 +3062,11 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+
+            A `CLI_MAX_RETRIES_KEY` entry (set by the `--max-retries` flag) is
+            treated specially: it is popped here and re-applied under the
+            provider's resolved retry-param name with top precedence, rather than
+            being forwarded verbatim to the constructor.
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (dcode wins).
@@ -3134,9 +3187,22 @@ def create_model(
             )
             raise ModelConfigError(msg) from exc
 
-    # App --model-params take highest priority
+    # App --model-params take highest priority. Copy defensively before popping
+    # the CLI sentinel so a caller that retains and reuses this dict (e.g. the
+    # app re-creating the model on a runtime `/model` switch) keeps the sentinel
+    # for the next provider's resolution.
+    cli_max_retries: int | None = None
     if extra_kwargs:
+        extra_kwargs = dict(extra_kwargs)
+        cli_max_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
         kwargs.update(extra_kwargs)
+
+    # `--max-retries` outranks everything: fold it under the provider's resolved
+    # retry-param name (honoring `[retries.<provider>].param`) so a custom
+    # provider whose kwarg is not `max_retries` is still served. Applied after
+    # the `extra_kwargs` merge so it wins over a `max_retries` in `--model-params`.
+    if cli_max_retries is not None:
+        kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()

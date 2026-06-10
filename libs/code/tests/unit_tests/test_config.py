@@ -11,6 +11,7 @@ import pytest
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code.config import (
+    CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     ModelResult,
@@ -20,6 +21,7 @@ from deepagents_code.config import (
     _get_provider_kwargs,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
+    _resolve_retry_param_name,
     build_langsmith_thread_url,
     create_model,
     detect_mode_prefix,
@@ -1032,6 +1034,7 @@ class TestRetriesConfig:
             ("anthropic", "max_retries"),
             ("azure_openai", "max_retries"),
             ("baseten", "max_retries"),
+            ("bedrock", "max_retries"),
             ("deepseek", "max_retries"),
             ("fireworks", "max_retries"),
             ("google_genai", "max_retries"),
@@ -1221,6 +1224,129 @@ max_retries = 3
         assert "'fireorks' is not a known provider" in caplog.text
         # The correctly spelled provider table must not be flagged.
         assert "[retries.fireworks]" not in caplog.text
+
+    def test_read_retries_allows_bedrock_table(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Retry-capable providers without API-key env entries are still known."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.bedrock]\nmax_retries = 3\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            section = _read_config_toml_retries()
+
+        assert section == {"bedrock": {"max_retries": 3}}
+        assert "is not a known provider" not in caplog.text
+
+
+class TestResolveRetryParamName:
+    """`_resolve_retry_param_name` picks the constructor kwarg for a provider."""
+
+    def test_registered_provider_returns_mapped_name(self) -> None:
+        """A registered provider resolves to its mapped kwarg."""
+        assert _resolve_retry_param_name("openai") == "max_retries"
+
+    def test_unknown_provider_defaults_to_max_retries(self) -> None:
+        """An unregistered provider falls back to the universal `max_retries`."""
+        assert _resolve_retry_param_name("some_unregistered_provider") == "max_retries"
+
+    def test_config_param_override_wins_for_custom_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """`[retries.<provider>].param` names the kwarg for a custom provider."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.custom]\nparam = "num_retries"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("custom") == "num_retries"
+
+    def test_config_param_override_wins_for_registered_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured `param` overrides even a registered provider's mapping."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.openai]\nparam = "request_retries"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("openai") == "request_retries"
+
+    def test_invalid_config_param_falls_back_to_registry(self, tmp_path: Path) -> None:
+        """An invalid `param` value is ignored, falling back to the registry."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.openai]\nparam = "not an identifier"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("openai") == "max_retries"
+
+
+class TestCreateModelMaxRetries:
+    """`create_model` folds the `--max-retries` sentinel into the constructor.
+
+    The flag value rides `extra_kwargs` under `CLI_MAX_RETRIES_KEY`; these tests
+    mock `init_chat_model` and assert on the kwargs forwarded to it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_folds_to_resolved_param(self, mock_init: Mock) -> None:
+        """A registered provider receives the value under `max_retries`."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 4}
+        )
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["max_retries"] == 4
+        # The internal carrier must never reach the constructor.
+        assert CLI_MAX_RETRIES_KEY not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_beats_model_params_max_retries(self, mock_init: Mock) -> None:
+        """The CLI flag outranks a `max_retries` supplied via `--model-params`."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 4, "max_retries": 1},
+        )
+        assert mock_init.call_args.kwargs["max_retries"] == 4
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_folds_to_configured_param(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """A `[retries.<provider>].param` override redirects the folded kwarg."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.anthropic]\nparam = "request_retries"\n')
+        mock_init.return_value = Mock()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={CLI_MAX_RETRIES_KEY: 4},
+            )
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["request_retries"] == 4
+        assert CLI_MAX_RETRIES_KEY not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_zero_is_forwarded(self, mock_init: Mock) -> None:
+        """`--max-retries 0` (disable retries) folds through, not dropped."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 0}
+        )
+        assert mock_init.call_args.kwargs["max_retries"] == 0
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_caller_extra_kwargs_not_mutated(self, mock_init: Mock) -> None:
+        """The caller's dict keeps the sentinel for reuse (runtime model switch)."""
+        mock_init.return_value = Mock()
+        extra = {CLI_MAX_RETRIES_KEY: 4}
+        create_model("anthropic:claude-sonnet-4-5", extra_kwargs=extra)
+        assert extra == {CLI_MAX_RETRIES_KEY: 4}
 
 
 class TestCreateModelProfileOverrides:

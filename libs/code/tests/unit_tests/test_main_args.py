@@ -567,7 +567,13 @@ class TestModelParamsArgument:
 
 
 class TestMaxRetriesForwarding:
-    """`--max-retries` folds into the model_params forwarded to the run."""
+    """`--max-retries` rides the forwarded model_params under an internal key.
+
+    The value is carried under `CLI_MAX_RETRIES_KEY` rather than a literal
+    `max_retries` so `create_model` can fold it under the resolved provider's
+    retry-param name; see `TestRetriesConfig` in `test_config.py` for the
+    folding/precedence behavior at the `create_model` layer.
+    """
 
     def _run_model_params(self, argv: list[str]) -> dict[str, object] | None:
         """Drive `cli_main` and return the `model_params` passed downstream."""
@@ -593,15 +599,20 @@ class TestMaxRetriesForwarding:
 
     def test_folds_into_model_params(self) -> None:
         """`--max-retries` creates model_params when no `--model-params` is given."""
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
         argv = ["deepagents", "-n", "task", "--max-retries", "4"]
-        assert self._run_model_params(argv) == {"max_retries": 4}
+        assert self._run_model_params(argv) == {CLI_MAX_RETRIES_KEY: 4}
 
-    def test_overrides_model_params_value(self) -> None:
-        """`--max-retries` wins over a `max_retries` in `--model-params`.
+    def test_carried_alongside_model_params(self) -> None:
+        """`--max-retries` rides next to `--model-params` without clobbering it.
 
-        Sibling keys from `--model-params` are preserved, guarding the
-        precedence contract (CLI flag beats `--model-params`).
+        The flag value is stashed under the internal key, leaving any explicit
+        `--model-params` entries (including a literal `max_retries`) untouched in
+        the forwarded dict. Precedence is resolved later, in `create_model`.
         """
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
         argv = [
             "deepagents",
             "-n",
@@ -612,8 +623,9 @@ class TestMaxRetriesForwarding:
             "4",
         ]
         assert self._run_model_params(argv) == {
-            "max_retries": 4,
+            "max_retries": 1,
             "temperature": 0.5,
+            CLI_MAX_RETRIES_KEY: 4,
         }
 
     def test_absent_leaves_model_params_untouched(self) -> None:

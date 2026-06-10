@@ -1922,9 +1922,14 @@ def cli_main() -> None:
 
         max_retries = getattr(args, "max_retries", None)
         if max_retries is not None:
+            from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
             if model_params is None:
                 model_params = {}
-            model_params["max_retries"] = max_retries
+            # Carry the flag value under an internal key; `create_model` folds it
+            # under the resolved provider's retry-param name (which may not be
+            # `max_retries` for custom providers) with top precedence.
+            model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)

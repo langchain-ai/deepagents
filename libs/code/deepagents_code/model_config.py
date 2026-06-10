@@ -530,6 +530,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "anthropic": "max_retries",
     "azure_openai": "max_retries",
     "baseten": "max_retries",
+    "bedrock": "max_retries",
     "deepseek": "max_retries",
     "fireworks": "max_retries",
     "google_genai": "max_retries",

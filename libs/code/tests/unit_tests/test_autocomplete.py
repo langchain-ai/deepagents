@@ -720,3 +720,53 @@ class TestFuzzyFileControllerWarmCacheRace:
 
         assert controller._project_root == sub_b
         assert controller._file_cache == ["b/file.py"]
+
+    async def test_aba_stale_warmer_does_not_overwrite_file_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An older A warmer must not win after an A-to-B-to-A switch."""
+        sub_a = tmp_path / "a"
+        sub_a.mkdir()
+        sub_b = tmp_path / "b"
+        sub_b.mkdir()
+
+        entered_old_a = threading.Event()
+        release_old_a = threading.Event()
+        lock = threading.Lock()
+        a_calls = 0
+
+        def fake_files(root: Path) -> list[str]:
+            nonlocal a_calls
+
+            if root == sub_a:
+                with lock:
+                    a_calls += 1
+                    call = a_calls
+                if call == 1:
+                    entered_old_a.set()
+                    release_old_a.wait(timeout=5)
+                    return ["a/old.py"]
+                return ["a/new.py"]
+            return ["b/file.py"]
+
+        monkeypatch.setattr(autocomplete_module, "find_project_root", lambda _: None)
+        monkeypatch.setattr(autocomplete_module, "_get_project_files", fake_files)
+
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub_a)
+        old_task_a = asyncio.create_task(controller.warm_cache())
+        await asyncio.to_thread(entered_old_a.wait, 5)
+
+        controller.set_cwd(sub_b)
+        await controller.warm_cache()
+
+        controller.set_cwd(sub_a)
+        await controller.warm_cache()
+        assert controller._file_cache == ["a/new.py"]
+
+        release_old_a.set()
+        await old_task_a
+
+        assert controller._project_root == sub_a
+        assert controller._file_cache == ["a/new.py"]

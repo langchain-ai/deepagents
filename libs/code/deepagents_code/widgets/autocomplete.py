@@ -514,6 +514,7 @@ class FuzzyFileController:
         # `set_cwd`) and the real project root is resolved off the event loop in
         # `warm_cache`. See `set_cwd` for why discovery is deferred.
         self._project_root_pending = False
+        self._cache_generation = 0
 
     def _get_files(self) -> list[str]:
         """Get cached file list or refresh.
@@ -527,6 +528,7 @@ class FuzzyFileController:
 
     def refresh_cache(self) -> None:
         """Force refresh of file cache."""
+        self._cache_generation += 1
         self._file_cache = None
 
     def set_cwd(self, cwd: Path) -> None:
@@ -538,6 +540,7 @@ class FuzzyFileController:
         run here on the event loop. Until then `cwd` is used as a provisional
         root, which is a safe narrower scope.
         """
+        self._cache_generation += 1
         self._cwd = cwd
         self._project_root = cwd
         self._project_root_pending = True
@@ -550,16 +553,17 @@ class FuzzyFileController:
         Also resolves a project root deferred by `set_cwd`, so the blocking
         filesystem walk runs in a worker thread instead of on the event loop.
 
-        Warmers are scheduled non-exclusively, so two quick cwd switches can run
-        concurrently. The cwd is snapshotted before each await and re-checked
-        after, so a warmer for a superseded cwd cannot overwrite controller
-        state belonging to a newer cwd.
+        Warmers are scheduled non-exclusively, so quick cwd/cache invalidations
+        can run concurrently. A monotonic generation is snapshotted before each
+        await and re-checked after, so a warmer for a superseded state cannot
+        overwrite controller state belonging to a newer generation.
         """
         cwd = self._cwd
+        generation = self._cache_generation
         if self._project_root_pending:
             root = await asyncio.to_thread(find_project_root, cwd)
-            if cwd != self._cwd:
-                # A newer cwd switch superseded this warmer; drop stale results.
+            if generation != self._cache_generation:
+                # A newer cwd/cache invalidation superseded this warmer.
                 return
             resolved = root or cwd
             if resolved != self._project_root:
@@ -574,7 +578,7 @@ class FuzzyFileController:
         # Best-effort; _get_files() falls back to sync on failure.
         with contextlib.suppress(Exception):
             files = await asyncio.to_thread(_get_project_files, project_root)
-            if cwd == self._cwd:
+            if generation == self._cache_generation:
                 self._file_cache = files
 
     @staticmethod

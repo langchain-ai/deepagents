@@ -436,6 +436,7 @@ class TestMiniMaxBuiltinProfile:
             assert profile.system_prompt_suffix is not None, spec
             assert "<track_and_verify>" in profile.system_prompt_suffix, spec
             assert "<report_back>" in profile.system_prompt_suffix, spec
+            assert "<clarify>" in profile.system_prompt_suffix, spec
             # ... paired with the reasoning-gate controller.
             mws = profile.materialize_extra_middleware()
             assert any(

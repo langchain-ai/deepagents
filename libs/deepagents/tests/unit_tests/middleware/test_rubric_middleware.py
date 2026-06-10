@@ -551,6 +551,22 @@ class TestTranscriptBuilder:
     def test_empty(self) -> None:
         assert _build_grader_transcript([]) == "(empty transcript)"
 
+    def test_renders_reasoning_content(self) -> None:
+        # The grader must see the model's reasoning, not just a "(reasoning)" marker.
+        messages = [
+            HumanMessage(content="do x"),
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "reasoning": "I should check the JFK option first."},
+                    {"type": "text", "text": "Booked."},
+                ]
+            ),
+        ]
+        text = _build_grader_transcript(messages)
+        assert "<reasoning>" in text
+        assert "I should check the JFK option first." in text
+        assert "Booked." in text
+
 
 # ---------------------------------------------------------------------- #
 # Rubric tracking across invocations

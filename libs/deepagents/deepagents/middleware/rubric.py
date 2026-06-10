@@ -96,15 +96,15 @@ When the transcript is longer than this, only the most recent
 `_build_grader_transcript`.
 """
 
-_MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 4_000
+_MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 12_000
 """Per-message character budget for transcript snippets. Anything longer
 is cut off and suffixed with `...(truncated)` before being handed to the
 grader.
 
-Example: a 10,000-character tool output is forwarded as the first 4,000
-characters plus `...(truncated)`, keeping the grader prompt bounded even
-when a single tool call returns a large blob (e.g. a file dump or test
-log).
+Sized to fit a reasoning-model turn (the rendered `<reasoning>` block plus
+the final answer and tool calls) without truncating the thinking to
+nothing, while still bounding a single oversized tool blob (e.g. a file
+dump or test log).
 """
 
 _MAX_ITERATIONS_HARD_CAP = 20
@@ -805,9 +805,16 @@ def _coerce_text(msg: AnyMessage) -> str:
             name = block.get("name", "tool")
             args = block.get("args", {})
             parts.append(f"<tool_call name={name!r} args={args!r}/>")
+        elif btype == "reasoning":
+            # Surface the model's reasoning so the grader can judge the chain
+            # of thought (e.g. whether it considered an alternative path),
+            # not just the final answer and tool calls.
+            rtext = block.get("reasoning") or block.get("text") or ""
+            if rtext:
+                parts.append(f"<reasoning>\n{rtext}\n</reasoning>")
         else:
             # Render the block type only so the grader can see something
-            # opaque (image, reasoning, server tool call, etc.) was there
-            # without exposing raw bytes.
+            # opaque (image, server tool call, etc.) was there without
+            # exposing raw bytes.
             parts.append(f"({btype or 'block'})")
     return "\n".join(parts) if parts else "(empty)"

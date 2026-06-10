@@ -139,6 +139,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Sampling temperature passed to the model. If omitted, the provider default is used. E.g. --temperature 1.0",
     )
+    parser.addoption(
+        "--openrouter-reasoning-effort",
+        action="store",
+        choices=("low", "medium", "high"),
+        default=None,
+        help="Reasoning effort for OpenRouter models (passed as reasoning={'effort': ...}). Requires an openrouter: model prefix. E.g. --openrouter-reasoning-effort high",
+    )
 
 
 def _filter_by_marker(
@@ -287,4 +294,10 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
     temperature = request.config.getoption("--temperature")
     if temperature is not None:
         kwargs["temperature"] = temperature
+    or_reasoning = request.config.getoption("--openrouter-reasoning-effort")
+    if or_reasoning:
+        if not model_name.startswith("openrouter:"):
+            msg = "--openrouter-reasoning-effort requires an openrouter: model prefix"
+            raise ValueError(msg)
+        kwargs["reasoning"] = {"effort": or_reasoning}
     return init_chat_model(model_name, **kwargs)

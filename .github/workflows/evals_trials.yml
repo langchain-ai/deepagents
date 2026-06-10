@@ -146,6 +146,16 @@ on:
           - medium
           - high
           - xhigh
+      openrouter_reasoning_effort:
+        description: "Reasoning effort for OpenRouter models (low|medium|high)."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - low
+          - medium
+          - high
       repl:
         description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools
           directly."
@@ -492,6 +502,7 @@ jobs:
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      openrouter_reasoning_effort: ${{ inputs.openrouter_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
 

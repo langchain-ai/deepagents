@@ -77,6 +77,11 @@ on:
         required: false
         default: ""
         type: string
+      openrouter_reasoning_effort:
+        description: "Reasoning effort for OpenRouter models (low|medium|high). Empty = provider default."
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -288,6 +293,22 @@ jobs:
             exit 1
           fi
           printf 'PYTEST_ADDOPTS=%s --temperature %s\n' "${PYTEST_ADDOPTS}" "${temp}" >> "$GITHUB_ENV"
+
+      - name: "🧠 Apply OpenRouter reasoning effort"
+        if: inputs.openrouter_reasoning_effort != '' && inputs.provider == 'openrouter'
+        env:
+          OPENROUTER_REASONING_EFFORT: ${{ inputs.openrouter_reasoning_effort }}
+        run: |
+          eff=$(echo "$OPENROUTER_REASONING_EFFORT" | xargs)
+          # Allowlist guard before embedding in PYTEST_ADDOPTS.
+          case "$eff" in
+            low|medium|high) ;;
+            *)
+              echo "::error::Unsupported openrouter_reasoning_effort: ${eff}. Allowed: low, medium, high."
+              exit 1
+              ;;
+          esac
+          printf 'PYTEST_ADDOPTS=%s --openrouter-reasoning-effort %s\n' "${PYTEST_ADDOPTS}" "${eff}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

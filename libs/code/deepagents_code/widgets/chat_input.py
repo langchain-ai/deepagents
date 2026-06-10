@@ -2089,6 +2089,15 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.text = val
 
+    def set_value_at_end(self, val: str) -> None:
+        """Set the input value and place the cursor at the end of the text."""
+        if not self._text_area:
+            return
+        self._text_area.text = val
+        lines = val.split("\n")
+        last_row = len(lines) - 1
+        self._text_area.move_cursor((last_row, len(lines[last_row])))
+
     @property
     def input_widget(self) -> ChatTextArea | None:
         """Get the underlying TextArea widget.

@@ -520,6 +520,34 @@ class TestHistoryNavigationFlag:
             await pilot.pause()
             assert text_area._skip_history_change_events == 0
 
+    async def test_set_value_at_end_places_cursor_at_end(self) -> None:
+        """set_value_at_end loads text and lands the cursor after the last char."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("ls -la")
+            await pilot.pause()
+
+            assert text_area.text == "ls -la"
+            assert text_area.cursor_location == (0, len("ls -la"))
+
+    async def test_set_value_at_end_multiline_places_cursor_at_end(self) -> None:
+        """set_value_at_end handles multi-line text by targeting the last line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("first\nsecond")
+            await pilot.pause()
+
+            assert text_area.text == "first\nsecond"
+            assert text_area.cursor_location == (1, len("second"))
+
     async def test_negative_counter_resets_with_warning(self) -> None:
         """Defensive check: negative counter is logged and reset to 0."""
         app = _ChatInputTestApp()

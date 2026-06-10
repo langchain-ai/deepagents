@@ -7858,6 +7858,8 @@ class DeepAgentsApp(App):
         widget = self.focused
         if not isinstance(widget, (TextArea, Input)):
             return False
+        if isinstance(widget, Input) and widget.password:
+            return False
 
         selected_text = widget.selected_text
         if not selected_text:

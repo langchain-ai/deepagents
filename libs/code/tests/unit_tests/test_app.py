@@ -1497,6 +1497,40 @@ class TestCtrlCCopySelection:
             exit_mock.assert_not_called()
             assert app._quit_pending is False
 
+    async def test_ctrl_c_skips_password_input_selection(self) -> None:
+        """Ctrl+C must not copy selected text from masked password inputs."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            test_input = Input(value="secret-api-key", password=True)
+            await app.mount(test_input)
+            test_input.focus()
+            await pilot.pause()
+            test_input.select_all()
+            await pilot.pause()
+
+            assert test_input.selected_text == "secret-api-key"
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
+            notify_mock.assert_called_once_with(
+                "Press Ctrl+C again to quit",
+                timeout=3,
+                markup=False,
+            )
+
 
 class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""

@@ -59,6 +59,7 @@ from deepagents_code.config import (
     console,
     get_default_coding_instructions,
     get_glyphs,
+    get_langsmith_project_name,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
@@ -1419,7 +1420,12 @@ def create_cli_agent(
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
-            LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
+            LocalContextMiddleware(
+                backend=backend,
+                mcp_server_info=mcp_server_info,
+                tracing_project=get_langsmith_project_name(),
+                user_tracing_project=settings.user_langchain_project,
+            )
         )
 
     # Add shell allow-list middleware when interrupt_shell_only is active.

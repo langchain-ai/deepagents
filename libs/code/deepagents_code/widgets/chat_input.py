@@ -951,11 +951,15 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self.text = text
         if cursor_at_end:
-            lines = text.split("\n")
-            last_row = len(lines) - 1
-            self.move_cursor((last_row, len(lines[last_row])))
+            self.move_cursor_to_end()
         else:
             self.move_cursor((0, 0))
+
+    def move_cursor_to_end(self) -> None:
+        """Move the cursor to the end of the current text."""
+        lines = self.text.split("\n")
+        last_row = len(lines) - 1
+        self.move_cursor((last_row, len(lines[last_row])))
 
     def clear_text(self) -> None:
         """Clear the text area."""
@@ -1782,8 +1786,7 @@ class ChatInput(Vertical):
 
         self._applying_inline_path_replacement = True
         self._text_area.text = replacement
-        lines = replacement.split("\n")
-        self._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        self._text_area.move_cursor_to_end()
         return True
 
     def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
@@ -2088,6 +2091,13 @@ class ChatInput(Vertical):
         """Set the input value."""
         if self._text_area:
             self._text_area.text = val
+
+    def set_value_at_end(self, val: str) -> None:
+        """Set the input value and place the cursor at the end of the text."""
+        if not self._text_area:
+            return
+        self._text_area.text = val
+        self._text_area.move_cursor_to_end()
 
     @property
     def input_widget(self) -> ChatTextArea | None:

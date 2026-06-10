@@ -4889,10 +4889,11 @@ class DeepAgentsApp(App):
     async def _run_startup_command(self, command: str) -> None:
         """Execute the `--startup-cmd` and render its output in the transcript.
 
-        Uses the same worker-backed subprocess path as the interactive `!`
-        shell prefix, with an app-style header (since the user did not type
-        the command). Non-zero exit is already rendered as an error by
-        `_run_shell_task` but does not abort the session.
+        Uses the same worker-backed subprocess path as the interactive shell
+        prefix, with an app-style header (since the user did not type the
+        command). Startup command output is local setup output and is not
+        buffered into model context. Non-zero exit is already rendered as an
+        error by `_run_shell_task` but does not abort the session.
 
         Raises:
             CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
@@ -4912,7 +4913,10 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         try:
-            worker = self.run_worker(self._run_shell_task(command), exclusive=False)
+            worker = self.run_worker(
+                self._run_shell_task(command, incognito=True),
+                exclusive=False,
+            )
         except Exception:
             # `run_worker` failed synchronously — `_run_shell_task`'s finally
             # never fires, so reset the busy flags here or the UI stays wedged.
@@ -7660,7 +7664,7 @@ class DeepAgentsApp(App):
             return
 
         if not self._chat_input.value.strip():
-            self._chat_input.value = msg.text
+            self._chat_input.set_value_at_end(msg.text)
             self.notify("Queued message moved to input", timeout=2)
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)

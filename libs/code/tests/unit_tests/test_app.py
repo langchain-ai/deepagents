@@ -4822,6 +4822,35 @@ class TestShellCommandInterrupt:
         assert app._pending_shell_messages == []
         app._agent.aupdate_state.assert_not_awaited()
 
+    async def test_startup_command_output_not_buffered(self) -> None:
+        """`--startup-cmd` output is local setup output, not model context."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret-startup\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_startup_command("echo secret-startup")
+                await pilot.pause()
+
+        assert app._pending_shell_messages == []
+        app._agent.aupdate_state.assert_not_awaited()
+
     async def test_non_incognito_shell_nonzero_exit_buffered(self) -> None:
         """A failing `!` command should buffer its exit code for the model."""
         app = DeepAgentsApp()

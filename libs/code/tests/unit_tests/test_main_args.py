@@ -566,6 +566,62 @@ class TestModelParamsArgument:
             assert parsed.model_params == '{"temperature": 0.5, "max_tokens": 2048}'
 
 
+class TestMaxRetriesForwarding:
+    """`--max-retries` folds into the model_params forwarded to the run."""
+
+    def _run_model_params(self, argv: list[str]) -> dict[str, object] | None:
+        """Drive `cli_main` and return the `model_params` passed downstream."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        await_args = mock_run.await_args
+        assert await_args is not None
+        return await_args.kwargs["model_params"]  # ty: ignore
+
+    def test_folds_into_model_params(self) -> None:
+        """`--max-retries` creates model_params when no `--model-params` is given."""
+        argv = ["deepagents", "-n", "task", "--max-retries", "4"]
+        assert self._run_model_params(argv) == {"max_retries": 4}
+
+    def test_overrides_model_params_value(self) -> None:
+        """`--max-retries` wins over a `max_retries` in `--model-params`.
+
+        Sibling keys from `--model-params` are preserved, guarding the
+        precedence contract (CLI flag beats `--model-params`).
+        """
+        argv = [
+            "deepagents",
+            "-n",
+            "task",
+            "--model-params",
+            '{"max_retries": 1, "temperature": 0.5}',
+            "--max-retries",
+            "4",
+        ]
+        assert self._run_model_params(argv) == {
+            "max_retries": 4,
+            "temperature": 0.5,
+        }
+
+    def test_absent_leaves_model_params_untouched(self) -> None:
+        """Without `--max-retries`, model_params reflects only `--model-params`."""
+        argv = ["deepagents", "-n", "task", "--model-params", '{"temperature": 0.5}']
+        assert self._run_model_params(argv) == {"temperature": 0.5}
+
+
 class TestProfileOverrideArgument:
     """Tests for --profile-override argument parsing."""
 

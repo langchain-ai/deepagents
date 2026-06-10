@@ -998,10 +998,9 @@ class TestRetriesConfig:
             ("anthropic", "max_retries"),
             ("azure_openai", "max_retries"),
             ("baseten", "max_retries"),
-            ("bedrock", "max_retries"),
             ("deepseek", "max_retries"),
             ("fireworks", "max_retries"),
-            ("google_genai", "retries"),
+            ("google_genai", "max_retries"),
             ("google_vertexai", "max_retries"),
             ("groq", "max_retries"),
             ("litellm", "max_retries"),
@@ -1085,6 +1084,75 @@ max_retries = 3
         clear_caches()
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             assert _get_provider_kwargs("fireworks")["max_retries"] == 5
+
+    def test_get_provider_kwargs_includes_global_retries(self, tmp_path: Path) -> None:
+        """A global `[retries]` default reaches provider kwargs via setdefault."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries]\nmax_retries = 2\n")
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 2
+
+    def test_resolve_retry_kwargs_zero_is_valid(self) -> None:
+        """`max_retries = 0` is a valid count (disables retries)."""
+        assert _resolve_retry_kwargs({"max_retries": 0}, "fireworks") == {
+            "max_retries": 0
+        }
+
+    def test_resolve_retry_kwargs_provider_scalar_falls_back_to_global(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-table provider value warns and falls back to the global count."""
+        section = {"max_retries": 2, "fireworks": 5}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+
+        assert "expected table" in caplog.text
+
+    def test_read_retries_returns_none_when_not_table(self, tmp_path: Path) -> None:
+        """A scalar `retries` value (not a table) yields `None`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("retries = 5\n")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_on_malformed_toml(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed TOML returns `None` with a warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries\nmax_retries = 1\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() is None
+
+        assert "Could not read retries config" in caplog.text
+
+    def test_read_retries_warns_unknown_provider_table(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A mistyped provider sub-table warns; a valid one does not."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[retries.fireworks]\nmax_retries = 3\n\n"
+            "[retries.fireorks]\nmax_retries = 2\n"
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            section = _read_config_toml_retries()
+
+        assert section is not None
+        assert "'fireorks' is not a known provider" in caplog.text
+        # The correctly spelled provider table must not be flagged.
+        assert "[retries.fireworks]" not in caplog.text
 
 
 class TestCreateModelProfileOverrides:

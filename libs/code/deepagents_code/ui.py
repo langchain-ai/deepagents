@@ -121,7 +121,7 @@ def show_help() -> None:
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
     console.print(
-        "  --max-retries N          Override retries for transient model errors"
+        "  --max-retries N            Override max retries for transient model errors"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")

@@ -1139,14 +1139,25 @@ def _resolve_interpreter_kwargs(
 
 
 def _read_config_toml_retries() -> dict[str, Any] | None:
-    """Read `[retries]` from `~/.deepagents/config.toml`.
+    """Read and lightly validate `[retries]` from `~/.deepagents/config.toml`.
+
+    Provider sub-table names are checked against the set of providers the app
+    knows how to authenticate so a mistyped provider (e.g. `[retries.fireorks]`)
+    surfaces a warning rather than being silently dropped. Value validation is
+    deferred to `_resolve_retry_kwargs`, which runs per active provider.
 
     Returns:
-        Mapping of retry setting names to raw values, or `None` if absent.
+        The raw `[retries]` mapping, or `None` when the section is absent or the
+            file cannot be read.
     """
     import tomllib
 
-    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+    from deepagents_code.model_config import (
+        DEFAULT_CONFIG_PATH,
+        IMPLICIT_AUTH_PROVIDERS,
+        NO_AUTH_REQUIRED_PROVIDERS,
+        PROVIDER_API_KEY_ENV,
+    )
 
     try:
         with DEFAULT_CONFIG_PATH.open("rb") as f:
@@ -1162,9 +1173,22 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         return None
 
     section = data.get("retries")
-    if isinstance(section, dict):
-        return section
-    return None
+    if not isinstance(section, dict):
+        return None
+
+    known_providers = (
+        set(PROVIDER_API_KEY_ENV)
+        | set(NO_AUTH_REQUIRED_PROVIDERS)
+        | set(IMPLICIT_AUTH_PROVIDERS)
+    )
+    for key, value in section.items():
+        if isinstance(value, dict) and key not in known_providers:
+            logger.warning(
+                "Ignoring [retries.%s] in config.toml; %r is not a known provider",
+                key,
+                key,
+            )
+    return section
 
 
 def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
@@ -1186,8 +1210,22 @@ def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
 def _resolve_retry_kwargs(
     section: dict[str, Any] | None,
     provider: str,
-) -> dict[str, Any]:
-    """Return `{retry_param_name: value}` for `provider`, or `{}`."""
+) -> dict[str, int]:
+    """Resolve the retry-count kwarg for `provider` from a `[retries]` section.
+
+    A per-provider `[retries.<provider>].max_retries` overrides the global
+    `[retries].max_retries`. Providers absent from `RETRY_PARAM_BY_PROVIDER`
+    receive nothing (their constructors reject the kwarg), and unknown or
+    malformed keys are dropped with a warning.
+
+    Args:
+        section: Raw `[retries]` mapping from `config.toml`, or `None`.
+        provider: Provider the kwargs are being resolved for.
+
+    Returns:
+        `{retry_param_name: count}` when a valid retry count resolves, else an
+            empty dict.
+    """
     if not section:
         return {}
 

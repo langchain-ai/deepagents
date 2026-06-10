@@ -53,6 +53,7 @@ import asyncio
 import logging
 import uuid
 import warnings
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
@@ -120,6 +121,19 @@ class SummarizationEvent(TypedDict):
     cutoff_index: int
     summary_message: HumanMessage
     file_path: str | None
+
+
+class TriggerClause(TypedDict, total=False):
+    """Dictionary-based summarization trigger with AND semantics."""
+
+    tokens: int
+    """Trigger when token count reaches or exceeds this value."""
+
+    messages: int
+    """Trigger when message count reaches or exceeds this value."""
+
+    fraction: float
+    """Trigger when token count reaches this fraction of the model context window."""
 
 
 class TruncateArgsSettings(TypedDict, total=False):
@@ -236,7 +250,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         model: str | BaseChatModel,
         *,
         backend: BACKEND_TYPES,
-        trigger: ContextSize | list[ContextSize] | None = None,
+        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
@@ -249,7 +263,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         Args:
             model: The language model to use for generating summaries.
             backend: Backend instance or factory for persisting conversation history.
-            trigger: Threshold(s) that trigger summarization.
+            trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
+                a dict combines thresholds with AND semantics, and a list combines items
+                with OR semantics.
             keep: Context retention policy after summarization.
 
                 Defaults to keeping last 20 messages.
@@ -1528,6 +1544,38 @@ class SummarizationToolMiddleware(AgentMiddleware):
             }
         )
 
+    @staticmethod
+    def _compact_threshold(value: float) -> int:
+        """Return the half-trigger threshold used by the compact tool."""
+        return max(1, int(value * 0.5))
+
+    @staticmethod
+    def _compact_trigger_clause(condition: object) -> Mapping[str, float]:
+        """Normalize old tuple and new dict trigger conditions for compact gating."""
+        if isinstance(condition, Mapping):
+            return cast("Mapping[str, float]", condition)
+        kind, value = cast("tuple[str, float]", condition)
+        return {kind: value}
+
+    def _is_compaction_clause_met(self, clause: Mapping[str, float], messages: list[AnyMessage]) -> bool:
+        """Check whether a normalized compact eligibility clause is met."""
+        lc = self._summarization._lc_helper
+        for kind, value in clause.items():
+            if kind == "messages" and len(messages) < self._compact_threshold(value):
+                return False
+            if kind == "tokens" and not lc._should_summarize_based_on_reported_tokens(messages, self._compact_threshold(value)):
+                return False
+            if kind == "fraction":
+                max_input_tokens = lc._get_profile_limits()
+                if max_input_tokens is None:
+                    return False
+                threshold = self._compact_threshold(max_input_tokens * value)
+                if not lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                    return False
+            if kind not in {"messages", "tokens", "fraction"}:
+                return False
+        return True
+
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
         """Check if manual compaction is currently allowed.
 
@@ -1536,33 +1584,17 @@ class SummarizationToolMiddleware(AgentMiddleware):
         the configured auto-summarization trigger:
 
         - For `("tokens", N)`, eligibility starts at `0.5 * N`.
+        - For `("messages", N)`, eligibility starts at `0.5 * N` messages.
         - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
             input tokens.
+        - For dict clauses, all specified thresholds must be met.
 
         Uses reported usage metadata when available.
         """
-        lc = self._summarization._lc_helper
-        trigger_conditions = lc._trigger_conditions
+        trigger_conditions = self._summarization._lc_helper._trigger_clauses
         if not trigger_conditions:
             return False
-
-        for kind, value in trigger_conditions:
-            if kind == "tokens":
-                threshold = int(value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-            elif kind == "fraction":
-                max_input_tokens = lc._get_profile_limits()
-                if max_input_tokens is None:
-                    continue
-                threshold = int(max_input_tokens * value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-        return False
+        return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)
 
     def _run_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.

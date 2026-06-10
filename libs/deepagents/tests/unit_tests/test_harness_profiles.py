@@ -14,6 +14,7 @@ from deepagents import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
     HarnessProfileConfig,
+    create_deep_agent,
 )
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles.harness._glm import _GLM_MODEL_SPECS
@@ -445,6 +446,22 @@ class TestMiniMaxBuiltinProfile:
         _ensure_harness_profiles_loaded()
         # A model with no harness profile resolves to no profile at all.
         assert _get_harness_profile("openai:gpt-4.1") is None
+
+    def test_agent_builds_with_profile(self) -> None:
+        """Building the agent resolves the controller's state schema (no network).
+
+        Guards against schema-resolution failures (e.g. a type used only under
+        TYPE_CHECKING that get_type_hints can't evaluate at build time).
+        """
+
+        class _FakeMiniMax(GenericFakeChatModel):
+            def _get_ls_params(self, *args: object, **kwargs: object) -> dict[str, str]:
+                return {"ls_provider": "openrouter", "ls_model_name": "minimax/minimax-m3"}
+
+        model = _FakeMiniMax(messages=itertools.cycle([AIMessage(content="ok")]))
+        object.__setattr__(model, "model_name", "minimax/minimax-m3")
+        agent = create_deep_agent(model=model)  # assembles graph -> resolves state schemas
+        assert agent is not None
 
 
 class TestKimiBuiltinProfile:

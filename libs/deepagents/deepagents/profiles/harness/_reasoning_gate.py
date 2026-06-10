@@ -24,7 +24,12 @@ from __future__ import annotations
 # ruff: noqa: E501
 # Rubric/classify prompts are written as whole-sentence lines by design.
 import uuid
-from typing import TYPE_CHECKING, Any, NotRequired
+from typing import (  # Annotated must stay importable at runtime: get_type_hints evaluates the state-schema annotation when create_deep_agent resolves schemas.
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    NotRequired,
+)
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -36,8 +41,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from deepagents.middleware.rubric import RubricMiddleware, RubricState
 
 if TYPE_CHECKING:
-    from typing import Annotated
-
     from langchain_core.language_models import BaseChatModel
     from langgraph.runtime import Runtime
 

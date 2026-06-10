@@ -53,6 +53,16 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
 
+_INHERITED_PYTHONPATH_ENV = "DEEPAGENTS_INHERITED_PYTHONPATH"
+"""Carrier var that relays a launch-time `PYTHONPATH` to agent `execute` commands.
+
+`PYTHONPATH` is stripped from the server interpreter's environment (see
+`server._SERVER_ENV_DENYLIST`) to keep an untrusted import path off `sys.path`
+during startup. The launch-time value is instead carried in this var and
+re-applied only to the approval-gated shell backend's `execute` subprocesses by
+`agent._apply_inherited_pythonpath`.
+"""
+
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         "DYLD_INSERT_LIBRARIES",
@@ -68,15 +78,14 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONPATH",
         "PYTHONSTARTUP",
         "SSH_ASKPASS",
+        _INHERITED_PYTHONPATH_ENV,
     }
 )
 """Environment keys that project `.env` files must not inject.
 
-For `PYTHONPATH` specifically, this is the sole remaining gate: the server-side
-`server._SERVER_ENV_DENYLIST` intentionally allows an inherited launch-time
-`PYTHONPATH` (e.g. `PYTHONPATH=src dcode`) to reach the subprocess, so blocking
-it here is what keeps a possibly-untrusted project `.env` from injecting one.
-"""
+`_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
+`PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
+is only meant to relay a value the user set in their launch environment."""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:

@@ -54,6 +54,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from deepagents_code import theme
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
     config,
     console,
@@ -1065,6 +1066,23 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     return interrupt_map
 
 
+def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
+    """Re-apply a relayed launch-time `PYTHONPATH` to a shell-command env.
+
+    `server._build_server_env` strips `PYTHONPATH` from the server interpreter
+    and relays the launch value via `config._INHERITED_PYTHONPATH_ENV`. This
+    restores it as `PYTHONPATH` for the approval-gated `execute` subprocesses,
+    which run in the user's working directory and need the import path. Mutates
+    `env` in place; a no-op when no value was relayed.
+
+    Args:
+        env: Environment mapping for the shell backend, modified in place.
+    """
+    inherited = env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    if inherited is not None:
+        env["PYTHONPATH"] = inherited
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -1408,13 +1426,19 @@ def create_cli_agent(
             shell_env = os.environ.copy()
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            # Re-apply a launch-time PYTHONPATH that was stripped from the server
+            # interpreter but relayed for approval-gated `execute` commands.
+            _apply_inherited_pythonpath(shell_env)
 
             # Use LocalShellBackend for filesystem + shell execution.
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
+            # `inherit_env=False`: `shell_env` is already a complete, curated
+            # copy of `os.environ`. Inheriting again would re-copy `os.environ`
+            # and resurrect the popped carrier var, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
-                inherit_env=True,
+                inherit_env=False,
                 env=shell_env,
             )
         else:

@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
+from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -48,16 +50,21 @@ _SERVER_ENV_DENYLIST = frozenset(
         "NODE_OPTIONS",
         "PYTHONEXECUTABLE",
         "PYTHONHOME",
+        "PYTHONPATH",
         "PYTHONSTARTUP",
         "SSH_ASKPASS",
     }
 )
 """Inherited env keys that can alter subprocess startup behavior.
 
-`PYTHONPATH` is intentionally excluded: a user-provided launch environment (e.g.
-`PYTHONPATH=src dcode`) must reach the server process so the local shell backend
-can pass it through to agent `execute` commands. Project `.env` files are still
-prevented from injecting `PYTHONPATH` via `config._DOTENV_DENIED_ENV_KEYS`."""
+`PYTHONPATH` is stripped here so an inherited launch value cannot land on the
+server interpreter's `sys.path` during startup, where a path inside an untrusted
+project could shadow a stdlib/third-party module and run before any approval
+gate. A user who launched with `PYTHONPATH` still wants it for their agent
+`execute` commands, so `_build_server_env` relays the value via
+`config._INHERITED_PYTHONPATH_ENV` and `agent._apply_inherited_pythonpath`
+re-applies it only to the approval-gated shell backend.
+"""
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -309,12 +316,22 @@ def _build_server_env() -> dict[str, str]:
     Copies `os.environ`, sets required flags, and strips variables that are not
     needed or can alter subprocess startup behavior.
 
+    A launch-time `PYTHONPATH` is captured into `config._INHERITED_PYTHONPATH_ENV`
+    before being stripped, so the value never reaches the server interpreter's
+    `sys.path` but can still be re-applied to agent `execute` commands downstream.
+
     Returns:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
+
+    # Capture a launch-time PYTHONPATH before stripping it. Never trust an
+    # inherited carrier var: pop it first, then set it only from the real value.
+    env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    inherited_pythonpath = os.environ.get("PYTHONPATH")
+
     for key in (
         "LANGGRAPH_AUTH",
         "LANGGRAPH_CLOUD_LICENSE_KEY",
@@ -323,6 +340,9 @@ def _build_server_env() -> dict[str, str]:
         *_SERVER_ENV_DENYLIST,
     ):
         env.pop(key, None)
+
+    if inherited_pythonpath is not None:
+        env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
     return env
 
 

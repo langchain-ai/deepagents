@@ -35,7 +35,9 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
 
     Displays available themes in an `OptionList`. Navigating the option list
     applies a live preview by swapping the app theme. Returns the selected
-    theme name on Enter, or `None` on Esc (restoring the original theme).
+    theme name on Enter, or `None` on Esc. Esc normally restores the original
+    theme, but if the user set a per-terminal default with `t` this session,
+    Esc keeps that theme active instead of reverting.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -47,7 +49,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     ]
     """Key bindings for the selector.
 
-    Esc dismisses and restores the original theme. Arrow keys and Enter are
+    Esc dismisses, restoring the original theme unless `t` set a per-terminal
+    default this session (in which case that theme is kept). Arrow keys and Enter are
     handled natively by the embedded `OptionList`; Tab / Shift+Tab are bound
     here to advance the option list cursor for consistency with other
     selector screens (where Tab cycles focus across multiple widgets).
@@ -109,6 +112,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         self._current_theme = current_theme
         self._original_theme = current_theme
         self._terminal_default = terminal_default
+        self._session_terminal_default: str | None = None
         self._show_keys = False
 
     def _sync_terminal_background(self) -> None:
@@ -218,8 +222,17 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Restore the original theme and dismiss."""
-        self.app.theme = self._original_theme
+        """Dismiss, keeping a terminal default set this session or restoring.
+
+        Pressing `t` saves a per-terminal default and is treated as a
+        deliberate choice, so Esc keeps that theme active instead of
+        reverting. `dismiss(None)` skips the global `[ui].theme` write — the
+        per-terminal mapping was already persisted by `action_set_for_terminal`.
+        Without a `t` press, Esc restores the original theme as before.
+        """
+        keep = self._session_terminal_default
+        target = keep if keep is not None else self._original_theme
+        self.app.theme = target
         self._sync_terminal_background()
         self.dismiss(None)
 
@@ -268,6 +281,11 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 "action_set_for_terminal got unregistered option id '%s'", name
             )
             return
+
+        # Record the deliberate choice synchronously so a subsequent Esc keeps
+        # this theme rather than reverting, regardless of when the async write
+        # finishes. The persisted mapping is the source of truth either way.
+        self._session_terminal_default = name
 
         async def _persist() -> None:
             try:

@@ -983,10 +983,12 @@ def _parse_interpreter_ptc(
     Returns:
         `False` for `False`/`None`/`[]`, the string `"safe"`/`"all"` when
         either sentinel is given, otherwise a validated list of tool names.
+        A list may include the `"safe"` preset (expanded at agent-build time)
+        but never `"all"`.
 
     Raises:
-        ValueError: If `raw` is a list with empty or non-string entries, or
-            a string other than `"safe"`/`"all"`.
+        ValueError: If `raw` is a list with empty or non-string entries, a
+            list containing `"all"`, or a string other than `"safe"`/`"all"`.
     """
     if raw is None or raw is False:
         return False
@@ -1016,7 +1018,15 @@ def _parse_interpreter_ptc(
                     f"got {entry!r}."
                 )
                 raise ValueError(msg)
-            names.append(entry.strip())
+            cleaned = entry.strip()
+            if cleaned.lower() == INTERPRETER_PTC_ALL_SENTINEL:
+                msg = (
+                    "`interpreter_ptc` list entries cannot include 'all'; use "
+                    "'all' as a standalone value or list explicit tool names "
+                    "(optionally with the 'safe' preset)."
+                )
+                raise ValueError(msg)
+            names.append(cleaned)
         return names
     msg = (
         f"`interpreter_ptc` must be False, 'safe', 'all', or a list of tool "
@@ -1308,11 +1318,13 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` intersected with the
-        live toolset.
-    - `"all"`: every live tool is exposed. Requires
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
+    - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names, validated at agent-build time.
+    - `list[str]`: explicit tool names. The list may also include the `"safe"`
+        preset (expanded to `INTERPRETER_PTC_SAFE_PRESET`); `"all"` is rejected
+        inside a list. Names are matched against the live tool registry at
+        runtime, so names not present are simply not exposed.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False

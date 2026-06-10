@@ -299,6 +299,60 @@ async def test_install_slash_package_cancel_aborts() -> None:
         assert "uv tool" not in joined
 
 
+async def test_install_slash_package_prompt_timeout_aborts() -> None:
+    """A timed-out prompt aborts the install and reports the timeout."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+            patch.object(
+                app,
+                "_push_screen_wait",
+                new=AsyncMock(side_effect=TimeoutError()),
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        joined = "\n".join(str(m._content) for m in app_msgs)
+        assert "timed out" in joined
+        # A timeout is not a user cancel and must not be reported as one.
+        assert "Cancelled install" not in joined
+
+
+async def test_install_slash_package_prompt_mount_failure_aborts() -> None:
+    """A modal that fails to mount aborts the install and surfaces an error."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+            patch.object(
+                app,
+                "_push_screen_wait",
+                new=AsyncMock(side_effect=RuntimeError("no screen stack")),
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_not_awaited()
+        err_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        joined = "\n".join(err_msgs)
+        assert "Could not show the install confirmation" in joined
+
+
 async def test_install_slash_package_force_skips_prompt() -> None:
     """`--package --force` must not open the confirmation prompt."""
     app = DeepAgentsApp()

@@ -109,5 +109,12 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
         self.dismiss(True)
 
     def action_cancel(self) -> None:
-        """Dismiss with `False`."""
+        """Dismiss with `False`.
+
+        The method name must stay `cancel`: the app owns a priority `escape`
+        binding that, for an active `ModalScreen`, dispatches to
+        `action_cancel` if present and otherwise falls through to
+        `dismiss(None)`. Renaming this would silently regress Esc to a
+        `None` dismiss instead of an explicit cancel.
+        """
         self.dismiss(False)

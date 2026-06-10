@@ -216,6 +216,16 @@ backend cannot trap the user inside a finished onboarding modal forever.
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
 
+_MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
+"""Upper bound on awaiting a confirmation modal's dismissal.
+
+Bounds command/worker handling against a modal that never resolves (compose
+crash, programmatic teardown that skips the dismiss callback). 10 minutes is
+well past any human latency but stops a genuinely broken modal from wedging
+the caller. Shared by the install-confirm, MCP-reconnect, and restart-prompt
+watchdogs so the three stay in lockstep.
+"""
+
 
 def _resolve_theme_name(value: object) -> str | None:
     """Resolve a user-supplied theme name to a canonical registry key.
@@ -3844,10 +3854,11 @@ class DeepAgentsApp(App):
             )
             return
 
+        # `_confirm_install_package` mounts its own outcome message (cancel,
+        # timeout, or mount failure), so the caller just aborts on a falsy
+        # result rather than mounting a generic — and possibly inaccurate —
+        # "Cancelled" line.
         if not force and not await self._confirm_install_package(package):
-            await self._mount_message(
-                AppMessage(f"Cancelled install of package '{package}'."),
-            )
             return
 
         log_path = create_update_log_path()
@@ -3890,13 +3901,16 @@ class DeepAgentsApp(App):
         Pushes a non-blocking Textual modal explaining that the install runs
         third-party code. A watchdog bounds the wait so a modal that never
         resolves can't wedge command handling; a timeout or mount failure is
-        treated as a cancel.
+        treated as a cancel. Each non-confirming outcome mounts its own
+        message so the user is told what actually happened rather than being
+        told they "cancelled" a prompt that timed out or failed to appear.
 
         Args:
             package: The package name to confirm, surfaced in the modal.
 
         Returns:
-            Whether the user confirmed the install.
+            `True` only when the user explicitly confirmed; `False` on cancel,
+                timeout, or mount failure.
         """
         from deepagents_code.widgets.install_confirm import (
             InstallPackageConfirmScreen,
@@ -3905,18 +3919,39 @@ class DeepAgentsApp(App):
         try:
             confirmed = await asyncio.wait_for(
                 self._push_screen_wait(InstallPackageConfirmScreen(package)),
-                timeout=600.0,
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(
                 "Install confirmation for %r timed out; treating as cancel",
                 package,
             )
+            await self._mount_message(
+                AppMessage(
+                    f"Install confirmation for '{package}' timed out; not "
+                    "installed. Re-run with `--force` to skip the prompt.",
+                ),
+            )
             return False
         except Exception:
             logger.exception("Failed to mount install confirmation for %r", package)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not show the install confirmation for '{package}'; "
+                    "not installed. Re-run with `--force` to skip the prompt.",
+                ),
+            )
             return False
-        return bool(confirmed)
+
+        # Fail closed: a programmatic dismiss yields `None`, so only an
+        # explicit `True` proceeds — anything else is treated as "do not
+        # install".
+        if confirmed is not True:
+            await self._mount_message(
+                AppMessage(f"Cancelled install of package '{package}'."),
+            )
+            return False
+        return True
 
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.
@@ -10150,9 +10185,10 @@ class DeepAgentsApp(App):
             try:
                 # Watchdog: guard against a screen that never resolves
                 # (compose crash, programmatic teardown that skips the
-                # callback). 10 minutes is well past any human latency
-                # but bounds the worker if the modal is genuinely broken.
-                choice = await asyncio.wait_for(choice_future, timeout=600.0)
+                # callback).
+                choice = await asyncio.wait_for(
+                    choice_future, timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
+                )
             except TimeoutError:
                 logger.warning(
                     "MCP reconnect prompt for %r timed out; defaulting to defer",
@@ -10279,12 +10315,10 @@ class DeepAgentsApp(App):
         try:
             # Watchdog: bound the handler against a screen that never resolves
             # (compose crash, programmatic teardown that skips the dismiss
-            # callback). 10 minutes is well past any human latency but stops a
-            # genuinely broken modal from wedging command handling. Mirrors the
-            # MCP reconnect prompt's watchdog.
+            # callback).
             choice = await asyncio.wait_for(
                 self._push_screen_wait(RestartPromptScreen(label)),
-                timeout=600.0,
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(

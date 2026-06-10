@@ -17,7 +17,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError as PydanticValidationError
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
@@ -66,6 +66,10 @@ class SubAgent(TypedDict):
             replaces the parent agent's rules entirely for this subagent.
 
             Rules are evaluated in declaration order; the first match wins.
+        input_schema: Structured payload schema for task tool calls to this subagent.
+
+            When provided, `task` calls targeting this subagent must include
+            `payload`, and the payload is validated before the subagent is invoked.
     """
 
     name: str
@@ -110,6 +114,17 @@ class SubAgent(TypedDict):
     Rules are evaluated in declaration order; the first match wins.
     `FilesystemMiddleware` enforces these rules for the built-in filesystem
     tools on the subagent stack.
+    """
+
+    input_schema: NotRequired[type]
+    """Structured payload schema for task tool calls to this subagent.
+
+    When specified, the main agent must provide `payload` when invoking this
+    subagent through the `task` tool. Payloads are validated before invocation
+    and forwarded to the subagent in the initial user message.
+
+    The schema must be a Python `type` accepted by Pydantic's `TypeAdapter`,
+    such as a Pydantic `BaseModel`, dataclass, or `TypedDict` class.
     """
 
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
@@ -231,6 +246,14 @@ class CompiledSubAgent(TypedDict):
     results back to the main agent.
     """
 
+    input_schema: NotRequired[type]
+    """Structured payload schema for task tool calls to this subagent.
+
+    When specified, the main agent must provide `payload` when invoking this
+    subagent through the `task` tool. Payloads are validated before invocation
+    and forwarded to the subagent in the initial user message.
+    """
+
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
 
@@ -269,6 +292,14 @@ class TaskToolSchema(BaseModel):
 
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
 
+    payload: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional structured payload to send to the subagent. Required when the selected subagent declares an input schema. "
+            "Must match that subagent's input schema."
+        ),
+    )
+
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -276,6 +307,8 @@ Available agent types and the tools they have access to:
 {available_agents}
 
 When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+Use description for natural-language instructions and payload for structured inputs.
+If a subagent lists an input payload schema, include a payload matching that schema.
 
 ## Usage notes:
 1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
@@ -432,6 +465,8 @@ class _SubagentSpec(TypedDict):
 
     runnable: Runnable
 
+    input_schema: NotRequired[type]
+
 
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
@@ -477,8 +512,15 @@ def _build_task_tool(  # noqa: C901, PLR0915
     """
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+    subagent_input_schemas: dict[str, type | None] = {spec["name"]: spec.get("input_schema") for spec in subagents}
 
-    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+    subagent_descriptions: list[str] = []
+    for spec in subagents:
+        subagent_descriptions.append(f"- {spec['name']}: {spec['description']}")
+        if "input_schema" in spec:
+            schema = TypeAdapter(spec["input_schema"]).json_schema()
+            subagent_descriptions.append(f"  Input payload schema: {json.dumps(schema, sort_keys=True)}")
+    subagent_description_str = "\n".join(subagent_descriptions)
 
     # Use custom description if provided, otherwise use default template
     if task_description is None:
@@ -528,19 +570,40 @@ def _build_task_tool(  # noqa: C901, PLR0915
             }
         )
 
-    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+    def _validate_and_prepare_state(
+        subagent_type: str,
+        description: str,
+        payload: dict[str, Any] | None,
+        runtime: ToolRuntime,
+    ) -> tuple[Runnable, dict] | str:
         """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
+        input_schema = subagent_input_schemas[subagent_type]
+
+        if input_schema is None:
+            content = description if payload is None else json.dumps({"description": description, "payload": payload})
+        else:
+            if payload is None:
+                return f"`payload` is required for subagent `{subagent_type}` because it declares an input schema."
+            try:
+                adapter = TypeAdapter(input_schema)
+                validated = adapter.validate_python(payload)
+                content = json.dumps({"description": description, "payload": adapter.dump_python(validated, mode="json")})
+            except PydanticValidationError as e:
+                return f"Invalid `payload` for subagent `{subagent_type}`: {e}"
+
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        subagent_state["messages"] = [HumanMessage(content=description)]
+
+        subagent_state["messages"] = [HumanMessage(content=content)]
         return subagent, subagent_state
 
     def task(
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        payload: dict[str, Any] | None = None,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -548,7 +611,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        prepared = _validate_and_prepare_state(subagent_type, description, payload, runtime)
+        if isinstance(prepared, str):
+            return prepared
+        subagent, subagent_state = prepared
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
         # ambient parent config and (as of langgraph#7926) merges it per-key, so
@@ -565,6 +631,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        payload: dict[str, Any] | None = None,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -572,7 +639,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        prepared = _validate_and_prepare_state(subagent_type, description, payload, runtime)
+        if isinstance(prepared, str):
+            return prepared
+        subagent, subagent_state = prepared
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
         # ambient parent config and (as of langgraph#7926) merges it per-key, so
@@ -723,7 +793,14 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
                 runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
+                compiled_spec: _SubagentSpec = {
+                    "name": compiled["name"],
+                    "description": compiled["description"],
+                    "runnable": runnable,
+                }
+                if "input_schema" in compiled:
+                    compiled_spec["input_schema"] = compiled["input_schema"]
+                specs.append(compiled_spec)
                 continue
 
             # SubAgent - validate required fields
@@ -755,13 +832,14 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             }
             if self._state_schema is not None:
                 create_agent_kwargs["state_schema"] = self._state_schema
-            specs.append(
-                {
-                    "name": spec["name"],
-                    "description": spec["description"],
-                    "runnable": create_agent(model, **create_agent_kwargs),
-                }
-            )
+            subagent_spec: _SubagentSpec = {
+                "name": spec["name"],
+                "description": spec["description"],
+                "runnable": create_agent(model, **create_agent_kwargs),
+            }
+            if "input_schema" in spec:
+                subagent_spec["input_schema"] = spec["input_schema"]
+            specs.append(subagent_spec)
 
         return specs
 

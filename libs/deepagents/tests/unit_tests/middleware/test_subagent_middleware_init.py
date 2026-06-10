@@ -7,6 +7,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.graph import START, MessagesState, StateGraph
+from pydantic import BaseModel
 
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
@@ -71,6 +72,54 @@ class TestSubagentMiddlewareInit:
         # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
         assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
         assert "weather" in middleware.system_prompt
+
+    def test_task_tool_schema_exposes_payload_argument(self) -> None:
+        """The task tool accepts an optional structured payload."""
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "weather",
+                    "description": "Weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "openai:gpt-5.5",
+                    "tools": [],
+                }
+            ],
+        )
+
+        schema = middleware.tools[0].tool_call_schema.model_json_schema()
+        payload_schema = schema["properties"]["payload"]
+
+        assert payload_schema["default"] is None
+        assert {"type": "null"} in payload_schema["anyOf"]
+        assert "structured payload" in payload_schema["description"]
+
+    def test_task_tool_description_includes_subagent_input_schema(self) -> None:
+        """Input schemas should be visible in the supervisor-facing tool description."""
+
+        class WeatherInput(BaseModel):
+            city: str
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "weather",
+                    "description": "Weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "openai:gpt-5.5",
+                    "tools": [],
+                    "input_schema": WeatherInput,
+                }
+            ],
+        )
+
+        description = middleware.tools[0].description
+
+        assert "Input payload schema" in description
+        assert "city" in description
+        assert "payload matching that schema" in description
 
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""
@@ -162,6 +211,39 @@ class TestSubagentMiddlewareInit:
         assert runnable.config is not None
         assert runnable.config.get("metadata", {}).get("lc_agent_name") == "my-subagent"
         assert runnable.config.get("run_name") == "my-subagent"
+
+    def test_input_schema_preserved_for_declarative_and_compiled_subagents(self) -> None:
+        """_get_subagents keeps input schemas for both subagent spec types."""
+
+        class WeatherInput(BaseModel):
+            city: str
+
+        graph = self._make_echo_graph()
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "declarative-weather",
+                    "description": "Declarative weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "openai:gpt-5.5",
+                    "tools": [],
+                    "input_schema": WeatherInput,
+                },
+                {
+                    "name": "compiled-weather",
+                    "description": "Compiled weather subagent",
+                    "runnable": graph,
+                    "input_schema": WeatherInput,
+                },
+            ],
+        )
+
+        schemas = {spec["name"]: spec.get("input_schema") for spec in middleware._get_subagents()}
+
+        assert schemas["declarative-weather"] is WeatherInput
+        assert schemas["compiled-weather"] is WeatherInput
 
     def test_compiled_subagent_does_not_mutate_original_runnable(self) -> None:
         """_get_subagents must not mutate the original runnable passed by the caller."""

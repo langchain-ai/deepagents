@@ -32,9 +32,10 @@ from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -89,8 +90,42 @@ class _ScriptedChatModel(BaseChatModel):
         return self
 
 
+class _WeatherInput(BaseModel):
+    city: str
+    days: int = Field(default=1, ge=1)
+
+
 class TestSubAgents:
     """Tests for sub-agent middleware functionality."""
+
+    @staticmethod
+    def _tool_runtime(*, tool_call_id: str = "call_task") -> ToolRuntime:
+        return ToolRuntime(
+            state={"messages": [HumanMessage(content="Parent message.")]},
+            context=None,
+            config={},
+            stream_writer=lambda _: None,
+            tool_call_id=tool_call_id,
+            store=None,
+        )
+
+    @staticmethod
+    def _weather_middleware(captured_states: list[dict[str, Any]]) -> SubAgentMiddleware:
+        def worker(state: dict[str, Any]) -> dict[str, Any]:
+            captured_states.append(state)
+            return {"messages": [AIMessage(content="Weather complete.")]}
+
+        return SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather-worker",
+                    description="Handles weather requests.",
+                    runnable=RunnableLambda(worker),
+                    input_schema=_WeatherInput,
+                )
+            ],
+        )
 
     def test_create_deep_agent_routes_async_subagents_from_subagents_param(self) -> None:
         agent = create_deep_agent(
@@ -208,6 +243,156 @@ class TestSubAgents:
         # Verify the ToolMessage contains the subagent's final response
         subagent_tool_message = tool_messages[0]
         assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
+
+    def test_parent_task_tool_call_accepts_payload_argument(self) -> None:
+        """ToolNode invocation should pass model-provided payload into `task`."""
+        captured_states: list[dict[str, Any]] = []
+
+        def worker(state: dict[str, Any]) -> dict[str, Any]:
+            captured_states.append(state)
+            return {"messages": [AIMessage(content="Weather complete.")]}
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Fetch weather.",
+                                    "subagent_type": "weather-worker",
+                                    "payload": {"city": "Seoul", "days": "3"},
+                                },
+                                "id": "call_weather",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            subagents=[
+                CompiledSubAgent(
+                    name="weather-worker",
+                    description="Handles weather requests.",
+                    runnable=RunnableLambda(worker),
+                    input_schema=_WeatherInput,
+                )
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="What is the weather in Seoul?")]})
+
+        content = json.loads(captured_states[0]["messages"][0].content)
+        assert content == {
+            "description": "Fetch weather.",
+            "payload": {"city": "Seoul", "days": 3},
+        }
+
+    def test_subagent_input_schema_requires_payload(self) -> None:
+        """A schema-backed subagent should not be invoked without payload."""
+        captured_states: list[dict[str, Any]] = []
+        middleware = self._weather_middleware(captured_states)
+
+        result = middleware.tools[0].func(
+            description="Fetch weather.",
+            subagent_type="weather-worker",
+            runtime=self._tool_runtime(),
+        )
+
+        assert isinstance(result, str)
+        assert "`payload` is required" in result
+        assert captured_states == []
+
+    def test_subagent_input_schema_rejects_invalid_payload(self) -> None:
+        """Invalid schema-backed payloads should return a retryable tool error."""
+        captured_states: list[dict[str, Any]] = []
+        middleware = self._weather_middleware(captured_states)
+
+        result = middleware.tools[0].func(
+            description="Fetch weather.",
+            subagent_type="weather-worker",
+            payload={"city": "Seoul", "days": 0},
+            runtime=self._tool_runtime(),
+        )
+
+        assert isinstance(result, str)
+        assert "Invalid `payload` for subagent `weather-worker`" in result
+        assert captured_states == []
+
+    def test_subagent_without_input_schema_forwards_raw_payload(self) -> None:
+        """Payloads remain available even when a subagent does not declare a schema."""
+        captured_states: list[dict[str, Any]] = []
+
+        def worker(state: dict[str, Any]) -> dict[str, Any]:
+            captured_states.append(state)
+            return {"messages": [AIMessage(content="Weather complete.")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather-worker",
+                    description="Handles weather requests.",
+                    runnable=RunnableLambda(worker),
+                )
+            ],
+        )
+
+        result = middleware.tools[0].func(
+            description="Fetch weather.",
+            subagent_type="weather-worker",
+            payload={"city": "Seoul", "days": "3"},
+            runtime=self._tool_runtime(),
+        )
+
+        assert not isinstance(result, str)
+        content = json.loads(captured_states[0]["messages"][0].content)
+        assert content == {
+            "description": "Fetch weather.",
+            "payload": {"city": "Seoul", "days": "3"},
+        }
+
+    async def test_async_task_input_schema_validates_and_forwards_payload(self) -> None:
+        """The async task path should use the same input schema validation."""
+        captured_states: list[dict[str, Any]] = []
+
+        async def worker(state: dict[str, Any]) -> dict[str, Any]:
+            captured_states.append(state)
+            return {"messages": [AIMessage(content="Async weather complete.")]}
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather-worker",
+                    description="Handles weather requests.",
+                    runnable=RunnableLambda(worker),
+                    input_schema=_WeatherInput,
+                )
+            ],
+        )
+
+        result = await middleware.tools[0].coroutine(
+            description="Fetch weather.",
+            subagent_type="weather-worker",
+            payload={"city": "Seoul"},
+            runtime=self._tool_runtime(),
+        )
+
+        assert not isinstance(result, str)
+        assert result.update["messages"][0].content == "Async weather complete."
+        content = json.loads(captured_states[0]["messages"][0].content)
+        assert content == {
+            "description": "Fetch weather.",
+            "payload": {"city": "Seoul", "days": 1},
+        }
 
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
         """Test that multiple different subagents can be launched in parallel.

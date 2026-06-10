@@ -51,6 +51,36 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 
 The agent can plan, read/write files, and manage its own context. Add your own tools, swap models, customize prompts, configure sub-agents, and more. For a full overview and quickstart of Deep Agents, the best resource is our [docs](https://docs.langchain.com/oss/python/deepagents/overview).
 
+### Structured sub-agent input
+
+Sub-agents can declare an `input_schema` to require structured `task` payloads from the supervisor before they run.
+
+```python
+from pydantic import BaseModel, Field
+
+from deepagents import create_deep_agent
+
+
+class ResearchInput(BaseModel):
+    topic: str = Field(description="Research topic")
+    depth: str = Field(description="Requested depth, such as 'brief' or 'deep'")
+
+
+agent = create_deep_agent(
+    model=...,
+    subagents=[
+        {
+            "name": "researcher",
+            "description": "Researches a topic from a structured payload.",
+            "system_prompt": "Use the JSON payload from the user message to research the topic.",
+            "input_schema": ResearchInput,
+        }
+    ],
+)
+```
+
+When a supervisor invokes `researcher`, the `task` call must include a `payload` matching `ResearchInput`. Invalid or missing payloads are rejected before the sub-agent is invoked.
+
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
 ## ❓ FAQ

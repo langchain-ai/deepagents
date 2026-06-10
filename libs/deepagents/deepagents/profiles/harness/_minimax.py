@@ -8,7 +8,7 @@ Registers a `HarnessProfile` for each MiniMax model spec
 # each; hard-wrapping them would not change behavior but would make edits harder
 # to diff.
 
-from deepagents.profiles.harness._precompletion import PreCompletionVerificationMiddleware
+from deepagents.profiles.harness._reasoning_gate import ReasoningGateMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
@@ -55,13 +55,24 @@ def register() -> None:
     """Register the built-in MiniMax harness profile for each MiniMax spec.
 
     The profile pairs the `track_and_verify` prompt framework with a
-    `PreCompletionVerificationMiddleware` hook that deterministically forces one
-    verification pass before finishing a tool-using turn — the prompt alone does
-    not reliably trigger the build-verify loop.
+    `ReasoningGateMiddleware` controller: it classifies each turn and, only when
+    the turn needs hard reasoning, grades the agent's work against a fixed
+    process rubric and re-runs once on a real violation.
+
+    The classifier + grader run on a MiniMax-family model served by Fireworks
+    (`minimax-m2p7`): the grader uses structured output, which MiniMax M3 on
+    OpenRouter (the actor) does not support (no endpoint accepts a forced
+    `tool_choice`). m2.7 is <= m3 in capability, so this adds no frontier
+    assistance — the verification gain comes from a fresh-perspective grade
+    against the rubric, not a stronger grader.
     """
     profile = HarnessProfile(
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-        extra_middleware=lambda: [PreCompletionVerificationMiddleware()],
+        extra_middleware=lambda: [
+            ReasoningGateMiddleware(
+                grader_model="fireworks:accounts/fireworks/models/minimax-m2p7"
+            )
+        ],
     )
     for spec in _MINIMAX_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

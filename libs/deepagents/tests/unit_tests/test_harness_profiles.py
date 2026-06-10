@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from deepagents import (
     AsyncSubAgentMiddleware,
@@ -18,6 +20,7 @@ from deepagents.profiles.harness._glm import _GLM_MODEL_SPECS
 from deepagents.profiles.harness._kimi import _KIMI_MODEL_SPECS
 from deepagents.profiles.harness._minimax import _MINIMAX_MODEL_SPECS, _SYSTEM_PROMPT_SUFFIX
 from deepagents.profiles.harness._precompletion import PreCompletionVerificationMiddleware
+from deepagents.profiles.harness._reasoning_gate import ReasoningGateMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     _ensure_harness_profiles_loaded,
     _get_harness_profile,
@@ -428,14 +431,14 @@ class TestMiniMaxBuiltinProfile:
             assert profile is not None, spec
             # write_todos stays (no middleware stripped).
             assert "TodoListMiddleware" not in profile.excluded_middleware, spec
-            # V3: track_and_verify + report_back prompt framework ...
+            # V4: track_and_verify + report_back prompt framework ...
             assert profile.system_prompt_suffix is not None, spec
             assert "<track_and_verify>" in profile.system_prompt_suffix, spec
             assert "<report_back>" in profile.system_prompt_suffix, spec
-            # ... paired with the pre-completion verification hook.
+            # ... paired with the reasoning-gate controller.
             mws = profile.materialize_extra_middleware()
             assert any(
-                type(m).__name__ == "PreCompletionVerificationMiddleware" for m in mws
+                type(m).__name__ == "ReasoningGateMiddleware" for m in mws
             ), spec
 
     def test_unprofiled_spec_is_unaffected(self) -> None:
@@ -503,3 +506,59 @@ class TestPreCompletionVerificationMiddleware:
         }
         out = mw.after_agent(state, None)
         assert out == {"_precompletion_verified": True}
+
+
+class TestReasoningGateMiddleware:
+    """Gate logic for the conditional rubric controller (model stubbed)."""
+
+    def _build(self, verdict: str) -> ReasoningGateMiddleware:
+        fake = GenericFakeChatModel(messages=itertools.cycle([AIMessage(content=verdict)]))
+        mw = ReasoningGateMiddleware(grader_model=fake)
+        mw._ensure_ready()  # resolves _model=fake + builds the real internal rubric
+        mw._rubric = MagicMock()  # stub grading; these tests only exercise the gate
+        mw._rubric.after_agent.return_value = {}
+        return mw
+
+    def test_simple_turn_skips_grading(self) -> None:
+        mw = self._build("SIMPLE")
+        state = {"messages": [HumanMessage("what's your name?")], "_gate_baseline": 1}
+        assert mw.after_agent(state, None) is None
+        mw._rubric.after_agent.assert_not_called()
+
+    def test_complex_turn_grades(self) -> None:
+        mw = self._build("COMPLEX")
+        state = {
+            "messages": [
+                HumanMessage("cancel my flight and rebook to JFK"),
+                AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}]),
+            ],
+            "_gate_baseline": 1,
+        }
+        out = mw.after_agent(state, None)
+        mw._rubric.after_agent.assert_called_once()
+        assert out is not None
+        assert "rubric" in out  # fresh-run state merged in
+
+    def test_in_progress_continues_without_classifying(self) -> None:
+        # Classifier would say SIMPLE, but an active grade loop must continue.
+        mw = self._build("SIMPLE")
+        state = {
+            "messages": [HumanMessage("hi")],
+            "_gate_baseline": 1,
+            "_rubric_status": "needs_revision",
+        }
+        mw.after_agent(state, None)
+        mw._rubric.after_agent.assert_called_once()
+
+    def test_build_rubric_embeds_system_prompt(self) -> None:
+        mw = ReasoningGateMiddleware(grader_model="unused-no-resolve")
+        state = {
+            "messages": [
+                SystemMessage(content="POLICY: basic economy is non-refundable."),
+                HumanMessage("cancel my flight"),
+            ]
+        }
+        rubric = mw._build_rubric(state)
+        assert "Requirement coverage" in rubric
+        assert "POLICY: basic economy is non-refundable." in rubric
+        assert "<operating_rules>" in rubric

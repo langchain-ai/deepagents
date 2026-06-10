@@ -549,10 +549,19 @@ class FuzzyFileController:
 
         Also resolves a project root deferred by `set_cwd`, so the blocking
         filesystem walk runs in a worker thread instead of on the event loop.
+
+        Warmers are scheduled non-exclusively, so two quick cwd switches can run
+        concurrently. The cwd is snapshotted before each await and re-checked
+        after, so a warmer for a superseded cwd cannot overwrite controller
+        state belonging to a newer cwd.
         """
+        cwd = self._cwd
         if self._project_root_pending:
-            root = await asyncio.to_thread(find_project_root, self._cwd)
-            resolved = root or self._cwd
+            root = await asyncio.to_thread(find_project_root, cwd)
+            if cwd != self._cwd:
+                # A newer cwd switch superseded this warmer; drop stale results.
+                return
+            resolved = root or cwd
             if resolved != self._project_root:
                 # The real root differs from the provisional `cwd`; drop any
                 # cache built against the narrower scope.
@@ -561,11 +570,12 @@ class FuzzyFileController:
             self._project_root_pending = False
         if self._file_cache is not None:
             return
+        project_root = self._project_root
         # Best-effort; _get_files() falls back to sync on failure.
         with contextlib.suppress(Exception):
-            self._file_cache = await asyncio.to_thread(
-                _get_project_files, self._project_root
-            )
+            files = await asyncio.to_thread(_get_project_files, project_root)
+            if cwd == self._cwd:
+                self._file_cache = files
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

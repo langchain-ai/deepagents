@@ -56,10 +56,24 @@ MCP server that is already registered in the workspace
 (`deepagents mcp-servers add`) — so a freshly scaffolded project deploys
 without first registering a server.
 
-New agents default to the `default` backend — switch `agent.json`'s
-`backend.type` to `thread_scoped_sandbox` (or `agent_scoped_sandbox`) to opt
-into a managed sandbox. The CLI does not create or run sandboxes locally;
-sandbox lifecycle is handled by the Managed Deep Agents platform.
+New agents default to the `state` backend. To opt into a managed sandbox, set
+`agent.json`'s `backend.type` to `sandbox` and configure
+`backend.sandbox_config.scope` as `thread` or `agent`; `sandbox_config` can also
+include sandbox policy IDs and TTL fields. The CLI does not create or run
+sandboxes locally; sandbox lifecycle is handled by the Managed Deep Agents
+platform.
+
+```json
+{
+  "backend": {
+    "type": "sandbox",
+    "sandbox_config": {
+      "scope": "thread",
+      "policy_ids": ["policy-id"]
+    }
+  }
+}
+```
 
 ### Project layout
 

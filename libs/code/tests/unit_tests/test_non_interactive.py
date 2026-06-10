@@ -4,7 +4,7 @@ import asyncio
 import io
 import signal
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -1627,7 +1627,7 @@ class TestRunStartupCommand:
         assert buf.getvalue() == ""
 
 
-async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
+async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item

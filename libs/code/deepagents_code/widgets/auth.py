@@ -35,19 +35,18 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from deepagents_code import auth_store, theme
+from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     ModelConfig,
-    ProviderAuthSource,
     clear_caches,
     get_available_models,
     get_base_url_env_var,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
-    resolved_env_var_name,
 )
 from deepagents_code.widgets._links import open_style_link
 
@@ -671,20 +670,7 @@ class AuthManagerScreen(ModalScreen[None]):
             A composed `Content` with the provider name and a status badge.
         """
         status = get_provider_auth_status(provider)
-        env_var = status.env_var or get_credential_env_var(provider) or ""
-        if status.source is ProviderAuthSource.STORED:
-            badge = Content.styled("[stored]", "bold $success")
-        elif status.source is ProviderAuthSource.ENV:
-            if env_var:
-                badge = Content.assemble(
-                    ("[env: ", "$text-muted"),
-                    Content.styled(resolved_env_var_name(env_var), "$text-muted"),
-                    ("]", "$text-muted"),
-                )
-            else:
-                badge = Content.styled("[env]", "$text-muted")
-        else:
-            badge = Content.styled("[missing]", "bold $warning")
+        badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=provider),
             "  ",

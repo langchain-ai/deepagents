@@ -54,7 +54,52 @@ def test_create_payload_normalizes_legacy_sandbox_backend(tmp_path: Path) -> Non
     (tmp_path / "AGENTS.md").write_text("hi")
     project = Project.load(tmp_path)
     payload = build_payload(project, mode="create")
-    assert payload["backend"] == {"type": "thread_scoped_sandbox"}
+    assert payload["backend"] == {
+        "type": "sandbox",
+        "sandbox_config": {"scope": "thread"},
+    }
+
+
+def test_create_payload_normalizes_legacy_default_backend(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        '{"name": "x", "backend": {"type": "default"}}'
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    project = Project.load(tmp_path)
+    payload = build_payload(project, mode="create")
+    assert payload["backend"] == {"type": "state"}
+
+
+def test_create_payload_allows_state_backend(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text('{"name": "x", "backend": {"type": "state"}}')
+    (tmp_path / "AGENTS.md").write_text("hi")
+    project = Project.load(tmp_path)
+    payload = build_payload(project, mode="create")
+    assert payload["backend"] == {"type": "state"}
+
+
+def test_create_payload_allows_sandbox_config(tmp_path: Path) -> None:
+    (tmp_path / "agent.json").write_text(
+        """
+        {
+          "name": "x",
+          "backend": {
+            "type": "sandbox",
+            "sandbox_config": {
+              "scope": "thread",
+              "policy_ids": ["p-1"]
+            }
+          }
+        }
+        """
+    )
+    (tmp_path / "AGENTS.md").write_text("hi")
+    project = Project.load(tmp_path)
+    payload = build_payload(project, mode="create")
+    assert payload["backend"] == {
+        "type": "sandbox",
+        "sandbox_config": {"scope": "thread", "policy_ids": ["p-1"]},
+    }
 
 
 def test_create_payload_compiles_model_shorthand(tmp_path: Path) -> None:

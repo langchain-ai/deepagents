@@ -48,6 +48,7 @@ body:
         - label: deepagents (SDK)
         - label: cli
         - label: code
+        - label: talon
         - label: acp
         - label: evals
         - label: harbor
@@ -119,6 +120,7 @@ body:
         deepagents: 0.x.y
         deepagents-cli: 0.x.y
         deepagents-code: 0.x.y
+        deepagents-talon: 0.x.y
   - type: markdown
     attributes:
       value: |

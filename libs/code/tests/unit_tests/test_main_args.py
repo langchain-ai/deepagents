@@ -209,7 +209,7 @@ class TestSkillFlagValidation:
         ):
             cli_main()
         assert exc_info.value.code == 0
-        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # ty: ignore
 
     def test_skill_with_quiet_without_non_interactive_exits_2(self) -> None:
         """`--skill` + `--quiet` without `-n` should exit with code 2."""
@@ -310,7 +310,7 @@ class TestMaxTurnsArgument:
         ):
             cli_main()
         assert exc_info.value.code == 0
-        assert mock_run.await_args.kwargs["max_turns"] == 5  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] == 5  # ty: ignore
 
     def test_forwarded_to_run_non_interactive(self) -> None:
         """--max-turns value is forwarded to run_non_interactive as max_turns."""
@@ -332,7 +332,7 @@ class TestMaxTurnsArgument:
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert mock_run.await_args.kwargs["max_turns"] == 3  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] == 3  # ty: ignore
 
     def test_not_forwarded_as_none_when_omitted(self) -> None:
         """When --max-turns is omitted, max_turns=None is forwarded."""
@@ -352,7 +352,7 @@ class TestMaxTurnsArgument:
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert mock_run.await_args.kwargs["max_turns"] is None  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] is None  # ty: ignore
 
     @pytest.mark.parametrize("bad_value", ["0", "-1", "-50", "abc"])
     def test_rejects_non_positive_and_non_integer(
@@ -654,7 +654,7 @@ class TestApplyStdinPipe:
         """When piped stdin is empty/whitespace, args are not modified."""
         args = _make_args()
         fake_stdin = io.StringIO("   \n  ")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message is None
@@ -664,7 +664,7 @@ class TestApplyStdinPipe:
         """Piped stdin with no flags sets non_interactive_message."""
         args = _make_args()
         fake_stdin = io.StringIO("my prompt")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "my prompt"
@@ -674,7 +674,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended to an existing -n message."""
         args = _make_args(non_interactive_message="do something")
         fake_stdin = io.StringIO("context from pipe")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "context from pipe\n\ndo something"
@@ -683,7 +683,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended to an existing -m message."""
         args = _make_args(initial_prompt="explain this")
         fake_stdin = io.StringIO("error log contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "error log contents\n\nexplain this"
@@ -693,7 +693,7 @@ class TestApplyStdinPipe:
         """Piped stdin becomes the startup request when `--skill` is set."""
         args = _make_args(initial_skill="code-review")
         fake_stdin = io.StringIO("diff contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "diff contents"
@@ -703,7 +703,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended when `--skill` and `-m` are combined."""
         args = _make_args(initial_prompt="review this", initial_skill="code-review")
         fake_stdin = io.StringIO("diff contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "diff contents\n\nreview this"
@@ -713,7 +713,7 @@ class TestApplyStdinPipe:
         """When both -n and -m are set, stdin is prepended to -n."""
         args = _make_args(non_interactive_message="task", initial_prompt="ignored")
         fake_stdin = io.StringIO("piped")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "piped\n\ntask"
@@ -723,7 +723,7 @@ class TestApplyStdinPipe:
         """Multiline piped input is preserved."""
         args = _make_args()
         fake_stdin = io.StringIO("line one\nline two\nline three")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "line one\nline two\nline three"
@@ -806,7 +806,7 @@ class TestApplyStdinPipe:
         """After reading piped input, fd 0 is replaced with /dev/tty."""
         args = _make_args()
         fake_stdin = io.StringIO("hello")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with (
             patch.object(sys, "stdin", fake_stdin),
             patch("os.open", return_value=99) as mock_os_open,
@@ -824,7 +824,7 @@ class TestApplyStdinPipe:
         """When /dev/tty cannot be opened, piped input is still captured."""
         args = _make_args()
         fake_stdin = io.StringIO("hello")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with (
             patch.object(sys, "stdin", fake_stdin),
             patch("os.open", side_effect=OSError("No controlling terminal")),
@@ -857,7 +857,7 @@ class TestAgentResolutionScope:
             cli_main()
 
         mock_list.assert_awaited_once()
-        assert mock_list.await_args.kwargs["agent_name"] is None  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["agent_name"] is None  # ty: ignore
         load_recent.assert_not_called()
         valid_recent.assert_not_called()
 
@@ -893,7 +893,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(Path.cwd())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(Path.cwd())  # ty: ignore
 
     def test_explicit_relative_cwd_is_normalized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -905,7 +905,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd", ".")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # ty: ignore
 
     def test_explicit_home_cwd_is_expanded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -917,7 +917,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd", "~/repo")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # ty: ignore
 
 
 class TestResolveAgentArg:
@@ -1602,3 +1602,51 @@ class TestInstallPackageSubcommand:
         code, perform_mock, _console = self._run_install_package("-rreqs.txt", yes=True)
         assert code == 2
         perform_mock.assert_not_awaited()
+
+
+class TestParseInterpreterToolsFlag:
+    """Tests for `_parse_interpreter_tools_flag`."""
+
+    def test_none_returns_none(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag(None) is None
+
+    def test_safe_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe") == "safe"
+
+    def test_all_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("all") == "all"
+
+    def test_explicit_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("read_file,glob,grep,task") == [
+            "read_file",
+            "glob",
+            "grep",
+            "task",
+        ]
+
+    def test_safe_inside_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe,task") == ["safe", "task"]
+
+    def test_all_inside_list_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("all,task")
+        assert exc_info.value.code == 2
+
+    def test_empty_value_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("   ")
+        assert exc_info.value.code == 2

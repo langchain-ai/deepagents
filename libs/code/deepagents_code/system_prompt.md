@@ -78,6 +78,8 @@ pytest /foo/bar/tests
 cd /foo/bar && pytest tests
 </bad-example>
 
+When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
+
 ### web_search
 
 Search for documentation, error solutions, and code examples.

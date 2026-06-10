@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -755,6 +756,32 @@ except PermissionError:
             "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
         }
         return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the sandbox via a server-side ``rm``.
+
+        Uses ``rm -f``, so deleting a path that does not exist succeeds
+        silently; a non-zero exit (e.g. the path is a directory, or a
+        permission error) is reported as a failure.
+
+        Args:
+            file_path: Absolute path to the file to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                deletion command fails.
+        """
+        # `shlex.quote` only neutralizes shell metacharacters so the path is
+        # passed to `rm` as a single literal argument. It is NOT a security
+        # boundary: it does not confine the deletion to any sandbox root or
+        # block traversal. Whatever the sandbox shell can reach, this can delete.
+        quoted = shlex.quote(file_path)
+        result = self.execute(f"rm -f {quoted}")
+
+        if result.exit_code == 0:
+            return DeleteResult(path=file_path)
+
+        return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
 
     def grep(
         self,

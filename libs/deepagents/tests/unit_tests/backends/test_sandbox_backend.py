@@ -1326,3 +1326,57 @@ def test_sandbox_edit_inline_permission_denied() -> None:
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/locked.txt" in result.error
+
+
+class TestSandboxDelete:
+    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
+
+    def test_delete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        # The shell command quotes the path and uses rm -f
+        assert sandbox.last_command is not None
+        assert "rm -f" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+
+    def test_delete_missing_is_noop_success(self) -> None:
+        # `rm -f` ignores a missing path: exit 0, so delete reports success.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/missing.txt")
+        assert result.error is None
+        assert result.path == "/missing.txt"
+
+    def test_delete_failure_reports_output(self) -> None:
+        # A non-zero exit (e.g. the path is a directory) surfaces rm's stderr.
+        sandbox = MockSandbox()
+        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/some/dir")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert "Is a directory" in result.error
+
+    def test_delete_failure_unknown_error(self) -> None:
+        # Non-zero exit with no output falls back to a generic message.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/file.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_adelete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = await sandbox.adelete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"

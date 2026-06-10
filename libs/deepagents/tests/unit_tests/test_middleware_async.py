@@ -10,7 +10,7 @@ from langgraph.store.memory import InMemoryStore
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
-from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
+from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
 
 def _make_backend(files=None):
@@ -660,6 +660,71 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         assert isinstance(result, ToolMessage)
+        assert mem_store.get(("filesystem",), "/test.txt") is not None
+
+    async def test_adelete_file(self):
+        """Async delete_file removes the file and reports success."""
+        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/test.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d1", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Deleted file" in result.content
+        assert mem_store.get(("filesystem",), "/test.txt") is None
+
+    async def test_adelete_file_invalid_path(self):
+        """Async delete_file rejects a traversal path with an error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "../etc/passwd",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d2", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    async def test_adelete_file_missing_returns_error(self):
+        """Async delete_file surfaces the backend's not-found error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/ghost.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d3", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "not found" in result.content
+
+    async def test_adelete_file_permission_denied(self):
+        """Async delete_file is blocked by a deny write permission."""
+        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+        )
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/test.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d5", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "permission denied for write" in result.content
+        # The file is left untouched since deletion was blocked.
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):

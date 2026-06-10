@@ -851,8 +851,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
+
+        from deepagents_code.model_config import load_thread_config
+
+        cfg = load_thread_config()
+
         if isinstance(filter_cwd, _Sentinel):
-            self._filter_cwd: str | None = _safe_cwd_string()
+            # Honor the persisted scope: "all" starts with no cwd filter,
+            # "cwd" scopes to the current working directory.
+            self._filter_cwd: str | None = (
+                None if cfg.scope == "all" else _safe_cwd_string()
+            )
         else:
             self._filter_cwd = filter_cwd
         initial = list(initial_threads) if initial_threads is not None else []
@@ -874,9 +883,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_controls: list[Input | Checkbox | Select[str]] | None = None
         self._cell_text: dict[tuple[str, str], str] = {}
 
-        from deepagents_code.model_config import load_thread_config
-
-        cfg = load_thread_config()
         self._columns = dict(cfg.columns)
         self._relative_time = cfg.relative_time
         self._sort_by_updated = cfg.sort_order == "updated_at"
@@ -2114,6 +2120,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 )
         else:
             new_cwd = None
+        self._persist_scope(
+            _SCOPE_VALUE_CWD if event.value == _SCOPE_VALUE_CWD else _SCOPE_VALUE_ALL
+        )
         if new_cwd == self._filter_cwd:
             return
         self._filter_cwd = new_cwd
@@ -2121,6 +2130,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
         )
+
+    def _persist_scope(self, scope: str) -> None:
+        """Save directory-scope preference to config, notifying on failure."""
+
+        async def _save() -> None:
+            from deepagents_code.model_config import save_thread_scope
+
+            ok = await asyncio.to_thread(save_thread_scope, scope)
+            if not ok:
+                self.app.notify("Could not save scope preference", severity="warning")
+
+        self.run_worker(_save(), group="thread-selector-save")
 
     def _persist_sort_order(self, order: str) -> None:
         """Save sort-order preference to config, notifying on failure."""

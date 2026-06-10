@@ -10300,7 +10300,7 @@ class DeepAgentsApp(App):
         if not await self._reload_configuration_for_restart():
             return
 
-        if self._server_proc is None or self._server_kwargs is None:
+        if self._server_kwargs is None:
             await self._mount_message(
                 AppMessage(
                     "Cannot restart: this app is connected to a remote "
@@ -10308,6 +10308,56 @@ class DeepAgentsApp(App):
                     "was reloaded; relaunch dcode to fully restart.",
                 ),
             )
+            return
+
+        # We own a server (`_server_kwargs is not None`) but it may not be
+        # ready to respawn. `_server_proc` stays `None` until the startup
+        # worker obtains the subprocess (assigned before `ServerReady` is
+        # posted; see `_run_startup_worker`), and `_connecting` stays set until
+        # the `ServerReady` handler runs. Guarding on both also covers the
+        # brief window where the proc is assigned but the handler hasn't fired,
+        # where restarting would let the still-queued startup `ServerReady`
+        # clobber state with the just-killed proc. A match here means the
+        # server is still coming up, deferred for model selection, or failed
+        # before a subprocess existed — not remote-server mode. Mirrors the
+        # sibling guards elsewhere in this file.
+        if self._connecting or self._server_proc is None:
+            if self._server_startup_deferred:
+                await self._mount_message(
+                    AppMessage(
+                        "Server startup is waiting for a model. Configuration "
+                        "was reloaded; set credentials with `/auth`, reload the "
+                        "environment with `/reload`, or pick a model with "
+                        "`/model` to start the server.",
+                    ),
+                )
+            elif self._connecting:
+                await self._mount_message(
+                    AppMessage(
+                        "The server is still starting. Configuration was "
+                        "reloaded and will apply once it finishes connecting; "
+                        "run `/restart` again afterward if needed.",
+                    ),
+                )
+            elif self._server_startup_error is not None:
+                await self._mount_message(
+                    AppMessage(
+                        "Cannot restart yet because the server did not finish "
+                        "starting. Configuration was reloaded; update "
+                        "credentials with `/auth` if needed, then pick a model "
+                        "with `/model` to try again. You can also relaunch "
+                        "dcode.\n\n"
+                        f"Last error: {self._server_startup_error}",
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        "Cannot restart yet because the server is not running. "
+                        "Configuration was reloaded; relaunch dcode to start "
+                        "again.",
+                    ),
+                )
             return
 
         await self._mount_message(AppMessage("Restarting server..."))

@@ -64,6 +64,41 @@ Casts are acceptable when the type violation is the point of the test (for examp
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
 
+## Local dev installs
+
+Keep the released CLI and editable development CLI separate:
+
+- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
+- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
+
+This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
+
+`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
+
+Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
+
+```bash
+uv venv ~/.local/share/dcode-dev --python 3.13
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
+ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
+```
+
+When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
+
+```bash
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
+```
+
+Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
+
+```bash
+which dcode
+which dcode-dev
+dcode --version
+dcode-dev --version
+~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
+```
+
 ## Startup performance
 
 `deepagents-code` must stay fast to launch. Never import heavy packages (e.g., `deepagents`, LangChain, LangGraph) at module level or in the argument-parsing path. These imports pull in large dependency trees and add seconds to every invocation, including trivial commands like `deepagents-code -v`.

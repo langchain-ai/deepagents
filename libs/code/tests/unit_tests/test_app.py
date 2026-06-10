@@ -11302,6 +11302,124 @@ class TestRestartCommand:
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert any("Cannot restart" in m for m in app_msgs)
 
+    async def test_server_still_starting_does_not_claim_remote(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` during startup must not show the remote-server message.
+
+        We own a server (`_server_kwargs` set) but `_server_proc` is `None`
+        while the startup worker is still obtaining it. The handler should
+        report "still starting" rather than the misleading "connected to a
+        remote LangGraph server".
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = {}
+            app._server_startup_deferred = False
+            app._connecting = True
+
+            called = False
+
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal called
+                called = True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _fail)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("still starting" in m for m in app_msgs)
+            assert not any("waiting for a model" in m for m in app_msgs)
+            assert not any("remote LangGraph server" in m for m in app_msgs)
+
+    async def test_failed_startup_does_not_claim_still_starting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` after failed startup must not imply work is still pending."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = {}
+            app._server_startup_deferred = False
+            app._connecting = False
+            app._server_startup_error = "ModelConfigError: missing API key"
+
+            called = False
+
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal called
+                called = True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _fail)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("server did not finish starting" in m for m in app_msgs)
+            assert any(
+                "Last error: ModelConfigError: missing API key" in m for m in app_msgs
+            )
+            assert not any("still starting" in m for m in app_msgs)
+            assert not any("waiting for a model" in m for m in app_msgs)
+            assert not any("remote LangGraph server" in m for m in app_msgs)
+
+    async def test_deferred_startup_reports_waiting_for_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` while startup is deferred guides the user to `/auth`/`/model`."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = {}
+            app._server_startup_deferred = True
+
+            called = False
+
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal called
+                called = True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _fail)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("waiting for a model" in m for m in app_msgs)
+            assert not any("still starting" in m for m in app_msgs)
+            assert not any("remote LangGraph server" in m for m in app_msgs)
+
     async def test_calls_server_restart_and_clears_caches(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

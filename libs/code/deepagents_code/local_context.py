@@ -49,6 +49,9 @@ _DETECT_SCRIPT_TIMEOUT = 30
 _MCP_ERROR_DETAIL_LIMIT = 200
 """Max characters of an MCP server error surfaced in the system prompt."""
 
+_TRACING_PROJECT_NAME_LIMIT = 200
+"""Max characters of a LangSmith project name surfaced in the system prompt."""
+
 
 def _sanitize_error_detail(error: str | None) -> str:
     """Make an untrusted MCP error string safe to embed in the system prompt.
@@ -71,6 +74,25 @@ def _sanitize_error_detail(error: str | None) -> str:
         return "unknown error"
     sanitized = sanitize_control_chars(error, max_length=_MCP_ERROR_DETAIL_LIMIT)
     return sanitized or "unknown error"
+
+
+def _sanitize_tracing_project_name(project: str) -> str:
+    """Make an untrusted LangSmith project name safe for the system prompt.
+
+    Project names can originate from a workspace `.env` file or process
+    environment. Flatten hidden/control characters and bound the length before
+    embedding them in prompt bullets so a crafted value cannot inject extra
+    prompt lines.
+
+    Args:
+        project: Raw LangSmith project name.
+
+    Returns:
+        A single-line, length-bounded, sanitized project name. Falls back to
+        `"unknown project"` when no usable text remains.
+    """
+    sanitized = sanitize_control_chars(project, max_length=_TRACING_PROJECT_NAME_LIMIT)
+    return sanitized or "unknown project"
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -165,9 +187,15 @@ def _build_tracing_context(
     if not agent_project:
         return ""
 
-    lines = ["**LangSmith Tracing**:", f"- Agent traces: project `{agent_project}`"]
-    if user_project and user_project != agent_project:
-        lines.append(f"- Shell-command traces: project `{user_project}`")
+    safe_agent_project = _sanitize_tracing_project_name(agent_project)
+    lines = [
+        "**LangSmith Tracing**:",
+        f"- Agent traces: project `{safe_agent_project}`",
+    ]
+    if user_project:
+        safe_user_project = _sanitize_tracing_project_name(user_project)
+        if safe_user_project != safe_agent_project:
+            lines.append(f"- Shell-command traces: project `{safe_user_project}`")
     return "\n".join(lines)
 
 

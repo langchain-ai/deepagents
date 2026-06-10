@@ -1749,6 +1749,34 @@ class TestBuildTracingContext:
         assert "- Agent traces: project `same-proj`" in result
         assert "Shell-command traces" not in result
 
+    def test_project_names_are_sanitized_to_single_lines(self) -> None:
+        """Environment-derived project names cannot inject prompt lines."""
+        result = _build_tracing_context(
+            "agent\n- injected agent instruction\x1b[31mred\x1b[0m",
+            "user\r\n- injected user instruction\u200btail",
+        )
+        lines = result.splitlines()
+        assert len(lines) == 3
+        assert "- Agent traces: project `agent - injected agent instruction" in result
+        assert (
+            "- Shell-command traces: project `user - injected user instructiontail`"
+        ) in result
+        assert "\n- injected" not in result
+        assert "\x1b" not in result
+        assert "\u200b" not in result
+
+    def test_project_names_are_truncated(self) -> None:
+        """Over-long project names are bounded before prompt insertion."""
+        result = _build_tracing_context("x" * 5000, None)
+        assert "…" in result
+        assert "x" * 500 not in result
+
+    def test_user_project_collapsed_when_sanitized_names_match(self) -> None:
+        """Compare sanitized names so equivalent unsafe forms are not duplicated."""
+        result = _build_tracing_context("same project", "same\nproject")
+        assert "- Agent traces: project `same project`" in result
+        assert "Shell-command traces" not in result
+
 
 class TestTracingContextInMiddleware:
     """Tests for tracing context integration in LocalContextMiddleware."""

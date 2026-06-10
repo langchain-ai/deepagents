@@ -1230,6 +1230,31 @@ def _build_whats_new_message(heading: str) -> Content:
     )
 
 
+_STARTUP_ERROR_HEADLINE_LIMIT = 300
+"""Max characters of a startup-error headline shown in chat before truncation.
+
+Long single-line errors (e.g. the `interpreter_ptc` "Available tools: ..." list)
+overflow this. `on_deep_agents_app_server_start_failed` appends a pointer to the
+full error in the debug log when the headline is clipped, since the truncated
+tail is often the actionable part.
+"""
+
+
+def _startup_error_headline(error: BaseException) -> str:
+    """Return the untruncated single-line `Type: message` startup headline.
+
+    Args:
+        error: The exception raised during server startup.
+
+    Returns:
+        A single-line `Type: message` summary (may exceed the banner width).
+    """
+    first_line = str(error).splitlines()[0].strip() if str(error) else ""
+    if not first_line:
+        first_line = error.__class__.__name__
+    return f"{type(error).__name__}: {first_line}"
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -1245,10 +1270,9 @@ def _format_startup_error(error: BaseException) -> str:
     Returns:
         A single-line `Type: message` summary suitable for the banner.
     """
-    first_line = str(error).splitlines()[0].strip() if str(error) else ""
-    if not first_line:
-        first_line = error.__class__.__name__
-    return f"{type(error).__name__}: {_truncate(first_line, limit=300)}"
+    return _truncate(
+        _startup_error_headline(error), limit=_STARTUP_ERROR_HEADLINE_LIMIT
+    )
 
 
 class TextualSessionState:
@@ -3083,11 +3107,18 @@ class DeepAgentsApp(App):
 
         self._connecting = False
         self._connection_ready_event.set()
+        headline_truncated = False
         if isinstance(event.error, MCPConfigError):
             # Already carries the path + hint; showing the class name is noise.
             self._server_startup_error = str(event.error)
         else:
             self._server_startup_error = _format_startup_error(event.error)
+            # A clipped headline drops the actionable tail (e.g. the
+            # `interpreter_ptc` available-tools list), so point at the full log.
+            headline_truncated = (
+                len(_startup_error_headline(event.error))
+                > _STARTUP_ERROR_HEADLINE_LIMIT
+            )
 
         # Stash the provider for the `/model` recovery hint. Reset on every
         # failure so a non-credentials retry-failure clears the prior flag.
@@ -3162,6 +3193,23 @@ class DeepAgentsApp(App):
                     f"\n\nHint: {install_hint}, then run "
                     f"`/model {missing.provider}:<model>` "
                     "to retry. Or pick a different provider with `/model`."
+                )
+
+        if headline_truncated:
+            from deepagents_code._debug import installed_debug_log_path
+
+            # Base the pointer on the handler that was actually installed, not on
+            # `DEEPAGENTS_CODE_DEBUG`: the var can read truthy (e.g. set in a
+            # `.env`) while no log file exists, which would point users at a
+            # nonexistent path.
+            debug_path = installed_debug_log_path()
+            if debug_path is not None:
+                text += f"\n\nNote: error truncated — full error in {debug_path}."
+            else:
+                text += (
+                    "\n\nNote: error truncated. Re-run with "
+                    "`DEEPAGENTS_CODE_DEBUG=1` to write the full error to the "
+                    "debug log."
                 )
 
         async def _mount_failure() -> None:
@@ -7868,12 +7916,21 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If shell command is running, kill it
-        2. If approval menu is active, reject it
-        3. If agent is running, interrupt it (preserve input)
-        4. If double press (quit_pending), quit
-        5. Otherwise show quit hint
+        1. If a focused input has a non-empty selection, copy it (a failed
+            copy falls through to the branches below)
+        2. If shell command is running, kill it
+        3. If approval menu is active, reject it
+        4. If ask_user menu is active, cancel it
+        5. If agent is running, interrupt it (preserve input)
+        6. If double press (quit_pending), quit
+        7. Otherwise show quit hint
         """
+        # If a focused input widget has selected text, copy it instead of
+        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
+        if self._copy_focused_selection():
+            self._quit_pending = False
+            return
+
         # If shell command is running, cancel the worker
         if self._shell_running and self._shell_worker:
             self._cancel_worker(self._shell_worker)
@@ -7907,6 +7964,43 @@ class DeepAgentsApp(App):
             self.exit()
         else:
             self._arm_quit_pending("Ctrl+C")
+
+    def _copy_focused_selection(self) -> bool:
+        """Copy the focused input's selection to the clipboard, if any.
+
+        Returns:
+            `True` when a non-empty selection was copied to the clipboard, so
+                the caller should treat the keypress as handled and skip
+                quit/interrupt. `False` when there was nothing to copy or every
+                clipboard backend failed, so the caller should fall through to
+                its normal quit/interrupt handling (a failed copy already
+                notifies the user).
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        selected_text = widget.selected_text
+        if not selected_text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self, selected_text)
+        if not success:
+            self.notify(
+                f"Failed to copy selection: {error}"
+                if error
+                else "Failed to copy selection - no clipboard method available",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+        return success
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.

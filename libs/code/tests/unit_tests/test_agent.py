@@ -22,7 +22,6 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
-    _ToolExceptionRecoveryMiddleware,
     build_model_identity_section,
     create_cli_agent,
     get_available_agent_names,
@@ -1872,138 +1871,6 @@ class TestLoadAsyncSubagents:
         assert result == []
 
 
-class TestToolExceptionRecoveryMiddleware:
-    """Tests for converting tool exceptions into recoverable tool messages."""
-
-    @staticmethod
-    def _request(tool_call_id: str) -> Mock:
-        """Build a minimal tool-call request the middleware can read."""
-        request = Mock()
-        request.tool_call = {
-            "name": "langsmith_fetch_runs",
-            "args": {},
-            "id": tool_call_id,
-        }
-        return request
-
-    def test_converts_tool_exception_sync(self) -> None:
-        from langchain_core.messages import ToolMessage
-        from langchain_core.tools import ToolException
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc1")
-        handler = Mock(side_effect=ToolException('no project found with name "abc"'))
-
-        result = middleware.wrap_tool_call(request, handler)
-
-        handler.assert_called_once_with(request)
-        assert isinstance(result, ToolMessage)
-        assert result.status == "error"
-        assert result.name == "langsmith_fetch_runs"
-        assert result.tool_call_id == "tc1"
-        assert 'no project found with name "abc"' in result.content
-
-    async def test_converts_tool_exception_async(self) -> None:
-        from unittest.mock import AsyncMock
-
-        from langchain_core.messages import ToolMessage
-        from langchain_core.tools import ToolException
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc2")
-        handler = AsyncMock(
-            side_effect=ToolException('no project found with name "abc"')
-        )
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        handler.assert_awaited_once_with(request)
-        assert isinstance(result, ToolMessage)
-        assert result.status == "error"
-        assert result.name == "langsmith_fetch_runs"
-        assert result.tool_call_id == "tc2"
-        assert 'no project found with name "abc"' in result.content
-
-    def test_passes_through_success_sync(self) -> None:
-        """A successful handler result is returned unchanged (sync)."""
-        from langchain_core.messages import ToolMessage
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc3")
-        sentinel = ToolMessage(content="ok", name="x", tool_call_id="tc3")
-
-        result = middleware.wrap_tool_call(request, lambda _req: sentinel)
-
-        assert result is sentinel
-
-    async def test_passes_through_success_async(self) -> None:
-        """A successful handler result is returned unchanged (async)."""
-        from unittest.mock import AsyncMock
-
-        from langgraph.types import Command
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc4")
-        sentinel = Command(update={"messages": []})
-        handler = AsyncMock(return_value=sentinel)
-
-        result = await middleware.awrap_tool_call(request, handler)
-
-        handler.assert_awaited_once_with(request)
-        assert result is sentinel
-
-    def test_propagates_non_tool_exception_sync(self) -> None:
-        """Non-`ToolException` errors propagate rather than being swallowed."""
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc5")
-        handler = Mock(side_effect=ValueError("boom"))
-
-        with pytest.raises(ValueError, match="boom"):
-            middleware.wrap_tool_call(request, handler)
-
-    async def test_propagates_non_tool_exception_async(self) -> None:
-        """Non-`ToolException` errors propagate rather than being swallowed."""
-        from unittest.mock import AsyncMock
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc6")
-        handler = AsyncMock(side_effect=ValueError("boom"))
-
-        with pytest.raises(ValueError, match="boom"):
-            await middleware.awrap_tool_call(request, handler)
-
-    def test_empty_exception_message_falls_back_to_tool_name(self) -> None:
-        """An exception with no message yields an informative fallback."""
-        from langchain_core.tools import ToolException
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc7")
-        handler = Mock(side_effect=ToolException())
-
-        result = middleware.wrap_tool_call(request, handler)
-
-        assert result.content == "langsmith_fetch_runs failed with no error detail"
-
-    def test_logs_warning_with_traceback(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The recovered failure is logged at WARNING with a traceback."""
-        import logging
-
-        from langchain_core.tools import ToolException
-
-        middleware = _ToolExceptionRecoveryMiddleware()
-        request = self._request("tc8")
-        handler = Mock(side_effect=ToolException("kaboom"))
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.agent"):
-            middleware.wrap_tool_call(request, handler)
-
-        records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("langsmith_fetch_runs" in r.getMessage() for r in records)
-        assert any(r.exc_info is not None for r in records)
-
-
 class TestShellAllowListMiddleware:
     """Tests for inline shell command validation middleware."""
 
@@ -2255,8 +2122,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert kwargs["interrupt_on"] == {}
         middleware_types = [type(m) for m in kwargs["middleware"]]
         assert ShellAllowListMiddleware in middleware_types
-        # Recovery middleware is wired onto the main agent, not just subagents.
-        assert _ToolExceptionRecoveryMiddleware in middleware_types
 
     def test_interrupt_shell_only_skipped_when_auto_approve(
         self, tmp_path: Path
@@ -2586,10 +2451,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
         }
 
         # Implicit-model subagents (and the general-purpose fallback) get
-        # configurable-model, shell, and recovery middlewares, with the
-        # configurable-model swap ordered before the shell gate so a runtime
-        # `/model` switch applies before tools are filtered, and recovery last
-        # so it wraps tool execution innermost (matching the main agent stack).
+        # configurable-model and shell middlewares, with the configurable-model
+        # swap ordered before the shell gate so a runtime `/model` switch applies
+        # before tools are filtered.
         for name in ("researcher", "general-purpose"):
             middleware_types = [
                 type(mw) for mw in subagents_by_name[name]["middleware"]
@@ -2597,7 +2461,6 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert middleware_types == [
                 ConfigurableModelMiddleware,
                 ShellAllowListMiddleware,
-                _ToolExceptionRecoveryMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
 
         # The pinned subagent keeps shell restriction but is NOT given the

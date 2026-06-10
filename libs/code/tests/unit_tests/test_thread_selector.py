@@ -1064,6 +1064,87 @@ class TestThreadSelectorScopeSelect:
                 await pilot.pause()
                 mock_save.assert_any_call("cwd")
 
+    async def test_scope_persists_even_when_cwd_unresolvable(self) -> None:
+        """Selecting "Current directory" persists "cwd" even if the cwd is gone.
+
+        When `_safe_cwd_string()` returns `None`, the resolved filter stays
+        `None` and the reload short-circuits, but the user's explicit "cwd"
+        choice must still be persisted. This pins the intentional ordering of
+        the persist call ahead of the `new_cwd == self._filter_cwd` early return.
+        """
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        mock_save = MagicMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.model_config.save_thread_scope",
+                mock_save,
+            ),
+        ):
+            # Start unfiltered ("all"); the cwd is unresolvable below.
+            app = _ThreadSelectorScopedTestApp(filter_cwd=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._filter_cwd is None
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                scope_select.value = "cwd"
+                await pilot.pause()
+                await pilot.pause()
+
+                mock_save.assert_any_call("cwd")
+                # Filter stays unfiltered (cwd unresolvable), yet the preference
+                # was still persisted before the early return fired.
+                assert screen._filter_cwd is None
+
+    async def test_scope_save_failure_notifies(self) -> None:
+        """A failed scope save should surface a warning notification."""
+        starting_cwd = "/home/user/project-a"
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        mock_save = MagicMock(return_value=False)
+
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value=starting_cwd,
+            ),
+            patch(
+                "deepagents_code.model_config.save_thread_scope",
+                mock_save,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                with patch.object(app, "notify") as mock_notify:
+                    scope_select.value = "all"
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+
+                mock_notify.assert_any_call(
+                    "Could not save scope preference", severity="warning"
+                )
+
 
 class TestThreadSelectorClickHandling:
     """Tests for mouse click handling."""

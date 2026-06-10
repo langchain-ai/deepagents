@@ -762,31 +762,31 @@ class TestThreadScopePersistence:
     def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
         """Saved scope should load back on the next session."""
         from deepagents_code.model_config import (
-            load_thread_scope,
+            load_thread_config,
             save_thread_scope,
         )
 
         config_path = tmp_path / "config.toml"
         assert save_thread_scope("all", config_path) is True
-        assert load_thread_scope(config_path) == "all"
+        assert load_thread_config(config_path).scope == "all"
 
         assert save_thread_scope("cwd", config_path) is True
-        assert load_thread_scope(config_path) == "cwd"
+        assert load_thread_config(config_path).scope == "cwd"
 
     def test_default_is_cwd(self, tmp_path: Path) -> None:
         """When no config file exists, scope defaults to cwd."""
-        from deepagents_code.model_config import load_thread_scope
+        from deepagents_code.model_config import load_thread_config
 
         config_path = tmp_path / "config.toml"
-        assert load_thread_scope(config_path) == "cwd"
+        assert load_thread_config(config_path).scope == "cwd"
 
     def test_invalid_value_falls_back_to_default(self, tmp_path: Path) -> None:
         """An unrecognized scope value should fall back to cwd."""
-        from deepagents_code.model_config import load_thread_scope
+        from deepagents_code.model_config import load_thread_config
 
         config_path = tmp_path / "config.toml"
         config_path.write_text('[threads]\nscope = "bogus"\n')
-        assert load_thread_scope(config_path) == "cwd"
+        assert load_thread_config(config_path).scope == "cwd"
 
     def test_save_invalid_value_raises(self, tmp_path: Path) -> None:
         """Saving an unrecognized scope value should raise ValueError."""
@@ -861,7 +861,6 @@ messages = false
             load_thread_columns,
             load_thread_config,
             load_thread_relative_time,
-            load_thread_scope,
             load_thread_sort_order,
         )
 
@@ -882,7 +881,9 @@ cwd = true
         assert cfg.columns == load_thread_columns(config_path)
         assert cfg.relative_time == load_thread_relative_time(config_path)
         assert cfg.sort_order == load_thread_sort_order(config_path)
-        assert cfg.scope == load_thread_scope(config_path)
+        # `scope` has no standalone loader; it is read only via the coalesced
+        # `load_thread_config`. Assert it parsed from the same combined file.
+        assert cfg.scope == "all"
 
     def test_corrupt_toml_returns_defaults(self, tmp_path: Path) -> None:
         """A corrupt config file should return defaults without crashing."""

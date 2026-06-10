@@ -2927,30 +2927,6 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
     return True
 
 
-def load_thread_scope(config_path: Path | None = None) -> str:
-    """Load the directory-scope preference for the thread selector.
-
-    Args:
-        config_path: Path to config file.
-
-    Returns:
-        `"cwd"` (current working directory) or `"all"` (all directories).
-    """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    try:
-        if not config_path.exists():
-            return "cwd"
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        value = data.get("threads", {}).get("scope")
-        if value in {"cwd", "all"}:
-            return value
-    except (OSError, tomllib.TOMLDecodeError):
-        logger.debug("Could not read thread scope config", exc_info=True)
-    return "cwd"
-
-
 def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
     """Save the directory-scope preference for the thread selector.
 
@@ -2984,11 +2960,15 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
             with os.fdopen(fd, "wb") as f:
                 tomli_w.dump(data, f)
             Path(tmp_path).replace(config_path)
-        except Exception:
+        except BaseException:
+            # Clean up temp file on any failure, including interrupts.
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # `TypeError`/`ValueError` cover `tomli_w.dump` rejecting a payload
+        # from a pre-existing config that does not round-trip; folding them in
+        # keeps the `bool` contract intact for `_persist_scope`'s failure toast.
         logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()

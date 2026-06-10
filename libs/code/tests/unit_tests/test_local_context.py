@@ -1838,3 +1838,51 @@ class TestTracingContextInMiddleware:
         prompt = request.override.call_args[1]["system_prompt"]
         assert "**LangSmith Tracing**:" in prompt
         assert "- Agent traces: project `agent-proj`" in prompt
+
+    def test_section_ordering_local_then_tracing_then_mcp(self) -> None:
+        """Tracing section sits between local context and MCP servers."""
+        backend = _make_backend()
+        server = _make_server("docs", "http", ["search"])
+        middleware = LocalContextMiddleware(
+            backend=backend,
+            mcp_server_info=[server],
+            tracing_project="agent-proj",
+            user_tracing_project="user-proj",
+        )
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.override.return_value = Mock()
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert (
+            prompt.index("## Local Context")
+            < prompt.index("**LangSmith Tracing**:")
+            < prompt.index("**MCP Servers**")
+        )
+
+    async def test_tracing_context_appended_async(self) -> None:
+        """Tracing info appears in system prompt via awrap_model_call."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(
+            backend=backend,
+            tracing_project="agent-proj",
+            user_tracing_project="user-proj",
+        )
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.override.return_value = Mock()
+        handler = AsyncMock(return_value="response")
+
+        await middleware.awrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert "**LangSmith Tracing**:" in prompt
+        assert "- Agent traces: project `agent-proj`" in prompt
+        assert "- Shell-command traces: project `user-proj`" in prompt

@@ -173,7 +173,9 @@ def _build_tracing_context(
 
     Surfaces both projects so the agent can look up the right traces with the
     LangSmith MCP server or CLI: the project its own runs are traced to, and
-    the user's original project that shell commands trace to.
+    the user's original project that shell commands trace to. The
+    shell-command line is shown only when the user's project differs from the
+    agent's (after sanitizing both), avoiding a redundant duplicate line.
 
     Args:
         agent_project: Project receiving the agent's own traces, or `None`

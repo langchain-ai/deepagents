@@ -35,7 +35,6 @@ __all__ = [
     "SubAgentMiddleware",
     "__version__",
     "create_deep_agent",
-    "create_sub_agent",
     "register_harness_profile",
     "register_provider_profile",
 ]

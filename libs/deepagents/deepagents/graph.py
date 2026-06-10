@@ -19,19 +19,21 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
-from langgraph.channels.delta import DeltaChannel
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
+from deepagents._delta_channel import (
+    messages_channel_reducer,
+    warn_if_delta_channel_unsupported,
+)
 from deepagents._excluded_middleware import (
     _apply_excluded_middleware,
     _validate_excluded_middleware_config,
     _verify_excluded_middleware_coverage,
 )
-from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
@@ -62,9 +64,13 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N).
 
-    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+    Falls back to `add_messages` when the installed `langgraph` predates
+    `DeltaChannel` (`langgraph>=1.2.0`); `create_deep_agent` warns in that case.
+    """
+
+    messages: Required[Annotated[list[AnyMessage], messages_channel_reducer()]]
 
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -544,6 +550,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
     # subclass constraint on `state_schema` is enforced by typing alone and not
     # validated at runtime.
+
+    warn_if_delta_channel_unsupported()
 
     _model_spec: str | None = model if isinstance(model, str) else None
 

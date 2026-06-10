@@ -99,9 +99,14 @@ _AUTH_STATUS_CASES = [
 
 @pytest.mark.parametrize(("status", "auth_label", "model_label"), _AUTH_STATUS_CASES)
 def test_format_auth_covers_all_states(
-    status: ProviderAuthStatus, auth_label: str, model_label: str
+    status: ProviderAuthStatus,
+    auth_label: str,
+    model_label: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both UI surfaces render every provider auth state."""
+    if status.env_var:
+        monkeypatch.delenv(f"DEEPAGENTS_CODE_{status.env_var}", raising=False)
     assert format_auth_badge(status).plain == auth_label
     assert format_auth_indicator(status, get_glyphs()) == model_label
 

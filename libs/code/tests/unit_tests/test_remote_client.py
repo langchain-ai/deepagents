@@ -1,6 +1,7 @@
 """Tests for RemoteAgent, _convert_message_data, and helpers."""
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from deepagents_code.remote_client import (
     _convert_message_data,
     _convert_tool_message,
     _prepare_config,
+    agent_error_type,
     format_agent_exception,
 )
 
@@ -228,7 +230,7 @@ class TestConvertInterrupts:
 
 
 def _make_agent(
-    events: list[tuple[tuple[str, ...], str, Any]],
+    events: Sequence[tuple[tuple[str, ...], str, Any]],
 ) -> RemoteAgent:
     """Create a RemoteAgent with a mock RemoteGraph yielding events."""
     agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
@@ -851,12 +853,13 @@ class TestFormatAgentException:
         assert format_agent_exception(exc) == "ToolException"
 
     def test_remote_exception_dict_payload_non_string_error(self) -> None:
-        """Non-string `error` keys must not crash; fall back to `str(exc)`."""
+        """Non-string `error` keys must not crash; class name stands in."""
         from langgraph.pregel.remote import RemoteException
 
         exc = RemoteException({"error": 500, "message": "boom"})
-        # Both keys non-string-typed → no clean rendering possible; fall through.
-        assert "boom" in format_agent_exception(exc)
+        # `agent_error_type` ignores the non-string `error` and uses the class
+        # name, so the message still renders cleanly.
+        assert format_agent_exception(exc) == "RemoteException: boom"
 
     def test_remote_exception_dict_payload_empty_dict(self) -> None:
         """Empty payload dict resolves `error` to the exception class name."""
@@ -882,3 +885,35 @@ class TestFormatAgentException:
             pass
 
         assert format_agent_exception(_BoomError()) == "_BoomError"
+
+
+class TestAgentErrorType:
+    """Cover the shared error-type extraction used for UI dispatch."""
+
+    def test_dict_payload_error_key_wins(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": "PermissionDeniedError", "message": "x"})
+        assert agent_error_type(exc) == "PermissionDeniedError"
+
+    def test_empty_args_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException()
+        assert exc.args == ()
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_dict_without_error_key_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"message": "x"})
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_non_string_error_key_uses_class_name(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        exc = RemoteException({"error": 500})
+        assert agent_error_type(exc) == "RemoteException"
+
+    def test_non_dict_payload_uses_class_name(self) -> None:
+        assert agent_error_type(ValueError("boom")) == "ValueError"

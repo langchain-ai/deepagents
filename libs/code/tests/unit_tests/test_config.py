@@ -39,6 +39,56 @@ from deepagents_code.project_utils import (
 )
 
 
+class TestRuntimeDotenvReload:
+    """Tests for project-scoped dotenv refresh behavior."""
+
+    def test_reload_from_environment_refreshes_loaded_project_dotenv_values(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Runtime reload replaces managed `.env` values after a cwd switch."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-current\n",
+        )
+        (target / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-target\n"
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY=sk-target-anthropic\n",
+        )
+
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-shell")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=current)
+            runtime = Settings.from_environment(start_path=current)
+            assert runtime.openai_api_key == "sk-current"
+
+            changes = runtime.reload_from_environment(start_path=target)
+
+            assert runtime.openai_api_key == "sk-target"
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-target"
+            assert runtime.anthropic_api_key == "sk-shell"
+            assert os.environ["DEEPAGENTS_CODE_ANTHROPIC_API_KEY"] == "sk-shell"
+            assert "openai_api_key: set -> set" in changes
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+
 class TestProjectRootDetection:
     """Test project root detection via .git directory."""
 
@@ -236,7 +286,7 @@ class TestProjectAgentMdFinding:
             if self.name == "AGENTS.md" and ".deepagents" in str(self):
                 msg = "Permission denied"
                 raise PermissionError(msg)
-            return original_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_resolve(self, *args, **kwargs)  # ty: ignore
 
         with patch.object(Path, "resolve", patched_resolve):
             result = _find_project_agent_md(project_root)
@@ -3188,7 +3238,7 @@ class TestInterpreterSettings:
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is False
-        assert settings_obj.interpreter_timeout_seconds == 5.0
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
@@ -3213,7 +3263,7 @@ ptc_acknowledge_unsafe = true
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == 12.5
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
         assert settings_obj.interpreter_memory_limit_mb == 128
         assert settings_obj.interpreter_max_ptc_calls == 64
         assert settings_obj.interpreter_max_result_chars == 8000

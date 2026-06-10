@@ -37,6 +37,24 @@ when it surfaces via `ServerStartFailed`."""
 _STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
 """Machine-readable prefix emitted by the server subprocess for known startup errors."""
 
+_SERVER_ENV_DENYLIST = frozenset(
+    {
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "GIT_ASKPASS",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "SSH_ASKPASS",
+    }
+)
+"""Inherited env keys that can alter subprocess startup behavior."""
+
 
 def _port_in_use(host: str, port: int) -> bool:
     """Check if a port is already in use.
@@ -284,8 +302,8 @@ def _build_server_cmd(config_path: Path, *, host: str, port: int) -> list[str]:
 def _build_server_env() -> dict[str, str]:
     """Build the environment dict for the server subprocess.
 
-    Copies `os.environ`, sets required flags, and strips auth-related variables
-    that are not needed (and could interfere) for the local dev server.
+    Copies `os.environ`, sets required flags, and strips variables that are not
+    needed or can alter subprocess startup behavior.
 
     Returns:
         Environment dict for `subprocess.Popen`.
@@ -298,6 +316,7 @@ def _build_server_env() -> dict[str, str]:
         "LANGGRAPH_CLOUD_LICENSE_KEY",
         "LANGSMITH_CONTROL_PLANE_API_KEY",
         "LANGSMITH_TENANT_ID",
+        *_SERVER_ENV_DENYLIST,
     ):
         env.pop(key, None)
     return env
@@ -343,7 +362,7 @@ class ServerProcess:
         self._owns_config_dir = owns_config_dir
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
-        self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
+        self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
 
     @property
@@ -537,7 +556,11 @@ class ServerProcess:
             timeout: Max seconds to wait for the server to become healthy.
         """
         logger.info("Restarting langgraph dev server")
-        self._stop_process()
+        # Offload the synchronous subprocess shutdown (it blocks up to
+        # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so the
+        # caller's event loop — the Textual reactor for `/restart` — keeps
+        # processing input instead of freezing the TUI.
+        await asyncio.to_thread(self._stop_process)
 
         with _scoped_env_overrides(self._env_overrides):
             await self.start(timeout=timeout)

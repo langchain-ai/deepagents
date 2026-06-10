@@ -556,7 +556,11 @@ class ServerProcess:
             timeout: Max seconds to wait for the server to become healthy.
         """
         logger.info("Restarting langgraph dev server")
-        self._stop_process()
+        # Offload the synchronous subprocess shutdown (it blocks up to
+        # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so the
+        # caller's event loop — the Textual reactor for `/restart` — keeps
+        # processing input instead of freezing the TUI.
+        await asyncio.to_thread(self._stop_process)
 
         with _scoped_env_overrides(self._env_overrides):
             await self.start(timeout=timeout)

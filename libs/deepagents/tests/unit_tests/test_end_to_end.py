@@ -1357,10 +1357,10 @@ class TestDeepAgentEndToEnd:
 
 
 class TestDeleteFileTool:
-    """End-to-end tests for the `delete_file` filesystem tool."""
+    """End-to-end tests for the `delete` filesystem tool."""
 
-    def test_delete_file_removes_existing_file(self) -> None:
-        """delete_file removes a file from state and reports success."""
+    def test_delete_removes_existing_file(self) -> None:
+        """delete removes a file from state and reports success."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1368,7 +1368,7 @@ class TestDeleteFileTool:
                         content="",
                         tool_calls=[
                             {
-                                "name": "delete_file",
+                                "name": "delete",
                                 "args": {"file_path": "/keep.txt"},
                                 "id": "call_1",
                                 "type": "tool_call",
@@ -1397,8 +1397,8 @@ class TestDeleteFileTool:
         assert tool_messages[0].content == "Deleted file /keep.txt"
         assert set(result["files"].keys()) == {"/other.txt"}
 
-    def test_delete_file_missing_returns_error(self) -> None:
-        """delete_file on a missing path returns an error tool message."""
+    def test_delete_missing_returns_error(self) -> None:
+        """delete on a missing path returns an error tool message."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1406,7 +1406,7 @@ class TestDeleteFileTool:
                         content="",
                         tool_calls=[
                             {
-                                "name": "delete_file",
+                                "name": "delete",
                                 "args": {"file_path": "/nope.txt"},
                                 "id": "call_1",
                                 "type": "tool_call",
@@ -1426,8 +1426,8 @@ class TestDeleteFileTool:
         assert tool_messages[0].status == "error"
         assert "not found" in tool_messages[0].content
 
-    def test_delete_file_permission_deny_blocks_delete(self) -> None:
-        """FilesystemPermission deny write blocks delete_file (delete is a write op)."""
+    def test_delete_permission_deny_blocks_delete(self) -> None:
+        """FilesystemPermission deny write blocks delete (delete is a write op)."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1435,7 +1435,7 @@ class TestDeleteFileTool:
                         content="",
                         tool_calls=[
                             {
-                                "name": "delete_file",
+                                "name": "delete",
                                 "args": {"file_path": "/secrets/key.txt"},
                                 "id": "call_1",
                                 "type": "tool_call",

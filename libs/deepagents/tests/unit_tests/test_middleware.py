@@ -122,27 +122,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete_file
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete_file
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete_file
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete_file
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -1507,8 +1507,8 @@ class TestFilesystemMiddleware:
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
 
-    def test_delete_file_filtered_when_backend_lacks_delete(self):
-        """delete_file is removed from the request when the backend can't delete.
+    def test_delete_filtered_when_backend_lacks_delete(self):
+        """delete is removed from the request when the backend can't delete.
 
         Mirrors how the execute tool is filtered out when the backend doesn't
         support execution, rather than advertising a tool that fails at call time.
@@ -1523,7 +1523,7 @@ class TestFilesystemMiddleware:
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         delete_tool = MagicMock()
-        delete_tool.name = "delete_file"
+        delete_tool.name = "delete"
         request = MagicMock()
         request.tools = [ls_tool, delete_tool]
         request.override.return_value = request
@@ -1532,17 +1532,17 @@ class TestFilesystemMiddleware:
 
         request.override.assert_called_once()
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "delete_file" not in filtered_names
+        assert "delete" not in filtered_names
         assert "ls" in filtered_names
 
-    def test_delete_file_kept_when_backend_supports_delete(self):
-        """delete_file stays in the request when the backend supports deletion."""
+    def test_delete_kept_when_backend_supports_delete(self):
+        """delete stays in the request when the backend supports deletion."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
 
         ls_tool = MagicMock()
         ls_tool.name = "ls"
         delete_tool = MagicMock()
-        delete_tool.name = "delete_file"
+        delete_tool.name = "delete"
         request = MagicMock()
         request.tools = [ls_tool, delete_tool]
         request.override.return_value = request
@@ -1553,10 +1553,10 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
-    def test_delete_file_invalid_path_returns_error(self):
-        """The sync delete_file tool rejects a traversal path before deleting."""
+    def test_delete_invalid_path_returns_error(self):
+        """The sync delete tool rejects a traversal path before deleting."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
         assert isinstance(result, ToolMessage)
         assert result.status == "error"

@@ -133,7 +133,7 @@ class TestRecursiveDeletePermissions:
     def test_recursive_delete_refused_when_descendant_denied(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny")]
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
 
@@ -146,7 +146,7 @@ class TestRecursiveDeletePermissions:
     def test_recursive_delete_allowed_when_whole_subtree_allowed(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/other/**"], mode="deny")]
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
 
@@ -157,7 +157,7 @@ class TestRecursiveDeletePermissions:
         # A rule on the bare directory path (no /**) still blocks deleting it.
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets"], mode="deny")]
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
 
@@ -167,7 +167,7 @@ class TestRecursiveDeletePermissions:
     def test_delete_unaffected_sibling_subtree(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets", "/work/secrets/**"], mode="deny")]
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = _invoke_with_permissions(tool, {"file_path": "/work/logs"}, rules, backend=backend)
 
@@ -177,7 +177,7 @@ class TestRecursiveDeletePermissions:
 
     def test_single_file_delete_still_works(self, tmp_path):
         backend = self._fs_backend(tmp_path)
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = _invoke_with_permissions(tool, {"file_path": "/work/a.txt"}, [], backend=backend)
 
@@ -187,7 +187,7 @@ class TestRecursiveDeletePermissions:
     async def test_recursive_delete_refused_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny")]
-        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete_file")
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
 
         result = await _ainvoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
 
@@ -196,10 +196,10 @@ class TestRecursiveDeletePermissions:
 
     def test_delete_registered_as_bulk_interrupt(self):
         # An interrupt rule on a descendant must fire for a recursive delete,
-        # so delete_file is registered (bulk scope) in the interrupt builder.
+        # so delete is registered (bulk scope) in the interrupt builder.
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="interrupt")]
         out = _build_interrupt_on_from_permissions(rules)
-        assert "delete_file" in out
+        assert "delete" in out
 
 
 class TestFilesystemPermission:
@@ -316,7 +316,7 @@ class TestBuildInterruptOnFromPermissions:
         """A write-only interrupt rule registers only the write-op tools."""
         rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
         out = _build_interrupt_on_from_permissions([rule])
-        assert set(out) == {"write_file", "edit_file", "delete_file"}
+        assert set(out) == {"write_file", "edit_file", "delete"}
 
     def test_registers_read_tools_for_read_interrupt(self):
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")

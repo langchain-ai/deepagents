@@ -662,12 +662,12 @@ class TestFilesystemMiddlewareAsync:
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
-    async def test_adelete_file(self):
-        """Async delete_file removes the file and reports success."""
+    async def test_adelete(self):
+        """Async delete removes the file and reports success."""
         files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
         backend, mem_store = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = await delete_tool.ainvoke(
             {
                 "file_path": "/test.txt",
@@ -679,11 +679,11 @@ class TestFilesystemMiddlewareAsync:
         assert "Deleted file" in result.content
         assert mem_store.get(("filesystem",), "/test.txt") is None
 
-    async def test_adelete_file_invalid_path(self):
-        """Async delete_file rejects a traversal path with an error."""
+    async def test_adelete_invalid_path(self):
+        """Async delete rejects a traversal path with an error."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = await delete_tool.ainvoke(
             {
                 "file_path": "../etc/passwd",
@@ -693,11 +693,11 @@ class TestFilesystemMiddlewareAsync:
         assert result.status == "error"
         assert "traversal" in result.content
 
-    async def test_adelete_file_missing_returns_error(self):
-        """Async delete_file surfaces the backend's not-found error."""
+    async def test_adelete_missing_returns_error(self):
+        """Async delete surfaces the backend's not-found error."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = await delete_tool.ainvoke(
             {
                 "file_path": "/ghost.txt",
@@ -707,15 +707,15 @@ class TestFilesystemMiddlewareAsync:
         assert result.status == "error"
         assert "not found" in result.content
 
-    async def test_adelete_file_permission_denied(self):
-        """Async delete_file is blocked by a deny write permission."""
+    async def test_adelete_permission_denied(self):
+        """Async delete is blocked by a deny write permission."""
         files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
         backend, mem_store = _make_backend(files)
         middleware = FilesystemMiddleware(
             backend=backend,
             _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
         )
-        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete_file")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = await delete_tool.ainvoke(
             {
                 "file_path": "/test.txt",

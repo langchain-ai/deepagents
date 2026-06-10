@@ -614,7 +614,7 @@ def test_read_file_empty_file_reports_empty(model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
-def test_delete_file_simple(model: BaseChatModel) -> None:
+def test_delete_simple(model: BaseChatModel) -> None:
     """Deletes a seeded file and confirms it is gone."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -622,15 +622,15 @@ def test_delete_file_simple(model: BaseChatModel) -> None:
         model=model,
         initial_files={"/foo.md": "delete me\n"},
         query="Delete the file /foo.md, then reply with DONE only.",
-        # 1st step: request a delete_file tool call for /foo.md.
+        # 1st step: request a delete tool call for /foo.md.
         # 2nd step: reply DONE.
-        # 1 tool call request: delete_file.
+        # 1 tool call request: delete.
         scorer=TrajectoryScorer()
         .expect(
             agent_steps=2,
             tool_call_requests=1,
             tool_calls=[
-                tool_call(name="delete_file", step=1, args_contains={"file_path": "/foo.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/foo.md"}),
             ],
         )
         .success(
@@ -655,15 +655,15 @@ def test_delete_one_of_several_files(model: BaseChatModel) -> None:
             "/c.md": "c",
         },
         query="Delete /b.md only. Leave the other files untouched. Reply with DONE only.",
-        # 1st step: request a delete_file tool call for /b.md.
+        # 1st step: request a delete tool call for /b.md.
         # 2nd step: reply DONE.
-        # 1 tool call request: delete_file.
+        # 1 tool call request: delete.
         scorer=TrajectoryScorer()
         .expect(
             agent_steps=2,
             tool_call_requests=1,
             tool_calls=[
-                tool_call(name="delete_file", step=1, args_contains={"file_path": "/b.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
             ],
         )
         .success(
@@ -678,7 +678,7 @@ def test_delete_one_of_several_files(model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
-def test_delete_files_in_parallel(model: BaseChatModel) -> None:
+def test_deletes_in_parallel(model: BaseChatModel) -> None:
     """Deletes two files in parallel without extra tool calls."""
     agent = create_deep_agent(model=model)
     run_agent(
@@ -688,16 +688,16 @@ def test_delete_files_in_parallel(model: BaseChatModel) -> None:
         query=(
             "Delete /a.md and /b.md. Do the deletes in parallel. Do NOT read any files afterward. Reply with DONE only."
         ),
-        # 1st step: request 2 delete_file tool calls in parallel.
+        # 1st step: request 2 delete tool calls in parallel.
         # 2nd step: reply DONE.
-        # 2 tool call requests: delete_file /a.md and delete_file /b.md.
+        # 2 tool call requests: delete /a.md and delete /b.md.
         scorer=TrajectoryScorer()
         .expect(
             agent_steps=2,
             tool_call_requests=2,
             tool_calls=[
-                tool_call(name="delete_file", step=1, args_contains={"file_path": "/a.md"}),
-                tool_call(name="delete_file", step=1, args_contains={"file_path": "/b.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
             ],
         )
         .success(
@@ -719,16 +719,16 @@ def test_write_then_delete_same_file(model: BaseChatModel) -> None:
         model=model,
         query=('Write "scratch" to /tmp.md, then delete /tmp.md. Reply with DONE only.'),
         # 1st step: request a write_file tool call for /tmp.md.
-        # 2nd step: request a delete_file tool call for /tmp.md.
+        # 2nd step: request a delete tool call for /tmp.md.
         # 3rd step: reply DONE.
-        # 2 tool call requests: write_file then delete_file.
+        # 2 tool call requests: write_file then delete.
         scorer=TrajectoryScorer()
         .expect(
             agent_steps=3,
             tool_call_requests=2,
             tool_calls=[
                 tool_call(name="write_file", step=1, args_contains={"file_path": "/tmp.md"}),
-                tool_call(name="delete_file", step=2, args_contains={"file_path": "/tmp.md"}),
+                tool_call(name="delete", step=2, args_contains={"file_path": "/tmp.md"}),
             ],
         )
         .success(
@@ -744,7 +744,7 @@ def test_write_then_delete_same_file(model: BaseChatModel) -> None:
 def test_delete_missing_file_reports_absence(model: BaseChatModel) -> None:
     """A delete of a nonexistent file is reported, not faked.
 
-    The `delete_file` tool returns a "File ... not found" error for a path
+    The `delete` tool returns a "File ... not found" error for a path
     that does not exist. The agent should surface that the file is missing
     rather than claim a successful deletion, and must leave the real file
     untouched. Tool-call shape is intentionally not enforced: a model may

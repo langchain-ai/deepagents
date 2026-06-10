@@ -543,7 +543,7 @@ class CompositeBackend(BackendProtocol):
         """Delete a file, routing to the appropriate backend.
 
         `CompositeBackend` always advertises delete support (it overrides this
-        method), so the `delete_file` tool is never filtered out for it. A
+        method), so the `delete` tool is never filtered out for it. A
         route may still point at a backend that does not implement `delete`;
         rather than letting `NotImplementedError` escape to the caller, that
         case is converted into a `DeleteResult` error.

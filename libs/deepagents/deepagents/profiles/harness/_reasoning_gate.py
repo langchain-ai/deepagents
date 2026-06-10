@@ -45,13 +45,14 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 _FIXED_RUBRIC = """\
-Evaluate whether the agent's work satisfies every criterion. Judge the agent's reasoning against the operating rules and the facts available to it; reward a correct refusal of a request that the rules don't permit, and do not require the agent to do something the rules forbid.
+Evaluate whether the agent's work satisfies every criterion. Judge the agent's reasoning against the operating rules and the facts available to it; reward a correct refusal of a request the rules don't permit, and never require the agent to do something the rules forbid.
 
 1. Requirement coverage — every distinct thing the user asked for is either done or explicitly addressed/declined with a reason; nothing the user still needs is silently dropped.
-2. Feasibility & permission — the agent determined whether each requested action is allowed and possible under the operating rules and available facts before acting.
+2. Feasibility & permission — before acting, the agent determined whether each requested action is allowed and possible under the operating rules and available facts.
 3. Reasoning validity — the agent's conclusions follow from the available facts and rules; it did not miss a combination of known facts that changes the outcome (e.g. declaring something impossible when a permitted sequence of actions achieves the user's goal), and it did not apply a rule it never actually checked.
-4. Action-claim consistency — anything the agent told the user it did is backed by a corresponding successful action and result.
-5. Transparency — any rule or limit that changed what the agent did was communicated to the user, not applied silently."""
+4. Verified state changes — for EVERY action that changed state, the transcript must show the agent confirming the result by RE-READING or RE-QUERYING the affected state afterward, and that re-read must match exactly what the user asked for (correct target, correct values, nothing missing or extra). A tool call that returned "success" is NOT sufficient evidence on its own: if there is no subsequent re-read confirming the new state, this criterion FAILS; if a re-read shows the state does not match the request, this criterion FAILS. (If the agent made no state changes, this criterion is trivially satisfied.)
+5. Faithful reporting — the agent's final message reports only what it actually verified (consistent with criterion 4) and gives the user the specific information they asked for; it must not claim or imply an outcome it did not confirm.
+6. Transparency — any rule or limit that changed what the agent did was stated to the user, not applied silently."""
 
 _CLASSIFY_PROMPT = """\
 You route tasks for a verification system. Given the user's latest request (and whether the agent took any tool actions this turn), answer with ONE word:

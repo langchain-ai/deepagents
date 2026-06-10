@@ -3126,3 +3126,74 @@ class TestSetCursorBlink:
             await pilot.pause()
 
             assert chat._text_area.has_focus is True
+
+
+class TestPasteBurstEnterSuppression:
+    """Multi-line pastes replayed as key events must not submit mid-stream.
+
+    Terminals without bracketed paste deliver a paste as rapid `Char`/`Enter`
+    key events. A short run of fast keystrokes arms a suppression window so the
+    embedded `enter` events insert newlines instead of submitting.
+    """
+
+    async def test_rapid_burst_with_newline_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fast keystroke run followed by enter inserts a newline."""
+        # Widen the burst gap so wall-clock delays between pilot.press calls on
+        # slow CI runners still register as a single rapid burst.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.press("w")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+
+    async def test_slow_typing_then_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deliberate typing (no burst) keeps enter as submit."""
+        # Force every inter-key gap to exceed the burst threshold.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello"
+
+    async def test_slash_command_enter_still_submits_during_burst(self) -> None:
+        """Slash-command context keeps enter dispatching even after a burst."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1

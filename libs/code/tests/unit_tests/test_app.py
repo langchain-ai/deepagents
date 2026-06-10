@@ -11168,6 +11168,7 @@ class TestRestartCommand:
             app._server_proc = None
             app._server_kwargs = {}
             app._server_startup_deferred = False
+            app._connecting = True
 
             called = False
 
@@ -11190,6 +11191,47 @@ class TestRestartCommand:
             assert called is False
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert any("still starting" in m for m in app_msgs)
+            assert not any("remote LangGraph server" in m for m in app_msgs)
+
+    async def test_failed_startup_does_not_claim_still_starting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` after failed startup must not imply work is still pending."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = {}
+            app._server_startup_deferred = False
+            app._connecting = False
+            app._server_startup_error = "ModelConfigError: missing API key"
+
+            called = False
+
+            async def _fail() -> bool:  # noqa: RUF029  # awaited by handler
+                nonlocal called
+                called = True
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _fail)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("server did not finish starting" in m for m in app_msgs)
+            assert any(
+                "Last error: ModelConfigError: missing API key" in m for m in app_msgs
+            )
+            assert not any("still starting" in m for m in app_msgs)
             assert not any("remote LangGraph server" in m for m in app_msgs)
 
     async def test_deferred_startup_reports_waiting_for_model(

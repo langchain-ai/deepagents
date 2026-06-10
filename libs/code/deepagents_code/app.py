@@ -10229,10 +10229,9 @@ class DeepAgentsApp(App):
             return
 
         # We own a server (`_server_kwargs is not None`) but `_server_proc`
-        # is only assigned once `ServerReady` fires. A `None` proc here means
-        # the server is still coming up — not remote-server mode. There's no
-        # subprocess to respawn yet, and config was already reloaded above, so
-        # the pending startup will use it.
+        # is only assigned once `ServerReady` fires. A `None` proc here can
+        # mean startup is still pending, deferred for model selection, or that
+        # startup already failed before a subprocess was available.
         if self._server_proc is None:
             if self._server_startup_deferred:
                 await self._mount_message(
@@ -10242,12 +10241,31 @@ class DeepAgentsApp(App):
                         "model with `/model` to start the server.",
                     ),
                 )
-            else:
+            elif self._connecting:
                 await self._mount_message(
                     AppMessage(
                         "The server is still starting. Configuration was "
                         "reloaded and will apply once it finishes connecting; "
                         "run `/restart` again afterward if needed.",
+                    ),
+                )
+            elif self._server_startup_error is not None:
+                await self._mount_message(
+                    AppMessage(
+                        "Cannot restart yet because the server did not finish "
+                        "starting. Configuration was reloaded; update "
+                        "credentials with `/auth` if needed, then pick a model "
+                        "with `/model` to try again. You can also relaunch "
+                        "dcode.\n\n"
+                        f"Last error: {self._server_startup_error}",
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        "Cannot restart yet because the server is not running. "
+                        "Configuration was reloaded; relaunch dcode to start "
+                        "again.",
                     ),
                 )
             return

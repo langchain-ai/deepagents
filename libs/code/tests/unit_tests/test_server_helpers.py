@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS
 from deepagents_code.server import (
+    _SERVER_ENV_DENYLIST,
     _build_server_cmd,
     _build_server_env,
     _scoped_env_overrides,
@@ -60,23 +62,30 @@ class TestBuildServerEnv:
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
     def test_strips_subprocess_hijack_variables(self) -> None:
+        injected = {key: f"/tmp/evil-{key}" for key in _SERVER_ENV_DENYLIST}
         with patch.dict(
             os.environ,
-            {
-                "LD_PRELOAD": "/tmp/evil.so",
-                "NODE_OPTIONS": "--require /tmp/evil.js",
-                "PATH": os.environ.get("PATH", ""),
-            },
+            {**injected, "PATH": os.environ.get("PATH", "")},
         ):
             env = _build_server_env()
-        assert "LD_PRELOAD" not in env
-        assert "NODE_OPTIONS" not in env
+        for key in _SERVER_ENV_DENYLIST:
+            assert key not in env
         assert "PATH" in env
 
     def test_preserves_inherited_pythonpath(self) -> None:
         with patch.dict(os.environ, {"PYTHONPATH": "src"}):
             env = _build_server_env()
         assert env["PYTHONPATH"] == "src"
+
+    def test_denylist_asymmetry_for_pythonpath(self) -> None:
+        """`PYTHONPATH` is allowed from the inherited env but blocked from `.env`.
+
+        Guards the intentional asymmetry between the two near-identical denylists:
+        a future re-merge would silently break either the inheritance fix or the
+        `.env` injection boundary.
+        """
+        assert "PYTHONPATH" not in _SERVER_ENV_DENYLIST
+        assert "PYTHONPATH" in _DOTENV_DENIED_ENV_KEYS
 
 
 class TestScopedEnvOverrides:

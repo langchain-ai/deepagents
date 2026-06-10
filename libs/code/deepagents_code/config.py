@@ -70,7 +70,13 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "SSH_ASKPASS",
     }
 )
-"""Environment keys that project `.env` files must not inject."""
+"""Environment keys that project `.env` files must not inject.
+
+For `PYTHONPATH` specifically, this is the sole remaining gate: the server-side
+`server._SERVER_ENV_DENYLIST` intentionally allows an inherited launch-time
+`PYTHONPATH` (e.g. `PYTHONPATH=src dcode`) to reach the subprocess, so blocking
+it here is what keeps a possibly-untrusted project `.env` from injecting one.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:

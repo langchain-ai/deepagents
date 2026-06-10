@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2671,6 +2672,47 @@ class TestResumeThread:
         _app_test_double(app)._mount_message = AsyncMock(
             side_effect=lambda w: mounted.append(w)
         )
+        offer_cwd_switch = AsyncMock(return_value="continue")
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        await app._resume_thread("thread-123")
+
+        offer_cwd_switch.assert_awaited_once_with(
+            "thread-123",
+            restart_server=True,
+        )
+        assert len(mounted) == 1
+        assert "Already on thread" in _get_widget_text(mounted[0])
+
+    async def test_already_on_thread_reports_cwd_switch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Same-thread resumes should not say unchanged after cwd switches."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(cwd=current)
+        mounted: list[Static] = []
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
+
+        async def offer_cwd_switch(  # noqa: RUF029  # must be async: awaited as _offer_thread_cwd_switch
+            thread_id: str,
+            *,
+            restart_server: bool,
+        ) -> str:
+            assert thread_id == "thread-123"
+            assert restart_server is True
+            app._cwd = str(target)
+            return "continue"
+
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -2678,7 +2720,8 @@ class TestResumeThread:
         await app._resume_thread("thread-123")
 
         assert len(mounted) == 1
-        assert "Already on thread" in _get_widget_text(mounted[0])
+        assert "Switched to thread directory" in _get_widget_text(mounted[0])
+        assert "Already on thread" not in _get_widget_text(mounted[0])
 
     async def test_successful_switch_updates_ids(self) -> None:
         """Successful _resume_thread should update thread IDs and load history."""

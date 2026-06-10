@@ -74,7 +74,7 @@ dependencies = [
     "tomli-w>=1.2.0,<2.0.0",
 
     # MCP
-    "langchain-mcp-adapters>=0.2.2,<1.0.0",
+    "langchain-mcp-adapters>=0.3.0,<1.0.0",
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",

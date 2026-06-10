@@ -94,6 +94,5 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
-    "create_sub_agent",
     "create_summarization_tool_middleware",
 ]

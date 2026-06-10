@@ -294,7 +294,8 @@ def _resolve_ptc_option(
             # `all` can only enumerate the tools passed to `create_cli_agent`;
             # SDK runtime built-ins (filesystem, `task`, …) are injected later
             # and are not enumerable here. Exposing them under `all` needs an
-            # "expose everything" sentinel in `CodeInterpreterMiddleware`.
+            # "expose everything" sentinel in `CodeInterpreterMiddleware`
+            # (tracked in langchain-ai/deepagents#3847).
             included = sorted(live_set)
             write_included = sorted(_INTERPRETER_WRITE_TOOLS & live_set)
             if write_included:

@@ -1318,14 +1318,13 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` intersected with the
-        live toolset.
-    - `"all"`: every live tool is exposed. Requires
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
+    - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names, validated at agent-build time. The list
-        may also include the `"safe"` preset (expanded to
-        `INTERPRETER_PTC_SAFE_PRESET` intersected with the live toolset);
-        `"all"` is rejected inside a list.
+    - `list[str]`: explicit tool names. The list may also include the `"safe"`
+        preset (expanded to `INTERPRETER_PTC_SAFE_PRESET`); `"all"` is rejected
+        inside a list. Names are matched against the live tool registry at
+        runtime, so names not present are simply not exposed.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False

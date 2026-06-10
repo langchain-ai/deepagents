@@ -25,7 +25,6 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
-    ModuleScope,
     Runtime,
     Snapshot,
     ThreadWorker,
@@ -44,7 +43,6 @@ from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 

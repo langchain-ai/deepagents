@@ -441,11 +441,13 @@ Usage:
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
-DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file or directory from the filesystem.
 
 Usage:
-- Permanently removes the file at the given absolute path.
-- This cannot be undone, so only delete files you are sure are no longer needed.
+- Permanently removes the file or directory at the given absolute path.
+- Deleting a directory removes it and everything inside it, recursively. Prefer
+  deleting a directory in one call over deleting each file individually.
+- This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -1266,6 +1268,56 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
+    def _scan_delete_for_denied_path(self, target: str, descendant_files: list[str]) -> str | None:
+        """All-or-nothing write-deny scan for a (possibly recursive) delete.
+
+        A recursive delete removes ``target`` plus every descendant, so each of
+        those paths must pass the ``write`` permission check. Returns the first
+        write-denied path found (so the whole delete can be refused), or ``None``
+        if the entire subtree is allowed.
+
+        ``descendant_files`` are the files ``glob('**/*')`` found under ``target``;
+        intermediate directories are derived from them so a rule that denies a
+        directory path (rather than its ``/**`` contents) is also honored. Empty
+        directories produce no glob hit and are therefore not enumerated.
+        """
+        if not self._permissions:
+            return None
+        if _check_fs_permission(self._permissions, "write", target) == "deny":
+            return target
+
+        anchor = target.rstrip("/")
+        paths_to_check: set[str] = set()
+        for file_path in descendant_files:
+            paths_to_check.add(file_path)
+            parent = PurePosixPath(file_path).parent
+            while True:
+                parent_str = str(parent)
+                if parent_str == anchor or not parent_str.startswith(anchor + "/"):
+                    break
+                paths_to_check.add(parent_str)
+                parent = parent.parent
+
+        for path in sorted(paths_to_check):
+            if _check_fs_permission(self._permissions, "write", path) == "deny":
+                return path
+        return None
+
+    def _delete_denied_path(self, backend: BackendProtocol, target: str) -> str | None:
+        """Sync subtree deny scan: returns the first denied path, or None."""
+        if not self._permissions:
+            return None
+        descendants = [m["path"] for m in backend.glob("**/*", path=target).matches]
+        return self._scan_delete_for_denied_path(target, descendants)
+
+    async def _adelete_denied_path(self, backend: BackendProtocol, target: str) -> str | None:
+        """Async subtree deny scan: returns the first denied path, or None."""
+        if not self._permissions:
+            return None
+        result = await backend.aglob("**/*", path=target)
+        descendants = [m["path"] for m in result.matches]
+        return self._scan_delete_for_denied_path(target, descendants)
+
     def _create_delete_file_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
         """Create the delete_file tool."""
         tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
@@ -1286,9 +1338,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+            denied_path = self._delete_denied_path(resolved_backend, validated_path)
+            if denied_path is not None:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {validated_path}",
+                    content=f"Error: permission denied for write on {denied_path}",
                     name="delete_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -1324,9 +1377,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+            denied_path = await self._adelete_denied_path(resolved_backend, validated_path)
+            if denied_path is not None:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {validated_path}",
+                    content=f"Error: permission denied for write on {denied_path}",
                     name="delete_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",

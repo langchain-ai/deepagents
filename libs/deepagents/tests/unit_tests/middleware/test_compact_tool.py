@@ -639,7 +639,7 @@ class TestIsEligibleForCompaction:
     def test_dict_clause_requires_all_thresholds(self) -> None:
         """Dict trigger clauses use AND semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        mw._summarization._lc_helper._trigger_conditions = [{"tokens": 100_000, "messages": 6}]
+        mw._summarization._lc_helper._trigger_clauses = [{"tokens": 100_000, "messages": 6}]
         messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
         runtime = _make_runtime(messages)
         result = mw._run_compact(runtime)
@@ -685,7 +685,7 @@ class TestIsEligibleForCompaction:
     def test_dict_clause_list_uses_or_semantics(self) -> None:
         """Multiple dict trigger clauses use OR semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        mw._summarization._lc_helper._trigger_conditions = [
+        mw._summarization._lc_helper._trigger_clauses = [
             {"tokens": 100_000, "messages": 10},
             {"tokens": 200_000, "messages": 2},
         ]

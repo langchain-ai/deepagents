@@ -36,7 +36,10 @@ def _label(package: Path) -> str:
 
 
 def _touches_talon(paths: list[str]) -> bool:
-    return any(Path(path).parts[:2] == ("libs", "talon") for path in paths)
+    return any(
+        Path(path).parts[:2] == ("libs", "talon") and Path(path).name != "uv.lock"
+        for path in paths
+    )
 
 
 def main(paths: list[str]) -> int:

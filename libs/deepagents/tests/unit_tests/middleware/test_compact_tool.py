@@ -639,7 +639,7 @@ class TestIsEligibleForCompaction:
     def test_dict_clause_requires_all_thresholds(self) -> None:
         """Dict trigger clauses use AND semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        mw._summarization._lc_helper._trigger_conditions = [{"tokens": 100_000, "messages": 6}]
+        mw._summarization._lc_helper._trigger_clauses = [{"tokens": 100_000, "messages": 6}]
         messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
         runtime = _make_runtime(messages)
         result = mw._run_compact(runtime)
@@ -656,15 +656,36 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
 
-    def test_dict_trigger_constructs_with_unreleased_langchain_support(self) -> None:
-        """Dict trigger input should not require LangChain's new trigger support."""
+    def test_trigger_clauses_are_preferred_over_legacy_conditions(self) -> None:
+        """LangChain's canonical `_trigger_clauses` attr wins when available."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        mw._summarization._lc_helper._trigger_clauses = [{"tokens": 100_000, "messages": 6}]
+        mw._summarization._lc_helper._trigger_conditions = [("tokens", 100_000)]
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
+        runtime = _make_runtime(messages)
+        result = mw._run_compact(runtime)
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+        messages.append(HumanMessage(content="more context"))
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+        assert "_summarization_event" in result.update
+
+    def test_dict_trigger_constructs_langchain_trigger_clauses(self) -> None:
+        """Dict trigger input should populate LangChain's canonical trigger clauses."""
         mw = _make_middleware_with_trigger({"tokens": 100_000, "messages": 6})
-        assert mw._summarization._lc_helper._trigger_conditions == [{"tokens": 100_000, "messages": 6}]
+        assert mw._summarization._lc_helper._trigger_clauses == [{"tokens": 100_000, "messages": 6}]
 
     def test_dict_clause_list_uses_or_semantics(self) -> None:
         """Multiple dict trigger clauses use OR semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
-        mw._summarization._lc_helper._trigger_conditions = [
+        mw._summarization._lc_helper._trigger_clauses = [
             {"tokens": 100_000, "messages": 10},
             {"tokens": 200_000, "messages": 2},
         ]

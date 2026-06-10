@@ -316,23 +316,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 package="deepagents",
             )
 
-        lc_trigger = self._trigger_for_lc_constructor(trigger)
-
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
-            trigger=lc_trigger,
+            trigger=trigger,
             keep=keep,
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
-        self.trigger = self._copy_trigger(trigger)
-        self._trigger_conditions = self._normalize_trigger(trigger)
-        lc_helper = cast("Any", self._lc_helper)
-        lc_helper.trigger = self.trigger
-        lc_helper._trigger_conditions = self._trigger_conditions
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -357,106 +350,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
 
-    @staticmethod
-    def _copy_trigger(
-        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
-    ) -> ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None:
-        """Copy mutable trigger containers so caller mutations do not affect this instance."""
-        if isinstance(trigger, Mapping):
-            return cast("TriggerClause", dict(trigger))
-        if isinstance(trigger, list):
-            return [cast("TriggerClause", dict(item)) if isinstance(item, Mapping) else item for item in trigger]
-        return trigger
-
-    @staticmethod
-    def _validate_trigger_clause(clause: Mapping[str, Any]) -> TriggerClause:
-        """Validate a dict trigger clause and return a typed shallow copy."""
-        if not clause:
-            msg = "trigger clause must specify at least one of 'tokens', 'messages', 'fraction'"
-            raise ValueError(msg)
-
-        validated: dict[str, int | float] = {}
-        for kind, value in clause.items():
-            if kind not in {"tokens", "messages", "fraction"}:
-                msg = f"Unsupported trigger metric: {kind!r}"
-                raise ValueError(msg)
-            if isinstance(value, bool):
-                msg = f"{kind} trigger value must be numeric, got {value!r}"
-                raise ValueError(msg)  # noqa: TRY004
-            if kind == "fraction":
-                if not isinstance(value, (int, float)):
-                    msg = f"Fraction trigger values must be numeric, got {value!r}"
-                    raise ValueError(msg)
-            elif not isinstance(value, int):
-                msg = f"{kind} trigger values must be integers, got {value!r}"
-                raise ValueError(msg)
-            LCSummarizationMiddleware._validate_context_size(cast("ContextSize", (kind, value)), "trigger")
-            validated[kind] = value
-        return cast("TriggerClause", validated)
-
-    @classmethod
-    def _normalize_trigger(
-        cls,
-        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
-    ) -> list[TriggerClause]:
-        """Normalize supported trigger inputs into dict clauses."""
-        if trigger is None:
-            return []
-
-        def _tuple_to_clause(context: ContextSize) -> TriggerClause:
-            kind, value = LCSummarizationMiddleware._validate_context_size(context, "trigger")
-            return cast("TriggerClause", {kind: value})
-
-        subject: Any = trigger
-        if isinstance(subject, Mapping):
-            return [cls._validate_trigger_clause(subject)]
-        if isinstance(subject, tuple):
-            return [_tuple_to_clause(cast("ContextSize", subject))]
-        if isinstance(subject, list):
-            clauses: list[TriggerClause] = []
-            for item in subject:
-                if isinstance(item, Mapping):
-                    clauses.append(cls._validate_trigger_clause(item))
-                elif isinstance(item, tuple):
-                    clauses.append(_tuple_to_clause(cast("ContextSize", item)))
-                else:
-                    msg = f"Unsupported trigger item type: {type(item)}"
-                    raise TypeError(msg)
-            return clauses
-
-        msg = f"Unsupported trigger type: {type(subject)}"
-        raise TypeError(msg)
-
-    @classmethod
-    def _trigger_for_lc_constructor(
-        cls,
-        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
-    ) -> ContextSize | list[ContextSize] | None:
-        """Convert dict trigger clauses into tuple triggers accepted by old LangChain."""
-        if trigger is None or isinstance(trigger, tuple):
-            return trigger
-
-        contexts: list[ContextSize] = []
-        subject: Any = trigger
-        if isinstance(subject, Mapping):
-            clause = cls._validate_trigger_clause(subject)
-            contexts.extend(cast("ContextSize", (kind, value)) for kind, value in clause.items())
-            return contexts
-        if isinstance(subject, list):
-            for item in subject:
-                if isinstance(item, Mapping):
-                    clause = cls._validate_trigger_clause(item)
-                    contexts.extend(cast("ContextSize", (kind, value)) for kind, value in clause.items())
-                elif isinstance(item, tuple):
-                    contexts.append(LCSummarizationMiddleware._validate_context_size(cast("ContextSize", item), "trigger"))
-                else:
-                    msg = f"Unsupported trigger item type: {type(item)}"
-                    raise TypeError(msg)
-            return contexts
-
-        msg = f"Unsupported trigger type: {type(subject)}"
-        raise TypeError(msg)
-
     # Delegated properties and methods from langchain helper
     @property
     def model(self) -> BaseChatModel:
@@ -474,39 +367,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Determine whether summarization should run for the current token usage."""
-        if not self._trigger_conditions:
-            return False
-        return any(self._is_summarization_clause_met(clause, messages, total_tokens) for clause in self._trigger_conditions)
-
-    def _is_summarization_clause_met(
-        self,
-        clause: TriggerClause,
-        messages: list[AnyMessage],
-        total_tokens: int,
-    ) -> bool:
-        """Check whether all thresholds in a summarization trigger clause are met."""
-        return all(self._is_summarization_condition_met(kind, cast("float", value), messages, total_tokens) for kind, value in clause.items())
-
-    def _is_summarization_condition_met(
-        self,
-        kind: str,
-        value: float,
-        messages: list[AnyMessage],
-        total_tokens: int,
-    ) -> bool:
-        """Check whether one summarization trigger threshold is met."""
-        if kind == "messages":
-            return len(messages) >= cast("int", value)
-        if kind == "tokens":
-            threshold = cast("int", value)
-            return total_tokens >= threshold or self._lc_helper._should_summarize_based_on_reported_tokens(messages, threshold)
-        if kind == "fraction":
-            max_input_tokens = self._get_profile_limits()
-            if max_input_tokens is None:
-                return False
-            threshold = max(1, int(max_input_tokens * value))
-            return total_tokens >= threshold or self._lc_helper._should_summarize_based_on_reported_tokens(messages, threshold)
-        return False
+        return self._lc_helper._should_summarize(messages, total_tokens)
 
     def _determine_cutoff_index(self, messages: list[AnyMessage]) -> int:
         """Choose cutoff index respecting retention configuration."""
@@ -1730,7 +1591,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         Uses reported usage metadata when available.
         """
-        trigger_conditions = self._summarization._lc_helper._trigger_conditions
+        trigger_conditions = self._summarization._lc_helper._trigger_clauses
         if not trigger_conditions:
             return False
         return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)

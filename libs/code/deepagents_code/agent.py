@@ -199,101 +199,6 @@ class ShellAllowListMiddleware(AgentMiddleware):
         return await handler(request)
 
 
-class _ToolExceptionRecoveryMiddleware(AgentMiddleware):
-    """Convert expected tool failures into recoverable tool messages.
-
-    A `ToolException` signals a tool-side failure that the model should see and
-    work around (e.g. an MCP server returning `isError`, which
-    `langchain-mcp-adapters` surfaces as a raised `ToolException`) rather than a
-    bug that should abort the run. LangGraph's default tool-error handling
-    re-raises plain `ToolException`, so without this shim such a failure would
-    propagate and crash the entire agent run. Catching it here turns it into an
-    error `ToolMessage` the model can recover from. Only `ToolException` is
-    caught; every other exception propagates so genuine bugs surface.
-
-    Temporary workaround shim while we determine whether an upstream change to
-    `langchain-mcp-adapters` is sensible.
-    """
-
-    @staticmethod
-    def _error_message(request: ToolCallRequest, exc: Exception) -> ToolMessage:
-        """Build an error-status `ToolMessage` from a caught exception.
-
-        Args:
-            request: The tool call request whose handler raised.
-            exc: The recoverable exception to surface to the model.
-
-        Returns:
-            A `ToolMessage` with `status="error"` carrying the exception text,
-                or a tool-named fallback when the exception has no message.
-        """
-        from langchain_core.messages import ToolMessage as LCToolMessage
-
-        tool_call = request.tool_call
-        return LCToolMessage(
-            content=str(exc) or f"{tool_call['name']} failed with no error detail",
-            name=tool_call["name"],
-            tool_call_id=tool_call["id"],
-            status="error",
-        )
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """Convert a recoverable `ToolException` into an error `ToolMessage`.
-
-        Args:
-            request: The tool call request being processed.
-            handler: The next handler in the middleware chain.
-
-        Returns:
-            The tool execution result, or an error `ToolMessage` when the tool
-                raised a `ToolException`. Other exceptions propagate unchanged.
-        """
-        from langchain_core.tools import ToolException
-
-        try:
-            return handler(request)
-        except ToolException as exc:
-            logger.warning(
-                "Tool %r failed with recoverable ToolException: %s",
-                request.tool_call.get("name"),
-                exc,
-                exc_info=True,
-            )
-            return self._error_message(request, exc)
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        """Convert a recoverable `ToolException` into an error `ToolMessage`.
-
-        Args:
-            request: The tool call request being processed.
-            handler: The next handler in the middleware chain.
-
-        Returns:
-            The tool execution result, or an error `ToolMessage` when the tool
-                raised a `ToolException`. Other exceptions propagate unchanged.
-        """
-        from langchain_core.tools import ToolException
-
-        try:
-            return await handler(request)
-        except ToolException as exc:
-            logger.warning(
-                "Tool %r failed with recoverable ToolException: %s",
-                request.tool_call.get("name"),
-                exc,
-                exc_info=True,
-            )
-            return self._error_message(request, exc)
-
-
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
     {"execute", "write_file", "edit_file"}
 )
@@ -1318,11 +1223,6 @@ def create_cli_agent(
                     [settings.get_user_agent_md_path(assistant_id)]
                 )
             )
-        # Recovery sits last so it is the innermost tool-call wrapper, matching
-        # the main agent stack: it then wraps tool execution as tightly as
-        # possible and only intercepts `ToolException`s from the tool itself,
-        # not from sibling middleware (which return error messages, not raise).
-        middleware.append(_ToolExceptionRecoveryMiddleware())
         return middleware
 
     for subagent_meta in list_subagents(
@@ -1369,7 +1269,6 @@ def create_cli_agent(
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
         _FilesystemEmptyResultMiddleware(),
-        _ToolExceptionRecoveryMiddleware(),
     ]
 
     # Resume state: declares the `_context_tokens` and `_model_spec` channels

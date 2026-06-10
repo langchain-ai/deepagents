@@ -1397,6 +1397,285 @@ class TestAppBindings:
         assert "ctrl+e" not in bindings_by_key
 
 
+class TestCtrlCCopySelection:
+    """Test Ctrl+C copying a focused input's selection instead of quitting."""
+
+    async def test_ctrl_c_copies_chat_text_area_selection(self) -> None:
+        """Ctrl+C with a selection in ChatTextArea copies it, no quit/interrupt."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+            text_area.select_all()
+            await pilot.pause()
+
+            assert text_area.selected_text == "hello world"
+
+            # Arm quit first so the post-copy assertion that `_quit_pending` is
+            # reset is load-bearing (it defaults to False, so without arming it
+            # the assertion would pass even if the reset were removed).
+            app._quit_pending = True
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "hello world")
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_without_selection_still_quits(self) -> None:
+        """Ctrl+C with no selection in ChatTextArea falls through to quit hint."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            assert text_area.selected_text == ""
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+                copy_mock.assert_not_called()
+                exit_mock.assert_not_called()
+                assert app._quit_pending is True
+                notify_mock.assert_called_once_with(
+                    "Press Ctrl+C again to quit",
+                    timeout=3,
+                    markup=False,
+                )
+
+                app.action_quit_or_interrupt()
+                exit_mock.assert_called_once()
+
+    async def test_ctrl_c_copies_input_selection(self) -> None:
+        """Ctrl+C with a selection in a focused Input copies it, no quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            test_input = Input(value="abc123")
+            await app.mount(test_input)
+            test_input.focus()
+            await pilot.pause()
+            test_input.select_all()
+            await pilot.pause()
+
+            assert test_input.selected_text == "abc123"
+
+            # Arm quit so the post-copy reset assertion is load-bearing.
+            app._quit_pending = True
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "abc123")
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_skips_password_input_selection(self) -> None:
+        """Ctrl+C must not copy selected text from masked password inputs."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            test_input = Input(value="secret-api-key", password=True)
+            await app.mount(test_input)
+            test_input.focus()
+            await pilot.pause()
+            test_input.select_all()
+            await pilot.pause()
+
+            assert test_input.selected_text == "secret-api-key"
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
+            notify_mock.assert_called_once_with(
+                "Press Ctrl+C again to quit",
+                timeout=3,
+                markup=False,
+            )
+
+    async def test_ctrl_c_copy_takes_precedence_over_agent_interrupt(self) -> None:
+        """A successful copy wins over interrupting a running agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+            text_area.select_all()
+            await pilot.pause()
+
+            assert text_area.selected_text == "hello world"
+
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "hello world")
+            # Copy consumed the keypress, so the agent worker is left running.
+            mock_worker.cancel.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_copy_failure_falls_through_to_interrupt(self) -> None:
+        """When the copy fails, Ctrl+C still interrupts the running agent.
+
+        Returning `True` unconditionally would swallow the keypress and leave
+        the agent running with only a transient warning, making interrupt
+        unreachable while a selection lingers. The copy must degrade to the
+        safety-critical interrupt path on failure.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "hello world"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+            text_area.select_all()
+            await pilot.pause()
+
+            assert text_area.selected_text == "hello world"
+
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(False, "boom"),
+                ) as copy_mock,
+                patch.object(app, "notify") as notify_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_called_once_with(app, "hello world")
+            notify_mock.assert_called_once_with(
+                "Failed to copy selection: boom",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+            # Fell through to the agent-interrupt branch instead of quitting.
+            mock_worker.cancel.assert_called_once()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
+        """Ctrl+C with a non-Input/TextArea widget focused never copies."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            checkbox = Checkbox()
+            await app.mount(checkbox)
+            checkbox.focus()
+            await pilot.pause()
+
+            assert app.focused is checkbox
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
+
+    async def test_ctrl_c_no_focus_falls_through(self) -> None:
+        """Ctrl+C with nothing focused never copies and does not crash."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.set_focus(None)
+            await pilot.pause()
+            assert app.focused is None
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "exit") as exit_mock,
+            ):
+                app.action_quit_or_interrupt()
+
+            copy_mock.assert_not_called()
+            exit_mock.assert_not_called()
+            assert app._quit_pending is True
+
+
 class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
 

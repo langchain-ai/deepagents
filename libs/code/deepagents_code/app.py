@@ -7868,12 +7868,21 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If shell command is running, kill it
-        2. If approval menu is active, reject it
-        3. If agent is running, interrupt it (preserve input)
-        4. If double press (quit_pending), quit
-        5. Otherwise show quit hint
+        1. If a focused input has a non-empty selection, copy it (a failed
+            copy falls through to the branches below)
+        2. If shell command is running, kill it
+        3. If approval menu is active, reject it
+        4. If ask_user menu is active, cancel it
+        5. If agent is running, interrupt it (preserve input)
+        6. If double press (quit_pending), quit
+        7. Otherwise show quit hint
         """
+        # If a focused input widget has selected text, copy it instead of
+        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
+        if self._copy_focused_selection():
+            self._quit_pending = False
+            return
+
         # If shell command is running, cancel the worker
         if self._shell_running and self._shell_worker:
             self._cancel_worker(self._shell_worker)
@@ -7907,6 +7916,43 @@ class DeepAgentsApp(App):
             self.exit()
         else:
             self._arm_quit_pending("Ctrl+C")
+
+    def _copy_focused_selection(self) -> bool:
+        """Copy the focused input's selection to the clipboard, if any.
+
+        Returns:
+            `True` when a non-empty selection was copied to the clipboard, so
+                the caller should treat the keypress as handled and skip
+                quit/interrupt. `False` when there was nothing to copy or every
+                clipboard backend failed, so the caller should fall through to
+                its normal quit/interrupt handling (a failed copy already
+                notifies the user).
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        selected_text = widget.selected_text
+        if not selected_text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self, selected_text)
+        if not success:
+            self.notify(
+                f"Failed to copy selection: {error}"
+                if error
+                else "Failed to copy selection - no clipboard method available",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+        return success
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.

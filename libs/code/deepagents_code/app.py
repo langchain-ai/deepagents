@@ -1230,6 +1230,31 @@ def _build_whats_new_message(heading: str) -> Content:
     )
 
 
+_STARTUP_ERROR_HEADLINE_LIMIT = 300
+"""Max characters of a startup-error headline shown in chat before truncation.
+
+Long single-line errors (e.g. the `interpreter_ptc` "Available tools: ..." list)
+overflow this. `on_deep_agents_app_server_start_failed` appends a pointer to the
+full error in the debug log when the headline is clipped, since the truncated
+tail is often the actionable part.
+"""
+
+
+def _startup_error_headline(error: BaseException) -> str:
+    """Return the untruncated single-line `Type: message` startup headline.
+
+    Args:
+        error: The exception raised during server startup.
+
+    Returns:
+        A single-line `Type: message` summary (may exceed the banner width).
+    """
+    first_line = str(error).splitlines()[0].strip() if str(error) else ""
+    if not first_line:
+        first_line = error.__class__.__name__
+    return f"{type(error).__name__}: {first_line}"
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -1245,10 +1270,9 @@ def _format_startup_error(error: BaseException) -> str:
     Returns:
         A single-line `Type: message` summary suitable for the banner.
     """
-    first_line = str(error).splitlines()[0].strip() if str(error) else ""
-    if not first_line:
-        first_line = error.__class__.__name__
-    return f"{type(error).__name__}: {_truncate(first_line, limit=300)}"
+    return _truncate(
+        _startup_error_headline(error), limit=_STARTUP_ERROR_HEADLINE_LIMIT
+    )
 
 
 class TextualSessionState:
@@ -3083,11 +3107,18 @@ class DeepAgentsApp(App):
 
         self._connecting = False
         self._connection_ready_event.set()
+        headline_truncated = False
         if isinstance(event.error, MCPConfigError):
             # Already carries the path + hint; showing the class name is noise.
             self._server_startup_error = str(event.error)
         else:
             self._server_startup_error = _format_startup_error(event.error)
+            # A clipped headline drops the actionable tail (e.g. the
+            # `interpreter_ptc` available-tools list), so point at the full log.
+            headline_truncated = (
+                len(_startup_error_headline(event.error))
+                > _STARTUP_ERROR_HEADLINE_LIMIT
+            )
 
         # Stash the provider for the `/model` recovery hint. Reset on every
         # failure so a non-credentials retry-failure clears the prior flag.
@@ -3162,6 +3193,24 @@ class DeepAgentsApp(App):
                     f"\n\nHint: {install_hint}, then run "
                     f"`/model {missing.provider}:<model>` "
                     "to retry. Or pick a different provider with `/model`."
+                )
+
+        if headline_truncated:
+            from deepagents_code._env_vars import (
+                DEBUG,
+                DEBUG_FILE,
+                DEFAULT_DEBUG_FILE,
+                is_env_truthy,
+            )
+
+            if is_env_truthy(DEBUG):
+                debug_path = os.environ.get(DEBUG_FILE, DEFAULT_DEBUG_FILE)
+                text += f"\n\nNote: error truncated — full error in {debug_path}."
+            else:
+                text += (
+                    "\n\nNote: error truncated. Re-run with "
+                    "`DEEPAGENTS_CODE_DEBUG=1` to write the full error to the "
+                    "debug log."
                 )
 
         async def _mount_failure() -> None:

@@ -6734,6 +6734,175 @@ class TestDeferredActions:
             assert "Server process exited with code 3" in stored
             assert len(stored) < 400
 
+    async def test_server_failure_truncated_headline_notes_debug_rerun(self) -> None:
+        """A clipped headline appends a re-run hint when debug logging is off.
+
+        The full error (e.g. the `interpreter_ptc` available-tools list) only
+        reaches disk under `DEEPAGENTS_CODE_DEBUG`; without it the note tells
+        the user how to capture it on the next run.
+        """
+        from deepagents_code._env_vars import DEBUG, DEBUG_FILE
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Single-line message long enough to overflow the headline limit.
+            long_message = "Unknown tool names: " + ", ".join(
+                f"tool_{i}" for i in range(80)
+            )
+            with patch.dict(os.environ, {DEBUG: "0"}, clear=False):
+                os.environ.pop(DEBUG_FILE, None)
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "error truncated" in rendered
+            assert "DEEPAGENTS_CODE_DEBUG=1" in rendered
+            # The note stays on the displayed message, not in stored state.
+            assert app._server_startup_error is not None
+            assert "error truncated" not in app._server_startup_error
+
+    async def test_server_failure_truncated_headline_points_to_debug_file(
+        self,
+    ) -> None:
+        """With debug logging on, the note points at the resolved log path."""
+        from deepagents_code._env_vars import DEBUG, DEBUG_FILE
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            long_message = "Unknown tool names: " + ", ".join(
+                f"tool_{i}" for i in range(80)
+            )
+            with patch.dict(
+                os.environ,
+                {DEBUG: "1", DEBUG_FILE: "/tmp/custom_debug.log"},
+                clear=False,
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "error truncated" in rendered
+            assert "/tmp/custom_debug.log" in rendered
+
+    async def test_server_failure_short_headline_omits_truncation_note(self) -> None:
+        """A headline within the limit renders no truncation note."""
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("short boom"))
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert "error truncated" not in str(widget._content)
+
+    async def test_server_failure_long_mcp_config_error_omits_truncation_note(
+        self,
+    ) -> None:
+        """A long `MCPConfigError` never gets a truncation note.
+
+        That branch sets `_server_startup_error` to the full (untruncated)
+        message and leaves `headline_truncated` False, so the note logic must
+        not fire even when the rendered text far exceeds the headline limit.
+        Locks the branch against a refactor that hoists the truncation check.
+        """
+        from deepagents_code.mcp_tools import MCPConfigError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            long_message = "Invalid MCP config at /tmp/x.json: " + "x" * 400
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=MCPConfigError(long_message))
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert "error truncated" not in str(widget._content)
+
+    async def test_server_failure_truncation_note_boundary(self) -> None:
+        """The note fires only when the headline strictly exceeds the limit.
+
+        `_startup_error_headline` prepends `"RuntimeError: "` (14 chars), so a
+        286-char body yields a 300-char headline (no note) and a 287-char body
+        yields 301 (note) — pinning the `>` vs `>=` boundary against off-by-one.
+        """
+        from deepagents_code.app import _STARTUP_ERROR_HEADLINE_LIMIT
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        prefix_len = len("RuntimeError: ")
+        at_limit = "a" * (_STARTUP_ERROR_HEADLINE_LIMIT - prefix_len)
+        over_limit = "a" * (_STARTUP_ERROR_HEADLINE_LIMIT - prefix_len + 1)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError(at_limit))
+            )
+            await pilot.pause()
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert "error truncated" not in str(widget._content)
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError(over_limit))
+            )
+            await pilot.pause()
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert "error truncated" in str(widget._content)
+
+    async def test_server_failure_truncated_headline_uses_default_debug_path(
+        self,
+    ) -> None:
+        """With debug on and `DEBUG_FILE` unset, the note names the default path.
+
+        Guards the `DEFAULT_DEBUG_FILE` fallback this change extracted — a
+        regression in the `os.environ.get(..., DEFAULT_DEBUG_FILE)` default
+        would otherwise go uncaught.
+        """
+        from deepagents_code._env_vars import DEBUG, DEBUG_FILE, DEFAULT_DEBUG_FILE
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            long_message = "Unknown tool names: " + ", ".join(
+                f"tool_{i}" for i in range(80)
+            )
+            with patch.dict(os.environ, {DEBUG: "1"}, clear=False):
+                os.environ.pop(DEBUG_FILE, None)
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert DEFAULT_DEBUG_FILE in str(widget._content)
+
     async def test_server_failure_mcp_config_error_omits_class_prefix(self) -> None:
         """`MCPConfigError` banner shows the path and reason without class prefix."""
         from deepagents_code.mcp_tools import MCPConfigError

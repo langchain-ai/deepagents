@@ -13,7 +13,12 @@ import os
 import sys
 from pathlib import Path
 
-from deepagents_code._env_vars import DEBUG, DEBUG_FILE, is_env_truthy
+from deepagents_code._env_vars import (
+    DEBUG,
+    DEBUG_FILE,
+    DEFAULT_DEBUG_FILE,
+    is_env_truthy,
+)
 
 _DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
 
@@ -25,8 +30,8 @@ def configure_debug_logging(target: logging.Logger) -> None:
     module loggers reach the same file via propagation, so individual modules do
     not configure logging themselves.
 
-    The log file defaults to `'/tmp/deepagents_debug.log'` but can be overridden
-    with `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends (`mode='a'`) so logs
+    The log file defaults to `DEFAULT_DEBUG_FILE` but can be overridden with
+    `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends (`mode='a'`) so logs
     are preserved across separate process runs. Calling this again with the same
     resolved path is a no-op: the existing tagged handler is reused rather than
     stacking duplicates. If the resolved path changes, the stale handler is
@@ -40,12 +45,7 @@ def configure_debug_logging(target: logging.Logger) -> None:
     if not is_env_truthy(DEBUG):
         return
 
-    debug_path = Path(
-        os.environ.get(
-            DEBUG_FILE,
-            "/tmp/deepagents_debug.log",  # noqa: S108
-        )
-    )
+    debug_path = Path(os.environ.get(DEBUG_FILE, DEFAULT_DEBUG_FILE))
     for existing in list(target.handlers):
         if not (
             isinstance(existing, logging.FileHandler)

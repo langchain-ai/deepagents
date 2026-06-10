@@ -46,7 +46,10 @@ as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
+"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+
+DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
+"""Default path for the debug log when `DEBUG_FILE` is unset."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.

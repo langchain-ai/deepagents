@@ -13,6 +13,7 @@ from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
+    create_sub_agent,
 )
 
 
@@ -50,8 +51,56 @@ class TestSubagentMiddlewareInit:
     def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
         """Public constructor annotations should support runtime introspection."""
         hints = get_type_hints(SubAgentMiddleware.__init__)
+        create_hints = get_type_hints(create_sub_agent)
 
         assert "state_schema" in hints
+        assert "state_schema" in create_hints
+        assert "return" in create_hints
+
+    def test_create_sub_agent_compiles_declarative_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The public helper should own the declarative create_agent path."""
+        graph = self._make_echo_graph()
+        calls: dict[str, object] = {}
+
+        class CustomState(MessagesState):
+            pass
+
+        def fake_resolve_model(model: object) -> object:
+            calls["model_spec"] = model
+            return "resolved-model"
+
+        def fake_create_agent(model: object, **kwargs: object) -> object:
+            calls["model"] = model
+            calls["kwargs"] = kwargs
+            return graph
+
+        monkeypatch.setattr("deepagents._models.resolve_model", fake_resolve_model)
+        monkeypatch.setattr("deepagents.middleware.subagents.create_agent", fake_create_agent)
+
+        runnable = create_sub_agent(
+            {
+                "name": "worker",
+                "description": "Does work.",
+                "system_prompt": "Work on the task.",
+                "model": "test-model",
+                "tools": [get_weather],
+                "interrupt_on": {"get_weather": True},
+            },
+            state_schema=CustomState,
+        )
+
+        assert runnable is graph
+        assert calls["model_spec"] == "test-model"
+        assert calls["model"] == "resolved-model"
+        kwargs = calls["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["system_prompt"] == "Work on the task."
+        assert kwargs["tools"] == [get_weather]
+        assert kwargs["name"] == "worker"
+        assert kwargs["state_schema"] is CustomState
+        middleware = kwargs["middleware"]
+        assert isinstance(middleware, list)
+        assert middleware[-1].__class__.__name__ == "HumanInTheLoopMiddleware"
 
     def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""
@@ -215,6 +264,37 @@ class TestSubagentMiddlewareInit:
         assert beta_runnable.config.get("run_name") == "agent-beta"
         assert alpha_runnable is not beta_runnable
         assert graph.config is None
+
+    def test_middleware_delegates_to_create_sub_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Middleware should use the shared entrypoint for declarative subagents."""
+        graph = self._make_echo_graph()
+        calls: list[tuple[object, type | None]] = []
+
+        class CustomState(MessagesState):
+            pass
+
+        def fake_create_sub_agent(spec: object, *, state_schema: type | None = None) -> object:
+            calls.append((spec, state_schema))
+            return graph
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
+
+        SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "agent-alpha",
+                    "description": "First binding",
+                    "system_prompt": "Work on the task.",
+                    "model": "test-model",
+                    "tools": [],
+                },
+            ],
+            state_schema=CustomState,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][1] is CustomState
 
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""

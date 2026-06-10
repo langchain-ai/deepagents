@@ -181,6 +181,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
+    from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
@@ -1842,7 +1843,7 @@ class DeepAgentsApp(App):
         self._shell_running = False
         """True while a `!` shell command is executing."""
 
-        self._pending_shell_messages: list[Any] = []
+        self._pending_shell_messages: list[BaseMessage] = []
         """Non-incognito `!` command/output messages awaiting flush.
 
         `!` runs outside the agent graph, so its command/output are buffered
@@ -5591,11 +5592,8 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
-            # Non-incognito `!` commands are part of the conversation the model
-            # can see; `!!` (incognito) stays local-only. `!` runs outside the
-            # graph, so buffer its command/output and flush into thread state on
-            # the next user send — never proactively, to avoid spending a model
-            # turn on output the user may never reference.
+            # Non-incognito `!` only; `!!` stays local. Buffered, not written
+            # now — see `_buffer_shell_for_model_context` for the rationale.
             if not incognito:
                 self._buffer_shell_for_model_context(command, output, proc.returncode)
 
@@ -5661,10 +5659,13 @@ class DeepAgentsApp(App):
         """Write buffered `!` command/output into thread state, then clear it.
 
         Called right before a user-driven agent turn so the model sees any
-        `!` commands run since the last turn. Best-effort: a checkpoint write
-        failure is logged and the buffer is still cleared so stale output is
-        not replayed onto a later turn. No-ops when nothing is buffered or no
-        agent/thread is active.
+        `!` commands run since the last turn. Adopts the session thread id when
+        one has not been resolved yet (e.g. a `!` run before the first send).
+        Best-effort: a checkpoint write failure is logged and surfaced as a
+        toast, and the buffer is still cleared so stale output is not replayed
+        onto a later turn. Returns early when nothing is buffered; when output
+        is buffered but no agent/thread is active yet, the buffer is left intact
+        for a later send rather than dropped.
         """
         if not self._pending_shell_messages:
             return
@@ -5689,9 +5690,16 @@ class DeepAgentsApp(App):
                     await remote.aensure_thread(remote_config)
                 await self._agent.aupdate_state(config, {"messages": messages})
         except Exception:  # best-effort; UI already showed the output
-            logger.warning(
-                "Failed to flush shell command into model context", exc_info=True
-            )
+            # Parity with the offload path's `aupdate_state` failure handling:
+            # log the traceback and surface a non-blocking toast, since the
+            # model silently lacking output the user expects is confusing.
+            logger.exception("Failed to flush shell command into model context")
+            with suppress(Exception):
+                self.notify(
+                    "Couldn't add ! output to the model's context.",
+                    severity="warning",
+                    markup=False,
+                )
 
     async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
         """Clean up after shell command task completes or is cancelled.

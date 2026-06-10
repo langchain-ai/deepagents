@@ -3643,6 +3643,9 @@ class DeepAgentsApp(App):
         parts = command.split()
         force = "--force" in parts[1:]
         package_mode = "--package" in parts[1:]
+        # `--yes` is an undocumented alias for `--force` in package mode,
+        # mirroring the CLI's `--yes` confirmation bypass.
+        yes = "--yes" in parts[1:]
         names = [p for p in parts[1:] if not p.startswith("-")]
         if not names:
             from deepagents_code.extras_info import format_known_extras
@@ -3668,7 +3671,7 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
 
         if package_mode:
-            await self._handle_install_package(names[0], force=force)
+            await self._handle_install_package(names[0], force=force or yes)
             return
 
         extra = names[0].lower()
@@ -3801,11 +3804,12 @@ class DeepAgentsApp(App):
         Backs `/install <package> --package`, the escape hatch for a provider
         whose package is not a `deepagents-code` extra (e.g. a custom
         `class_path` model). Arbitrary packages have no curated allowlist, so a
-        `--force` token is required to confirm pulling in third-party code.
+        non-blocking confirmation modal gates pulling in third-party code.
+        `--force` (or `--yes`) bypasses the prompt.
 
         Args:
             package: The package name to install.
-            force: Whether the user passed `--force` to confirm the install.
+            force: Whether the user passed `--force`/`--yes` to skip the prompt.
         """
         try:
             from deepagents_code.config import _is_editable_install
@@ -3840,13 +3844,9 @@ class DeepAgentsApp(App):
             )
             return
 
-        if not force:
+        if not force and not await self._confirm_install_package(package):
             await self._mount_message(
-                AppMessage(
-                    f"Installing the package '{package}' runs third-party code. "
-                    "Re-run with `--force` to proceed: "
-                    f"`/install {package} --package --force`",
-                ),
+                AppMessage(f"Cancelled install of package '{package}'."),
             )
             return
 
@@ -3883,6 +3883,40 @@ class DeepAgentsApp(App):
             ),
         )
         await self._offer_restart_after_install(package)
+
+    async def _confirm_install_package(self, package: str) -> bool:
+        """Ask the user to confirm installing an arbitrary package.
+
+        Pushes a non-blocking Textual modal explaining that the install runs
+        third-party code. A watchdog bounds the wait so a modal that never
+        resolves can't wedge command handling; a timeout or mount failure is
+        treated as a cancel.
+
+        Args:
+            package: The package name to confirm, surfaced in the modal.
+
+        Returns:
+            Whether the user confirmed the install.
+        """
+        from deepagents_code.widgets.install_confirm import (
+            InstallPackageConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(InstallPackageConfirmScreen(package)),
+                timeout=600.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Install confirmation for %r timed out; treating as cancel",
+                package,
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount install confirmation for %r", package)
+            return False
+        return bool(confirmed)
 
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.

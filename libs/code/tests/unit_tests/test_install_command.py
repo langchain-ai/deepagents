@@ -247,8 +247,34 @@ async def test_install_slash_editable_install_refuses() -> None:
         assert any("Editable install detected" in str(m._content) for m in app_msgs)
 
 
-async def test_install_slash_package_requires_force() -> None:
-    """`--package` without `--force` must not call `perform_install_package`."""
+async def test_install_slash_package_confirm_runs() -> None:
+    """`--package` without `--force` prompts; confirming runs the install."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value=True)
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_awaited_once()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert any(
+            "Installed package 'langchain-custom'" in str(m._content) for m in app_msgs
+        )
+
+
+async def test_install_slash_package_cancel_aborts() -> None:
+    """Cancelling the prompt must not call `perform_install_package`."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -258,16 +284,59 @@ async def test_install_slash_package_requires_force() -> None:
                 "deepagents_code.update_check.perform_install_package",
                 new_callable=AsyncMock,
             ) as perform_mock,
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value=False)
+            ) as prompt,
         ):
             await app._handle_command("/install langchain-custom --package")
             await pilot.pause()
+        prompt.assert_awaited_once()
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         joined = "\n".join(str(m._content) for m in app_msgs)
-        assert "--force" in joined
-        assert "third-party code" in joined
+        assert "Cancelled install" in joined
         # The raw `uv tool` command is never surfaced to the user.
         assert "uv tool" not in joined
+
+
+async def test_install_slash_package_force_skips_prompt() -> None:
+    """`--package --force` must not open the confirmation prompt."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package --force")
+            await pilot.pause()
+        prompt.assert_not_awaited()
+        perform_mock.assert_awaited_once()
+
+
+async def test_install_slash_package_yes_alias_skips_prompt() -> None:
+    """`--package --yes` is an alias for `--force` and skips the prompt."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package --yes")
+            await pilot.pause()
+        prompt.assert_not_awaited()
+        perform_mock.assert_awaited_once()
 
 
 async def test_install_slash_package_with_force_runs() -> None:

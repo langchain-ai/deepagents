@@ -6735,66 +6735,99 @@ class TestDeferredActions:
             assert len(stored) < 400
 
     async def test_server_failure_truncated_headline_notes_debug_rerun(self) -> None:
-        """A clipped headline appends a re-run hint when debug logging is off.
+        """A clipped headline appends a re-run hint when no debug log is active.
 
         The full error (e.g. the `interpreter_ptc` available-tools list) only
-        reaches disk under `DEEPAGENTS_CODE_DEBUG`; without it the note tells
-        the user how to capture it on the next run.
+        reaches disk when a debug file handler is installed; absent one the note
+        tells the user how to capture it on the next run.
         """
-        from deepagents_code._env_vars import DEBUG, DEBUG_FILE
+        import logging
+
         from deepagents_code.widgets.messages import ErrorMessage
 
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Single-line message long enough to overflow the headline limit.
-            long_message = "Unknown tool names: " + ", ".join(
-                f"tool_{i}" for i in range(80)
-            )
-            with patch.dict(os.environ, {DEBUG: "0"}, clear=False):
-                os.environ.pop(DEBUG_FILE, None)
+        # Strip any installed debug handler so the helper reports "no log file"
+        # deterministically — a developer may run the suite with
+        # `DEEPAGENTS_CODE_DEBUG` exported, which installs one at import.
+        package_logger = logging.getLogger("deepagents_code")
+        stripped = [
+            h
+            for h in package_logger.handlers
+            if getattr(h, "_deepagents_code_debug_handler", False)
+        ]
+        for h in stripped:
+            package_logger.removeHandler(h)
+        try:
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                # Single-line message long enough to overflow the headline limit.
+                long_message = "Unknown tool names: " + ", ".join(
+                    f"tool_{i}" for i in range(80)
+                )
                 app.on_deep_agents_app_server_start_failed(
                     DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
                 )
                 await pilot.pause()
 
-            widget = app._startup_failure_widget
-            assert isinstance(widget, ErrorMessage)
-            rendered = str(widget._content)
-            assert "error truncated" in rendered
-            assert "DEEPAGENTS_CODE_DEBUG=1" in rendered
-            # The note stays on the displayed message, not in stored state.
-            assert app._server_startup_error is not None
-            assert "error truncated" not in app._server_startup_error
+                widget = app._startup_failure_widget
+                assert isinstance(widget, ErrorMessage)
+                rendered = str(widget._content)
+                assert "error truncated" in rendered
+                assert "DEEPAGENTS_CODE_DEBUG=1" in rendered
+                # The note stays on the displayed message, not in stored state.
+                assert app._server_startup_error is not None
+                assert "error truncated" not in app._server_startup_error
+        finally:
+            for h in stripped:
+                package_logger.addHandler(h)
 
     async def test_server_failure_truncated_headline_points_to_debug_file(
-        self,
+        self, tmp_path
     ) -> None:
-        """With debug logging on, the note points at the resolved log path."""
+        """The note points at the path of the handler that was actually installed.
+
+        The pointer reflects the file handler attached by
+        `configure_debug_logging`, not the `DEEPAGENTS_CODE_DEBUG` env value: a
+        var set only after import (e.g. via a project `.env`) never installs a
+        handler, so the note must never advertise a file that was never created.
+        """
+        import logging
+
+        from deepagents_code._debug import configure_debug_logging
         from deepagents_code._env_vars import DEBUG, DEBUG_FILE
         from deepagents_code.widgets.messages import ErrorMessage
 
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            long_message = "Unknown tool names: " + ", ".join(
-                f"tool_{i}" for i in range(80)
-            )
-            with patch.dict(
-                os.environ,
-                {DEBUG: "1", DEBUG_FILE: "/tmp/custom_debug.log"},
-                clear=False,
-            ):
+        package_logger = logging.getLogger("deepagents_code")
+        log_path = tmp_path / "custom_debug.log"
+        pre_existing = list(package_logger.handlers)
+        with patch.dict(
+            os.environ,
+            {DEBUG: "1", DEBUG_FILE: str(log_path)},
+            clear=False,
+        ):
+            configure_debug_logging(package_logger)
+        added = [h for h in package_logger.handlers if h not in pre_existing]
+        try:
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                long_message = "Unknown tool names: " + ", ".join(
+                    f"tool_{i}" for i in range(80)
+                )
                 app.on_deep_agents_app_server_start_failed(
                     DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
                 )
                 await pilot.pause()
 
-            widget = app._startup_failure_widget
-            assert isinstance(widget, ErrorMessage)
-            rendered = str(widget._content)
-            assert "error truncated" in rendered
-            assert "/tmp/custom_debug.log" in rendered
+                widget = app._startup_failure_widget
+                assert isinstance(widget, ErrorMessage)
+                rendered = str(widget._content)
+                assert "error truncated" in rendered
+                assert str(log_path) in rendered
+        finally:
+            for h in added:
+                h.close()
+                package_logger.removeHandler(h)
 
     async def test_server_failure_short_headline_omits_truncation_note(self) -> None:
         """A headline within the limit renders no truncation note."""
@@ -6877,31 +6910,43 @@ class TestDeferredActions:
     async def test_server_failure_truncated_headline_uses_default_debug_path(
         self,
     ) -> None:
-        """With debug on and `DEBUG_FILE` unset, the note names the default path.
+        """With `DEBUG_FILE` unset, a handler at the default path is named.
 
-        Guards the `DEFAULT_DEBUG_FILE` fallback this change extracted — a
-        regression in the `os.environ.get(..., DEFAULT_DEBUG_FILE)` default
-        would otherwise go uncaught.
+        Guards the `DEFAULT_DEBUG_FILE` fallback — a regression in the default
+        resolution would otherwise go uncaught. The handler is installed at the
+        default path so `installed_debug_log_path` reports it.
         """
+        import logging
+
+        from deepagents_code._debug import configure_debug_logging
         from deepagents_code._env_vars import DEBUG, DEBUG_FILE, DEFAULT_DEBUG_FILE
         from deepagents_code.widgets.messages import ErrorMessage
 
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            long_message = "Unknown tool names: " + ", ".join(
-                f"tool_{i}" for i in range(80)
-            )
-            with patch.dict(os.environ, {DEBUG: "1"}, clear=False):
-                os.environ.pop(DEBUG_FILE, None)
+        package_logger = logging.getLogger("deepagents_code")
+        pre_existing = list(package_logger.handlers)
+        with patch.dict(os.environ, {DEBUG: "1"}, clear=False):
+            os.environ.pop(DEBUG_FILE, None)
+            configure_debug_logging(package_logger)
+        added = [h for h in package_logger.handlers if h not in pre_existing]
+        try:
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                long_message = "Unknown tool names: " + ", ".join(
+                    f"tool_{i}" for i in range(80)
+                )
                 app.on_deep_agents_app_server_start_failed(
                     DeepAgentsApp.ServerStartFailed(error=RuntimeError(long_message))
                 )
                 await pilot.pause()
 
-            widget = app._startup_failure_widget
-            assert isinstance(widget, ErrorMessage)
-            assert DEFAULT_DEBUG_FILE in str(widget._content)
+                widget = app._startup_failure_widget
+                assert isinstance(widget, ErrorMessage)
+                assert DEFAULT_DEBUG_FILE in str(widget._content)
+        finally:
+            for h in added:
+                h.close()
+                package_logger.removeHandler(h)
 
     async def test_server_failure_mcp_config_error_omits_class_prefix(self) -> None:
         """`MCPConfigError` banner shows the path and reason without class prefix."""

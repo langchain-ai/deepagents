@@ -3196,15 +3196,14 @@ class DeepAgentsApp(App):
                 )
 
         if headline_truncated:
-            from deepagents_code._env_vars import (
-                DEBUG,
-                DEBUG_FILE,
-                DEFAULT_DEBUG_FILE,
-                is_env_truthy,
-            )
+            from deepagents_code._debug import installed_debug_log_path
 
-            if is_env_truthy(DEBUG):
-                debug_path = os.environ.get(DEBUG_FILE, DEFAULT_DEBUG_FILE)
+            # Base the pointer on the handler that was actually installed, not on
+            # `DEEPAGENTS_CODE_DEBUG`: the var can read truthy (e.g. set in a
+            # `.env`) while no log file exists, which would point users at a
+            # nonexistent path.
+            debug_path = installed_debug_log_path()
+            if debug_path is not None:
                 text += f"\n\nNote: error truncated — full error in {debug_path}."
             else:
                 text += (

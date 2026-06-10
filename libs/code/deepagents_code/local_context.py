@@ -143,6 +143,34 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
     return "\n".join(lines)
 
 
+def _build_tracing_context(
+    agent_project: str | None,
+    user_project: str | None,
+) -> str:
+    """Format LangSmith tracing project names for the system prompt.
+
+    Surfaces both projects so the agent can look up the right traces with the
+    LangSmith MCP server or CLI: the project its own runs are traced to, and
+    the user's original project that shell commands trace to.
+
+    Args:
+        agent_project: Project receiving the agent's own traces, or `None`
+            when LangSmith tracing is not enabled.
+        user_project: User's original `LANGSMITH_PROJECT`, used by code the
+            agent runs in the shell.
+
+    Returns:
+        Formatted markdown string, or `""` when tracing is disabled.
+    """
+    if not agent_project:
+        return ""
+
+    lines = ["**LangSmith Tracing**:", f"- Agent traces: project `{agent_project}`"]
+    if user_project and user_project != agent_project:
+        lines.append(f"- Shell-command traces: project `{user_project}`")
+    return "\n".join(lines)
+
+
 @runtime_checkable
 class _ExecutableBackend(Protocol):
     """Any backend that supports `execute(command) -> ExecuteResponse`."""
@@ -566,15 +594,24 @@ class LocalContextMiddleware(AgentMiddleware):
         backend: _ExecutableBackend | _AsyncExecutableBackend,
         *,
         mcp_server_info: list[MCPServerInfo] | None = None,
+        tracing_project: str | None = None,
+        user_tracing_project: str | None = None,
     ) -> None:
         """Initialize with a backend that supports shell execution.
 
         Args:
             backend: Backend instance that provides shell command execution.
             mcp_server_info: MCP server metadata to include in the system prompt.
+            tracing_project: LangSmith project the agent's own runs trace to, or
+                `None` when tracing is disabled (the tracing section is omitted).
+            user_tracing_project: User's original `LANGSMITH_PROJECT` used by
+                shell commands the agent runs.
         """
         self.backend = backend
         self._mcp_context = _build_mcp_context(mcp_server_info or [])
+        self._tracing_context = _build_tracing_context(
+            tracing_project, user_tracing_project
+        )
 
     @staticmethod
     def _handle_detect_result(result: ExecuteResponse) -> str | None:
@@ -792,7 +829,9 @@ class LocalContextMiddleware(AgentMiddleware):
         state = cast("LocalContextState", request.state)
         local_context = state.get("local_context", "")
 
-        parts = [p for p in (local_context, self._mcp_context) if p]
+        parts = [
+            p for p in (local_context, self._tracing_context, self._mcp_context) if p
+        ]
         if not parts:
             return None
 

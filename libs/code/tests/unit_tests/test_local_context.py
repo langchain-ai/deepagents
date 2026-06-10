@@ -20,6 +20,7 @@ from deepagents_code.local_context import (
     LocalContextState,
     _AsyncExecutableBackend,
     _build_mcp_context,
+    _build_tracing_context,
     _ExecutableBackend,
     _section_files,
     _section_gh_cli,
@@ -1719,3 +1720,93 @@ class TestMcpContextInMiddleware:
         prompt = call_args["system_prompt"]
         assert "**MCP Servers**" in prompt
         assert "**fs** (stdio): read" in prompt
+
+
+class TestBuildTracingContext:
+    """Tests for the `_build_tracing_context` formatter."""
+
+    def test_empty_when_no_agent_project(self) -> None:
+        """No section when tracing is disabled (agent project is None)."""
+        assert _build_tracing_context(None, None) == ""
+        assert _build_tracing_context(None, "user-proj") == ""
+
+    def test_agent_project_only(self) -> None:
+        """Only the agent project line when user project is absent."""
+        result = _build_tracing_context("agent-proj", None)
+        assert "**LangSmith Tracing**:" in result
+        assert "- Agent traces: project `agent-proj`" in result
+        assert "Shell-command traces" not in result
+
+    def test_both_projects_when_distinct(self) -> None:
+        """Both lines appear when projects differ."""
+        result = _build_tracing_context("agent-proj", "user-proj")
+        assert "- Agent traces: project `agent-proj`" in result
+        assert "- Shell-command traces: project `user-proj`" in result
+
+    def test_user_project_collapsed_when_same(self) -> None:
+        """No duplicate line when user project equals agent project."""
+        result = _build_tracing_context("same-proj", "same-proj")
+        assert "- Agent traces: project `same-proj`" in result
+        assert "Shell-command traces" not in result
+
+
+class TestTracingContextInMiddleware:
+    """Tests for tracing context integration in LocalContextMiddleware."""
+
+    def test_tracing_context_appended_to_prompt(self) -> None:
+        """Tracing info appears in system prompt via wrap_model_call."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(
+            backend=backend,
+            tracing_project="agent-proj",
+            user_tracing_project="user-proj",
+        )
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.override.return_value = Mock()
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert "**LangSmith Tracing**:" in prompt
+        assert "- Agent traces: project `agent-proj`" in prompt
+        assert "- Shell-command traces: project `user-proj`" in prompt
+
+    def test_no_tracing_context_when_disabled(self) -> None:
+        """No tracing section when tracing project is None."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(backend=backend, tracing_project=None)
+
+        request = Mock()
+        request.system_prompt = "Base prompt"
+        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.override.return_value = Mock()
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert "LangSmith Tracing" not in prompt
+        assert "## Local Context" in prompt
+
+    def test_tracing_context_alone(self) -> None:
+        """Tracing context appended even when no bash context is available."""
+        backend = _make_backend()
+        middleware = LocalContextMiddleware(
+            backend=backend, tracing_project="agent-proj"
+        )
+
+        request = Mock()
+        request.system_prompt = "Base"
+        request.state = {}  # no local_context
+        request.override.return_value = Mock()
+        handler = Mock(return_value="response")
+
+        middleware.wrap_model_call(request, handler)
+
+        prompt = request.override.call_args[1]["system_prompt"]
+        assert "**LangSmith Tracing**:" in prompt
+        assert "- Agent traces: project `agent-proj`" in prompt

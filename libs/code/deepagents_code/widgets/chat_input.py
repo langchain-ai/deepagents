@@ -52,6 +52,18 @@ def _default_history_path() -> Path:
     return DEFAULT_STATE_DIR / "history.jsonl"
 
 
+_LOCK_KEYS = frozenset({"caps_lock", "num_lock", "scroll_lock"})
+"""Lock keys that must never insert text.
+
+Under the kitty keyboard protocol with associated-text reporting (used by
+iTerm2, VS Code's xterm.js, and others), pressing a lock key arrives as a
+`Key` event whose `character` is the text that *would* have been produced by
+the next key — e.g. pressing Caps Lock reports `key='caps_lock'`,
+`character='A'`. Textual's parser does not strip this, so `TextArea` inserts a
+stray letter. We drop these events entirely. See the kitty keyboard protocol
+spec (functional key definitions) for background.
+"""
+
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
 
@@ -726,6 +738,16 @@ class ChatTextArea(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. Under
+        # the kitty keyboard protocol with associated-text reporting (iTerm2,
+        # VS Code's xterm.js, etc.), pressing Caps Lock arrives as
+        # Key(key='caps_lock', character='A'), so TextArea would insert a stray
+        # letter. Swallow these events.
+        if event.key in _LOCK_KEYS:
+            event.prevent_default()
+            event.stop()
+            return
+
         # VS Code 1.110 incorrectly sends space as a CSI u escape code
         # (`\x1b[32u`) instead of a plain ` ` character.  Textual parses
         # this as Key(key='space', character=None, is_printable=False), so

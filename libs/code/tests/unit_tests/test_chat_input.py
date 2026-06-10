@@ -2663,6 +2663,36 @@ class TestVSCodeSpaceWorkaround:
             assert ta.text == "hello "
 
 
+class TestLockKeysDoNotType:
+    """Lock keys must never insert text.
+
+    Under the kitty keyboard protocol with associated-text reporting (iTerm2,
+    VS Code's xterm.js, etc.), pressing Caps Lock arrives as
+    Key(key='caps_lock', character='A'), which would otherwise make TextArea
+    insert a stray letter.
+    """
+
+    @pytest.mark.parametrize("lock_key", ["caps_lock", "num_lock", "scroll_lock"])
+    async def test_lock_key_with_associated_text_inserts_nothing(
+        self, lock_key: str
+    ) -> None:
+        """A lock-key event carrying associated text should insert nothing."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            # iTerm2/kitty protocol reports the would-be text as `character`.
+            await ta._on_key(events.Key(lock_key, "A"))
+            await pilot.pause()
+
+            assert ta.text == "hello"
+
+
 class TestCtrlUDeleteToLineStart:
     """Test that ctrl+u deletes from cursor to start of line (readline convention)."""
 

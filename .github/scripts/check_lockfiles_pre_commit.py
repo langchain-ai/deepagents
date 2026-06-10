@@ -36,14 +36,15 @@ def _label(package: Path) -> str:
 
 
 def _touches_talon(paths: list[str]) -> bool:
-    return any(
-        Path(path).parts[:2] == ("libs", "talon") and Path(path).name != "uv.lock"
-        for path in paths
-    )
+    return any(Path(path).parts[:2] == ("libs", "talon") for path in paths)
+
+
+def _include_talon(paths: list[str]) -> bool:
+    return not paths or _touches_talon(paths)
 
 
 def main(paths: list[str]) -> int:
-    include_talon = not paths or _touches_talon(paths)
+    include_talon = _include_talon(paths)
     for package in _package_dirs(include_talon=include_talon):
         print(f"🔍 Checking {_label(package)}")
         result = subprocess.run(

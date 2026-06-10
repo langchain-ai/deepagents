@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
@@ -152,7 +153,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             File content, or `None` when the file is missing or unreadable.
         """
         try:
-            return path.read_text(encoding="utf-8")
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "r", encoding="utf-8") as f:
+                return f.read()
         except FileNotFoundError:
             # Expected when the guarded file has not been created yet.
             return None
@@ -161,6 +164,16 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             # disable protection for this call, so make it visible.
             logger.warning("Could not read guarded memory file %s", path, exc_info=True)
             return None
+
+    @staticmethod
+    def _write(path: Path, content: str) -> None:
+        """Write `content` to `path` without following symlinks."""
+        flags = os.O_WRONLY | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
 
     @staticmethod
     def _line_range_for_block(before: str, before_block: str) -> tuple[int, int] | None:
@@ -298,8 +311,8 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             )
             return _RestoreOutcome.FAILED
         try:
-            path.write_text(restored, encoding="utf-8")
-        except OSError:
+            self._write(path, restored)
+        except (OSError, UnicodeEncodeError):
             logger.warning(
                 "Could not restore managed memory block at %s", path, exc_info=True
             )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -118,6 +120,31 @@ def test_other_edits_preserved_when_block_reverted(tmp_path) -> None:
     assert '- The user\'s preferred name is "Ada".' in content
     assert "Mallory" not in content
     assert "Added a real learning." in content
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"),
+    reason="symlink hardening requires O_NOFOLLOW",
+)
+def test_restore_does_not_follow_replaced_guarded_file_symlink(tmp_path) -> None:
+    """A symlink swap during restore must not overwrite the symlink target."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    target = tmp_path / "target.txt"
+    _managed_file(path, "Ada")
+    target.write_text("do not overwrite\n", encoding="utf-8")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        path.unlink()
+        path.symlink_to(target)
+        return _success()
+
+    result = middleware.wrap_tool_call(_request("edit_file", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert target.read_text(encoding="utf-8") == "do not overwrite\n"
+    assert path.is_symlink()
 
 
 def test_unguarded_file_passes_through(tmp_path) -> None:

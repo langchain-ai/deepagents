@@ -6,7 +6,7 @@ import contextlib
 import queue
 import threading
 import time
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
@@ -21,54 +21,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from vercel.sandbox import Sandbox
-
-
-class _CommandModel(Protocol):
-    exit_code: int | None
-
-
-class _Command(Protocol):
-    cmd_id: str
-    cmd: _CommandModel
-
-    def kill(self, signal: int = 15) -> None:
-        """Kill the running command."""
-
-    def wait(self) -> _Command:
-        """Wait for the command to finish."""
-
-    def stdout(self) -> str:
-        """Return command stdout."""
-
-    def stderr(self) -> str:
-        """Return command stderr."""
-
-
-class _VercelSandboxLike(Protocol):
-    sandbox_id: str
-
-    def run_command_detached(
-        self,
-        cmd: str,
-        args: Sequence[str] | None = None,
-        *,
-        cwd: str | None = None,
-        env: dict[str, str] | None = None,
-        sudo: bool = False,
-    ) -> _Command:
-        """Start a detached command."""
-
-    def get_command(self, cmd_id: str) -> _Command:
-        """Get command status."""
-
-    def read_file(self, path: str, *, cwd: str | None = None) -> bytes | None:
-        """Read a file from the sandbox."""
-
-    def write_files(self, files: list[dict[str, object]]) -> None:
-        """Write files into the sandbox."""
+    from vercel.sandbox import Command, CommandFinished, Sandbox, WriteFile
 
 
 class VercelSandbox(BaseSandbox):
@@ -87,7 +40,7 @@ class VercelSandbox(BaseSandbox):
             timeout: Default command timeout in seconds used when `execute()` is
                 called without an explicit `timeout`.
         """
-        self._sandbox: _VercelSandboxLike = cast("_VercelSandboxLike", sandbox)
+        self._sandbox = sandbox
         self._default_timeout = timeout
 
     @property
@@ -124,17 +77,16 @@ class VercelSandbox(BaseSandbox):
             msg = f"Command timed out after {effective_timeout} seconds"
             return ExecuteResponse(output=msg, exit_code=124, truncated=False)
 
-        exit_code = _command_exit_code(current)
-        if exit_code is None:
-            msg = "Command completed without an exit code"
-            return ExecuteResponse(output=msg, exit_code=1, truncated=False)
-
         output = current.stdout() or ""
         stderr = current.stderr() or ""
         if stderr.strip():
             output += f"\n<stderr>{stderr.strip()}</stderr>"
 
-        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+        return ExecuteResponse(
+            output=output,
+            exit_code=current.exit_code,
+            truncated=False,
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
@@ -172,7 +124,7 @@ class VercelSandbox(BaseSandbox):
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files into the sandbox."""
-        write_files: list[dict[str, object]] = []
+        write_files: list[WriteFile] = []
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
@@ -220,26 +172,18 @@ def _map_file_error(exc: Exception) -> FileOperationError:
     return error
 
 
-def _command_exit_code(command: _Command) -> int | None:
-    """Return an exit code from either SDK command shape."""
-    exit_code = getattr(command, "exit_code", None)
-    if exit_code is not None:
-        return exit_code
-    return command.cmd.exit_code
-
-
 def _wait_for_command(
-    cmd: _Command,
+    cmd: Command,
     effective_timeout: int,
     started_at: float,
-) -> _Command | None:
+) -> CommandFinished | None:
     """Wait for a Vercel command while preserving local timeout semantics."""
     if effective_timeout == 0:
         return cmd.wait()
 
     remaining = max(0.0, effective_timeout - (time.monotonic() - started_at))
-    result_queue: queue.Queue[tuple[_Command | None, Exception | None]] = queue.Queue(
-        maxsize=1
+    result_queue: queue.Queue[tuple[CommandFinished | None, Exception | None]] = (
+        queue.Queue(maxsize=1)
     )
 
     def wait() -> None:

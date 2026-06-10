@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
@@ -14,11 +13,6 @@ NON_ZERO_EXIT_CODE = 7
 TIMEOUT_EXIT_CODE = 124
 
 
-@dataclass
-class _CommandModel:
-    exit_code: int | None
-
-
 class _Command:
     def __init__(
         self,
@@ -29,7 +23,7 @@ class _Command:
         stderr: str = "",
     ) -> None:
         self.cmd_id = cmd_id
-        self.cmd = _CommandModel(exit_code=exit_code)
+        self.exit_code = exit_code
         self._stdout = stdout
         self._stderr = stderr
         self.wait_event: threading.Event | None = None

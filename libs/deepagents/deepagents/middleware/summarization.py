@@ -1576,6 +1576,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 return False
         return True
 
+    def _compact_trigger_conditions(self) -> list[object]:
+        """Return LangChain's canonical trigger clauses, falling back for older versions."""
+        lc = self._summarization._lc_helper
+        return cast("list[object]", getattr(lc, "_trigger_clauses", lc._trigger_conditions))
+
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
         """Check if manual compaction is currently allowed.
 
@@ -1591,7 +1596,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         Uses reported usage metadata when available.
         """
-        trigger_conditions = self._summarization._lc_helper._trigger_conditions
+        trigger_conditions = self._compact_trigger_conditions()
         if not trigger_conditions:
             return False
         return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)

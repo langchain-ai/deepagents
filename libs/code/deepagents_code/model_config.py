@@ -1170,10 +1170,16 @@ _LOCAL_HOSTNAMES: frozenset[str] = frozenset(
 )
 
 
-def _is_local_endpoint(url: str | None) -> bool:
-    """Return whether a provider endpoint points at the local machine."""
+def _is_local_endpoint(url: object) -> bool:
+    """Return whether a provider endpoint points at the local machine.
+
+    Accepts `object` rather than `str | None` because the endpoint originates
+    from untyped TOML; the `isinstance` guard below defends against drift.
+    """
     if not url:
         return True
+    if not isinstance(url, str):
+        return False
 
     # Bare hostname literal (no scheme, no port) — short-circuit so IPv6
     # forms like `::1` don't get misparsed by urlparse.

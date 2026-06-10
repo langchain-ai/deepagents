@@ -3295,7 +3295,7 @@ class TestIsLocalEndpoint:
 
     def test_non_string_input_returns_false(self) -> None:
         """Non-string input must not raise (defensive against TOML drift)."""
-        assert _is_local_endpoint(123) is False  # ty: ignore
+        assert _is_local_endpoint(123) is False
 
 
 class TestProviderAuthStatusBranches:

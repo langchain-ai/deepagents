@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import SandboxBackendProtocol
 
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
     """Run users setup script in sandbox with env var expansion.
@@ -70,16 +72,6 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     console.print(f"[green]{get_glyphs().checkmark} Setup complete[/green]")
 
 
-_PROVIDER_TO_WORKING_DIR = {
-    "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
-    "daytona": "/home/daytona",
-    "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
-    "modal": "/workspace",
-    "runloop": "/home/user",
-}
-"""Map of sandbox provider names to their default working directories."""
-
-
 @contextmanager
 def create_sandbox(
     provider: str,
@@ -87,6 +79,7 @@ def create_sandbox(
     sandbox_id: str | None = None,
     snapshot_name: str | None = None,
     setup_script_path: str | None = None,
+    params: dict[str, Any] | None = None,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -94,13 +87,17 @@ def create_sandbox(
     provider abstraction.
 
     Args:
-        provider: Sandbox provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
+            `'langsmith'`, `'modal'`, `'runloop'`), entry-point providers, and
+            config-declared providers are all resolved through the registry.
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
-            Honored by `'langsmith'` (snapshot) and `'runloop'` (blueprint);
-            must be `None` for other providers.
+            Honored by providers whose metadata sets `supports_snapshot_name`
+            (built-ins: `'langsmith'` snapshot, `'runloop'` blueprint); must be
+            `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
+        params: Extra keyword arguments forwarded to `provider.get_or_create()`
+            (e.g. config-declared `[sandboxes.providers.<name>.params]`).
 
     Yields:
         `SandboxBackendProtocol` instance
@@ -109,10 +106,14 @@ def create_sandbox(
         ValueError: If `snapshot_name` is provided for an unsupported provider,
             or combined with `sandbox_id` (snapshots only apply to fresh sandboxes).
     """
-    if snapshot_name is not None and provider not in {"langsmith", "runloop"}:
+    registry = _get_registry()
+    metadata = registry.get_metadata(provider)
+    if snapshot_name is not None and (
+        metadata is None or not metadata.supports_snapshot_name
+    ):
         msg = (
-            f"snapshot_name is only supported for provider='langsmith' or "
-            f"'runloop' (got provider={provider!r})"
+            f"snapshot_name is not supported by provider {provider!r} "
+            f"(got snapshot_name={snapshot_name!r})"
         )
         raise ValueError(msg)
     if snapshot_name is not None and sandbox_id is not None:
@@ -127,7 +128,9 @@ def create_sandbox(
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
-    provider_kwargs: dict[str, str | None] = {}
+    provider_kwargs: dict[str, Any] = dict(registry.get_params(provider))
+    if params:
+        provider_kwargs.update(params)
     if snapshot_name is not None:
         provider_kwargs["snapshot"] = snapshot_name
 
@@ -166,21 +169,35 @@ def create_sandbox(
                 )
 
 
+def _get_registry() -> SandboxRegistry:
+    """Build a `SandboxRegistry` from the current user config.
+
+    The registry is cheap to construct and reflects the latest config and
+    entry points on each call, so it is not cached here.
+
+    Returns:
+        A fresh `SandboxRegistry`.
+    """
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+    return SandboxRegistry.load()
+
+
 def _get_available_sandbox_types() -> list[str]:
     """Get list of available sandbox provider types (internal).
 
     Returns:
         List of available sandbox provider type names
     """
-    return sorted(_PROVIDER_TO_WORKING_DIR.keys())
+    return _get_registry().available_providers()
 
 
 def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider: Sandbox provider name. Resolved through the registry so
+            built-in, entry-point, and config providers are all supported.
 
     Returns:
         Default working directory path as string
@@ -188,10 +205,11 @@ def get_default_working_dir(provider: str) -> str:
     Raises:
         ValueError: If provider is unknown
     """
-    if provider in _PROVIDER_TO_WORKING_DIR:
-        return _PROVIDER_TO_WORKING_DIR[provider]
-    msg = f"Unknown sandbox provider: {provider}"
-    raise ValueError(msg)
+    metadata = _get_registry().get_metadata(provider)
+    if metadata is None:
+        msg = f"Unknown sandbox provider: {provider}"
+        raise ValueError(msg)
+    return metadata.working_dir
 
 
 # ---------------------------------------------------------------------------
@@ -829,30 +847,14 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider (`'agentcore'`, `'daytona'`, `'langsmith'`,
-            `'modal'`, `'runloop'`)
+        provider_name: Name of the provider. Resolved through the registry so
+            built-in, entry-point, and config providers are all supported.
 
     Returns:
-        `SandboxProvider` instance
-
-    Raises:
-        ValueError: If `provider_name` is unknown.
+        `SandboxProvider` instance. Raises `ValueError` (via the registry) if
+            `provider_name` is unknown.
     """
-    if provider_name == "agentcore":
-        return _AgentCoreProvider()
-    if provider_name == "daytona":
-        return _DaytonaProvider()
-    if provider_name == "langsmith":
-        return _LangSmithProvider()
-    if provider_name == "modal":
-        return _ModalProvider()
-    if provider_name == "runloop":
-        return _RunloopProvider()
-    msg = (
-        f"Unknown sandbox provider: {provider_name}. "
-        f"Available providers: {', '.join(_get_available_sandbox_types())}"
-    )
-    raise ValueError(msg)
+    return _get_registry().create_provider(provider_name)
 
 
 def verify_sandbox_deps(provider: str) -> None:
@@ -861,7 +863,8 @@ def verify_sandbox_deps(provider: str) -> None:
     Uses `importlib.util.find_spec` for a lightweight check with no actual
     imports. Call this in the app's process *before* spawning the server
     subprocess so users get a clear, actionable error instead of an opaque
-    server crash.
+    server crash. The backend module to probe and the install hint both come
+    from provider metadata.
 
     Args:
         provider: Sandbox provider name (e.g. `'daytona'`).
@@ -869,39 +872,31 @@ def verify_sandbox_deps(provider: str) -> None:
     Raises:
         ImportError: If the provider's backend package is not installed.
     """
-    if not provider or provider in {"none", "langsmith"}:
+    if not provider or provider == "none":
         return
 
-    # Map provider name → (backend module, pip extra).
-    # Only the backend module is checked because the underlying SDK is a
-    # transitive dependency of the backend package.
-    backend_modules: dict[str, tuple[str, str]] = {
-        "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
-        "daytona": ("langchain_daytona", "daytona"),
-        "modal": ("langchain_modal", "modal"),
-        "runloop": ("langchain_runloop", "runloop"),
-    }
-
-    entry = backend_modules.get(provider)
-    if entry is None:
+    metadata = _get_registry().get_metadata(provider)
+    if metadata is None or metadata.backend_module is None:
         logger.debug(
-            "No backend_modules entry for provider %r; skipping pre-flight check",
+            "No backend module to probe for provider %r; skipping pre-flight check",
             provider,
         )
         return
 
-    module_name, extra = entry
     try:
-        found = importlib.util.find_spec(module_name) is not None
+        found = importlib.util.find_spec(metadata.backend_module) is not None
     except (ImportError, ValueError):
         found = False
 
     if not found:
-        msg = (
-            f"Missing dependencies for '{provider}' sandbox. "
-            f"Install with: /install {extra} (in-app) or "
-            f"dcode --install {extra} (CLI)"
-        )
+        if metadata.install is not None:
+            install_hint = (
+                f"Install with: {metadata.install.command(in_app=True)} (in-app) "
+                f"or {metadata.install.command(in_app=False)} (CLI)"
+            )
+        else:
+            install_hint = "Install the provider's package."
+        msg = f"Missing dependencies for '{provider}' sandbox. {install_hint}"
         raise ImportError(msg)
 
 

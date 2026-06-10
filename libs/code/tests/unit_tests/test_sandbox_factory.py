@@ -158,7 +158,7 @@ def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
         ),
         pytest.raises(
             ValueError,
-            match="only supported for provider='langsmith' or 'runloop'",
+            match="snapshot_name is not supported by provider 'modal'",
         ),
         create_sandbox("modal", snapshot_name="custom-snap"),
     ):

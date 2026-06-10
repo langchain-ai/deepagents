@@ -2895,8 +2895,16 @@ class TestCreateCliAgentInterpreterWiring:
                 sandbox=fake_sandbox,
             )
 
-    def test_raises_on_unknown_ptc_tool_name(self, tmp_path: Path) -> None:
+    def test_unknown_ptc_names_pass_through_to_middleware(self, tmp_path: Path) -> None:
+        """Names absent from `tools` are forwarded, not rejected.
+
+        The middleware matches `ptc` names against the live runtime registry and
+        silently drops unmatched ones, so an unrecognized name (a typo, or a
+        runtime-injected built-in) is passed through rather than raising at
+        build time.
+        """
         from langchain_core.tools import tool
+        from langchain_quickjs import CodeInterpreterMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_settings.interpreter_ptc = ["nope", "grep"]
@@ -2907,15 +2915,20 @@ class TestCreateCliAgentInterpreterWiring:
             """Search for a pattern."""
             return ""
 
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
-            pytest.raises(ValueError, match="nope") as exc_info,
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2927,7 +2940,12 @@ class TestCreateCliAgentInterpreterWiring:
                 tools=[grep],
             )
 
-        assert "Unknown tool names" in str(exc_info.value)
+        _, kwargs = mock_create.call_args
+        middlewares = [
+            m for m in kwargs["middleware"] if isinstance(m, CodeInterpreterMiddleware)
+        ]
+        assert len(middlewares) == 1
+        assert middlewares[0]._ptc == ["nope", "grep"]
 
     def test_raises_on_ptc_all_without_acknowledge(self, tmp_path: Path) -> None:
         from langchain_core.tools import tool
@@ -2963,8 +2981,15 @@ class TestCreateCliAgentInterpreterWiring:
                 tools=[grep],
             )
 
-    def test_safe_preset_drops_unknown_members(self, tmp_path: Path) -> None:
-        """`'safe'` ∩ live toolset; missing preset members are silently dropped."""
+    def test_safe_preset_includes_runtime_builtins(self, tmp_path: Path) -> None:
+        """`'safe'` resolves to the full preset including SDK-injected built-ins.
+
+        `glob` is not in the passed `tools`, but `create_deep_agent` injects it
+        at runtime, so the `ptc` list handed to `CodeInterpreterMiddleware` must
+        include all three preset members — not just the ones in `tools`. This is
+        the regression guard for the server/non-interactive path, where the
+        filesystem tools are never members of the `tools` sequence.
+        """
         from langchain_core.tools import tool
         from langchain_quickjs import CodeInterpreterMiddleware
 
@@ -3012,8 +3037,9 @@ class TestCreateCliAgentInterpreterWiring:
             m for m in kwargs["middleware"] if isinstance(m, CodeInterpreterMiddleware)
         ]
         assert len(middlewares) == 1
-        # Names beyond the live set should be dropped, leaving exactly grep+read_file
-        assert sorted(middlewares[0]._ptc) == ["grep", "read_file"]
+        # `glob` is absent from `tools` but is a runtime built-in, so the safe
+        # preset resolves to all three members rather than dropping it.
+        assert sorted(middlewares[0]._ptc) == ["glob", "grep", "read_file"]
 
 
 class TestResolvePtcOption:
@@ -3066,7 +3092,13 @@ class TestResolvePtcOption:
             is None
         )
 
-    def test_safe_intersects_with_live_toolset(self) -> None:
+    def test_safe_includes_builtin_preset_members(self) -> None:
+        """`"safe"` resolves to the full preset even when members are SDK built-ins.
+
+        `glob` is not in the passed `tools` here, but it is a Deep Agents
+        built-in injected at runtime, so the resolved allowlist must still
+        include it — the middleware bridges it against the live registry.
+        """
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
@@ -3075,7 +3107,7 @@ class TestResolvePtcOption:
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["grep", "read_file"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_all_with_auto_approve_skips_ack_check(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -3087,7 +3119,175 @@ class TestResolvePtcOption:
             auto_approve=True,
         )
         assert result is not None
+        # `all` enumerates only the tools passed to `create_cli_agent`; SDK
+        # runtime built-ins are injected later and are not enumerable here.
         assert sorted(result) == ["grep", "read_file", "write_file"]
+
+    @staticmethod
+    def _tools_with_task() -> list:
+        from langchain_core.tools import tool
+
+        @tool
+        def read_file(path: str) -> str:  # noqa: ARG001
+            """Read."""
+            return ""
+
+        @tool
+        def glob(pattern: str) -> str:  # noqa: ARG001
+            """Glob."""
+            return ""
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        @tool
+        def task(prompt: str) -> str:  # noqa: ARG001
+            """Dispatch a subagent."""
+            return ""
+
+        return [read_file, glob, grep, task]
+
+    def test_safe_in_list_expands_with_explicit_tool(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_in_list_dedupes_preserving_order(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["grep", "safe", "task", "grep"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["grep", "glob", "read_file", "task"]
+
+    def test_all_in_list_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="cannot include 'all'"):
+            _resolve_ptc_option(
+                ["all", "task"],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
+    def test_unknown_name_in_list_passes_through(self) -> None:
+        """Unrecognized names are forwarded, not rejected.
+
+        A name absent from `tools` may still match an SDK built-in injected at
+        runtime (or be a genuine typo the middleware drops), so the resolver
+        passes it through after expanding `"safe"`.
+        """
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "nope"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "nope"]
+
+    def test_safe_alone_in_list_equals_standalone(self) -> None:
+        """`["safe"]` must resolve identically to the standalone `"safe"`."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        tools = self._tools_with_task()
+        kwargs = {"acknowledge_unsafe": False, "auto_approve": False}
+        as_list = _resolve_ptc_option(["safe"], tools=tools, **kwargs)
+        standalone = _resolve_ptc_option("safe", tools=tools, **kwargs)
+        assert as_list == standalone == ["glob", "grep", "read_file"]
+
+    def test_safe_in_list_is_case_insensitive(self) -> None:
+        """The `"safe"` sentinel is matched case-insensitively inside a list."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["SAFE", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_sentinel_is_whitespace_tolerant(self) -> None:
+        """Whitespace around the `"safe"` sentinel is tolerated and expanded."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            [" safe ", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_explicit_names_are_not_normalized(self) -> None:
+        """Only the `"safe"`/`"all"` sentinels are normalized; names pass verbatim.
+
+        The CLI and config layers strip whitespace before this layer, so a
+        padded explicit name should never reach here in practice. If one does,
+        it is forwarded verbatim (not trimmed) and the middleware resolves it
+        against the runtime registry.
+        """
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", " task "],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", " task "]
+
+    def test_resolves_builtins_absent_from_passed_tools(self) -> None:
+        """Reproduce the server path: built-in names resolve without being in `tools`.
+
+        In server/non-interactive mode `create_cli_agent` only receives custom
+        tools (e.g. `fetch_url` + MCP); the filesystem and `task` tools are
+        injected by `create_deep_agent` middleware. The PTC allowlist must
+        still resolve `safe`/`task` against those runtime built-ins rather than
+        raising "Unknown tool names".
+        """
+        from langchain_core.tools import tool
+
+        from deepagents_code.agent import _resolve_ptc_option
+
+        @tool
+        def fetch_url(url: str) -> str:  # noqa: ARG001
+            """Fetch a URL (a custom, non-built-in tool)."""
+            return ""
+
+        result = _resolve_ptc_option(
+            ["safe", "task"],
+            tools=[fetch_url],
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_duplicate_safe_tokens_dedupe(self) -> None:
+        """Repeated `"safe"` tokens expand once; members are not duplicated."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
 
     def test_safe_excludes_hitl_gated_tools(self) -> None:
         """`"safe"` must never expose tools that are HITL-gated outside the REPL.

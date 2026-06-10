@@ -181,6 +181,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
+    from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
@@ -214,6 +215,16 @@ backend cannot trap the user inside a finished onboarding modal forever.
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
+
+_MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
+"""Upper bound on awaiting a confirmation modal's dismissal.
+
+Bounds command/worker handling against a modal that never resolves (compose
+crash, programmatic teardown that skips the dismiss callback). 10 minutes is
+well past any human latency but stops a genuinely broken modal from wedging
+the caller. Shared by the install-confirm, MCP-reconnect, and restart-prompt
+watchdogs so the three stay in lockstep.
+"""
 
 
 def _resolve_theme_name(value: object) -> str | None:
@@ -1841,6 +1852,14 @@ class DeepAgentsApp(App):
 
         self._shell_running = False
         """True while a `!` shell command is executing."""
+
+        self._pending_shell_messages: list[BaseMessage] = []
+        """Non-incognito `!` command/output messages awaiting flush.
+
+        `!` runs outside the agent graph, so its command/output are buffered
+        here and written into thread state on the next user send (see
+        `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
+        never appends here."""
 
         self._prewarm_worker: Worker[None] | None = None
         """Background worker that prewarms `deepagents`/LangChain imports.
@@ -3634,6 +3653,9 @@ class DeepAgentsApp(App):
         parts = command.split()
         force = "--force" in parts[1:]
         package_mode = "--package" in parts[1:]
+        # `--yes` is an undocumented alias for `--force` in package mode,
+        # mirroring the CLI's `--yes` confirmation bypass.
+        yes = "--yes" in parts[1:]
         names = [p for p in parts[1:] if not p.startswith("-")]
         if not names:
             from deepagents_code.extras_info import format_known_extras
@@ -3659,7 +3681,7 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
 
         if package_mode:
-            await self._handle_install_package(names[0], force=force)
+            await self._handle_install_package(names[0], force=force or yes)
             return
 
         extra = names[0].lower()
@@ -3792,11 +3814,12 @@ class DeepAgentsApp(App):
         Backs `/install <package> --package`, the escape hatch for a provider
         whose package is not a `deepagents-code` extra (e.g. a custom
         `class_path` model). Arbitrary packages have no curated allowlist, so a
-        `--force` token is required to confirm pulling in third-party code.
+        non-blocking confirmation modal gates pulling in third-party code.
+        `--force` (or `--yes`) bypasses the prompt.
 
         Args:
             package: The package name to install.
-            force: Whether the user passed `--force` to confirm the install.
+            force: Whether the user passed `--force`/`--yes` to skip the prompt.
         """
         try:
             from deepagents_code.config import _is_editable_install
@@ -3831,14 +3854,11 @@ class DeepAgentsApp(App):
             )
             return
 
-        if not force:
-            await self._mount_message(
-                AppMessage(
-                    f"Installing the package '{package}' runs third-party code. "
-                    "Re-run with `--force` to proceed: "
-                    f"`/install {package} --package --force`",
-                ),
-            )
+        # `_confirm_install_package` mounts its own outcome message (cancel,
+        # timeout, or mount failure), so the caller just aborts on a falsy
+        # result rather than mounting a generic — and possibly inaccurate —
+        # "Cancelled" line.
+        if not force and not await self._confirm_install_package(package):
             return
 
         log_path = create_update_log_path()
@@ -3874,6 +3894,64 @@ class DeepAgentsApp(App):
             ),
         )
         await self._offer_restart_after_install(package)
+
+    async def _confirm_install_package(self, package: str) -> bool:
+        """Ask the user to confirm installing an arbitrary package.
+
+        Pushes a non-blocking Textual modal explaining that the install runs
+        third-party code. A watchdog bounds the wait so a modal that never
+        resolves can't wedge command handling; a timeout or mount failure is
+        treated as a cancel. Each non-confirming outcome mounts its own
+        message so the user is told what actually happened rather than being
+        told they "cancelled" a prompt that timed out or failed to appear.
+
+        Args:
+            package: The package name to confirm, surfaced in the modal.
+
+        Returns:
+            `True` only when the user explicitly confirmed; `False` on cancel,
+                timeout, or mount failure.
+        """
+        from deepagents_code.widgets.install_confirm import (
+            InstallPackageConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(InstallPackageConfirmScreen(package)),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Install confirmation for %r timed out; treating as cancel",
+                package,
+            )
+            await self._mount_message(
+                AppMessage(
+                    f"Install confirmation for '{package}' timed out; not "
+                    "installed. Re-run with `--force` to skip the prompt.",
+                ),
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount install confirmation for %r", package)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not show the install confirmation for '{package}'; "
+                    "not installed. Re-run with `--force` to skip the prompt.",
+                ),
+            )
+            return False
+
+        # Fail closed: a programmatic dismiss yields `None`, so only an
+        # explicit `True` proceeds — anything else is treated as "do not
+        # install".
+        if confirmed is not True:
+            await self._mount_message(
+                AppMessage(f"Cancelled install of package '{package}'."),
+            )
+            return False
+        return True
 
     async def _handle_version_command(self) -> None:
         """Handle the `/version` slash command — show versions and update status.
@@ -4880,10 +4958,11 @@ class DeepAgentsApp(App):
     async def _run_startup_command(self, command: str) -> None:
         """Execute the `--startup-cmd` and render its output in the transcript.
 
-        Uses the same worker-backed subprocess path as the interactive `!`
-        shell prefix, with an app-style header (since the user did not type
-        the command). Non-zero exit is already rendered as an error by
-        `_run_shell_task` but does not abort the session.
+        Uses the same worker-backed subprocess path as the interactive shell
+        prefix, with an app-style header (since the user did not type the
+        command). Startup command output is local setup output and is not
+        buffered into model context. Non-zero exit is already rendered as an
+        error by `_run_shell_task` but does not abort the session.
 
         Raises:
             CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
@@ -4903,7 +4982,10 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         try:
-            worker = self.run_worker(self._run_shell_task(command), exclusive=False)
+            worker = self.run_worker(
+                self._run_shell_task(command, incognito=True),
+                exclusive=False,
+            )
         except Exception:
             # `run_worker` failed synchronously — `_run_shell_task`'s finally
             # never fires, so reset the busy flags here or the UI stays wedged.
@@ -5543,10 +5625,19 @@ class DeepAgentsApp(App):
                 )
             except TimeoutError:
                 await self._kill_shell_process()
-                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                err_msg = "Command timed out (60s limit)"
+                await self._mount_message(ErrorMessage(err_msg))
+                if not incognito:
+                    self._buffer_shell_for_model_context(command, err_msg, None)
                 return
             except asyncio.CancelledError:
                 await self._kill_shell_process()
+                if not incognito:
+                    self._buffer_shell_for_model_context(
+                        command,
+                        "Command interrupted",
+                        None,
+                    )
                 raise
 
             # Start branch refresh as soon as the shell exits so it can overlap
@@ -5574,6 +5665,11 @@ class DeepAgentsApp(App):
             if proc.returncode and proc.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {proc.returncode}"))
 
+            # Non-incognito `!` only; `!!` stays local. Buffered, not written
+            # now — see `_buffer_shell_for_model_context` for the rationale.
+            if not incognito:
+                self._buffer_shell_for_model_context(command, output, proc.returncode)
+
             # Anchor to bottom so shell output stays visible
             with suppress(NoMatches, ScreenStackError):
                 self.query_one("#chat", VerticalScroll).anchor()
@@ -5582,6 +5678,8 @@ class DeepAgentsApp(App):
             logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
+            if not incognito:
+                self._buffer_shell_for_model_context(command, err_msg, None)
         except Exception:
             # Defense in depth: a crash between subprocess read and
             # `_mount_message` could leave the user with no signal that the
@@ -5600,6 +5698,81 @@ class DeepAgentsApp(App):
             raise
         finally:
             await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
+
+    def _buffer_shell_for_model_context(
+        self, command: str, output: str, returncode: int | None
+    ) -> None:
+        """Buffer a non-incognito `!` command/output for the next user send.
+
+        `!` commands run as local subprocesses that bypass the agent graph, so
+        their command/output never reach the checkpoint the model reads. Rather
+        than write to thread state immediately (which would spend a model turn
+        on output the user may never reference), the command/output are queued
+        here as a `HumanMessage`/`AIMessage` pair and flushed when the user
+        sends their next message (see `_flush_pending_shell_messages`). `!!`
+        (incognito) callers skip this and stay local-only.
+
+        Args:
+            command: The shell command that was run (without the `!` prefix).
+            output: Combined stdout/stderr captured from the command.
+            returncode: Process exit code, or `None` if unavailable.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        body = output or "(no output)"
+        self._pending_shell_messages.extend(
+            [
+                HumanMessage(content=f"!{command}"),
+                AIMessage(content=f"```\n{body}\n```{status}"),
+            ]
+        )
+
+    async def _flush_pending_shell_messages(self) -> None:
+        """Write buffered `!` command/output into thread state, then clear it.
+
+        Called right before a user-driven agent turn so the model sees any
+        `!` commands run since the last turn. Adopts the session thread id when
+        one has not been resolved yet (e.g. a `!` run before the first send).
+        Best-effort: a checkpoint write failure is logged and surfaced as a
+        toast, and the buffer is still cleared so stale output is not replayed
+        onto a later turn. Returns early when nothing is buffered; when output
+        is buffered but no agent/thread is active yet, the buffer is left intact
+        for a later send rather than dropped.
+        """
+        if not self._pending_shell_messages:
+            return
+        if not self._lc_thread_id and self._session_state:
+            self._lc_thread_id = self._session_state.thread_id
+        if not self._agent or not self._lc_thread_id:
+            return
+
+        messages = self._pending_shell_messages
+        self._pending_shell_messages = []
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        remote_config: dict[str, Any] = {
+            "configurable": {"thread_id": self._lc_thread_id}
+        }
+        try:
+            # Suppress the standalone `UpdateState` LangSmith run this write would
+            # otherwise emit — it's bookkeeping, not a user-driven agent turn.
+            from langsmith import tracing_context
+
+            with tracing_context(enabled=False):
+                if remote := self._remote_agent():
+                    await remote.aensure_thread(remote_config)
+                await self._agent.aupdate_state(config, {"messages": messages})
+        except Exception:  # best-effort; UI already showed the output
+            # Parity with the offload path's `aupdate_state` failure handling:
+            # log the traceback and surface a non-blocking toast, since the
+            # model silently lacking output the user expects is confusing.
+            logger.exception("Failed to flush shell command into model context")
+            with suppress(Exception):
+                self.notify(
+                    "Couldn't add ! output to the model's context.",
+                    severity="warning",
+                    markup=False,
+                )
 
     async def _cleanup_shell_task(self, *, refresh_git_branch: bool = True) -> None:
         """Clean up after shell command task completes or is cancelled.
@@ -6672,6 +6845,10 @@ class DeepAgentsApp(App):
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
 
+            # Flush any buffered non-incognito `!` shell output into thread
+            # state so this turn's model sees commands run since the last turn.
+            await self._flush_pending_shell_messages()
+
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
 
@@ -7510,6 +7687,9 @@ class DeepAgentsApp(App):
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
+        # Drop buffered `!` shell output so it never leaks across a thread
+        # reset, switch, or resume.
+        self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
         try:
@@ -7553,7 +7733,7 @@ class DeepAgentsApp(App):
             return
 
         if not self._chat_input.value.strip():
-            self._chat_input.value = msg.text
+            self._chat_input.set_value_at_end(msg.text)
             self.notify("Queued message moved to input", timeout=2)
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)
@@ -7688,12 +7868,21 @@ class DeepAgentsApp(App):
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
         Priority order:
-        1. If shell command is running, kill it
-        2. If approval menu is active, reject it
-        3. If agent is running, interrupt it (preserve input)
-        4. If double press (quit_pending), quit
-        5. Otherwise show quit hint
+        1. If a focused input has a non-empty selection, copy it (a failed
+            copy falls through to the branches below)
+        2. If shell command is running, kill it
+        3. If approval menu is active, reject it
+        4. If ask_user menu is active, cancel it
+        5. If agent is running, interrupt it (preserve input)
+        6. If double press (quit_pending), quit
+        7. Otherwise show quit hint
         """
+        # If a focused input widget has selected text, copy it instead of
+        # quitting/interrupting so Ctrl+C matches standard terminal behavior.
+        if self._copy_focused_selection():
+            self._quit_pending = False
+            return
+
         # If shell command is running, cancel the worker
         if self._shell_running and self._shell_worker:
             self._cancel_worker(self._shell_worker)
@@ -7727,6 +7916,43 @@ class DeepAgentsApp(App):
             self.exit()
         else:
             self._arm_quit_pending("Ctrl+C")
+
+    def _copy_focused_selection(self) -> bool:
+        """Copy the focused input's selection to the clipboard, if any.
+
+        Returns:
+            `True` when a non-empty selection was copied to the clipboard, so
+                the caller should treat the keypress as handled and skip
+                quit/interrupt. `False` when there was nothing to copy or every
+                clipboard backend failed, so the caller should fall through to
+                its normal quit/interrupt handling (a failed copy already
+                notifies the user).
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        selected_text = widget.selected_text
+        if not selected_text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self, selected_text)
+        if not success:
+            self.notify(
+                f"Failed to copy selection: {error}"
+                if error
+                else "Failed to copy selection - no clipboard method available",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+        return success
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.
@@ -10005,9 +10231,10 @@ class DeepAgentsApp(App):
             try:
                 # Watchdog: guard against a screen that never resolves
                 # (compose crash, programmatic teardown that skips the
-                # callback). 10 minutes is well past any human latency
-                # but bounds the worker if the modal is genuinely broken.
-                choice = await asyncio.wait_for(choice_future, timeout=600.0)
+                # callback).
+                choice = await asyncio.wait_for(
+                    choice_future, timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
+                )
             except TimeoutError:
                 logger.warning(
                     "MCP reconnect prompt for %r timed out; defaulting to defer",
@@ -10134,12 +10361,10 @@ class DeepAgentsApp(App):
         try:
             # Watchdog: bound the handler against a screen that never resolves
             # (compose crash, programmatic teardown that skips the dismiss
-            # callback). 10 minutes is well past any human latency but stops a
-            # genuinely broken modal from wedging command handling. Mirrors the
-            # MCP reconnect prompt's watchdog.
+            # callback).
             choice = await asyncio.wait_for(
                 self._push_screen_wait(RestartPromptScreen(label)),
-                timeout=600.0,
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(

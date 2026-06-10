@@ -247,10 +247,12 @@ def _parse_interpreter_tools_flag(
 
     Returns:
         `None` when the flag is absent, the literal string `"safe"`/`"all"`,
-        or a list of trimmed tool names.
+        or a list of trimmed tool names. The list may contain `"safe"` as an
+        expandable preset (e.g. `"safe,task"` → `["safe", "task"]`).
 
-        Calls `sys.exit(2)` when the value is empty or contains only blank
-        tokens — the CLI treats that as a usage error.
+        Calls `sys.exit(2)` when the value is empty, contains only blank
+        tokens, or includes `"all"` inside a list — the CLI treats those as
+        usage errors.
     """
     if raw is None:
         return None
@@ -269,6 +271,13 @@ def _parse_interpreter_tools_flag(
         sys.stderr.write(
             "Error: --interpreter-tools list must contain at least one "
             "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if any(name.lower() == "all" for name in names):
+        sys.stderr.write(
+            "Error: --interpreter-tools 'all' cannot be combined with other "
+            "tools; use 'all' on its own or list explicit tool names "
+            "(optionally with the 'safe' preset).\n"
         )
         sys.exit(2)
     return names
@@ -1086,7 +1095,8 @@ def parse_args() -> argparse.Namespace:
         dest="interpreter_tools",
         metavar="VALUE",
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
-        "list of tool names. Default is no PTC (pure REPL).",
+        "list of tool names (which may include the 'safe' preset, e.g. "
+        "'safe,task'). Default is no PTC (pure REPL).",
     )
 
     try:

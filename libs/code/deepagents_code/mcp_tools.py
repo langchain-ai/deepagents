@@ -18,7 +18,7 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -1052,6 +1052,57 @@ def _build_cached_mcp_tool(
         _convert_call_tool_result,  # noqa: PLC2701
     )
 
+    try:
+        from langchain_mcp_adapters.tools import (
+            _handle_mcp_tool_error,
+        )
+    except ImportError:  # pragma: no cover - remove once PR #540 is released
+        from langchain_mcp_adapters.tools import (
+            _convert_mcp_content_to_lc_block,  # noqa: PLC2701
+            create_text_block,
+        )
+
+        def _summarize_tool_error(tool_content: list[Any]) -> str:
+            error_parts = [
+                block["text"]
+                for block in tool_content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            if error_parts:
+                return "\n".join(error_parts)
+            if tool_content:
+                return (
+                    "MCP tool returned an error with no text content "
+                    f"({len(tool_content)} non-text content block(s))."
+                )
+            return "MCP tool returned an error with empty content."
+
+        class _MCPToolExecutionError(ToolException):
+            def __init__(self, tool_content: list[Any]) -> None:
+                super().__init__(_summarize_tool_error(tool_content))
+                self.tool_content = tool_content
+
+        def _handle_mcp_tool_error(error: ToolException) -> list[Any]:
+            if isinstance(error, _MCPToolExecutionError):
+                if error.tool_content:
+                    return error.tool_content
+                return [create_text_block(text=str(error))]
+            raise error
+
+        def _convert_cached_call_tool_result(result: Any) -> Any:  # noqa: ANN401
+            if getattr(result, "isError", False):
+                tool_content = [
+                    _convert_mcp_content_to_lc_block(content)
+                    for content in result.content
+                ]
+                raise _MCPToolExecutionError(tool_content)
+            return _convert_call_tool_result(result)
+
+    else:
+
+        def _convert_cached_call_tool_result(result: Any) -> Any:  # noqa: ANN401
+            return _convert_call_tool_result(result)
+
     original_tool_name = mcp_tool.name
     lc_tool_name = (
         f"{server_name}_{original_tool_name}"
@@ -1150,12 +1201,12 @@ def _build_cached_mcp_tool(
                             exc_info=True,
                         )
 
-        # `_convert_call_tool_result` raises ToolException when the MCP server
-        # returns a result flagged isError=True. That ToolException propagates
-        # up through ToolNode, whose default handler re-raises everything except
-        # ToolInvocationError — so it aborts the turn unless a wrap_tool_call
-        # middleware converts it to a recoverable ToolMessage.
-        return _convert_call_tool_result(result)
+        # MCP `isError=True` results become `_MCPToolExecutionError`; the
+        # StructuredTool error handler below returns the converted MCP content
+        # blocks so LangChain emits a `ToolMessage(status="error")` instead of
+        # aborting the run. Transport/session failures and non-MCP
+        # `ToolException`s still propagate.
+        return _convert_cached_call_tool_result(result)
 
     return StructuredTool(
         name=lc_tool_name,
@@ -1164,6 +1215,7 @@ def _build_cached_mcp_tool(
         coroutine=coroutine,
         response_format="content_and_artifact",
         metadata=metadata,
+        handle_tool_error=cast("Any", _handle_mcp_tool_error),
     )
 
 

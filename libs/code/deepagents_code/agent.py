@@ -203,16 +203,13 @@ class _ToolExceptionRecoveryMiddleware(AgentMiddleware):
     """Convert expected tool failures into recoverable tool messages.
 
     A `ToolException` signals a tool-side failure that the model should see and
-    work around (e.g. an MCP server returning `isError`, which
-    `langchain-mcp-adapters` surfaces as a raised `ToolException`) rather than a
-    bug that should abort the run. LangGraph's default tool-error handling
-    re-raises plain `ToolException`, so without this shim such a failure would
-    propagate and crash the entire agent run. Catching it here turns it into an
-    error `ToolMessage` the model can recover from. Only `ToolException` is
+    work around rather than a bug that should abort the run. Current
+    `langchain-mcp-adapters` tools handle MCP `CallToolResult(isError=True)` at
+    the tool level and return `ToolMessage(status="error")` by default, so this
+    middleware remains for Deep Agents/tool-originated `ToolException`s,
+    older adapter versions, and other backwards-compatible tool paths that do
+    not install their own `handle_tool_error` callback. Only `ToolException` is
     caught; every other exception propagates so genuine bugs surface.
-
-    Temporary workaround shim while we determine whether an upstream change to
-    `langchain-mcp-adapters` is sensible.
     """
 
     @staticmethod

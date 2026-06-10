@@ -1944,8 +1944,8 @@ class TestCachedSessionProxy:
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A logical tool failure propagates without retrying the session."""
-        from langchain_core.tools import ToolException
+        """MCP `isError=True` returns a failed `ToolMessage` without retrying."""
+        from langchain_core.messages import ToolMessage
         from mcp.types import CallToolResult, TextContent
 
         path = write_config(
@@ -1983,12 +1983,70 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="boom"):
-                await tools[0].ainvoke({})  # ty: ignore
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-1"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == "boom"
         assert call_counter["n"] == 2
         assert runtime_session is not None
         assert runtime_session.call_tool.await_count == 1
+        await manager.cleanup()
+
+    async def test_empty_mcp_error_content_uses_placeholder_tool_message(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Empty MCP error content gets the adapter placeholder text block."""
+        from langchain_core.messages import ToolMessage
+        from mcp.types import CallToolResult
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+        runtime_session: AsyncMock | None = None
+
+        def _new_session() -> AsyncMock:
+            nonlocal runtime_session
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            session.call_tool = AsyncMock(
+                return_value=CallToolResult(content=[], isError=True)
+            )
+            runtime_session = session
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == (
+            "MCP tool returned an error with empty content."
+        )
+        assert runtime_session is not None
+        assert runtime_session.call_tool.await_count == 1
+        assert manager is not None
         await manager.cleanup()
 
     async def test_reauth_signal_surfaces_tool_exception_without_retry(

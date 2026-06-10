@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
+    _apply_inherited_pythonpath,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -3318,3 +3319,16 @@ class TestResolvePtcOption:
         from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
 
         assert frozenset({"read_file", "glob", "grep"}) == INTERPRETER_PTC_SAFE_PRESET
+
+
+class TestApplyInheritedPythonpath:
+    def test_relays_carrier_to_pythonpath(self) -> None:
+        env = {"DEEPAGENTS_INHERITED_PYTHONPATH": "src", "PATH": "/usr/bin"}
+        _apply_inherited_pythonpath(env)
+        assert env["PYTHONPATH"] == "src"
+        assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in env
+
+    def test_noop_without_carrier(self) -> None:
+        env = {"PATH": "/usr/bin"}
+        _apply_inherited_pythonpath(env)
+        assert "PYTHONPATH" not in env

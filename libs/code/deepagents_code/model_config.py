@@ -1174,8 +1174,6 @@ def _is_local_endpoint(url: str | None) -> bool:
     """Return whether a provider endpoint points at the local machine."""
     if not url:
         return True
-    if not isinstance(url, str):
-        return False
 
     # Bare hostname literal (no scheme, no port) — short-circuit so IPv6
     # forms like `::1` don't get misparsed by urlparse.
@@ -2060,7 +2058,10 @@ class ModelConfig:
 
         # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():
-            enabled = provider.get("enabled")
+            # `enabled` originates from untyped TOML; cast to `object` so the
+            # runtime non-bool validation below stays reachable (the TypedDict
+            # types it as `bool`, which would otherwise mark this branch dead).
+            enabled = cast("object", provider.get("enabled"))
             if enabled is not None and not isinstance(enabled, bool):
                 logger.warning(
                     "Provider '%s' has non-boolean 'enabled' value %r "

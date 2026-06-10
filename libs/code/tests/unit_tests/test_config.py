@@ -992,6 +992,33 @@ class TestRetriesConfig:
             "max_retries": 2
         }
 
+    @pytest.mark.parametrize(
+        ("provider", "retry_param"),
+        [
+            ("anthropic", "max_retries"),
+            ("azure_openai", "max_retries"),
+            ("baseten", "max_retries"),
+            ("bedrock", "max_retries"),
+            ("deepseek", "max_retries"),
+            ("fireworks", "max_retries"),
+            ("google_genai", "retries"),
+            ("google_vertexai", "max_retries"),
+            ("groq", "max_retries"),
+            ("litellm", "max_retries"),
+            ("mistralai", "max_retries"),
+            ("openai", "max_retries"),
+            ("openrouter", "max_retries"),
+            ("perplexity", "max_retries"),
+            ("together", "max_retries"),
+            ("xai", "max_retries"),
+        ],
+    )
+    def test_resolve_retry_kwargs_registered_providers(
+        self, provider: str, retry_param: str
+    ) -> None:
+        """Registered providers receive the retry kwarg their constructor expects."""
+        assert _resolve_retry_kwargs({"max_retries": 2}, provider) == {retry_param: 2}
+
     def test_resolve_retry_kwargs_provider_override_wins(self) -> None:
         """Provider retry config beats the global value."""
         section = {"max_retries": 2, "fireworks": {"max_retries": 3}}
@@ -1018,7 +1045,7 @@ class TestRetriesConfig:
     ) -> None:
         """Unsupported providers do not receive retry kwargs."""
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            assert _resolve_retry_kwargs({"max_retries": 2}, "google_genai") == {}
+            assert _resolve_retry_kwargs({"max_retries": 2}, "custom_provider") == {}
 
         assert "does not support a registered retry parameter" in caplog.text
 

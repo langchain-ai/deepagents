@@ -25,7 +25,6 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
-    ModuleScope,
     Runtime,
     Snapshot,
     ThreadWorker,
@@ -40,13 +39,10 @@ from langchain_quickjs._format import (
     stringify,
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
-from langchain_quickjs._skills import SkillLoadError, aload_skill, scan_skill_references
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from deepagents.backends.protocol import BackendProtocol
-    from deepagents.middleware.skills import SkillMetadata
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -380,11 +376,6 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
-        # Slot-local skill install cache. Kept on the REPL (not registry)
-        # so thread-scoped backends can resolve same-named skills
-        # differently across threads.
-        self._installed_skills: set[_SkillCacheKey] = set()
-        self._skill_install_lock = asyncio.Lock()
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -573,8 +564,6 @@ class _ThreadREPL:
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
@@ -584,8 +573,6 @@ class _ThreadREPL:
         return self._worker.run_sync(
             self._aeval_async(
                 code,
-                skills=skills,
-                skills_backend=skills_backend,
                 outer_runtime=outer_runtime,
             )
         )
@@ -594,16 +581,12 @@ class _ThreadREPL:
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
-                skills=skills,
-                skills_backend=skills_backend,
                 outer_runtime=outer_runtime,
                 outer_loop=outer_loop,
             )
@@ -645,57 +628,10 @@ class _ThreadREPL:
             inject_globals=inject_globals,
         )
 
-    def _collect_pending_skills(
-        self,
-        referenced: frozenset[str],
-        metadata: dict[str, SkillMetadata],
-        errors: list[SkillLoadError],
-    ) -> list[tuple[_SkillCacheKey, SkillMetadata]]:
-        """Return skill entries that still need install on this REPL."""
-        pending: list[tuple[_SkillCacheKey, SkillMetadata]] = []
-        for name in referenced:
-            meta = metadata.get(name)
-            if meta is None:
-                errors.append(
-                    SkillLoadError(
-                        f"skill {name!r} referenced but not available on this agent"
-                    )
-                )
-                continue
-            cache_key = _skill_cache_key(meta)
-            if cache_key in self._installed_skills:
-                continue
-            pending.append((cache_key, meta))
-        return pending
-
-    async def _aensure_skills_installed(
-        self,
-        referenced: frozenset[str],
-        metadata: dict[str, SkillMetadata],
-        backend: BackendProtocol,
-    ) -> list[SkillLoadError]:
-        """Worker-loop-only skill install implementation."""
-        errors: list[SkillLoadError] = []
-        async with self._skill_install_lock:
-            for cache_key, meta in self._collect_pending_skills(
-                referenced, metadata, errors
-            ):
-                try:
-                    loaded = await aload_skill(meta, backend)
-                except SkillLoadError as exc:
-                    errors.append(exc)
-                    continue
-                scope = ModuleScope({loaded.specifier: loaded.scope})
-                self._runtime.install(scope)
-                self._installed_skills.add(cache_key)
-        return errors
-
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
@@ -709,20 +645,6 @@ class _ThreadREPL:
         """
         ctx = self._require_ctx()
         outcome = EvalOutcome()
-        if skills_backend is not None:
-            referenced = scan_skill_references(code)
-            if referenced:
-                errors = await self._aensure_skills_installed(
-                    referenced, skills or {}, skills_backend
-                )
-                if errors:
-                    outcome.error_type = "SkillNotAvailable"
-                    outcome.error_message = "; ".join(str(error) for error in errors)
-                    (
-                        outcome.stdout,
-                        outcome.stdout_truncated_chars,
-                    ) = self._console.drain()
-                    return outcome
         # Save/restore rather than clear-on-exit: a second eval that hits
         # ConcurrentEvalError would otherwise null out the in-flight
         # eval's state and orphan its bridge calls.
@@ -817,21 +739,6 @@ class _ThreadREPL:
         if self._ctx is not None:
             self._ctx.close()
             self._ctx = None
-        self._installed_skills.clear()
-
-
-_SkillCacheKey = tuple[str, str, str | None]
-
-
-def _skill_cache_key(metadata: SkillMetadata) -> _SkillCacheKey:
-    """Build a stable per-slot cache key for a skill definition.
-
-    The key intentionally includes path + module (not just name) so two
-    same-named skills from different sources do not collide inside a
-    thread-local cache.
-    """
-    entrypoint = metadata.get("metadata", {}).get("entrypoint")
-    return (metadata["name"], metadata["path"], entrypoint)
 
 
 @dataclass

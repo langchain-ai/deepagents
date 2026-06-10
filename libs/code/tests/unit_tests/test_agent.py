@@ -3159,6 +3159,88 @@ class TestResolvePtcOption:
                 auto_approve=False,
             )
 
+    def test_safe_alone_in_list_equals_standalone(self) -> None:
+        """`["safe"]` must resolve identically to the standalone `"safe"`."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        tools = self._tools_with_task()
+        kwargs = {"acknowledge_unsafe": False, "auto_approve": False}
+        as_list = _resolve_ptc_option(["safe"], tools=tools, **kwargs)
+        standalone = _resolve_ptc_option("safe", tools=tools, **kwargs)
+        assert as_list == standalone == ["glob", "grep", "read_file"]
+
+    def test_safe_in_list_is_case_insensitive(self) -> None:
+        """The `"safe"` sentinel is matched case-insensitively inside a list."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["SAFE", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_sentinel_is_whitespace_tolerant(self) -> None:
+        """Whitespace around the `"safe"` sentinel is tolerated and expanded."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            [" safe ", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_explicit_names_are_not_whitespace_stripped(self) -> None:
+        """Only sentinels are normalized; explicit names match `live_set` exactly.
+
+        The CLI and config layers strip whitespace before this layer sees the
+        names, so a padded explicit name reaching `_resolve_ptc_option` is a
+        genuine mismatch and must be reported rather than silently trimmed.
+        """
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="Unknown tool names"):
+            _resolve_ptc_option(
+                ["safe", " task "],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
+    def test_safe_in_list_empty_when_preset_absent(self) -> None:
+        """`["safe"]` resolves to `[]` when no preset members are live."""
+        from langchain_core.tools import tool
+
+        from deepagents_code.agent import _resolve_ptc_option
+
+        @tool
+        def task(prompt: str) -> str:  # noqa: ARG001
+            """Dispatch a subagent."""
+            return ""
+
+        result = _resolve_ptc_option(
+            ["safe"],
+            tools=[task],
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == []
+
+    def test_duplicate_safe_tokens_dedupe(self) -> None:
+        """Repeated `"safe"` tokens expand once; members are not duplicated."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
     def test_safe_excludes_hitl_gated_tools(self) -> None:
         """`"safe"` must never expose tools that are HITL-gated outside the REPL.
 

@@ -1322,7 +1322,10 @@ class Settings:
         live toolset.
     - `"all"`: every live tool is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names, validated at agent-build time.
+    - `list[str]`: explicit tool names, validated at agent-build time. The list
+        may also include the `"safe"` preset (expanded to
+        `INTERPRETER_PTC_SAFE_PRESET` intersected with the live toolset);
+        `"all"` is rejected inside a list.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False

@@ -324,6 +324,13 @@ def _resolve_ptc_option(
             if name.strip().lower() == "safe":
                 for member in sorted(INTERPRETER_PTC_SAFE_PRESET & live_set):
                     _add(member)
+                dropped = sorted(INTERPRETER_PTC_SAFE_PRESET - live_set)
+                if dropped:
+                    logger.debug(
+                        "interpreter_ptc 'safe' preset members not present in "
+                        "toolset: %s",
+                        dropped,
+                    )
                 continue
             if name not in live_set:
                 unknown.append(name)

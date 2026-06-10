@@ -5668,19 +5668,25 @@ class DeepAgentsApp(App):
         """
         if not self._pending_shell_messages:
             return
+        if not self._lc_thread_id and self._session_state:
+            self._lc_thread_id = self._session_state.thread_id
         if not self._agent or not self._lc_thread_id:
-            self._pending_shell_messages.clear()
             return
 
         messages = self._pending_shell_messages
         self._pending_shell_messages = []
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        remote_config: dict[str, Any] = {
+            "configurable": {"thread_id": self._lc_thread_id}
+        }
         try:
             # Suppress the standalone `UpdateState` LangSmith run this write would
             # otherwise emit — it's bookkeeping, not a user-driven agent turn.
             from langsmith import tracing_context
 
             with tracing_context(enabled=False):
+                if remote := self._remote_agent():
+                    await remote.aensure_thread(remote_config)
                 await self._agent.aupdate_state(config, {"messages": messages})
         except Exception:  # best-effort; UI already showed the output
             logger.warning(

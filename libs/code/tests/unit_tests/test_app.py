@@ -4723,6 +4723,70 @@ class TestShellCommandInterrupt:
         # Buffer is drained so it is not replayed onto a later turn.
         assert app._pending_shell_messages == []
 
+    async def test_pending_shell_first_message_uses_session_thread(self) -> None:
+        """A first-message `!` command should flush to the new session thread."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._pending_shell_messages = [
+            HumanMessage(content="!echo before-chat"),
+            AIMessage(content="```\nbefore-chat\n```"),
+        ]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._lc_thread_id = None
+            app._session_state.thread_id = "thread-first"
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("what did that print?")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+        app._agent.aupdate_state.assert_awaited_once()
+        call = app._agent.aupdate_state.await_args
+        assert call is not None
+        assert call.args[0]["configurable"]["thread_id"] == "thread-first"
+        assert app._lc_thread_id == "thread-first"
+        assert app._pending_shell_messages == []
+
+    async def test_pending_shell_flush_ensures_remote_thread_first(self) -> None:
+        """Server mode must register a fresh thread before flushing shell output."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_code.remote_client import RemoteAgent
+
+        calls: list[str] = []
+        remote = MagicMock(spec=RemoteAgent)
+        remote.aensure_thread = AsyncMock(
+            side_effect=lambda _config: calls.append("ensure")
+        )
+        agent = MagicMock()
+        agent.aupdate_state = AsyncMock(
+            side_effect=lambda _config, _values: calls.append("update")
+        )
+
+        app = DeepAgentsApp(agent=agent, thread_id="thread-remote")
+        app._pending_shell_messages = [
+            HumanMessage(content="!pwd"),
+            AIMessage(content="```\n/tmp/project\n```"),
+        ]
+
+        with patch.object(app, "_remote_agent", return_value=remote):
+            await app._flush_pending_shell_messages()
+
+        remote.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "thread-remote"}}
+        )
+        agent.aupdate_state.assert_awaited_once()
+        assert calls == ["ensure", "update"]
+        assert app._pending_shell_messages == []
+
     async def test_incognito_shell_output_not_buffered(self) -> None:
         """A `!!` command/output must never be buffered for the model."""
         app = DeepAgentsApp()

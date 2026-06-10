@@ -33,6 +33,7 @@ from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
     render_eval_tool_description,
     render_repl_system_prompt,
+    render_subagent_prompt,
 )
 from langchain_quickjs._ptc import (
     PTCOption,
@@ -40,6 +41,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
+from langchain_quickjs._subagent import subagent_payload_from_configurable
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,40 @@ def _resolve_thread_id(fallback: str) -> str:
     if thread_id is not None:
         return str(thread_id)
     return fallback
+
+
+def _current_configurable() -> dict[str, Any] | None:
+    """Return the active RunnableConfig configurable dict, if available."""
+    try:
+        config = get_config()
+    except RuntimeError:
+        return None
+    configurable = config.get("configurable", {}) if config else {}
+    return configurable if isinstance(configurable, dict) else None
+
+
+def _runtime_configurable(runtime: ToolRuntime[None, Any]) -> dict[str, Any] | None:
+    """Return the eval tool runtime's configurable dict, if available."""
+    config = getattr(runtime, "config", None)
+    if not isinstance(config, dict):
+        return None
+    configurable = config.get("configurable")
+    return configurable if isinstance(configurable, dict) else None
+
+
+def _subagent_descriptions_from_payload(
+    payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Extract prompt-safe subagent names and descriptions from a spec payload."""
+    descriptions: list[dict[str, str]] = []
+    for spec in payload.get("subagents", ()):
+        if not isinstance(spec, dict):
+            continue
+        name = spec.get("name")
+        description = spec.get("description")
+        if isinstance(name, str) and isinstance(description, str):
+            descriptions.append({"name": name, "description": description})
+    return descriptions
 
 
 @beta()
@@ -310,6 +346,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 outcome = repl.eval_sync(
                     code,
                     outer_runtime=runtime,
+                    configurable=_runtime_configurable(runtime),
                 )
             finally:
                 if middleware._reset_between_calls:
@@ -327,6 +364,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     code,
                     outer_runtime=runtime,
                     outer_loop=asyncio.get_running_loop(),
+                    configurable=_runtime_configurable(runtime),
                 )
             finally:
                 if middleware._reset_between_calls:
@@ -437,17 +475,25 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
 
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
-        """Install PTC bindings for this turn and return the system-prompt addendum.
+        """Install PTC bindings for this turn and return the prompt addendum.
 
         Called from both sync and async model-call wrappers. Reads the
         live tool list off the request (middlewares upstream may have
-        filtered it), decides what PTC exposes this turn, registers any
-        missing host-function bridges on the current thread's REPL, and
-        rebuilds `globalThis.tools` if the exposed name set changed.
+        filtered it), installs PTC bridges on the current thread's REPL,
+        and renders matching API-reference text.
         """
-        if self._ptc is None:
-            return self._base_system_prompt
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
+        prompt = self._base_system_prompt
+
+        payload = subagent_payload_from_configurable(_current_configurable())
+        if payload is not None:
+            prompt += render_subagent_prompt(
+                _subagent_descriptions_from_payload(payload)
+            )
+
+        if self._ptc is None:
+            return prompt
+
         exposed = filter_tools_for_ptc(
             request_tools,
             self._ptc,
@@ -473,7 +519,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 exposed_names,
                 render_ptc_prompt(exposed, tool_name=self._tool_name),
             )
-        return self._base_system_prompt + self._ptc_prompt_cache[1]
+        return prompt + self._ptc_prompt_cache[1]
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

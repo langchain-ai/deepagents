@@ -14,7 +14,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from quickjs_rs import (
     UNDEFINED,
@@ -25,7 +25,6 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
-    ModuleScope,
     Runtime,
     Snapshot,
     ThreadWorker,
@@ -40,15 +39,23 @@ from langchain_quickjs._format import (
     stringify,
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
+from langchain_quickjs._subagent import (
+    QuickJSSubagentDispatcher,
+    subagent_payload_from_configurable,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from types import TracebackType
 
-    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
 logger = logging.getLogger(__name__)
+
+_MAX_SUBAGENT_CALLS_PER_THREAD = 32
+_SUBAGENT_CALL_LIMIT_POLL_S = 0.001
+_SUBAGENT_FUNCTION_NAME = "subagent"
 
 
 def _clear_exception_references(exc: BaseException) -> None:
@@ -109,6 +116,7 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    configurable: dict[str, Any] | None = None
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -125,6 +133,31 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
+
+
+class _SubagentCallSlot:
+    """Async context manager for a REPL thread's subagent concurrency cap."""
+
+    def __init__(self, semaphore: threading.BoundedSemaphore) -> None:
+        self._semaphore = semaphore
+        self._acquired = False
+
+    async def __aenter__(self) -> Self:
+        while not self._acquired:
+            self._acquired = self._semaphore.acquire(blocking=False)
+            if not self._acquired:
+                await asyncio.sleep(_SUBAGENT_CALL_LIMIT_POLL_S)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if self._acquired:
+            self._semaphore.release()
+            self._acquired = False
 
 
 class _ConsoleBuffer:
@@ -378,6 +411,15 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
+        # Top-level subagent host function is registered when the QuickJS
+        # context is created. The dispatch target is resolved from the current
+        # eval's configurable payload.
+        self._subagent_dispatcher_cache: tuple[
+            int, QuickJSSubagentDispatcher
+        ] | None = None
+        self._subagent_calls = threading.BoundedSemaphore(
+            _MAX_SUBAGENT_CALLS_PER_THREAD
+        )
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -387,6 +429,7 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
+        self._register_subagent_bridge()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -476,6 +519,102 @@ class _ThreadREPL:
         ctx.eval(_render_tools_namespace_assignment(bridges))
         self._active_tool_names = target_names
         self._tools_installed = True
+
+    async def _ainvoke_subagent_on_outer_loop(
+        self,
+        dispatcher: QuickJSSubagentDispatcher,
+        payload: dict[str, Any],
+        *,
+        state: _PTCState,
+    ) -> Any:
+        """Run the subagent dispatcher on the outer LangGraph loop if present."""
+        description = payload.get("description")
+        if not isinstance(description, str) or not description:
+            msg = "subagent() requires non-empty string field `description`"
+            raise ValueError(msg)
+
+        subagent_type = payload.get("subagent_type")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            msg = "subagent() requires non-empty string field `subagent_type`"
+            raise ValueError(msg)
+
+        response_schema = payload.get("response_schema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = "subagent() field `response_schema` must be an object when provided"
+            raise ValueError(msg)
+
+        async def _call() -> Any:
+            return await dispatcher.ainvoke(
+                description=description,
+                subagent_type=subagent_type,
+                response_schema=response_schema,
+                runtime=state.outer_runtime,
+            )
+
+        outer_loop = state.outer_loop
+        if outer_loop is None:
+            return await _call()
+        current_loop = asyncio.get_running_loop()
+        if current_loop is outer_loop:
+            return await _call()
+        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    def _subagent_dispatcher_from_configurable(
+        self,
+        configurable: dict[str, Any] | None,
+    ) -> QuickJSSubagentDispatcher | None:
+        payload = subagent_payload_from_configurable(configurable)
+        if payload is None:
+            return None
+        key = id(payload)
+        if (
+            self._subagent_dispatcher_cache is not None
+            and self._subagent_dispatcher_cache[0] == key
+        ):
+            return self._subagent_dispatcher_cache[1]
+        dispatcher = QuickJSSubagentDispatcher(payload)
+        self._subagent_dispatcher_cache = (key, dispatcher)
+        return dispatcher
+
+    def _register_subagent_bridge(self) -> None:
+        """Install the async host function backing top-level ``subagent()``."""
+        ctx = self._require_ctx()
+
+        async def _bridge(raw_input: Any = None) -> Any:
+            state = self._ptc_state
+            if state is None:
+                msg = "subagent bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            dispatcher = self._subagent_dispatcher_from_configurable(
+                state.configurable
+            )
+            if dispatcher is None:
+                msg = "subagent specs not configured for this eval"
+                raise RuntimeError(msg)
+
+            payload = _normalize_tool_input(raw_input)
+            async with _SubagentCallSlot(self._subagent_calls):
+                result = await self._ainvoke_subagent_on_outer_loop(
+                    dispatcher,
+                    payload,
+                    state=state,
+                )
+            return coerce_tool_output_for_ptc(result)
+
+        ctx.register(_SUBAGENT_FUNCTION_NAME, _bridge, is_async=True)
+        ctx.eval(
+            "Object.freeze(globalThis.subagent);"
+            "Object.defineProperty(globalThis, 'subagent', {"
+            " value: globalThis.subagent,"
+            " writable: false,"
+            " configurable: false,"
+            "}); undefined"
+        )
 
     async def _ainvoke_tool_on_outer_loop(
         self,
@@ -567,6 +706,7 @@ class _ThreadREPL:
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
+        configurable: dict[str, Any] | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -576,6 +716,7 @@ class _ThreadREPL:
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
+                configurable=configurable,
             )
         )
 
@@ -585,12 +726,14 @@ class _ThreadREPL:
         *,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        configurable: dict[str, Any] | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
                 outer_loop=outer_loop,
+                configurable=configurable,
             )
         )
 
@@ -636,6 +779,7 @@ class _ThreadREPL:
         *,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        configurable: dict[str, Any] | None = None,
     ) -> EvalOutcome:
         """Uses ``ctx.eval_async`` directly.
 
@@ -655,6 +799,7 @@ class _ThreadREPL:
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
+            configurable=configurable,
         )
         try:
             # Drive any final-expression Promise (e.g. a bare async

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents.middleware.subagents import SUBAGENT_SPECS_CONFIG_KEY
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
@@ -880,6 +883,114 @@ async def test_async_top_level_await(repl: _ThreadREPL) -> None:
     outcome = await repl.eval_async("await new Promise(resolve => resolve(42))")
     assert outcome.error_type is None
     assert outcome.result == "42"
+
+
+def _subagent_configurable(runnable: RunnableLambda) -> dict[str, Any]:
+    return {
+        SUBAGENT_SPECS_CONFIG_KEY: {
+            "subagents": (
+                {
+                    "name": "worker",
+                    "description": "Does work.",
+                    "runnable": runnable,
+                },
+            ),
+            "state_schema": None,
+            "private_state_keys": frozenset(),
+        }
+    }
+
+
+async def test_async_subagent_global_invokes_dispatcher(repl: _ThreadREPL) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"messages": [AIMessage(content="sync")]}
+
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        calls.append({"state": state, "config": config})
+        return {"messages": [AIMessage(content="ok")]}
+
+    runnable = RunnableLambda(_sync, afunc=_async)
+
+    outcome = await repl.eval_async(
+        "globalThis.subagent = null;"
+        "delete globalThis.subagent;"
+        "subagent.extra = 1;"
+        "if (!Object.isFrozen(subagent) || subagent.extra !== undefined) {"
+        "  throw new Error('subagent binding is mutable');"
+        "}"
+        "JSON.stringify(await subagent({"
+        "description: 'work', "
+        "subagent_type: 'worker'"
+        "}))",
+        configurable=_subagent_configurable(runnable),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == '"ok"'
+    assert calls
+    assert calls[0]["state"]["messages"][0].content == "work"
+    assert calls[0]["config"]["configurable"]["ls_agent_type"] == "subagent"
+
+
+async def test_async_subagent_global_limits_concurrency_per_repl(
+    repl: _ThreadREPL,
+) -> None:
+    class _CountingDispatcher:
+        subagent_descriptions = ({"name": "worker", "description": "Does work."},)
+
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        async def ainvoke(
+            self,
+            *,
+            description: str,
+            subagent_type: str,
+            response_schema: dict[str, Any] | None = None,
+            runtime: ToolRuntime | None = None,
+        ) -> str:
+            del subagent_type, response_schema, runtime
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            with self.lock:
+                self.active -= 1
+            return description
+
+    dispatcher = _CountingDispatcher()
+
+    async def _counting_async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del config
+        content = await dispatcher.ainvoke(
+            description=state["messages"][0].content,
+            subagent_type="worker",
+        )
+        return {"messages": [AIMessage(content=content)]}
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_counting_async,
+    )
+
+    outcome = await repl.eval_async(
+        "const calls = [];"
+        "for (let i = 0; i < 64; i++) {"
+        "  calls.push(subagent({description: String(i), subagent_type: 'worker'}));"
+        "}"
+        "(await Promise.all(calls)).length",
+        configurable=_subagent_configurable(runnable),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == "64"
+    assert dispatcher.max_active <= 32
+    assert dispatcher.max_active > 1
 
 
 async def test_async_promise_chain(repl: _ThreadREPL) -> None:

@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -47,6 +47,7 @@ from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
+    SUBAGENT_SPECS_CONFIG_KEY,
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
@@ -59,6 +60,9 @@ from deepagents.profiles.harness.harness_profiles import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 class DeepAgentState(AgentState):
@@ -819,8 +823,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_names=_main_matched_names,
     )
     private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
+    configurable: dict[str, Any] = {}
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
+        configurable[SUBAGENT_SPECS_CONFIG_KEY] = sub_agent_middleware.subagent_specs_payload
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale
@@ -841,6 +847,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
+    agent_config: RunnableConfig = {
+        "recursion_limit": 9_999,
+        "metadata": {
+            "ls_integration": "deepagents",
+            "versions": {"deepagents": __version__},
+            "lc_agent_name": name,
+        },
+    }
+    if configurable:
+        agent_config["configurable"] = configurable
+
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -854,13 +871,4 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         name=name,
         cache=cache,
         state_schema=state_schema if state_schema is not None else DeepAgentState,
-    ).with_config(
-        {
-            "recursion_limit": 9_999,
-            "metadata": {
-                "ls_integration": "deepagents",
-                "versions": {"deepagents": __version__},
-                "lc_agent_name": name,
-            },
-        }
-    )
+    ).with_config(agent_config)

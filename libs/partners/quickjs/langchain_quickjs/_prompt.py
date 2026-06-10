@@ -75,6 +75,51 @@ def render_repl_system_prompt(
     )
 
 
+def render_subagent_prompt(
+    subagents: Sequence[dict[str, str]],
+    *,
+    function_name: str = "subagent",
+) -> str:
+    """Build the top-level `subagent` global API-reference section."""
+    if not subagents:
+        return ""
+    descriptions = "\n".join(
+        f"- `{entry['name']}`: {entry['description']}" for entry in subagents
+    )
+    names = " | ".join(json.dumps(entry["name"]) for entry in subagents)
+    subagent_type = names or "string"
+    return (
+        "\n\n"
+        f"### API Reference — `{function_name}`\n\n"
+        f"`{function_name}` is available as a top-level async function in the "
+        "JavaScript REPL. It launches one configured ephemeral subagent and "
+        "returns that subagent's final result.\n\n"
+        "Invocation pattern: "
+        f"`await {function_name}("
+        "{ description, subagent_type, response_schema? })`.\n\n"
+        "- Use `Promise.all` for independent subagent calls so they can run "
+        "concurrently.\n"
+        "- `response_schema` is optional and must be a JSON Schema object. It is "
+        "only supported for declarative subagents created from `SubAgent` specs; "
+        "runnable-backed subagents reject dynamic schemas.\n"
+        "- Results from structured responses are already typed JavaScript values; "
+        "do not `JSON.parse` them unless the subagent intentionally returned a "
+        "JSON string.\n\n"
+        "Available subagents:\n"
+        f"{descriptions}\n\n"
+        "```typescript\n"
+        f"async function {function_name}(input: {{\n"
+        "  /** Detailed autonomous task instructions. */\n"
+        "  description: string;\n"
+        "  /** Which configured subagent to run. */\n"
+        f"  subagent_type: {subagent_type};\n"
+        "  /** Optional JSON Schema object for structured output. */\n"
+        "  response_schema?: Record<string, unknown>;\n"
+        "}): Promise<unknown>\n"
+        "```"
+    )
+
+
 def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str:
     """Render the eval tool's `code` argument description."""
     if mode == "call":

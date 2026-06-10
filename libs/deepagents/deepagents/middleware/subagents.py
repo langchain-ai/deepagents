@@ -23,6 +23,9 @@ from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
 
+SUBAGENT_SPECS_CONFIG_KEY = "__deepagents_subagent_specs__"
+"""RunnableConfig configurable key exposing normalized subagent specs to REPL bridges."""
+
 
 class SubAgent(TypedDict):
     """Specification for an agent.

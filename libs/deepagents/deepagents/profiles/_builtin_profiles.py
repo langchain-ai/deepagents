@@ -32,7 +32,6 @@ from deepagents.profiles.harness import (
     _anthropic_sonnet_4_6,
     _glm,
     _kimi,
-    _minimax,
     _openai_codex,
 )
 from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
@@ -154,7 +153,8 @@ def _ensure_builtin_profiles_loaded() -> None:
         _anthropic_sonnet_4_6.register()
         _anthropic_haiku_4_5.register()
         _openai_codex.register()
-        _minimax.register()
+        # MiniMax profile registration intentionally omitted on this isolation
+        # branch so MiniMax M3 runs vanilla (no profile) for the reasoning=high test.
         _kimi.register()
         _glm.register()
         _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)

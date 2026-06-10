@@ -9,6 +9,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
@@ -119,8 +120,6 @@ class TestRecursiveDeletePermissions:
     """
 
     def _fs_backend(self, tmp_path):
-        from deepagents.backends.filesystem import FilesystemBackend
-
         # /work/a.txt, /work/logs/run.log, /work/secrets/{key,token}.txt
         (tmp_path / "work" / "logs").mkdir(parents=True)
         (tmp_path / "work" / "secrets").mkdir(parents=True)

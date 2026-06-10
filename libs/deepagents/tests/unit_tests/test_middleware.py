@@ -1508,7 +1508,7 @@ class TestFilesystemMiddleware:
         assert "does not support command execution" in result.content
 
     def test_delete_filtered_when_backend_lacks_delete(self):
-        """delete is removed from the request when the backend can't delete.
+        """Delete is removed from the request when the backend can't delete.
 
         Mirrors how the execute tool is filtered out when the backend doesn't
         support execution, rather than advertising a tool that fails at call time.
@@ -1536,7 +1536,7 @@ class TestFilesystemMiddleware:
         assert "ls" in filtered_names
 
     def test_delete_kept_when_backend_supports_delete(self):
-        """delete stays in the request when the backend supports deletion."""
+        """Delete stays in the request when the backend supports deletion."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
 
         ls_tool = MagicMock()

@@ -1360,7 +1360,7 @@ class TestDeleteFileTool:
     """End-to-end tests for the `delete` filesystem tool."""
 
     def test_delete_removes_existing_file(self) -> None:
-        """delete removes a file from state and reports success."""
+        """Delete removes a file from state and reports success."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1398,7 +1398,7 @@ class TestDeleteFileTool:
         assert set(result["files"].keys()) == {"/other.txt"}
 
     def test_delete_missing_returns_error(self) -> None:
-        """delete on a missing path returns an error tool message."""
+        """Delete on a missing path returns an error tool message."""
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [

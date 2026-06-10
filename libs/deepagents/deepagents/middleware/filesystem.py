@@ -1307,7 +1307,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Sync subtree deny scan: returns the first denied path, or None."""
         if not self._permissions:
             return None
-        descendants = [m["path"] for m in backend.glob("**/*", path=target).matches]
+        descendants = [m["path"] for m in (backend.glob("**/*", path=target).matches or [])]
         return self._scan_delete_for_denied_path(target, descendants)
 
     async def _adelete_denied_path(self, backend: BackendProtocol, target: str) -> str | None:
@@ -1315,7 +1315,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not self._permissions:
             return None
         result = await backend.aglob("**/*", path=target)
-        descendants = [m["path"] for m in result.matches]
+        descendants = [m["path"] for m in (result.matches or [])]
         return self._scan_delete_for_denied_path(target, descendants)
 
     def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling

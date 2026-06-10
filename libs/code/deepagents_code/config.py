@@ -317,6 +317,14 @@ def _ensure_bootstrap() -> None:
             _bootstrap_start_path = ctx.user_cwd if ctx else None
             _load_dotenv(start_path=_bootstrap_start_path)
 
+            # `configure_debug_logging` already ran at import, before the `.env`
+            # above was loaded. Re-run it so a `DEEPAGENTS_CODE_DEBUG` set only in
+            # `.env` installs the file handler now (idempotent for the same path),
+            # ensuring later failures are actually written to the debug log.
+            from deepagents_code._debug import configure_debug_logging
+
+            configure_debug_logging(logging.getLogger("deepagents_code"))
+
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
             _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")

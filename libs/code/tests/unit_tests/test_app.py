@@ -11158,8 +11158,9 @@ class TestRestartCommand:
         """`/restart` during startup must not show the remote-server message.
 
         We own a server (`_server_kwargs` set) but `_server_proc` is `None`
-        until `ServerReady` fires. The handler should report "still starting"
-        rather than the misleading "connected to a remote LangGraph server".
+        while the startup worker is still obtaining it. The handler should
+        report "still starting" rather than the misleading "connected to a
+        remote LangGraph server".
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -11172,10 +11173,9 @@ class TestRestartCommand:
 
             called = False
 
-            async def _fail() -> bool:  # noqa: RUF029  # awaited by handler
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
                 nonlocal called
                 called = True
-                return True
 
             from deepagents_code.config import settings
 
@@ -11191,6 +11191,7 @@ class TestRestartCommand:
             assert called is False
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert any("still starting" in m for m in app_msgs)
+            assert not any("waiting for a model" in m for m in app_msgs)
             assert not any("remote LangGraph server" in m for m in app_msgs)
 
     async def test_failed_startup_does_not_claim_still_starting(
@@ -11209,10 +11210,9 @@ class TestRestartCommand:
 
             called = False
 
-            async def _fail() -> bool:  # noqa: RUF029  # awaited by handler
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
                 nonlocal called
                 called = True
-                return True
 
             from deepagents_code.config import settings
 
@@ -11232,6 +11232,7 @@ class TestRestartCommand:
                 "Last error: ModelConfigError: missing API key" in m for m in app_msgs
             )
             assert not any("still starting" in m for m in app_msgs)
+            assert not any("waiting for a model" in m for m in app_msgs)
             assert not any("remote LangGraph server" in m for m in app_msgs)
 
     async def test_deferred_startup_reports_waiting_for_model(
@@ -11248,10 +11249,9 @@ class TestRestartCommand:
 
             called = False
 
-            async def _fail() -> bool:  # noqa: RUF029  # awaited by handler
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
                 nonlocal called
                 called = True
-                return True
 
             from deepagents_code.config import settings
 
@@ -11267,6 +11267,7 @@ class TestRestartCommand:
             assert called is False
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert any("waiting for a model" in m for m in app_msgs)
+            assert not any("still starting" in m for m in app_msgs)
             assert not any("remote LangGraph server" in m for m in app_msgs)
 
     async def test_calls_server_restart_and_clears_caches(

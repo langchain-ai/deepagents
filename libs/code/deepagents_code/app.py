@@ -10228,17 +10228,25 @@ class DeepAgentsApp(App):
             )
             return
 
-        # We own a server (`_server_kwargs is not None`) but `_server_proc`
-        # is only assigned once `ServerReady` fires. A `None` proc here can
-        # mean startup is still pending, deferred for model selection, or that
-        # startup already failed before a subprocess was available.
-        if self._server_proc is None:
+        # We own a server (`_server_kwargs is not None`) but it may not be
+        # ready to respawn. `_server_proc` stays `None` until the startup
+        # worker obtains the subprocess (assigned before `ServerReady` is
+        # posted; see `_run_startup_worker`), and `_connecting` stays set until
+        # the `ServerReady` handler runs. Guarding on both also covers the
+        # brief window where the proc is assigned but the handler hasn't fired,
+        # where restarting would let the still-queued startup `ServerReady`
+        # clobber state with the just-killed proc. A match here means the
+        # server is still coming up, deferred for model selection, or failed
+        # before a subprocess existed — not remote-server mode. Mirrors the
+        # sibling guards elsewhere in this file.
+        if self._connecting or self._server_proc is None:
             if self._server_startup_deferred:
                 await self._mount_message(
                     AppMessage(
                         "Server startup is waiting for a model. Configuration "
-                        "was reloaded; set credentials with `/auth` or pick a "
-                        "model with `/model` to start the server.",
+                        "was reloaded; set credentials with `/auth`, reload the "
+                        "environment with `/reload`, or pick a model with "
+                        "`/model` to start the server.",
                     ),
                 )
             elif self._connecting:

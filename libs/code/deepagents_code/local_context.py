@@ -9,6 +9,7 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import (
     TYPE_CHECKING,
@@ -93,6 +94,18 @@ def _sanitize_tracing_project_name(project: str) -> str:
     """
     sanitized = sanitize_control_chars(project, max_length=_TRACING_PROJECT_NAME_LIMIT)
     return sanitized or "unknown project"
+
+
+def _quote_tracing_project_name(project: str) -> str:
+    """JSON-quote a sanitized LangSmith project name for prompt insertion.
+
+    Args:
+        project: Sanitized LangSmith project name.
+
+    Returns:
+        JSON string literal for the project name.
+    """
+    return json.dumps(project, ensure_ascii=False)
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -190,14 +203,16 @@ def _build_tracing_context(
         return ""
 
     safe_agent_project = _sanitize_tracing_project_name(agent_project)
+    quoted_agent_project = _quote_tracing_project_name(safe_agent_project)
     lines = [
         "**LangSmith Tracing**:",
-        f"- Agent traces: project `{safe_agent_project}`",
+        f"- Agent traces: project {quoted_agent_project}",
     ]
     if user_project:
         safe_user_project = _sanitize_tracing_project_name(user_project)
         if safe_user_project != safe_agent_project:
-            lines.append(f"- Shell-command traces: project `{safe_user_project}`")
+            quoted_user_project = _quote_tracing_project_name(safe_user_project)
+            lines.append(f"- Shell-command traces: project {quoted_user_project}")
     return "\n".join(lines)
 
 

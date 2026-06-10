@@ -43,7 +43,7 @@ def _touches_talon(paths: list[str]) -> bool:
 
 
 def main(paths: list[str]) -> int:
-    include_talon = _touches_talon(paths)
+    include_talon = not paths or _touches_talon(paths)
     for package in _package_dirs(include_talon=include_talon):
         print(f"🔍 Checking {_label(package)}")
         result = subprocess.run(

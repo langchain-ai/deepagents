@@ -64,16 +64,19 @@ class TestBuildServerEnv:
             os.environ,
             {
                 "LD_PRELOAD": "/tmp/evil.so",
-                "PYTHONPATH": "/tmp/evil",
                 "NODE_OPTIONS": "--require /tmp/evil.js",
                 "PATH": os.environ.get("PATH", ""),
             },
         ):
             env = _build_server_env()
         assert "LD_PRELOAD" not in env
-        assert "PYTHONPATH" not in env
         assert "NODE_OPTIONS" not in env
         assert "PATH" in env
+
+    def test_preserves_inherited_pythonpath(self) -> None:
+        with patch.dict(os.environ, {"PYTHONPATH": "src"}):
+            env = _build_server_env()
+        assert env["PYTHONPATH"] == "src"
 
 
 class TestScopedEnvOverrides:

@@ -48,12 +48,16 @@ _SERVER_ENV_DENYLIST = frozenset(
         "NODE_OPTIONS",
         "PYTHONEXECUTABLE",
         "PYTHONHOME",
-        "PYTHONPATH",
         "PYTHONSTARTUP",
         "SSH_ASKPASS",
     }
 )
-"""Inherited env keys that can alter subprocess startup behavior."""
+"""Inherited env keys that can alter subprocess startup behavior.
+
+`PYTHONPATH` is intentionally excluded: a user-provided launch environment (e.g.
+`PYTHONPATH=src dcode`) must reach the server process so the local shell backend
+can pass it through to agent `execute` commands. Project `.env` files are still
+prevented from injecting `PYTHONPATH` via `config._DOTENV_DENIED_ENV_KEYS`."""
 
 
 def _port_in_use(host: str, port: int) -> bool:

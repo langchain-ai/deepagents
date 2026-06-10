@@ -43,6 +43,29 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def non_negative_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 0.
+
+    Args:
+        value: Raw argument string to parse.
+
+    Returns:
+        Parsed non-negative integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 0.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 0:
+        msg = f"must be a non-negative integer (>= 0), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
 def _print_option_section(*lines: str, title: str = "Options") -> None:
     """Print a help-screen options section with shared JSON/help flags.
 
@@ -96,6 +119,9 @@ def show_help() -> None:
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
+    )
+    console.print(
+        "  --max-retries N            Override max retries for transient model errors"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")

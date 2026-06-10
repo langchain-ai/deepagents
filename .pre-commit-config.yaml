@@ -86,9 +86,8 @@ repos:
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: make -C libs lock-check
+        entry: python3 .github/scripts/check_lockfiles_pre_commit.py
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
-        pass_filenames: false
       - id: extras-sync
         name: check extras sync with required deps
         language: system

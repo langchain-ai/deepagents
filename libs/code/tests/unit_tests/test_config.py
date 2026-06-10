@@ -986,6 +986,40 @@ class TestRetriesConfig:
 
         assert "Could not read retries config" in caplog.text
 
+    def test_read_retries_allows_unknown_provider_with_param(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown providers can opt into retries with an explicit param."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.custom_provider]\nparam = 'max_retries'\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() == {
+                "custom_provider": {"param": "max_retries"}
+            }
+
+        assert "is not a known provider" not in caplog.text
+
+    def test_read_retries_warns_unknown_provider_without_param(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown retry tables still warn when they cannot provide a kwarg."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.custom_provider]\nmax_retries = 2\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() == {
+                "custom_provider": {"max_retries": 2}
+            }
+
+        assert "is not a known provider" in caplog.text
+
     def test_resolve_retry_kwargs_global(self) -> None:
         """Global retry config applies to supported providers."""
         assert _resolve_retry_kwargs({"max_retries": 2}, "fireworks") == {
@@ -1029,6 +1063,24 @@ class TestRetriesConfig:
             {"fireworks": {"max_retries": 3}}, "fireworks"
         ) == {"max_retries": 3}
 
+    def test_resolve_retry_kwargs_custom_provider_param(self) -> None:
+        """Custom providers can name the retry constructor kwarg."""
+        section = {
+            "max_retries": 2,
+            "custom_provider": {"param": "retries", "max_retries": 4},
+        }
+        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 4}
+
+    def test_resolve_retry_kwargs_custom_provider_param_uses_global(self) -> None:
+        """Custom provider param can use the global retry count."""
+        section = {"max_retries": 2, "custom_provider": {"param": "retries"}}
+        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 2}
+
+    def test_resolve_retry_kwargs_param_overrides_registry(self) -> None:
+        """Known providers can override the registered retry kwarg name."""
+        section = {"max_retries": 2, "fireworks": {"param": "retries"}}
+        assert _resolve_retry_kwargs(section, "fireworks") == {"retries": 2}
+
     @pytest.mark.parametrize("value", [-1, 1.5, True, False, "3"])
     def test_resolve_retry_kwargs_invalid_values_warn(
         self, value: object, caplog: pytest.LogCaptureFixture
@@ -1046,7 +1098,23 @@ class TestRetriesConfig:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             assert _resolve_retry_kwargs({"max_retries": 2}, "custom_provider") == {}
 
-        assert "does not support a registered retry parameter" in caplog.text
+        assert (
+            "does not support a registered or configured retry parameter" in caplog.text
+        )
+
+    @pytest.mark.parametrize("value", ["max-retries", "class", "", 2, True])
+    def test_resolve_retry_kwargs_invalid_param_warns(
+        self, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invalid retry kwarg names are ignored with a warning."""
+        section = {"max_retries": 2, "custom_provider": {"param": value}}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "custom_provider") == {}
+
+        assert "Ignoring [retries.custom_provider].param" in caplog.text
+        assert (
+            "does not support a registered or configured retry parameter" in caplog.text
+        )
 
     def test_resolve_retry_kwargs_unknown_keys_warn(
         self, caplog: pytest.LogCaptureFixture

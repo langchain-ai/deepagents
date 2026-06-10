@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import keyword
 import logging
 import os
 import re
@@ -1182,7 +1183,11 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         | set(IMPLICIT_AUTH_PROVIDERS)
     )
     for key, value in section.items():
-        if isinstance(value, dict) and key not in known_providers:
+        if (
+            isinstance(value, dict)
+            and key not in known_providers
+            and "param" not in value
+        ):
             logger.warning(
                 "Ignoring [retries.%s] in config.toml; %r is not a known provider",
                 key,
@@ -1207,6 +1212,26 @@ def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
     return None
 
 
+def _coerce_retry_param(raw: Any, *, source: str) -> str | None:  # noqa: ANN401
+    """Validate a constructor kwarg name for retry configuration.
+
+    Args:
+        raw: Value loaded from TOML.
+        source: Human-readable config path for warnings.
+
+    Returns:
+        The retry parameter name, or `None` when invalid.
+    """
+    if isinstance(raw, str) and raw.isidentifier() and not keyword.iskeyword(raw):
+        return raw
+    logger.warning(
+        "Ignoring %s=%r in config.toml (expected Python identifier string)",
+        source,
+        raw,
+    )
+    return None
+
+
 def _resolve_retry_kwargs(
     section: dict[str, Any] | None,
     provider: str,
@@ -1214,9 +1239,10 @@ def _resolve_retry_kwargs(
     """Resolve the retry-count kwarg for `provider` from a `[retries]` section.
 
     A per-provider `[retries.<provider>].max_retries` overrides the global
-    `[retries].max_retries`. Providers absent from `RETRY_PARAM_BY_PROVIDER`
-    receive nothing (their constructors reject the kwarg), and unknown or
-    malformed keys are dropped with a warning.
+    `[retries].max_retries`. Known providers use `RETRY_PARAM_BY_PROVIDER`;
+    arbitrary providers can opt in with `[retries.<provider>].param`.
+    Unknown providers without a configured parameter receive nothing, and
+    unknown or malformed keys are dropped with a warning.
 
     Args:
         section: Raw `[retries]` mapping from `config.toml`, or `None`.
@@ -1231,20 +1257,12 @@ def _resolve_retry_kwargs(
 
     from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
 
-    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
-    if retry_param is None:
-        logger.warning(
-            "Ignoring [retries] config for provider %r; provider does not support "
-            "a registered retry parameter",
-            provider,
-        )
-        return {}
-
     for key, value in section.items():
         if key == "max_retries" or isinstance(value, dict):
             continue
         logger.warning("Ignoring [retries].%s=%r in config.toml", key, value)
 
+    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
     resolved: int | None = None
     if "max_retries" in section:
         resolved = _coerce_max_retries(
@@ -1260,7 +1278,7 @@ def _resolve_retry_kwargs(
         )
     elif provider_section:
         for key, value in provider_section.items():
-            if key != "max_retries":
+            if key not in {"max_retries", "param"}:
                 logger.warning(
                     "Ignoring [retries.%s].%s=%r in config.toml",
                     provider,
@@ -1274,6 +1292,21 @@ def _resolve_retry_kwargs(
             )
             if provider_value is not None:
                 resolved = provider_value
+        if "param" in provider_section:
+            provider_param = _coerce_retry_param(
+                provider_section["param"],
+                source=f"[retries.{provider}].param",
+            )
+            if provider_param is not None:
+                retry_param = provider_param
+
+    if retry_param is None:
+        logger.warning(
+            "Ignoring [retries] config for provider %r; provider does not support "
+            "a registered or configured retry parameter",
+            provider,
+        )
+        return {}
 
     if resolved is None:
         return {}

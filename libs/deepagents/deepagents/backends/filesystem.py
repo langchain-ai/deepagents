@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import asyncio
 import base64
 import errno
 import functools
@@ -891,6 +892,45 @@ class FilesystemBackend(BackendProtocol):
 
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results)
+
+    # Async overrides offload the sync implementations onto a worker thread so
+    # `os.readlink`/`stat`/`Path.resolve` inside `_raise_if_symlink_loop` and
+    # the file IO below do not trip langgraph dev's blocking-call detector
+    # (blockbuster) when the async tool path drives this backend.
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        """Async read; offloads the sync impl to a worker thread."""
+        return await asyncio.to_thread(self.read, file_path, offset, limit)
+
+    async def awrite(
+        self,
+        file_path: str,
+        content: str,
+    ) -> WriteResult:
+        """Async write; offloads the sync impl to a worker thread."""
+        return await asyncio.to_thread(self.write, file_path, content)
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+    ) -> EditResult:
+        """Async edit; offloads the sync impl to a worker thread."""
+        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+
+    async def als(self, path: str) -> LsResult:
+        """Async ls; offloads the sync impl to a worker thread."""
+        return await asyncio.to_thread(self.ls, path)
+
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Async glob; offloads the sync impl to a worker thread."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.

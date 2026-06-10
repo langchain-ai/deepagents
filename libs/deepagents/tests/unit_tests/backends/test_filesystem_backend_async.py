@@ -1,6 +1,9 @@
 """Async tests for FilesystemBackend."""
 
+import os
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -566,3 +569,81 @@ async def test_als_empty_directory_returns_empty_entries(tmp_path: Path) -> None
 
     assert result.error is None
     assert result.entries == []
+
+
+async def test_awrite_offloads_blocking_calls_to_worker_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: `awrite` must not invoke blocking syscalls on the event-loop thread.
+
+    Mirrors what langgraph dev's blocking-call detector (blockbuster) does:
+    flag any blocking `os.readlink`/`os.stat` invocation made on the thread
+    that's currently running an event loop. The async variants on
+    `FilesystemBackend` offload to `asyncio.to_thread`, so the syscalls
+    fire in a worker thread and the guard does not trip.
+    """
+    loop_thread_id = threading.get_ident()
+    real_readlink = os.readlink
+    real_stat = os.stat
+
+    def guarded_readlink(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if threading.get_ident() == loop_thread_id:
+            msg = "Blocking call to os.readlink"
+            raise BlockingIOError(msg)
+        return real_readlink(*args, **kwargs)
+
+    def guarded_stat(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if threading.get_ident() == loop_thread_id:
+            msg = "Blocking call to os.stat"
+            raise BlockingIOError(msg)
+        return real_stat(*args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", guarded_readlink)
+    monkeypatch.setattr(os, "stat", guarded_stat)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    target = tmp_path / "blocking-guard.txt"
+
+    result = await be.awrite(str(target), "payload")
+
+    assert isinstance(result, WriteResult)
+    assert result.error is None
+    assert target.read_text() == "payload"
+
+
+async def test_async_filesystem_ops_run_off_event_loop_thread(tmp_path: Path) -> None:
+    """All async backend entrypoints must execute their sync impl on a worker thread."""
+    loop_thread_id = threading.get_ident()
+    observed: dict[str, int] = {}
+
+    class RecordingBackend(FilesystemBackend):
+        def write(self, file_path, content):  # type: ignore[override]
+            observed["write"] = threading.get_ident()
+            return super().write(file_path, content)
+
+        def read(self, file_path, offset=0, limit=2000):  # type: ignore[override]
+            observed["read"] = threading.get_ident()
+            return super().read(file_path, offset, limit)
+
+        def edit(self, file_path, old_string, new_string, replace_all=False):  # type: ignore[override]  # noqa: FBT002
+            observed["edit"] = threading.get_ident()
+            return super().edit(file_path, old_string, new_string, replace_all=replace_all)
+
+        def ls(self, path):  # type: ignore[override]
+            observed["ls"] = threading.get_ident()
+            return super().ls(path)
+
+        def glob(self, pattern, path=None):  # type: ignore[override]
+            observed["glob"] = threading.get_ident()
+            return super().glob(pattern, path)
+
+    be = RecordingBackend(root_dir=str(tmp_path), virtual_mode=False)
+    target = tmp_path / "off-loop.txt"
+
+    await be.awrite(str(target), "hello")
+    await be.aread(str(target))
+    await be.aedit(str(target), "hello", "world")
+    await be.als(str(tmp_path))
+    await be.aglob("*.txt", path=str(tmp_path))
+
+    assert set(observed) == {"write", "read", "edit", "ls", "glob"}
+    for op, tid in observed.items():
+        assert tid != loop_thread_id, f"{op} ran on the event-loop thread"

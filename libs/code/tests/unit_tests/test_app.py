@@ -4130,6 +4130,9 @@ class TestShellCommandInterrupt:
                 await app._run_shell_task("sleep 999")
 
             mock_killpg.assert_called()
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!sleep 999"
+            assert "Command interrupted" in buffered[1].content
 
     async def test_cleanup_clears_state(self) -> None:
         """_cleanup_shell_task should reset all shell state."""
@@ -4414,6 +4417,9 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             error_msgs = app.query(ErrorMessage)
             assert any("timed out" in w._content for w in error_msgs)
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!sleep 999"
+            assert "timed out" in buffered[1].content
 
     async def test_incognito_timeout_feedback_is_not_model_visible(self) -> None:
         """Incognito timeout feedback should stay out of user/assistant records."""
@@ -4525,6 +4531,9 @@ class TestShellCommandInterrupt:
             assert app._shell_process is None
             error_msgs = app.query(ErrorMessage)
             assert any("Permission denied" in w._content for w in error_msgs)
+            buffered = app._pending_shell_messages
+            assert buffered[0].content == "!forbidden"
+            assert "Permission denied" in buffered[1].content
 
     async def test_handle_shell_command_sets_running_state(self) -> None:
         """_handle_shell_command should set _shell_running and spawn worker."""

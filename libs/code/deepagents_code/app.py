@@ -5551,10 +5551,19 @@ class DeepAgentsApp(App):
                 )
             except TimeoutError:
                 await self._kill_shell_process()
-                await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
+                err_msg = "Command timed out (60s limit)"
+                await self._mount_message(ErrorMessage(err_msg))
+                if not incognito:
+                    self._buffer_shell_for_model_context(command, err_msg, None)
                 return
             except asyncio.CancelledError:
                 await self._kill_shell_process()
+                if not incognito:
+                    self._buffer_shell_for_model_context(
+                        command,
+                        "Command interrupted",
+                        None,
+                    )
                 raise
 
             # Start branch refresh as soon as the shell exits so it can overlap
@@ -5598,6 +5607,8 @@ class DeepAgentsApp(App):
             logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
+            if not incognito:
+                self._buffer_shell_for_model_context(command, err_msg, None)
         except Exception:
             # Defense in depth: a crash between subprocess read and
             # `_mount_message` could leave the user with no signal that the

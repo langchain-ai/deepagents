@@ -983,10 +983,12 @@ def _parse_interpreter_ptc(
     Returns:
         `False` for `False`/`None`/`[]`, the string `"safe"`/`"all"` when
         either sentinel is given, otherwise a validated list of tool names.
+        A list may include the `"safe"` preset (expanded at agent-build time)
+        but never `"all"`.
 
     Raises:
-        ValueError: If `raw` is a list with empty or non-string entries, or
-            a string other than `"safe"`/`"all"`.
+        ValueError: If `raw` is a list with empty or non-string entries, a
+            list containing `"all"`, or a string other than `"safe"`/`"all"`.
     """
     if raw is None or raw is False:
         return False
@@ -1016,7 +1018,15 @@ def _parse_interpreter_ptc(
                     f"got {entry!r}."
                 )
                 raise ValueError(msg)
-            names.append(entry.strip())
+            cleaned = entry.strip()
+            if cleaned.lower() == INTERPRETER_PTC_ALL_SENTINEL:
+                msg = (
+                    "`interpreter_ptc` list entries cannot include 'all'; use "
+                    "'all' as a standalone value or list explicit tool names "
+                    "(optionally with the 'safe' preset)."
+                )
+                raise ValueError(msg)
+            names.append(cleaned)
         return names
     msg = (
         f"`interpreter_ptc` must be False, 'safe', 'all', or a list of tool "

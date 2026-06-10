@@ -1602,3 +1602,51 @@ class TestInstallPackageSubcommand:
         code, perform_mock, _console = self._run_install_package("-rreqs.txt", yes=True)
         assert code == 2
         perform_mock.assert_not_awaited()
+
+
+class TestParseInterpreterToolsFlag:
+    """Tests for `_parse_interpreter_tools_flag`."""
+
+    def test_none_returns_none(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag(None) is None
+
+    def test_safe_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe") == "safe"
+
+    def test_all_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("all") == "all"
+
+    def test_explicit_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("read_file,glob,grep,task") == [
+            "read_file",
+            "glob",
+            "grep",
+            "task",
+        ]
+
+    def test_safe_inside_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe,task") == ["safe", "task"]
+
+    def test_all_inside_list_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("all,task")
+        assert exc_info.value.code == 2
+
+    def test_empty_value_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("   ")
+        assert exc_info.value.code == 2

@@ -3089,6 +3089,76 @@ class TestResolvePtcOption:
         assert result is not None
         assert sorted(result) == ["grep", "read_file", "write_file"]
 
+    @staticmethod
+    def _tools_with_task() -> list:
+        from langchain_core.tools import tool
+
+        @tool
+        def read_file(path: str) -> str:  # noqa: ARG001
+            """Read."""
+            return ""
+
+        @tool
+        def glob(pattern: str) -> str:  # noqa: ARG001
+            """Glob."""
+            return ""
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        @tool
+        def task(prompt: str) -> str:  # noqa: ARG001
+            """Dispatch a subagent."""
+            return ""
+
+        return [read_file, glob, grep, task]
+
+    def test_safe_in_list_expands_with_explicit_tool(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_in_list_dedupes_preserving_order(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["grep", "safe", "task", "grep"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["grep", "glob", "read_file", "task"]
+
+    def test_all_in_list_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="cannot include 'all'"):
+            _resolve_ptc_option(
+                ["all", "task"],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
+    def test_unknown_name_in_list_with_safe_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="Unknown tool names"):
+            _resolve_ptc_option(
+                ["safe", "nope"],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
     def test_safe_excludes_hitl_gated_tools(self) -> None:
         """`"safe"` must never expose tools that are HITL-gated outside the REPL.
 

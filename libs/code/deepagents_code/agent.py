@@ -222,7 +222,9 @@ def _resolve_ptc_option(
 
     Args:
         ptc: Raw `interpreter_ptc` value from settings or CLI. Accepts
-            `False`/`[]`, `"safe"`, `"all"`, or a list of names.
+            `False`/`[]`, `"safe"`, `"all"`, or a list of names. A list may
+            include `"safe"`, which expands to the live intersection of
+            `INTERPRETER_PTC_SAFE_PRESET`; `"all"` is rejected inside a list.
         tools: Live tool list given to `create_cli_agent`. Used to validate
             explicit names, intersect the `"safe"` preset, and enumerate
             `"all"`.
@@ -237,8 +239,9 @@ def _resolve_ptc_option(
         suitable for `CodeInterpreterMiddleware(ptc=...)`.
 
     Raises:
-        ValueError: For unknown names in an explicit list, or for `"all"`
-            without `acknowledge_unsafe` outside of `auto_approve`.
+        ValueError: For unknown names in an explicit list, for `"all"` inside
+            a list, or for `"all"` without `acknowledge_unsafe` outside of
+            `auto_approve`.
     """
     from langchain.tools import BaseTool as _BaseTool
 
@@ -298,7 +301,35 @@ def _resolve_ptc_option(
         raise ValueError(msg)
 
     if isinstance(ptc, list):
-        unknown = [name for name in ptc if name not in live_set]
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        if any(name.strip().lower() == "all" for name in ptc):
+            msg = (
+                "interpreter_ptc list entries cannot include 'all'; use 'all' "
+                "as a standalone value or list explicit tool names (optionally "
+                "with the 'safe' preset)."
+            )
+            raise ValueError(msg)
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+
+        def _add(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                resolved.append(name)
+
+        unknown: list[str] = []
+        for name in ptc:
+            if name.strip().lower() == "safe":
+                for member in sorted(INTERPRETER_PTC_SAFE_PRESET & live_set):
+                    _add(member)
+                continue
+            if name not in live_set:
+                unknown.append(name)
+                continue
+            _add(name)
+
         if unknown:
             available = ", ".join(sorted(live_set)) or "<none>"
             msg = (
@@ -306,7 +337,7 @@ def _resolve_ptc_option(
                 f"{sorted(set(unknown))}. Available tools: {available}."
             )
             raise ValueError(msg)
-        return list(ptc)
+        return resolved
 
     msg = (
         "interpreter_ptc must be False, 'safe', 'all', or a list of tool names; "

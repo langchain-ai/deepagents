@@ -1852,13 +1852,13 @@ class TestCachedSessionProxy:
         sessions[2].call_tool.assert_awaited_once()
         await manager.cleanup()
 
-    async def test_repeated_transient_error_surfaces_tool_exception(
+    async def test_repeated_transient_error_surfaces_tool_message(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A second transient failure becomes a `ToolException`."""
+        """A second transient failure becomes a tool-local error message."""
         from anyio import ClosedResourceError
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1888,9 +1888,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="failed after one retry"):
-                await tools[0].ainvoke({})  # ty: ignore
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "failed after one retry" in result.content
         assert call_counter["n"] == 3
         await manager.cleanup()
 
@@ -1900,7 +1904,7 @@ class TestCachedSessionProxy:
         fake_tool_result: Any,  # noqa: ANN401
     ) -> None:
         """Generic `OSError`s do not trigger session invalidation and retry."""
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1932,11 +1936,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            # Non-transient exceptions now surface as `ToolException` so the
-            # agent sees a structured error instead of a raw `OSError`.
-            with pytest.raises(ToolException, match="socket glitch"):
-                await tools[0].ainvoke({})  # ty: ignore
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "socket glitch" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 
@@ -2049,12 +2055,12 @@ class TestCachedSessionProxy:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_reauth_signal_surfaces_tool_exception_without_retry(
+    async def test_reauth_signal_surfaces_tool_message_without_retry(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Runtime re-auth signals surface as actionable `ToolException`s."""
-        from langchain_core.tools import ToolException
+        """Runtime re-auth signals surface as actionable tool messages."""
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {
@@ -2095,9 +2101,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="re-authentication"):
-                await tools[0].ainvoke({})  # ty: ignore
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "re-authentication" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 

@@ -5,6 +5,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import mimetypes
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
+    GlobResult,
     GrepMatch,
     GrepResult,
     ReadResult,
@@ -69,6 +71,7 @@ from deepagents.middleware._message_eviction import (
 from deepagents.middleware._utils import append_to_system_message
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
+_SYNC_GLOB_WORKERS = 4
 
 FilesystemOperation = Literal["read", "write"]
 
@@ -764,7 +767,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
         # Sized above 1 so a timed-out glob still occupying a worker does not
         # stall subsequent glob calls.
-        self._glob_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="deepagents-glob")
+        self._glob_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_SYNC_GLOB_WORKERS,
+            thread_name_prefix="deepagents-glob",
+        )
+        self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
 
         self.tools = [
             self._create_ls_tool(),
@@ -1278,10 +1285,30 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # ThreadPoolExecutor: a `with` block here would call
             # shutdown(wait=True) on timeout and block until the runaway glob
             # finished anyway, defeating the timeout.
-            future = self._glob_executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=backend_path))
+            if not self._glob_slots.acquire(blocking=False):
+                return ToolMessage(
+                    content=("Error: too many glob calls are already running. Try again later with a more specific pattern or a narrower path."),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            def run_glob() -> GlobResult:
+                try:
+                    return ctx.run(resolved_backend.glob, pattern, path=backend_path)
+                finally:
+                    self._glob_slots.release()
+
+            try:
+                future = self._glob_executor.submit(run_glob)
+            except Exception:
+                self._glob_slots.release()
+                raise
             try:
                 glob_result = future.result(timeout=GLOB_TIMEOUT)
             except concurrent.futures.TimeoutError:
+                if future.cancel():
+                    self._glob_slots.release()
                 return ToolMessage(
                     content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
                     name="glob",

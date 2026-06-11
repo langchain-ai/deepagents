@@ -739,7 +739,7 @@ class FilesystemBackend(BackendProtocol):
                 `partial_error` is `None` on a clean walk, otherwise a
                 human-readable message indicating the walk was incomplete:
                 either the wall-clock `timeout` elapsed, at least one file
-                failed after scanning started, or the walk aborted early
+                could not be opened or fully read, or the walk aborted early
                 (e.g., a directory entry was removed mid-walk). Callers
                 should treat such results as incomplete.
         """
@@ -763,6 +763,13 @@ class FilesystemBackend(BackendProtocol):
             if not file_errors:
                 return None
             return "One or more files could not be fully searched:\n" + "\n".join(file_errors)
+
+        def _safe_detail(exc: Exception) -> str:
+            # Human-readable cause without the absolute path that `str(exc)`
+            # embeds for `OSError` — keeps virtual paths virtual and avoids
+            # leaking the real root through the agent-facing error.
+            reason = getattr(exc, "strerror", None) or getattr(exc, "reason", None)
+            return f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
 
         try:
             for fp in root.rglob("*"):
@@ -806,9 +813,23 @@ class FilesystemBackend(BackendProtocol):
                                 continue
                             line = raw_line.rstrip("\n")
                             results.setdefault(virt_path, []).append((line_num, line))
-                except (UnicodeDecodeError, PermissionError, OSError, RuntimeError) as e:
+                except UnicodeDecodeError as e:
+                    # A file that fails to decode before any line is scanned is
+                    # treated as binary and skipped silently, mirroring ripgrep's
+                    # binary-file skip (and its DEBUG-level per-file error frames).
+                    # If decoding only failed partway through, surface the
+                    # truncation so the partial result is flagged.
                     if scanned_lines > 0 or virt_path in results:
-                        file_errors.append(f"- {virt_path}: {type(e).__name__} while reading file")
+                        file_errors.append(f"- {virt_path}: {_safe_detail(e)}")
+                    else:
+                        logger.debug("Skipping undecodable file in grep fallback: %s", fp)
+                    continue
+                except (OSError, RuntimeError) as e:
+                    # Could not open or fully read the file. Unlike an undecodable
+                    # binary, this is a file the caller likely expected to search,
+                    # so always surface it even when no lines were scanned.
+                    file_errors.append(f"- {virt_path}: {_safe_detail(e)}")
+                    logger.debug("Could not fully read %s in grep fallback", fp, exc_info=True)
                     continue
         except (OSError, RuntimeError) as e:
             # `rglob` raised mid-iteration. `OSError` covers the common case

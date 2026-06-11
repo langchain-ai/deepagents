@@ -1004,6 +1004,49 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
 
 
+class _FailingHandle:
+    """File-handle stub that yields one line, then raises `UnicodeDecodeError`.
+
+    Simulates a file that decodes cleanly at first and fails partway through —
+    the case a real undecodable file cannot reproduce, since a real binary file
+    fails on the first read and exercises the silent-skip path instead.
+    """
+
+    def __init__(self, first_line: str = "needle before failure\n") -> None:
+        self._first_line = first_line
+        self._emitted = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> str:
+        if not self._emitted:
+            self._emitted = True
+            return self._first_line
+        encoding = "utf-8"
+        data = b"\xff"
+        reason = "invalid start byte"
+        raise UnicodeDecodeError(encoding, data, 0, 1, reason)
+
+
+def _fake_open_for(target: Path, handle: object) -> object:
+    """Build a `Path.open` replacement that returns `handle` for `target` only."""
+    original_open = Path.open
+
+    def fake_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == target:
+            return handle
+        return original_open(path, *args, **kwargs)
+
+    return fake_open
+
+
 class TestGrepPythonFallbackTimeout:
     """Tests for the wall-clock timeout on the Python grep fallback."""
 
@@ -1033,7 +1076,8 @@ class TestGrepPythonFallbackTimeout:
 
         `time.monotonic` is stubbed to advance 1s per call. Inside
         `_python_search` it is called once to set the deadline, once for the
-        outer per-file check, then once every 2048 lines. With the deadline
+        outer per-file check, then on each 2048-line boundary (here only the
+        check at line 2048 fires before the function returns). With the deadline
         1.5s out, the outer check passes (so the file is opened) and the first
         in-file check at line 2048 trips. This proves the mid-file branch runs
         rather than the outer guard short-circuiting before any read — which is
@@ -1110,44 +1154,135 @@ class TestGrepPythonFallbackTimeout:
         """A per-file read error after scanning starts is surfaced with partial matches."""
         bad = tmp_path / "bad.txt"
         bad.write_text("")
-
-        class BrokenHandle:
-            def __init__(self) -> None:
-                self._first = True
-
-            def __enter__(self) -> Self:
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                return None
-
-            def __iter__(self) -> Self:
-                return self
-
-            def __next__(self) -> str:
-                if self._first:
-                    self._first = False
-                    return "needle before failure\n"
-                encoding = "utf-8"
-                data = b"\xff"
-                reason = "invalid start byte"
-                raise UnicodeDecodeError(encoding, data, 0, 1, reason)
-
-        original_open = Path.open
-
-        def fake_open(path: Path, *args: object, **kwargs: object) -> BrokenHandle | object:
-            if path == bad:
-                return BrokenHandle()
-            return original_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", fake_open)
+        monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         results, partial_error = be._python_search("needle", tmp_path, None)
 
         assert results == {"/bad.txt": [(1, "needle before failure")]}
         assert partial_error is not None
         assert "One or more files could not be fully searched" in partial_error
-        assert "- /bad.txt: UnicodeDecodeError while reading file" in partial_error
+        assert "- /bad.txt: UnicodeDecodeError: invalid start byte" in partial_error
+
+    def test_python_search_surfaces_open_failure_without_scanned_lines(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An open failure is surfaced even when no lines were scanned.
+
+        Unlike an undecodable binary (skipped silently), a file the caller asked
+        to search but that could not be opened is reported via `partial_error`.
+        """
+        target = tmp_path / "locked.txt"
+        target.write_text("needle\n")
+        original_open = Path.open
+
+        def fake_open(path: Path, *args: object, **kwargs: object) -> object:
+            if path == target:
+                msg = "nope"
+                raise PermissionError(msg)
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fake_open)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results == {}
+        assert partial_error is not None
+        assert "- /locked.txt: PermissionError" in partial_error
+
+    def test_python_search_returns_matches_when_another_file_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A clean file's matches are returned while a sibling's read error is surfaced."""
+        good = tmp_path / "good.txt"
+        good.write_text("needle good\n")
+        bad = tmp_path / "bad.txt"
+        bad.write_text("")
+        monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results.get("/good.txt") == [(1, "needle good")]
+        assert partial_error is not None
+        assert "/bad.txt" in partial_error
+        assert "/good.txt" not in partial_error
+
+    def test_python_search_glob_filters_files(self, tmp_path: Path) -> None:
+        """The compiled glob matcher restricts the fallback to matching filenames."""
+        (tmp_path / "match.py").write_text("needle in py\n")
+        (tmp_path / "skip.txt").write_text("needle in txt\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, "*.py")
+        assert partial_error is None
+        assert results.get("/match.py") == [(1, "needle in py")]
+        assert "/skip.txt" not in results
+
+    def test_python_search_glob_matches_directory_components(self, tmp_path: Path) -> None:
+        """Directory-component globs filter nested files (GLOBSTAR/BRACE flags)."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "a.md").write_text("needle doc\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "b.md").write_text("needle src\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, "docs/*.md")
+        assert partial_error is None
+        assert results.get("/docs/a.md") == [(1, "needle doc")]
+        assert "/src/b.md" not in results
+
+    def test_python_search_skips_file_over_size_limit(self, tmp_path: Path) -> None:
+        """Files exceeding `max_file_size_bytes` are skipped without a partial error."""
+        (tmp_path / "big.txt").write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        be.max_file_size_bytes = 3  # smaller than the file; forces the size-skip branch
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {}
+
+    def test_python_search_non_virtual_mode_keys_on_absolute_path(self, tmp_path: Path) -> None:
+        """In non-virtual mode the result key is the absolute filesystem path."""
+        target = tmp_path / "f.txt"
+        target.write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {str(target): [(1, "needle")]}
+
+    def test_python_search_accumulates_multiple_matches_per_file(self, tmp_path: Path) -> None:
+        """All matching lines are collected in order with 1-based line numbers."""
+        (tmp_path / "f.txt").write_text("needle\nno\nneedle\nno\nneedle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {"/f.txt": [(1, "needle"), (3, "needle"), (5, "needle")]}
+
+    def test_python_search_handles_cr_only_line_endings(self, tmp_path: Path) -> None:
+        """Classic-Mac CR line endings are normalized by universal-newline translation."""
+        (tmp_path / "cr.txt").write_bytes(b"hit me\rother\r")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("hit", tmp_path, None)
+        assert partial_error is None
+        assert results.get("/cr.txt") == [(1, "hit me")]
+
+    def test_grep_fallback_treats_pattern_literally(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`grep` passes the raw pattern to the fallback (no `re.escape`), matching literally.
+
+        Stubbing `_ripgrep_search` to `None` forces the Python fallback regardless
+        of whether ripgrep is installed, locking the call-site contract.
+        """
+        (tmp_path / "f.txt").write_text("a.b\naxb\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: None)
+        result = be.grep("a.b", path="/")
+        texts = [m["text"] for m in result.matches]
+        assert "a.b" in texts
+        assert "axb" not in texts
 
     def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """`grep` surfaces the timeout as a partial error while still returning matches found so far."""

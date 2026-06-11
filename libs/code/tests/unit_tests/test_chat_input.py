@@ -3214,6 +3214,37 @@ class TestPasteBurstEnterSuppression:
             assert app.submitted[0].value == "abc"
             assert "\n" not in ta.text
 
+    async def test_suppressed_enter_rearms_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suppressed enter extends the window so trailing lines stay grouped."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            # Fresh keystroke within the char gap and an open (but nearly
+            # closed) window: this enter belongs to a replayed paste.
+            ta._paste_burst_last_key_time = now
+            original_until = now + 0.01
+            ta._paste_burst_window_until = original_until
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+            assert ta._paste_burst_window_until is not None
+            assert ta._paste_burst_window_until > original_until
+
     async def test_slash_command_enter_still_submits_during_burst(self) -> None:
         """Slash-command context keeps enter dispatching even after a burst."""
         app = _RecordingApp()

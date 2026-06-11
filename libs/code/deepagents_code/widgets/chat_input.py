@@ -703,12 +703,18 @@ class ChatTextArea(TextArea):
     def _enter_inserts_newline_during_burst(self, now: float) -> bool:
         """Return whether `enter` should insert a newline rather than submit.
 
-        True while a burst is buffering or within the suppression window that
-        outlives it, except in slash-command context where `enter` must keep
-        its submit/dispatch semantics.
+        True only when the preceding keystroke was itself part of a rapid run
+        (within `_PASTE_BURST_CHAR_GAP_SECONDS`) and the suppression window is
+        still open. The char-gap check keeps a deliberate `enter` pressed after
+        a burst settles from being swallowed; the window bounds how long a
+        replayed paste's newlines stay grouped. Slash-command context always
+        keeps `enter`'s submit/dispatch semantics.
         """
         if self._in_slash_command_context():
             return False
+        # Defensive: the plain-Enter caller appends-and-returns or flushes any
+        # active buffer before this helper runs, so this branch is unreachable
+        # today. It keeps the helper's contract self-contained.
         if self._paste_burst_buffer:
             return True
         last_key = self._paste_burst_last_key_time

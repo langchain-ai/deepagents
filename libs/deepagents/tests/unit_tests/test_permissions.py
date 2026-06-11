@@ -188,6 +188,30 @@ class TestRecursiveDeletePermissions:
         assert not (tmp_path / "work" / "logs").exists()
         assert (tmp_path / "work" / "secrets" / "key.txt").exists()
 
+    def test_delete_reports_multiple_overlapping_patterns(self, tmp_path):
+        # The agent gets context: several overlapping deny patterns are reported.
+        backend = self._fs_backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/work/logs/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "/work/secrets/**" in result
+        assert "/work/logs/**" in result
+        assert (tmp_path / "work" / "a.txt").exists()
+
+    def test_find_delete_deny_patterns_caps_at_five(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["write"], paths=[f"/work/d{i}/**"], mode="deny") for i in range(8)],
+        )
+        # All 8 overlap /work, but at most 5 are collected.
+        assert len(middleware._find_delete_deny_patterns("/work")) == 5
+
     def test_single_file_delete_still_works(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")

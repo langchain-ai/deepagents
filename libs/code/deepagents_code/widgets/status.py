@@ -33,7 +33,7 @@ PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
 `accounts/fireworks/models/...` that crowd out the rest of the status bar;
 strip the registered prefixes before display."""
 
-ConnectionState = Literal["", "connecting", "reconnecting"]
+ConnectionState = Literal["", "connecting", "reconnecting", "resuming"]
 """Connection states the status bar can display (`''` means cleared)."""
 
 CONNECTION_STATES = frozenset(get_args(ConnectionState))
@@ -369,7 +369,7 @@ class StatusBar(Horizontal):
 
     def watch_connection_state(self, new_value: ConnectionState) -> None:
         """Start or stop the spinner and re-render when connection state changes."""
-        if new_value in {"connecting", "reconnecting"}:
+        if new_value in {"connecting", "reconnecting", "resuming"}:
             self._start_spinner()
         else:
             self._stop_spinner()
@@ -413,6 +413,8 @@ class StatusBar(Horizontal):
         parts: list[str] = []
         if self.connection_state == "reconnecting":
             parts.append(f"{self._spinner.current_frame()} Reconnecting")
+        elif self.connection_state == "resuming":
+            parts.append(f"{self._spinner.current_frame()} Resuming")
         elif self.connection_state == "connecting":
             parts.append(f"{self._spinner.current_frame()} Connecting")
         if self.queued_count > 0:
@@ -429,7 +431,8 @@ class StatusBar(Horizontal):
         """Set the connection indicator state.
 
         Args:
-            state: One of `''` (clear), `'connecting'`, or `'reconnecting'`.
+            state: One of `''` (clear), `'connecting'`, `'reconnecting'`, or
+                `'resuming'`.
 
         Raises:
             ValueError: If `state` is not a recognized connection state.

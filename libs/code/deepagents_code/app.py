@@ -1941,6 +1941,14 @@ class DeepAgentsApp(App):
         the meaningless `(_connecting=False, _reconnecting=True)` state.
         """
 
+        self._resuming = self._connecting and self._resume_thread_intent is not None
+        """True while the initial connect is resuming a thread (`-r`).
+
+        Lets the status bar label the spinner "Resuming" instead of the generic
+        "Connecting" during `-r` startup. Only meaningful while `_connecting` is
+        `True`; cleared whenever `_connecting` is cleared.
+        """
+
         self._server_startup_error: str | None = None
         """Set when the background server fails to start; persists for the
         session lifetime (server failure is terminal).
@@ -4292,6 +4300,7 @@ class DeepAgentsApp(App):
             self._reconnecting = False
         if not self._connecting:
             self._defer_connection_status_display = False
+            self._resuming = False
             self._cancel_connection_status_reveal_timer()
             self._status_bar.set_connection("")
         elif self._defer_connection_status_display:
@@ -4299,6 +4308,8 @@ class DeepAgentsApp(App):
             self._schedule_connection_status_reveal_timer()
         elif self._reconnecting:
             self._status_bar.set_connection("reconnecting")
+        elif self._resuming:
+            self._status_bar.set_connection("resuming")
         else:
             self._status_bar.set_connection("connecting")
 

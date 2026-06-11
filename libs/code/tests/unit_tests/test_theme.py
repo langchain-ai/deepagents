@@ -2935,3 +2935,65 @@ class TestThemeSelectorScreen:
             await app.workers.wait_for_complete()
 
         assert app.theme == "langchain-light"
+
+    @pytest.mark.parametrize("failure_mode", ["status", "exception"])
+    async def test_escape_restores_theme_when_in_flight_save_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_mode: str
+    ) -> None:
+        """Esc reverts once a terminal-default save kept by cancel fails."""
+        import asyncio
+        import threading
+
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.app import _ConfigWriteResult
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _slow_failing_save(*_args: object, **_kwargs: object) -> _ConfigWriteResult:
+            started.set()
+            release.wait(timeout=1)
+            if failure_mode == "exception":
+                msg = "simulated"
+                raise OSError(msg)
+            return _ConfigWriteResult(
+                False, "Could not save terminal mapping.", "error"
+            )
+
+        monkeypatch.setattr(
+            "deepagents_code.app._save_terminal_theme_mapping_result",
+            _slow_failing_save,
+        )
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = list(theme.get_registry()).index(
+                "langchain-light"
+            )
+            await pilot.pause()
+
+            await pilot.press("t")
+            assert await asyncio.to_thread(started.wait, 1)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.theme == "langchain-light"
+
+            release.set()
+            await app.workers.wait_for_complete()
+
+        assert app.theme == "langchain"

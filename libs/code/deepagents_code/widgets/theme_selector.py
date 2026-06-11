@@ -114,6 +114,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         self._original_theme = current_theme
         self._terminal_default = terminal_default
         self._session_terminal_default: str | None = None
+        self._cancel_kept_terminal_default: str | None = None
         self._show_keys = False
 
     def _sync_terminal_background(self) -> None:
@@ -235,6 +236,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         restores the theme that was active when the picker opened.
         """
         keep = self._session_terminal_default
+        if keep is not None:
+            self._cancel_kept_terminal_default = keep
         target = keep if keep is not None else self._original_theme
         try:
             self.app.theme = target
@@ -246,6 +249,25 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 "Failed to apply theme '%s' on cancel", target, exc_info=True
             )
         self.dismiss(None)
+
+    def _discard_failed_terminal_default_save(self, name: str) -> None:
+        if self._session_terminal_default != name:
+            return
+        self._session_terminal_default = None
+        if self._cancel_kept_terminal_default != name:
+            return
+        self._cancel_kept_terminal_default = None
+        if self.app.theme != name:
+            return
+        try:
+            self.app.theme = self._original_theme
+            self._sync_terminal_background()
+        except Exception:
+            logger.warning(
+                "Failed to restore original theme '%s' after terminal save failure",
+                self._original_theme,
+                exc_info=True,
+            )
 
     def action_cursor_down(self) -> None:
         """Move the option list cursor down (Tab)."""
@@ -308,10 +330,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
             except Exception as exc:
                 logger.exception("Failed to persist terminal theme mapping")
-                # Guard against clobbering a newer `t` selection whose write
-                # is still in flight; only clear if this save is still current.
-                if self._session_terminal_default == name:
-                    self._session_terminal_default = None
+                self._discard_failed_terminal_default_save(name)
                 self.app.notify(
                     f"Could not save terminal mapping ({type(exc).__name__}).",
                     severity="error",
@@ -320,8 +339,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
                 return
             if not status.ok:
-                if self._session_terminal_default == name:
-                    self._session_terminal_default = None
+                self._discard_failed_terminal_default_save(name)
                 self.app.notify(
                     status.message or "Could not save terminal mapping.",
                     severity=status.severity,

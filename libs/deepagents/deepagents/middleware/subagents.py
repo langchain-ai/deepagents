@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import json
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from typing import Any, NotRequired, TypedDict, TypeGuard
+from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -239,20 +239,6 @@ class CompiledSubAgent(TypedDict):
     a 'messages' key. This is required for the subagent to communicate
     results back to the main agent.
     """
-
-
-def _is_compiled_subagent(
-    spec: SubAgent | CompiledSubAgent,
-) -> TypeGuard[CompiledSubAgent]:
-    """Return whether `spec` is a compiled subagent spec."""
-    return "runnable" in spec
-
-
-def _is_raw_subagent(
-    spec: SubAgent | CompiledSubAgent,
-) -> TypeGuard[SubAgent]:
-    """Return whether `spec` is a raw subagent spec."""
-    return "runnable" not in spec
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -566,11 +552,15 @@ def _build_task_tool(  # noqa: C901, PLR0915
         response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
     ) -> CompiledSubAgent:
         """Compile one raw spec or configure one provided runnable."""
-        if _is_compiled_subagent(spec):
+        if "runnable" in spec:
             if response_format is not None:
                 msg = f'response_schema cannot be used with compiled subagent "{spec["name"]}"; dynamic schemas require a raw SubAgent spec.'
                 raise ValueError(msg)
-            runnable = spec["runnable"].with_config(
+
+            # Use with_config (not attribute mutation) so the original runnable is
+            # untouched and a shared instance can be registered under multiple names.
+            compiled = cast("CompiledSubAgent", spec)
+            runnable = compiled["runnable"].with_config(
                 {
                     "metadata": {"lc_agent_name": spec["name"]},
                     "run_name": spec["name"],
@@ -581,9 +571,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 "description": spec["description"],
                 "runnable": runnable,
             }
-        if not _is_raw_subagent(spec):  # pragma: no cover
-            msg = "Subagent spec must be either raw or compiled."
-            raise TypeError(msg)
         return {
             "name": spec["name"],
             "description": spec["description"],

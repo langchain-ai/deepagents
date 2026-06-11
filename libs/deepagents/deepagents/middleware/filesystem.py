@@ -774,9 +774,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
-        # Cache for dynamic system prompts keyed on whether the execute tool
-        # is both present and supported. The text depends only on that flag
-        # and immutable config, so it is computed at most twice per instance.
+        # Cache for dynamic system prompts keyed on the `include_execution`
+        # flag. The text depends only on that flag and immutable config, so it
+        # is computed at most twice per instance.
         self._dynamic_system_prompt_cache: dict[bool, str] = {}
 
         # Store configuration (private - internal implementation details)
@@ -811,6 +811,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         The result depends only on `include_execution` and immutable config,
         so it is cached per instance to avoid rebuilding on every model call.
+        The cache is intentionally lock-free even though sync and async model
+        calls share it: writes are idempotent (a given flag always yields the
+        same string), so a race at worst recomputes and re-stores that value.
         """
         cached = self._dynamic_system_prompt_cache.get(include_execution)
         if cached is not None:

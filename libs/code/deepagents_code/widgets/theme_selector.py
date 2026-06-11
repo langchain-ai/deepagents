@@ -35,7 +35,9 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
 
     Displays available themes in an `OptionList`. Navigating the option list
     applies a live preview by swapping the app theme. Returns the selected
-    theme name on Enter, or `None` on Esc (restoring the original theme).
+    theme name on Enter, or `None` on Esc. Esc normally restores the original
+    theme, but if a per-terminal default was saved with `t` this session, Esc
+    keeps that theme active instead of reverting.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -47,8 +49,10 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     ]
     """Key bindings for the selector.
 
-    Esc dismisses and restores the original theme. Arrow keys and Enter are
-    handled natively by the embedded `OptionList`; Tab / Shift+Tab are bound
+    Esc dismisses, restoring the original theme unless a `t` save set a
+    per-terminal default this session (in which case that theme is kept).
+    Arrow keys and Enter are handled natively by the embedded `OptionList`;
+    Tab / Shift+Tab are bound
     here to advance the option list cursor for consistency with other
     selector screens (where Tab cycles focus across multiple widgets).
     `action_toggle_names` toggles between human-readable labels and canonical
@@ -109,6 +113,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         self._current_theme = current_theme
         self._original_theme = current_theme
         self._terminal_default = terminal_default
+        self._session_terminal_default: str | None = None
+        self._cancel_kept_terminal_default: str | None = None
         self._show_keys = False
 
     def _sync_terminal_background(self) -> None:
@@ -218,10 +224,50 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Restore the original theme and dismiss."""
-        self.app.theme = self._original_theme
-        self._sync_terminal_background()
+        """Dismiss, keeping a terminal default chosen this session or restoring.
+
+        Pressing `t` to save a per-terminal default is a deliberate choice, so
+        Esc keeps that theme instead of reverting. `action_set_for_terminal`
+        records the choice synchronously (and clears it only if the async save
+        fails), so Esc keeps the theme even when the write is still in flight;
+        the persisted `[ui.terminal_themes]` mapping is the source of truth
+        across sessions. `dismiss(None)` intentionally skips the global
+        `[ui].theme` write. Without a `t` press — or after a failed save — Esc
+        restores the theme that was active when the picker opened.
+        """
+        keep = self._session_terminal_default
+        if keep is not None:
+            self._cancel_kept_terminal_default = keep
+        target = keep if keep is not None else self._original_theme
+        try:
+            self.app.theme = target
+            self._sync_terminal_background()
+        except Exception:
+            # A theme can be unregistered mid-session; never trap the user in
+            # the modal. Log and dismiss regardless so Esc always closes.
+            logger.warning(
+                "Failed to apply theme '%s' on cancel", target, exc_info=True
+            )
         self.dismiss(None)
+
+    def _discard_failed_terminal_default_save(self, name: str) -> None:
+        if self._session_terminal_default != name:
+            return
+        self._session_terminal_default = None
+        if self._cancel_kept_terminal_default != name:
+            return
+        self._cancel_kept_terminal_default = None
+        if self.app.theme != name:
+            return
+        try:
+            self.app.theme = self._original_theme
+            self._sync_terminal_background()
+        except Exception:
+            logger.warning(
+                "Failed to restore original theme '%s' after terminal save failure",
+                self._original_theme,
+                exc_info=True,
+            )
 
     def action_cursor_down(self) -> None:
         """Move the option list cursor down (Tab)."""
@@ -269,6 +315,12 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             )
             return
 
+        # Record the deliberate choice synchronously so Esc keeps this theme
+        # even if the user dismisses before the async write returns (otherwise
+        # a slow write would race the cancel path and revert). The failure
+        # branches below clear it so a save that errors still reverts on Esc.
+        self._session_terminal_default = name
+
         async def _persist() -> None:
             try:
                 from deepagents_code.app import _save_terminal_theme_mapping_result
@@ -278,6 +330,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
             except Exception as exc:
                 logger.exception("Failed to persist terminal theme mapping")
+                self._discard_failed_terminal_default_save(name)
                 self.app.notify(
                     f"Could not save terminal mapping ({type(exc).__name__}).",
                     severity="error",
@@ -286,6 +339,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
                 return
             if not status.ok:
+                self._discard_failed_terminal_default_save(name)
                 self.app.notify(
                     status.message or "Could not save terminal mapping.",
                     severity=status.severity,

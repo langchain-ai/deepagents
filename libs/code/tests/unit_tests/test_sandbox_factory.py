@@ -8,12 +8,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
     _get_provider,
     create_sandbox,
     get_default_working_dir,
     verify_sandbox_deps,
 )
+from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+_FACTORY = "deepagents_code.integrations.sandbox_factory"
+
+
+def _registry_with(config: SandboxConfig) -> SandboxRegistry:
+    """Build a deterministic registry (no entry-point discovery) from config."""
+    return SandboxRegistry(config=config, include_entry_points=False)
 
 
 @pytest.mark.parametrize(
@@ -158,7 +167,7 @@ def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
         ),
         pytest.raises(
             ValueError,
-            match="only supported for provider='langsmith' or 'runloop'",
+            match="snapshot_name is not supported by provider 'modal'",
         ),
         create_sandbox("modal", snapshot_name="custom-snap"),
     ):
@@ -292,7 +301,7 @@ def test_agentcore_init_without_boto3_does_not_raise() -> None:
         for k in env_clear:
             os.environ.pop(k, None)
         provider = _get_provider("agentcore")
-    assert provider._region == "us-west-2"  # ty: ignore[unresolved-attribute]
+    assert provider._region == "us-west-2"  # ty: ignore
 
 
 @pytest.mark.parametrize(
@@ -325,7 +334,7 @@ def test_agentcore_region_resolution(env: dict[str, str], expected: str) -> None
             if k not in env:
                 os.environ.pop(k, None)
         provider = _get_provider("agentcore")
-    assert provider._region == expected  # ty: ignore[unresolved-attribute]
+    assert provider._region == expected  # ty: ignore
 
 
 def test_agentcore_get_or_create_happy_path() -> None:
@@ -357,7 +366,7 @@ def test_agentcore_get_or_create_happy_path() -> None:
 
     mock_interpreter.start.assert_called_once()
     assert result is mock_backend
-    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore[unresolved-attribute]
+    assert provider._active_interpreters["session-123"] is mock_interpreter  # ty: ignore
 
 
 def test_agentcore_start_failure_cleans_up() -> None:
@@ -388,7 +397,7 @@ def test_agentcore_start_failure_cleans_up() -> None:
         provider.get_or_create()
 
     mock_interpreter.stop.assert_called_once()
-    assert not provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert not provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_stops_tracked_interpreter() -> None:
@@ -399,12 +408,12 @@ def test_agentcore_delete_stops_tracked_interpreter() -> None:
         provider = _get_provider("agentcore")
 
     mock_interpreter = MagicMock()
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
 
     provider.delete(sandbox_id="sess-1")
 
     mock_interpreter.stop.assert_called_once()
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_swallows_stop_exception() -> None:
@@ -416,10 +425,10 @@ def test_agentcore_delete_swallows_stop_exception() -> None:
 
     mock_interpreter = MagicMock()
     mock_interpreter.stop.side_effect = RuntimeError("network error")
-    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore[unresolved-attribute]
+    provider._active_interpreters["sess-1"] = mock_interpreter  # ty: ignore
 
     provider.delete(sandbox_id="sess-1")  # should not raise
-    assert "sess-1" not in provider._active_interpreters  # ty: ignore[unresolved-attribute]
+    assert "sess-1" not in provider._active_interpreters  # ty: ignore
 
 
 def test_agentcore_delete_untracked_session() -> None:
@@ -510,11 +519,87 @@ class TestVerifySandboxDeps:
     @pytest.mark.parametrize("provider", ["none", "langsmith", "", None])
     def test_skips_builtin_and_empty_providers(self, provider: str | None) -> None:
         """Built-in and empty providers should be silently accepted."""
-        verify_sandbox_deps(provider)  # type: ignore[arg-type]
+        verify_sandbox_deps(provider)  # ty: ignore
 
     def test_skips_unknown_provider(self) -> None:
         """Unknown providers are passed through for downstream handling."""
         verify_sandbox_deps("unknown_provider")  # should not raise
+
+    def test_config_override_of_builtin_uses_package_hint(self) -> None:
+        """Overriding a built-in keeps its probe module and uses the package."""
+        config = SandboxConfig(
+            providers={"daytona": {"class_path": "x:Y", "package": "my-daytona"}}
+        )
+        with (
+            patch(f"{_FACTORY}._get_registry", return_value=_registry_with(config)),
+            patch(
+                f"{_FACTORY}.importlib.util.find_spec",
+                return_value=None,
+            ),
+            pytest.raises(
+                ImportError,
+                match=r"Missing dependencies for 'daytona'.*"
+                r"/install my-daytona --package",
+            ),
+        ):
+            verify_sandbox_deps("daytona")
+
+
+class TestCreateSandboxParams:
+    """Tests for forwarding `params` into `provider.get_or_create()`."""
+
+    def test_config_and_call_params_merge_with_call_precedence(self) -> None:
+        """Call-site params override config params; both reach get_or_create."""
+        config = SandboxConfig(
+            providers={
+                "acme": {
+                    "class_path": "x:Y",
+                    "working_dir": "/w",
+                    "params": {"region": "us-east-1", "shared": "from-config"},
+                }
+            }
+        )
+        registry = _registry_with(config)
+        backend = MagicMock(id="sandbox-1")
+        provider = MagicMock()
+        provider.get_or_create.return_value = backend
+
+        with (
+            patch(f"{_FACTORY}._get_registry", return_value=registry),
+            patch(f"{_FACTORY}._get_provider", return_value=provider),
+            create_sandbox(
+                "acme", params={"shared": "from-call", "extra": "call-only"}
+            ) as result,
+        ):
+            assert result is backend
+
+        provider.get_or_create.assert_called_once_with(
+            sandbox_id=None,
+            region="us-east-1",
+            shared="from-call",
+            extra="call-only",
+        )
+
+
+class TestGetDefaultWorkingDirRegistry:
+    """Tests for `get_default_working_dir` resolving through the registry."""
+
+    def test_config_override(self) -> None:
+        config = SandboxConfig(
+            providers={"acme": {"class_path": "x:Y", "working_dir": "/cfg-wd"}}
+        )
+        with patch(f"{_FACTORY}._get_registry", return_value=_registry_with(config)):
+            assert get_default_working_dir("acme") == "/cfg-wd"
+
+    def test_unknown_provider_raises(self) -> None:
+        with (
+            patch(
+                f"{_FACTORY}._get_registry",
+                return_value=_registry_with(SandboxConfig()),
+            ),
+            pytest.raises(ValueError, match="Unknown sandbox provider: nope"),
+        ):
+            get_default_working_dir("nope")
 
 
 class TestLangSmithSnapshotResolution:

@@ -1155,7 +1155,10 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         self.context.server_url,
                     )
                     for url in prm_urls:
-                        response = yield create_oauth_metadata_request(url)
+                        # ASYNC119: yielding the request to receive its response is
+                        # this auth generator's handshake protocol, not a value
+                        # escaping a context manager.
+                        response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
                         prm = await handle_protected_resource_response(response)
                         if prm is None:
                             logger.debug(
@@ -1172,7 +1175,10 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         self.context.server_url,
                     )
                     for url in asm_urls:
-                        response = yield create_oauth_metadata_request(url)
+                        # ASYNC119: yielding the request to receive its response is
+                        # this auth generator's handshake protocol, not a value
+                        # escaping a context manager.
+                        response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
                         ok, metadata = await handle_auth_metadata_response(response)
                         if not ok:
                             break

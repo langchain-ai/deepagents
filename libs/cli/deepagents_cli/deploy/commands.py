@@ -136,7 +136,7 @@ _STARTER_AGENT_JSON = """\
   "description": "A managed deep agent.",
   "model": "openai:gpt-5.5",
   "backend": {{
-    "type": "default"
+    "type": "state"
   }}
 }}
 """
@@ -546,30 +546,34 @@ def execute_agents_command(args: argparse.Namespace) -> None:
     _load_dotenv(start_path=Path.cwd())
     client = ApiClient.from_env()
     try:
-        if args.agents_cmd == "list":
-            for agent in client.iter_agents(page_size=50):
-                updated = agent.get("updated_at", "")
-                print(f"{agent.get('id')}\t{agent.get('name', '')}\t{updated}")
-        elif args.agents_cmd == "get":
-            agent = client.get_agent(args.agent_id, include_files=args.include_files)
-            print(json.dumps(agent, indent=2))
-        elif args.agents_cmd == "delete":
-            if not args.yes:
-                try:
-                    prompt = f"Delete agent {args.agent_id}? [y/N]: "
-                    answer = input(prompt).strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    print("Aborted.")
-                    return
-                if answer not in {"y", "yes"}:
-                    print("Aborted.")
-                    return
-            client.delete_agent(args.agent_id)
-            print(f"Deleted {args.agent_id}")
+        _execute_agents_command(args, client)
     except ApiError as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
+
+
+def _execute_agents_command(args: argparse.Namespace, client: ApiClient) -> None:
+    if args.agents_cmd == "list":
+        for agent in client.iter_agents(page_size=50):
+            updated = agent.get("updated_at", "")
+            print(f"{agent.get('id')}\t{agent.get('name', '')}\t{updated}")
+    elif args.agents_cmd == "get":
+        agent = client.get_agent(args.agent_id, include_files=args.include_files)
+        print(json.dumps(agent, indent=2))
+    elif args.agents_cmd == "delete":
+        if not args.yes:
+            try:
+                prompt = f"Delete agent {args.agent_id}? [y/N]: "
+                answer = input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                print("Aborted.")
+                return
+            if answer not in {"y", "yes"}:
+                print("Aborted.")
+                return
+        client.delete_agent(args.agent_id)
+        print(f"Deleted {args.agent_id}")
 
 
 def _add_mcp_servers_parser(
@@ -705,126 +709,139 @@ def _resolve_mcp_server_id(client: ApiClient, identifier: str) -> str:
 
 def execute_mcp_servers_command(args: argparse.Namespace) -> None:
     """Run the `deepagents mcp-servers` sub-command."""
-    from urllib.parse import urlparse
-
     from deepagents_cli.config import _load_dotenv
     from deepagents_cli.deploy.api_client import ApiClient, ApiError
 
     _load_dotenv(start_path=Path.cwd())
     client = ApiClient.from_env()
     try:
-        if args.mcp_cmd == "list":
-            for srv in client.list_mcp_servers():
-                print(f"{srv.get('id')}\t{srv.get('name', '')}\t{srv.get('url', '')}")
-        elif args.mcp_cmd == "add":
-            if args.auth_type == "oauth" and args.header:
-                print("Error: --header cannot be used with --auth-type oauth.")
-                raise SystemExit(1)
-            if args.auth_type != "oauth" and getattr(args, "connect", False):
-                print("Error: --connect requires --auth-type oauth.")
-                raise SystemExit(1)
-            headers = _parse_header_args(args.header)
-            name = args.name or urlparse(args.url).hostname or args.url
-            srv = client.create_mcp_server(
-                name=name,
-                url=args.url,
-                headers=headers,
-                auth_type=args.auth_type,
-                oauth_mode=(
-                    "per_user_dynamic_client" if args.auth_type == "oauth" else None
-                ),
-            )
-            srv_id = srv.get("id")
-            srv_name = srv.get("name")
-            srv_url = srv.get("url")
-            print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
-            connect_attempted = False
-            if getattr(args, "connect", False):
-                if not isinstance(srv_id, str) or not srv_id:
-                    print("Error: created OAuth MCP server did not include an id.")
-                    raise SystemExit(1)
-                _connect_mcp_server_oauth(
-                    client,
-                    srv_id,
-                    scopes=args.scope,
-                    force_new=args.force_new,
-                    timeout_seconds=args.timeout,
-                    no_browser=args.no_browser,
-                )
-                connect_attempted = True
-            _show_tools_after_add(
-                client,
-                srv,
-                auth_type=args.auth_type,
-                connect_attempted=connect_attempted,
-                suppressed=getattr(args, "no_tools", False),
-            )
-        elif args.mcp_cmd == "get":
-            server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
-            server = client.get_mcp_server(server_id)
-            print(json.dumps(_redact_mcp_server(server), indent=2))
-        elif args.mcp_cmd == "update":
-            headers = _parse_update_headers(args.header, args.clear_headers)
-            if args.url is None and headers is None and args.auth_type is None:
-                print(
-                    "Error: provide at least one of --url, --header, "
-                    "or --clear-headers."
-                )
-                raise SystemExit(1)
-            srv = client.update_mcp_server(
-                _resolve_mcp_server_id(client, args.mcp_server_id),
-                url=args.url,
-                headers=headers,
-                auth_type=args.auth_type,
-            )
-            srv_id = srv.get("id")
-            srv_name = srv.get("name")
-            srv_url = srv.get("url")
-            print(f"Updated mcp_server {srv_id}: {srv_name} → {srv_url}")
-        elif args.mcp_cmd == "delete":
-            server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
-            label = (
-                server_id
-                if args.mcp_server_id == server_id
-                else f"{args.mcp_server_id} ({server_id})"
-            )
-            if not args.yes:
-                try:
-                    prompt = f"Delete MCP server {label}? [y/N]: "
-                    answer = input(prompt).strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    print("Aborted.")
-                    return
-                if answer not in {"y", "yes"}:
-                    print("Aborted.")
-                    return
-            client.delete_mcp_server(server_id)
-            print(f"Deleted {server_id}")
-        elif args.mcp_cmd == "connect":
-            _connect_mcp_server_oauth(
-                client,
-                _resolve_mcp_server_id(client, args.mcp_server_id),
-                scopes=args.scope,
-                force_new=args.force_new,
-                timeout_seconds=args.timeout,
-                no_browser=args.no_browser,
-            )
-        elif args.mcp_cmd == "tools":
-            server = client.get_mcp_server(
-                _resolve_mcp_server_id(client, args.mcp_server_id)
-            )
-            url = server.get("url")
-            if not isinstance(url, str) or not url:
-                print("Error: that MCP server record has no URL.")
-                raise SystemExit(1)
-            tools = client.list_mcp_server_tools(
-                url, oauth_provider_id=server.get("oauth_provider_id")
-            )
-            _print_mcp_tools(server, tools)
+        _execute_mcp_servers_command(args, client)
     except ApiError as exc:
         print(f"Error: {exc}")
         raise SystemExit(1) from None
+
+
+def _execute_mcp_servers_command(args: argparse.Namespace, client: ApiClient) -> None:
+    if args.mcp_cmd == "list":
+        for srv in client.list_mcp_servers():
+            print(f"{srv.get('id')}\t{srv.get('name', '')}\t{srv.get('url', '')}")
+    elif args.mcp_cmd == "add":
+        _execute_mcp_server_add(args, client)
+    elif args.mcp_cmd == "get":
+        server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
+        server = client.get_mcp_server(server_id)
+        print(json.dumps(_redact_mcp_server(server), indent=2))
+    elif args.mcp_cmd == "update":
+        _execute_mcp_server_update(args, client)
+    elif args.mcp_cmd == "delete":
+        _execute_mcp_server_delete(args, client)
+    elif args.mcp_cmd == "connect":
+        _connect_mcp_server_oauth(
+            client,
+            _resolve_mcp_server_id(client, args.mcp_server_id),
+            scopes=args.scope,
+            force_new=args.force_new,
+            timeout_seconds=args.timeout,
+            no_browser=args.no_browser,
+        )
+    elif args.mcp_cmd == "tools":
+        _execute_mcp_server_tools(args, client)
+
+
+def _execute_mcp_server_add(args: argparse.Namespace, client: ApiClient) -> None:
+    from urllib.parse import urlparse
+
+    if args.auth_type == "oauth" and args.header:
+        print("Error: --header cannot be used with --auth-type oauth.")
+        raise SystemExit(1)
+    if args.auth_type != "oauth" and getattr(args, "connect", False):
+        print("Error: --connect requires --auth-type oauth.")
+        raise SystemExit(1)
+    headers = _parse_header_args(args.header)
+    name = args.name or urlparse(args.url).hostname or args.url
+    srv = client.create_mcp_server(
+        name=name,
+        url=args.url,
+        headers=headers,
+        auth_type=args.auth_type,
+        oauth_mode="per_user_dynamic_client" if args.auth_type == "oauth" else None,
+    )
+    srv_id = srv.get("id")
+    srv_name = srv.get("name")
+    srv_url = srv.get("url")
+    print(f"Created mcp_server {srv_id}: {srv_name} → {srv_url}")
+    connect_attempted = False
+    if getattr(args, "connect", False):
+        if not isinstance(srv_id, str) or not srv_id:
+            print("Error: created OAuth MCP server did not include an id.")
+            raise SystemExit(1)
+        _connect_mcp_server_oauth(
+            client,
+            srv_id,
+            scopes=args.scope,
+            force_new=args.force_new,
+            timeout_seconds=args.timeout,
+            no_browser=args.no_browser,
+        )
+        connect_attempted = True
+    _show_tools_after_add(
+        client,
+        srv,
+        auth_type=args.auth_type,
+        connect_attempted=connect_attempted,
+        suppressed=getattr(args, "no_tools", False),
+    )
+
+
+def _execute_mcp_server_update(args: argparse.Namespace, client: ApiClient) -> None:
+    headers = _parse_update_headers(args.header, args.clear_headers)
+    if args.url is None and headers is None and args.auth_type is None:
+        print("Error: provide at least one of --url, --header, or --clear-headers.")
+        raise SystemExit(1)
+    srv = client.update_mcp_server(
+        _resolve_mcp_server_id(client, args.mcp_server_id),
+        url=args.url,
+        headers=headers,
+        auth_type=args.auth_type,
+    )
+    srv_id = srv.get("id")
+    srv_name = srv.get("name")
+    srv_url = srv.get("url")
+    print(f"Updated mcp_server {srv_id}: {srv_name} → {srv_url}")
+
+
+def _execute_mcp_server_delete(args: argparse.Namespace, client: ApiClient) -> None:
+    server_id = _resolve_mcp_server_id(client, args.mcp_server_id)
+    label = (
+        server_id
+        if args.mcp_server_id == server_id
+        else f"{args.mcp_server_id} ({server_id})"
+    )
+    if not args.yes:
+        try:
+            prompt = f"Delete MCP server {label}? [y/N]: "
+            answer = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print("Aborted.")
+            return
+        if answer not in {"y", "yes"}:
+            print("Aborted.")
+            return
+    client.delete_mcp_server(server_id)
+    print(f"Deleted {server_id}")
+
+
+def _execute_mcp_server_tools(args: argparse.Namespace, client: ApiClient) -> None:
+    server = client.get_mcp_server(_resolve_mcp_server_id(client, args.mcp_server_id))
+    url = server.get("url")
+    if not isinstance(url, str) or not url:
+        print("Error: that MCP server record has no URL.")
+        raise SystemExit(1)
+    tools = client.list_mcp_server_tools(
+        url, oauth_provider_id=server.get("oauth_provider_id")
+    )
+    _print_mcp_tools(server, tools)
 
 
 def _connect_mcp_server_oauth(

@@ -108,7 +108,7 @@ class TestBuildSkillCommands:
                 "source": "user",
             }
         ]
-        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        result = build_skill_commands(skills)  # ty: ignore
         assert len(result) == 1
         entry = result[0]
         assert isinstance(entry, CommandEntry)
@@ -140,7 +140,7 @@ class TestBuildSkillCommands:
                 "source": "project",
             },
         ]
-        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        result = build_skill_commands(skills)  # ty: ignore
         assert len(result) == 2
         assert result[0].name == "/skill:skill-a"
         assert result[1].name == "/skill:skill-b"
@@ -159,7 +159,7 @@ class TestBuildSkillCommands:
                 "source": "built-in",
             }
         ]
-        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        result = build_skill_commands(skills)  # ty: ignore
         for entry in result:
             assert isinstance(entry, CommandEntry)
 
@@ -197,7 +197,7 @@ class TestBuildSkillCommands:
                 "source": "user",
             },
         ]
-        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        result = build_skill_commands(skills)  # ty: ignore
         names = [r[0] for r in result]
         assert "/skill:remember" not in names
         assert "/skill:skill-creator" not in names
@@ -218,7 +218,7 @@ class TestBuildSkillCommands:
                 "source": "user",
             },
         ]
-        result = build_skill_commands(skills)  # type: ignore[arg-type]
+        result = build_skill_commands(skills)  # ty: ignore
         assert len(result) == 1
         assert result[0][0] == "/skill:model"
 
@@ -269,10 +269,11 @@ def _make_app() -> MagicMock:
     app._assistant_id = "agent"
     app._discovered_skills = []
     app._skill_allowed_roots = []
-    app._mounted_messages: list[object] = []
+    mounted_messages: list[object] = []
+    app._mounted_messages = mounted_messages
 
     def capture_mount(msg: object) -> None:
-        app._mounted_messages.append(msg)
+        mounted_messages.append(msg)
 
     app._mount_message = AsyncMock(side_effect=capture_mount)
     app._handle_user_message = AsyncMock()
@@ -326,7 +327,7 @@ class TestBuildSkillInvocationEnvelope:
             "path": "/skills/code-review/SKILL.md",
         }
         envelope = build_skill_invocation_envelope(
-            skill,  # type: ignore[arg-type]
+            skill,  # ty: ignore
             "# Instructions\nDo stuff",
             "review this patch",
         )
@@ -345,7 +346,7 @@ class TestBuildSkillInvocationEnvelope:
 
         skill = {"name": "test", "description": "", "source": "built-in", "path": "/x"}
         envelope = build_skill_invocation_envelope(
-            skill,  # type: ignore[arg-type]
+            skill,  # ty: ignore
             "body",
             "",
         )
@@ -358,7 +359,7 @@ class TestBuildSkillInvocationEnvelope:
 
         skill = {"name": "minimal", "path": "/x"}
         envelope = build_skill_invocation_envelope(
-            skill,  # type: ignore[arg-type]
+            skill,  # ty: ignore
             "body",
         )
         meta = envelope.message_kwargs["additional_kwargs"]["__skill"]

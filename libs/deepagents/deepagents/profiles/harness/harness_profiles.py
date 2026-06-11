@@ -1235,7 +1235,11 @@ def _resolve_middleware_seq(
 ) -> Sequence[AgentMiddleware]:
     """Resolve middleware to a concrete sequence, calling the factory if needed."""
     if callable(middleware):
-        return middleware()  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
+        # `callable()` is the runtime discriminator for this union, but `ty` keeps
+        # a callable+Sequence intersection in play, so it cannot infer the
+        # zero-argument factory signature without this local cast.
+        factory = cast("Callable[[], Sequence[AgentMiddleware]]", middleware)
+        return factory()
     return middleware
 
 

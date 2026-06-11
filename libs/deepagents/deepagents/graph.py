@@ -676,7 +676,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            processed_spec: SubAgent = {
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
@@ -727,7 +727,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_names=_main_matched_names,
         )
 
-        general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+        general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
             "model": model,
             "tools": _tools or [],

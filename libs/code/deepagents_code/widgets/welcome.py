@@ -13,7 +13,7 @@ from textual.style import Style as TStyle
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    from textual.events import Click
+    from textual.events import Click, MouseMove
     from textual.timer import Timer
 
 from deepagents_code import theme
@@ -59,6 +59,7 @@ _TIPS: dict[str, int] = {
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
+    "Set [retries] in ~/.deepagents/config.toml for resilience to transient errors": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
@@ -339,6 +340,18 @@ class WelcomeBanner(Static):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a hand pointer over link spans and reset it elsewhere.
+
+        `auto_links` is disabled to avoid a hover-refresh flicker, so the
+        pointer shape is updated manually from the style under the cursor.
+        """
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the banner."""
+        self.styles.pointer = "default"
 
     def _build_banner(self, project_url: str | None = None) -> Content:
         """Build the banner content.

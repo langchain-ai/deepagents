@@ -36,7 +36,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never, cast
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import is_env_truthy
@@ -56,7 +56,7 @@ INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | tuple[str, ...] = False
+INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 
@@ -322,8 +322,14 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
             # on a NUL byte; fall back rather than crash resolution/startup.
             logger.warning("Ignoring %s (could not resolve a path)", name)
             return _INVALID
-    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
-        # PTC has no env var; STRUCTURED is not env-backed. Returned verbatim.
+    if (
+        kind is OptionKind.PTC_DELEGATE
+        or kind is OptionKind.STRUCTURED
+        or kind is OptionKind.THEME_DELEGATE
+    ):
+        # PTC has no env var; STRUCTURED is not env-backed; THEME_DELEGATE is
+        # resolved upstream in `resolve_scalar` and never reaches here. Returned
+        # verbatim as a defensive fallback.
         return raw
     assert_never(kind)
 
@@ -354,7 +360,9 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
             from deepagents_code.config import _parse_extra_skills_dirs
 
             try:
-                return _parse_extra_skills_dirs(None, raw)
+                # `raw` is a TOML list of unknown element type; the callee
+                # guards each entry with `isinstance(p, str)`.
+                return _parse_extra_skills_dirs(None, cast("list[str]", raw))
             except (ValueError, RuntimeError):
                 # Unresolvable `~user` / NUL byte in a path string: fall back
                 # rather than crash resolution.
@@ -936,8 +944,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
 
 
 # Env-var constants in `_env_vars` that are not standalone options: prefixes
-# and aggregates the manifest deliberately does not enumerate.
-NON_OPTION_ENV_VARS: frozenset[str] = frozenset({_env_vars.SERVER_ENV_PREFIX})
+# and aggregates the manifest does not enumerate, plus internal/transient
+# signaling flags the app sets for itself rather than reading as user config.
+NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
+    {
+        _env_vars.SERVER_ENV_PREFIX,
+        # Set then popped during the self-update restart handshake (main.py);
+        # never user-configured.
+        _env_vars.RESTARTED_AFTER_UPDATE,
+    }
+)
 """`_env_vars` constants intentionally excluded from the option catalog."""
 
 

@@ -851,8 +851,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
+
+        from deepagents_code.model_config import load_thread_config
+
+        cfg = load_thread_config()
+
         if isinstance(filter_cwd, _Sentinel):
-            self._filter_cwd: str | None = _safe_cwd_string()
+            # Honor the persisted scope: "all" starts with no cwd filter,
+            # "cwd" scopes to the current working directory.
+            self._filter_cwd: str | None = (
+                None if cfg.scope == "all" else _safe_cwd_string()
+            )
         else:
             self._filter_cwd = filter_cwd
         initial = list(initial_threads) if initial_threads is not None else []
@@ -864,6 +873,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._threads: list[ThreadInfo] = initial
         self._filtered_threads: list[ThreadInfo] = list(self._threads)
         self._has_initial_threads = initial_threads is not None
+        self._disk_load_complete = False
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
         self._filter_text = ""
@@ -873,9 +883,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_controls: list[Input | Checkbox | Select[str]] | None = None
         self._cell_text: dict[tuple[str, str], str] = {}
 
-        from deepagents_code.model_config import load_thread_config
-
-        cfg = load_thread_config()
         self._columns = dict(cfg.columns)
         self._relative_time = cfg.relative_time
         self._sort_by_updated = cfg.sort_order == "updated_at"
@@ -1064,21 +1071,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                             yield cell
 
                     with VerticalScroll(classes="thread-list"):
-                        if self._has_initial_threads:
-                            if self._filtered_threads:
-                                self._option_widgets, _ = self._create_option_widgets()
-                                yield from self._option_widgets
-                            else:
-                                yield Static(
-                                    Content.styled("No threads found", "dim"),
-                                    classes="thread-empty",
-                                )
+                        if self._has_initial_threads and self._filtered_threads:
+                            self._option_widgets, _ = self._create_option_widgets()
+                            yield from self._option_widgets
                         else:
-                            yield Static(
-                                Content.styled("Loading threads...", "dim"),
-                                classes="thread-empty",
-                                id="thread-loading",
-                            )
+                            yield self._build_empty_state()
 
                 with Vertical(classes="thread-controls"):
                     yield Static("Options", classes="thread-controls-title")
@@ -1613,9 +1610,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
+            self._disk_load_complete = True
+            await self._show_mount_error(str(exc))
+            return
+        except Exception as exc:
+            # An unexpected error (e.g. a malformed row raising ValueError) must
+            # still mark the load complete and surface the failure; otherwise the
+            # picker stays stuck on the "Loading threads..." placeholder forever.
+            # CancelledError is a BaseException and is intentionally not caught
+            # here, so a superseding exclusive worker keeps ownership of the flag.
+            logger.exception("Unexpected error loading threads for thread selector")
+            self._disk_load_complete = True
             await self._show_mount_error(str(exc))
             return
 
+        self._disk_load_complete = True
         apply_cached_thread_message_counts(self._threads)
         apply_cached_thread_initial_prompts(self._threads)
         if not self._has_initial_threads:
@@ -1785,6 +1794,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         self.focus()
 
+    def _build_empty_state(self) -> Static:
+        """Build the empty-list placeholder.
+
+        Shows "Loading threads..." while the disk load is still pending so the
+        picker never claims "No threads found" before the query completes.
+
+        Returns:
+            The placeholder `Static` widget to mount in the thread list.
+        """
+        if not self._disk_load_complete:
+            return Static(
+                Content.styled("Loading threads...", "dim"),
+                classes="thread-empty",
+                id="thread-loading",
+            )
+        return Static(
+            Content.styled("No threads found", "dim"),
+            classes="thread-empty",
+        )
+
     async def _build_list(self, *, recompute_widths: bool = True) -> None:
         """Build the thread option widgets.
 
@@ -1805,12 +1834,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
                 if not self._filtered_threads:
                     self._option_widgets = []
-                    await scroll.mount(
-                        Static(
-                            Content.styled("No threads found", "dim"),
-                            classes="thread-empty",
-                        )
-                    )
+                    await scroll.mount(self._build_empty_state())
                     return
 
                 self._option_widgets, selected_widget = self._create_option_widgets()
@@ -2096,6 +2120,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 )
         else:
             new_cwd = None
+        self._persist_scope(
+            _SCOPE_VALUE_CWD if event.value == _SCOPE_VALUE_CWD else _SCOPE_VALUE_ALL
+        )
         if new_cwd == self._filter_cwd:
             return
         self._filter_cwd = new_cwd
@@ -2103,6 +2130,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
         )
+
+    def _persist_scope(self, scope: str) -> None:
+        """Save directory-scope preference to config, notifying on failure."""
+
+        async def _save() -> None:
+            from deepagents_code.model_config import save_thread_scope
+
+            ok = await asyncio.to_thread(save_thread_scope, scope)
+            if not ok:
+                self.app.notify("Could not save scope preference", severity="warning")
+
+        self.run_worker(_save(), group="thread-selector-save")
 
     def _persist_sort_order(self, order: str) -> None:
         """Save sort-order preference to config, notifying on failure."""

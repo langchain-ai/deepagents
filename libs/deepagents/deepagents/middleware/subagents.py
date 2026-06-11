@@ -423,16 +423,6 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 
 
-class _SubagentSpec(TypedDict):
-    """Internal spec for building the task tool."""
-
-    name: str
-
-    description: str
-
-    runnable: Runnable
-
-
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -457,8 +447,60 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
+def create_sub_agent(
+    spec: SubAgent,
+    *,
+    state_schema: type | None = None,
+) -> Runnable:
+    """Create a runnable agent from a declarative `SubAgent` spec.
+
+    This is the shared entrypoint for the `create_agent` path used by
+    declarative subagent specs. Pre-compiled `CompiledSubAgent` runnables are
+    already created by the caller and are handled separately by
+    `SubAgentMiddleware`.
+
+    Args:
+        spec: Subagent spec to compile. Must specify `model` and `tools`.
+        state_schema: Base graph state schema forwarded to `create_agent` for
+            the subagent.
+
+    Returns:
+        Runnable agent ready for task-tool invocation.
+
+    Raises:
+        ValueError: If `spec` is missing `model` or `tools`.
+    """
+    if "model" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'model'"
+        raise ValueError(msg)
+    if "tools" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'tools'"
+        raise ValueError(msg)
+
+    from deepagents._models import resolve_model  # noqa: PLC0415
+
+    model = resolve_model(spec["model"])
+    middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
+
+    interrupt_on = spec.get("interrupt_on")
+    if interrupt_on:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    create_agent_kwargs: dict[str, Any] = {
+        "system_prompt": spec["system_prompt"],
+        "tools": spec["tools"],
+        "middleware": middleware,
+        "name": spec["name"],
+        "response_format": spec.get("response_format"),
+    }
+    if state_schema is not None:
+        create_agent_kwargs["state_schema"] = state_schema
+
+    return create_agent(model, **create_agent_kwargs)
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
-    subagents: list[_SubagentSpec],
+    subagents: list[CompiledSubAgent],
     task_description: str | None = None,
     *,
     private_state_keys: frozenset[str] = frozenset(),
@@ -709,57 +751,33 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
         self.tools = [task_tool]
 
-    def _get_subagents(self) -> list[_SubagentSpec]:
+    def _get_subagents(self) -> list[CompiledSubAgent]:
         """Create runnable agents from specs.
 
         Returns:
             List of subagent specs with name, description, and runnable.
         """
-        specs: list[_SubagentSpec] = []
+        specs: list[CompiledSubAgent] = []
 
         for spec in self._subagents:
             if "runnable" in spec:
                 # Use with_config (not attribute mutation) so the original runnable is
                 # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
-                runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
+                runnable = compiled["runnable"].with_config(
+                    {
+                        "metadata": {"lc_agent_name": compiled["name"]},
+                        "run_name": compiled["name"],
+                    }
+                )
                 specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
                 continue
 
-            # SubAgent - validate required fields
-            if "model" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'model'"
-                raise ValueError(msg)
-            if "tools" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'tools'"
-                raise ValueError(msg)
-
-            # Resolve model if string
-            from deepagents._models import resolve_model  # noqa: PLC0415
-
-            model = resolve_model(spec["model"])
-
-            # Use middleware as provided (caller is responsible for building full stack)
-            middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
-
-            interrupt_on = spec.get("interrupt_on")
-            if interrupt_on:
-                middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-            create_agent_kwargs: dict[str, Any] = {
-                "system_prompt": spec["system_prompt"],
-                "tools": spec["tools"],
-                "middleware": middleware,
-                "name": spec["name"],
-                "response_format": spec.get("response_format"),
-            }
-            if self._state_schema is not None:
-                create_agent_kwargs["state_schema"] = self._state_schema
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
-                    "runnable": create_agent(model, **create_agent_kwargs),
+                    "runnable": create_sub_agent(spec, state_schema=self._state_schema),
                 }
             )
 

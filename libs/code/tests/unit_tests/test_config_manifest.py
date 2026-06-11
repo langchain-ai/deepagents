@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from deepagents_code import _env_vars
 from deepagents_code.config_commands import (
     _display_value,
@@ -308,7 +310,7 @@ def test_resolve_interpreter_kwargs_maps_settings_fields() -> None:
     assert kwargs["interpreter_memory_limit_mb"] == 256
     assert kwargs["enable_interpreter"] is True
     # Unspecified fields resolve to their manifest defaults.
-    assert kwargs["interpreter_timeout_seconds"] == 5.0
+    assert kwargs["interpreter_timeout_seconds"] == pytest.approx(5.0)
 
 
 def test_resolve_theme_uses_terminal_mapping_before_saved_theme(monkeypatch) -> None:

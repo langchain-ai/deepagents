@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import tomllib
+from collections.abc import Mapping, Sequence  # noqa: TC003
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -35,6 +36,7 @@ from deepagents_code.update_check import (
     format_release_age_parenthetical,
     format_sdk_age_suffix,
     format_sdk_release_age,
+    get_cached_update_available,
     get_latest_version,
     get_release_time,
     get_sdk_release_time,
@@ -43,6 +45,7 @@ from deepagents_code.update_check import (
     install_extras_command,
     install_package_command,
     is_auto_update_enabled,
+    is_installed_version_at_least,
     is_update_available,
     is_valid_extra_name,
     is_valid_package_name,
@@ -74,22 +77,25 @@ def update_log_dir(tmp_path):
 
 def _mock_pypi_response(
     version: str = "99.0.0",
-    releases: dict[str, list[dict[str, object]]] | None = None,
+    releases: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     release_times: dict[str, str] | None = None,
 ) -> MagicMock:
     if releases is None:
         releases = {version: [{"filename": "fake.tar.gz"}]}
+    releases_data = {
+        ver: [dict(file) for file in files] for ver, files in releases.items()
+    }
     release_times = release_times or {}
     # Stamp upload_time_iso_8601 onto the first file of each release so the
     # real extraction path runs in tests.
     for ver, iso in release_times.items():
-        files = releases.get(ver)
+        files = releases_data.get(ver)
         if files:
             files[0]["upload_time_iso_8601"] = iso
     resp = MagicMock()
     resp.json.return_value = {
         "info": {"version": version},
-        "releases": releases,
+        "releases": releases_data,
     }
     resp.raise_for_status = MagicMock()
     return resp
@@ -141,6 +147,20 @@ class TestParseVersion:
         assert _parse_version("1.0.0rc1") < _parse_version("1.0.0")
 
 
+class TestInstalledVersionAtLeast:
+    def test_true_when_distribution_metadata_matches_target(self) -> None:
+        with patch("importlib.metadata.version", return_value="2.0.0"):
+            assert is_installed_version_at_least("2.0.0") is True
+
+    def test_true_when_distribution_metadata_is_newer(self) -> None:
+        with patch("importlib.metadata.version", return_value="2.0.1"):
+            assert is_installed_version_at_least("2.0.0") is True
+
+    def test_false_when_distribution_metadata_is_older(self) -> None:
+        with patch("importlib.metadata.version", return_value="1.9.9"):
+            assert is_installed_version_at_least("2.0.0") is False
+
+
 class TestLatestFromReleases:
     def test_stable_only(self) -> None:
         releases = {
@@ -181,6 +201,51 @@ class TestLatestFromReleases:
         }
         assert _latest_from_releases(releases, include_prereleases=False) is None
         assert _latest_from_releases(releases, include_prereleases=True) == "1.0.0b1"
+
+
+class TestCachedUpdateAvailable:
+    def test_fresh_cache_reports_update_without_http(self, cache_file) -> None:
+        """Fresh cache can drive startup auto-update without network access."""
+        cache_file.write_text(
+            json.dumps({"version": "99.0.0", "checked_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (True, "99.0.0")
+
+        mock_get.assert_not_called()
+
+    def test_stale_cache_returns_no_answer_without_http(self, cache_file) -> None:
+        """Stale cache must not trigger a startup network request."""
+        cache_file.write_text(
+            json.dumps(
+                {"version": "99.0.0", "checked_at": time.time() - CACHE_TTL - 1}
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
+    def test_missing_cache_returns_no_answer_without_http(self, cache_file) -> None:
+        """Missing cache should not block startup on a network request."""
+        assert not cache_file.exists()
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
+    def test_fresh_current_cache_reports_no_update(self, cache_file) -> None:
+        """A fresh cache at the installed version should not update."""
+        cache_file.write_text(
+            json.dumps({"version": __version__, "checked_at": time.time()}),
+            encoding="utf-8",
+        )
+
+        assert get_cached_update_available() == (False, __version__)
 
 
 class TestGetLatestVersion:
@@ -1467,15 +1532,20 @@ class TestRunInstallSubprocessFailureModes:
 
 
 def _mock_sdk_pypi_response(
-    releases: dict[str, list[dict[str, object]]] | None = None,
+    releases: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
 ) -> MagicMock:
     """Build a minimal PyPI response for the `deepagents` SDK.
 
     The SDK lookup reads from the `releases` map (keyed by version) rather
     than `info.version`, so only that field is required.
     """
+    releases_data = (
+        {ver: [dict(file) for file in files] for ver, files in releases.items()}
+        if releases is not None
+        else {}
+    )
     resp = MagicMock()
-    resp.json.return_value = {"releases": releases or {}}
+    resp.json.return_value = {"releases": releases_data}
     resp.raise_for_status = MagicMock()
     return resp
 
@@ -2033,5 +2103,7 @@ class TestShouldShowWhatsNew:
         mark_version_seen("1.0.0")
         with patch("deepagents_code.update_check.__version__", "2.0.0"):
             assert should_show_whats_new() is True
+        # Notification throttle still works
+        assert should_notify_update("2.0.0") is False
         # Notification throttle still works
         assert should_notify_update("2.0.0") is False

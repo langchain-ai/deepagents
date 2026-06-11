@@ -66,7 +66,7 @@ class _FakeHarborEnvironment:
 async def test_aedit_preserves_existing_line_endings(line_ending: str) -> None:
     original = f"alpha{line_ending}old{line_ending}omega{line_ending}".encode()
     env = _FakeHarborEnvironment(files={"/app/test.txt": original})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/test.txt", "old", "new")
 
@@ -79,7 +79,7 @@ async def test_aedit_preserves_existing_line_endings(line_ending: str) -> None:
 
 async def test_aedit_file_not_found() -> None:
     env = _FakeHarborEnvironment()
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/missing.txt", "old", "new")
 
@@ -89,7 +89,7 @@ async def test_aedit_file_not_found() -> None:
 
 async def test_aedit_binary_file_returns_error() -> None:
     env = _FakeHarborEnvironment(files={"/app/binary.bin": b"\x80\x81\x82\xff"})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/binary.bin", "old", "new")
 
@@ -99,7 +99,7 @@ async def test_aedit_binary_file_returns_error() -> None:
 
 async def test_aedit_string_not_found() -> None:
     env = _FakeHarborEnvironment(files={"/app/test.txt": b"hello world"})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/test.txt", "missing", "new")
 
@@ -109,7 +109,7 @@ async def test_aedit_string_not_found() -> None:
 
 async def test_aedit_multiple_occurrences_without_replace_all() -> None:
     env = _FakeHarborEnvironment(files={"/app/test.txt": b"foo bar foo"})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/test.txt", "foo", "baz")
 
@@ -119,7 +119,7 @@ async def test_aedit_multiple_occurrences_without_replace_all() -> None:
 
 async def test_aedit_replace_all() -> None:
     env = _FakeHarborEnvironment(files={"/app/test.txt": b"foo bar foo"})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/test.txt", "foo", "baz", replace_all=True)
 
@@ -132,7 +132,7 @@ async def test_aedit_propagates_unknown_download_errors() -> None:
     env = _FakeHarborEnvironment(
         download_errors={"/app/test.txt": RuntimeError("transient failure")}
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient failure"):
         await sandbox.aedit("/app/test.txt", "old", "new")
@@ -143,7 +143,7 @@ async def test_aedit_propagates_unknown_upload_errors() -> None:
         files={"/app/test.txt": b"hello old world"},
         upload_errors={"/app/test.txt": RuntimeError("transient upload failure")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient upload failure"):
         await sandbox.aedit("/app/test.txt", "old", "new")
@@ -154,7 +154,7 @@ async def test_aedit_maps_known_upload_errors() -> None:
         files={"/app/test.txt": b"hello old world"},
         upload_errors={"/app/test.txt": PermissionError("denied")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.aedit("/app/test.txt", "old", "new")
 
@@ -167,7 +167,7 @@ async def test_aedit_maps_known_upload_errors() -> None:
 
 async def test_awrite_uploads_content() -> None:
     env = _FakeHarborEnvironment(exec_result=_FakeExecResult())
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.awrite("/app/new.txt", "hello world")
 
@@ -181,7 +181,7 @@ async def test_awrite_propagates_unknown_upload_errors() -> None:
         exec_result=_FakeExecResult(),
         upload_errors={"/app/new.txt": RuntimeError("transient failure")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient failure"):
         await sandbox.awrite("/app/new.txt", "content")
@@ -192,7 +192,7 @@ async def test_awrite_maps_known_upload_errors() -> None:
         exec_result=_FakeExecResult(),
         upload_errors={"/app/new.txt": PermissionError("denied")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.awrite("/app/new.txt", "content")
 
@@ -207,7 +207,7 @@ async def test_awrite_returns_error_when_file_exists() -> None:
             return_code=1,
         ),
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     result = await sandbox.awrite("/app/existing.txt", "content")
 
@@ -229,7 +229,7 @@ async def test_awrite_returns_error_when_file_exists() -> None:
 )
 async def test_adownload_files_maps_known_errors(exc: Exception, expected_error: str) -> None:
     env = _FakeHarborEnvironment(download_errors={"/app/test.txt": exc})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     responses = await sandbox.adownload_files(["/app/test.txt"])
 
@@ -244,7 +244,7 @@ async def test_adownload_files_propagates_unknown_errors() -> None:
     env = _FakeHarborEnvironment(
         download_errors={"/app/test.txt": RuntimeError("transient download failure")}
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient download failure"):
         await sandbox.adownload_files(["/app/test.txt"])
@@ -255,7 +255,7 @@ async def test_adownload_files_partial_success() -> None:
         files={"/app/good.txt": b"content"},
         download_errors={"/app/bad.txt": PermissionError("denied")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     responses = await sandbox.adownload_files(["/app/good.txt", "/app/bad.txt"])
 
@@ -272,7 +272,7 @@ async def test_adownload_files_unknown_error_aborts_batch() -> None:
         files={"/app/good.txt": b"content"},
         download_errors={"/app/bad.txt": RuntimeError("transient download failure")},
     )
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient download failure"):
         await sandbox.adownload_files(["/app/bad.txt", "/app/good.txt"])
@@ -283,7 +283,7 @@ async def test_adownload_files_unknown_error_aborts_batch() -> None:
 
 async def test_aupload_files_happy_path() -> None:
     env = _FakeHarborEnvironment()
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     responses = await sandbox.aupload_files([("/app/file.txt", b"content")])
 
@@ -294,7 +294,7 @@ async def test_aupload_files_happy_path() -> None:
 
 async def test_aupload_files_maps_known_errors() -> None:
     env = _FakeHarborEnvironment(upload_errors={"/app/denied.txt": PermissionError("denied")})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     responses = await sandbox.aupload_files([("/app/denied.txt", b"content")])
 
@@ -305,7 +305,7 @@ async def test_aupload_files_maps_known_errors() -> None:
 async def test_aupload_files_propagates_unknown_errors() -> None:
     """Unclassified exceptions propagate instead of being captured."""
     env = _FakeHarborEnvironment(upload_errors={"/app/file.txt": RuntimeError("transient failure")})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient failure"):
         await sandbox.aupload_files([("/app/file.txt", b"content")])
@@ -314,7 +314,7 @@ async def test_aupload_files_propagates_unknown_errors() -> None:
 async def test_aupload_files_unknown_error_aborts_batch() -> None:
     """Unclassified error on one file aborts the entire batch."""
     env = _FakeHarborEnvironment(upload_errors={"/app/bad.txt": RuntimeError("transient failure")})
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(RuntimeError, match="transient failure"):
         await sandbox.aupload_files([("/app/bad.txt", b"first"), ("/app/good.txt", b"second")])
@@ -340,7 +340,7 @@ async def test_aupload_files_unknown_error_aborts_batch() -> None:
 def test_sync_stubs_raise_not_implemented(method_name: str, args: tuple[object, ...]) -> None:
     """Every sync method on HarborSandbox must raise NotImplementedError."""
     env = _FakeHarborEnvironment()
-    sandbox = HarborSandbox(env)  # type: ignore[invalid-argument-type]
+    sandbox = HarborSandbox(env)  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(NotImplementedError, match="only supports async"):
         getattr(sandbox, method_name)(*args)

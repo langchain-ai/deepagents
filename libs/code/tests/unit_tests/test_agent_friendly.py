@@ -41,7 +41,7 @@ class TestHelpScreenExamples:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with patch("deepagents_code.ui.console", test_console):
-            fn()  # type: ignore[operator]
+            fn()  # ty: ignore
         return buf.getvalue()
 
     def test_list_help_has_examples(self) -> None:

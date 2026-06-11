@@ -9,6 +9,7 @@ same detection logic works regardless of where the agent runs.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import (
     TYPE_CHECKING,
@@ -49,6 +50,9 @@ _DETECT_SCRIPT_TIMEOUT = 30
 _MCP_ERROR_DETAIL_LIMIT = 200
 """Max characters of an MCP server error surfaced in the system prompt."""
 
+_TRACING_PROJECT_NAME_LIMIT = 200
+"""Max characters of a LangSmith project name surfaced in the system prompt."""
+
 
 def _sanitize_error_detail(error: str | None) -> str:
     """Make an untrusted MCP error string safe to embed in the system prompt.
@@ -71,6 +75,37 @@ def _sanitize_error_detail(error: str | None) -> str:
         return "unknown error"
     sanitized = sanitize_control_chars(error, max_length=_MCP_ERROR_DETAIL_LIMIT)
     return sanitized or "unknown error"
+
+
+def _sanitize_tracing_project_name(project: str) -> str:
+    """Make an untrusted LangSmith project name safe for the system prompt.
+
+    Project names can originate from a workspace `.env` file or process
+    environment. Flatten hidden/control characters and bound the length before
+    embedding them in prompt bullets so a crafted value cannot inject extra
+    prompt lines.
+
+    Args:
+        project: Raw LangSmith project name.
+
+    Returns:
+        A single-line, length-bounded, sanitized project name. Falls back to
+        `"unknown project"` when no usable text remains.
+    """
+    sanitized = sanitize_control_chars(project, max_length=_TRACING_PROJECT_NAME_LIMIT)
+    return sanitized or "unknown project"
+
+
+def _quote_tracing_project_name(project: str) -> str:
+    """JSON-quote a sanitized LangSmith project name for prompt insertion.
+
+    Args:
+        project: Sanitized LangSmith project name.
+
+    Returns:
+        JSON string literal for the project name.
+    """
+    return json.dumps(project, ensure_ascii=False)
 
 
 def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
@@ -140,6 +175,44 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
                 f"- **{server.name}** ({server.transport}): {', '.join(names)}"
             )
 
+    return "\n".join(lines)
+
+
+def _build_tracing_context(
+    agent_project: str | None,
+    user_project: str | None,
+) -> str:
+    """Format LangSmith tracing project names for the system prompt.
+
+    Surfaces both projects so the agent can look up the right traces with the
+    LangSmith MCP server or CLI: the project its own runs are traced to, and
+    the user's original project that shell commands trace to. The
+    shell-command line is shown only when the user's project differs from the
+    agent's (after sanitizing both), avoiding a redundant duplicate line.
+
+    Args:
+        agent_project: Project receiving the agent's own traces, or `None`
+            when LangSmith tracing is not enabled.
+        user_project: User's original `LANGSMITH_PROJECT`, used by code the
+            agent runs in the shell.
+
+    Returns:
+        Formatted markdown string, or `""` when tracing is disabled.
+    """
+    if not agent_project:
+        return ""
+
+    safe_agent_project = _sanitize_tracing_project_name(agent_project)
+    quoted_agent_project = _quote_tracing_project_name(safe_agent_project)
+    lines = [
+        "**LangSmith Tracing**:",
+        f"- Agent traces: project {quoted_agent_project}",
+    ]
+    if user_project:
+        safe_user_project = _sanitize_tracing_project_name(user_project)
+        if safe_user_project != safe_agent_project:
+            quoted_user_project = _quote_tracing_project_name(safe_user_project)
+            lines.append(f"- Shell-command traces: project {quoted_user_project}")
     return "\n".join(lines)
 
 
@@ -328,6 +401,43 @@ if $IN_GIT; then
 fi"""
 
 
+def _section_gh_cli() -> str:
+    """GitHub CLI search JSON-field affordances from the installed `gh`.
+
+    Returns:
+        Bash snippet (standalone).
+    """
+    return r"""# --- GitHub CLI ---
+if command -v gh >/dev/null 2>&1; then
+  _gh_json_fields() {
+    gh search "$1" --help 2>/dev/null \
+      | awk '
+        /^JSON FIELDS/ { in_fields = 1; next }
+        in_fields && /^$/ { exit }
+        in_fields { gsub(/^  /, ""); print }
+      ' \
+      | tr '\n' ' ' \
+      | sed 's/  */ /g; s/^ //; s/ $//'
+  }
+
+  GH_PRS_FIELDS="$(_gh_json_fields prs)"
+  GH_ISSUES_FIELDS="$(_gh_json_fields issues)"
+  if [ -n "$GH_PRS_FIELDS" ] || [ -n "$GH_ISSUES_FIELDS" ]; then
+    echo "**GitHub CLI**:"
+    [ -n "$GH_PRS_FIELDS" ] \
+      && echo "- \`gh search prs --json\` fields: ${GH_PRS_FIELDS}"
+    [ -n "$GH_ISSUES_FIELDS" ] \
+      && echo "- \`gh search issues --json\` fields: ${GH_ISSUES_FIELDS}"
+    case ",$GH_PRS_FIELDS," in
+      *mergedAt*) ;;
+      *) echo "- \`gh search prs --json\` does not expose \`mergedAt\`;"
+         echo "  use \`gh pr view --json mergedAt\` per PR for merge timestamps." ;;
+    esac
+    echo ""
+  fi
+fi"""
+
+
 def _section_test_command() -> str:
     """Test command detection (make test / pytest / npm test).
 
@@ -462,10 +572,11 @@ def build_detect_script() -> str:
         ("02_pkgmgr", _section_package_managers()),
         ("03_runtimes", _section_runtimes()),
         ("04_git", _section_git()),
-        ("05_testcmd", _section_test_command()),
-        ("06_files", _section_files()),
-        ("07_tree", _section_tree()),
-        ("08_makefile", _section_makefile()),
+        ("05_gh_cli", _section_gh_cli()),
+        ("06_testcmd", _section_test_command()),
+        ("07_files", _section_files()),
+        ("08_tree", _section_tree()),
+        ("09_makefile", _section_makefile()),
     ]
 
     # Build parallel wrapper: each section runs in a subshell writing to a
@@ -528,15 +639,24 @@ class LocalContextMiddleware(AgentMiddleware):
         backend: _ExecutableBackend | _AsyncExecutableBackend,
         *,
         mcp_server_info: list[MCPServerInfo] | None = None,
+        tracing_project: str | None = None,
+        user_tracing_project: str | None = None,
     ) -> None:
         """Initialize with a backend that supports shell execution.
 
         Args:
             backend: Backend instance that provides shell command execution.
             mcp_server_info: MCP server metadata to include in the system prompt.
+            tracing_project: LangSmith project the agent's own runs trace to, or
+                `None` when tracing is disabled (the tracing section is omitted).
+            user_tracing_project: User's original `LANGSMITH_PROJECT` used by
+                shell commands the agent runs.
         """
         self.backend = backend
         self._mcp_context = _build_mcp_context(mcp_server_info or [])
+        self._tracing_context = _build_tracing_context(
+            tracing_project, user_tracing_project
+        )
 
     @staticmethod
     def _handle_detect_result(result: ExecuteResponse) -> str | None:
@@ -605,7 +725,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
     # override - state parameter is intentionally narrowed from
     # AgentState to LocalContextState for type safety within this middleware.
-    def before_agent(  # type: ignore[override]
+    def before_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
@@ -700,7 +820,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return LocalContextMiddleware._handle_detect_result(result)
 
-    async def abefore_agent(  # type: ignore[override]
+    async def abefore_agent(  # ty: ignore[invalid-method-override]
         self,
         state: LocalContextState,
         runtime: Runtime,  # noqa: ARG002  # Required by interface but not used in local context
@@ -754,7 +874,9 @@ class LocalContextMiddleware(AgentMiddleware):
         state = cast("LocalContextState", request.state)
         local_context = state.get("local_context", "")
 
-        parts = [p for p in (local_context, self._mcp_context) if p]
+        parts = [
+            p for p in (local_context, self._tracing_context, self._mcp_context) if p
+        ]
         if not parts:
             return None
 

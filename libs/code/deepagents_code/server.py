@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
+from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -36,6 +38,33 @@ message. Enough to carry a Python traceback without flooding the TUI banner
 when it surfaces via `ServerStartFailed`."""
 _STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
 """Machine-readable prefix emitted by the server subprocess for known startup errors."""
+
+_SERVER_ENV_DENYLIST = frozenset(
+    {
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "GIT_ASKPASS",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "SSH_ASKPASS",
+    }
+)
+"""Inherited env keys that can alter subprocess startup behavior.
+
+`PYTHONPATH` is stripped here so an inherited launch value cannot land on the
+server interpreter's `sys.path` during startup, where a path inside an untrusted
+project could shadow a stdlib/third-party module and run before any approval
+gate. A user who launched with `PYTHONPATH` still wants it for their agent
+`execute` commands, so `_build_server_env` relays the value via
+`config._INHERITED_PYTHONPATH_ENV` and `agent._apply_inherited_pythonpath`
+re-applies it only to the approval-gated shell backend.
+"""
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -284,8 +313,12 @@ def _build_server_cmd(config_path: Path, *, host: str, port: int) -> list[str]:
 def _build_server_env() -> dict[str, str]:
     """Build the environment dict for the server subprocess.
 
-    Copies `os.environ`, sets required flags, and strips auth-related variables
-    that are not needed (and could interfere) for the local dev server.
+    Copies `os.environ`, sets required flags, and strips variables that are not
+    needed or can alter subprocess startup behavior.
+
+    A launch-time `PYTHONPATH` is captured into `config._INHERITED_PYTHONPATH_ENV`
+    before being stripped, so the value never reaches the server interpreter's
+    `sys.path` but can still be re-applied to agent `execute` commands downstream.
 
     Returns:
         Environment dict for `subprocess.Popen`.
@@ -293,13 +326,23 @@ def _build_server_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
+
+    # Capture a launch-time PYTHONPATH before stripping it. Never trust an
+    # inherited carrier var: pop it first, then set it only from the real value.
+    env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    inherited_pythonpath = os.environ.get("PYTHONPATH")
+
     for key in (
         "LANGGRAPH_AUTH",
         "LANGGRAPH_CLOUD_LICENSE_KEY",
         "LANGSMITH_CONTROL_PLANE_API_KEY",
         "LANGSMITH_TENANT_ID",
+        *_SERVER_ENV_DENYLIST,
     ):
         env.pop(key, None)
+
+    if inherited_pythonpath is not None:
+        env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
     return env
 
 
@@ -343,7 +386,7 @@ class ServerProcess:
         self._owns_config_dir = owns_config_dir
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
-        self._log_file: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
+        self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
 
     @property
@@ -537,7 +580,11 @@ class ServerProcess:
             timeout: Max seconds to wait for the server to become healthy.
         """
         logger.info("Restarting langgraph dev server")
-        self._stop_process()
+        # Offload the synchronous subprocess shutdown (it blocks up to
+        # `_SHUTDOWN_TIMEOUT` + SIGKILL grace waiting on `process.wait`) so the
+        # caller's event loop — the Textual reactor for `/restart` — keeps
+        # processing input instead of freezing the TUI.
+        await asyncio.to_thread(self._stop_process)
 
         with _scoped_env_overrides(self._env_overrides):
             await self.start(timeout=timeout)

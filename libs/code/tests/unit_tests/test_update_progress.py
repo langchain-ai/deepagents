@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from textual.app import App
 from textual.widgets import Log, Static
 
@@ -45,7 +46,9 @@ async def test_update_progress_screen_shows_tail_when_details_toggle(tmp_path) -
         assert list(screen._tail) == ["second", "third"]
 
 
-async def test_update_progress_screen_copies_log_path_only_in_details(tmp_path) -> None:
+async def test_update_progress_screen_copies_log_path_only_in_details(
+    tmp_path, monkeypatch
+) -> None:
     """Pressing c copies the log path only when details are visible."""
     log_path = tmp_path / "update.log"
     screen = UpdateProgressScreen(
@@ -56,7 +59,7 @@ async def test_update_progress_screen_copies_log_path_only_in_details(tmp_path) 
 
     copied: list[str] = []
     app = App()
-    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
     async with app.run_test() as pilot:
         app.push_screen(screen)
         await pilot.pause()

@@ -13082,6 +13082,8 @@ class TestResumeThreadCwdSwitch:
         app._server_proc = old_server
         app._server_kwargs = {"assistant_id": "agent"}
         app._mcp_preload_kwargs = None
+        status_bar = MagicMock()
+        app._status_bar = status_bar
         new_agent = MagicMock()
         new_server = MagicMock()
         ready: list[Any] = []
@@ -13102,6 +13104,7 @@ class TestResumeThreadCwdSwitch:
         assert result == "continue"
         assert Path.cwd() == target
         old_server.stop.assert_called_once_with()
+        status_bar.set_connection.assert_called_once_with("reconnecting")
         assert len(ready) == 1
         assert ready[0].agent is new_agent
         assert ready[0].server_proc is new_server
@@ -13178,6 +13181,8 @@ class TestResumeThreadCwdSwitch:
         app._server_kwargs = {"assistant_id": "agent"}
         app._mcp_preload_kwargs = None
         app._mcp_server_info = ["prev"]
+        status_bar = MagicMock()
+        app._status_bar = status_bar
 
         async def boom(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
             msg = "server failed"
@@ -13199,6 +13204,11 @@ class TestResumeThreadCwdSwitch:
         assert app._server_proc is old_server
         assert app._mcp_server_info == ["prev"]
         assert app._connecting is False
+        assert app._reconnecting is False
+        assert status_bar.set_connection.call_args_list == [
+            call("reconnecting"),
+            call(""),
+        ]
         old_server.stop.assert_not_called()
 
     async def test_replace_server_failure_rolls_back_project_dotenv(

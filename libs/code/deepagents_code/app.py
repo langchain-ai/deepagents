@@ -11015,12 +11015,14 @@ class DeepAgentsApp(App):
 
         try:
             self._connecting = True
+            self._reconnecting = True
             self._agent = None
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connecting()
             except NoMatches:
                 pass
+            self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
 
@@ -11104,6 +11106,7 @@ class DeepAgentsApp(App):
             self._server_proc = previous_server
             self._mcp_server_info = previous_mcp_info
             self._connecting = False
+            self._reconnecting = False
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(
@@ -11114,6 +11117,7 @@ class DeepAgentsApp(App):
                 )
             except NoMatches:
                 pass
+            self._sync_status_connection()
             if not isinstance(exc, Exception):
                 # Cancellation / SystemExit: state is restored; let it propagate.
                 raise

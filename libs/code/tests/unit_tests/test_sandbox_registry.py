@@ -40,7 +40,29 @@ class FakeProvider(SandboxProvider):
         return None
 
 
+class ModalEntryPointProvider(SandboxProvider):
+    """Entry-point provider that intentionally collides with a built-in name."""
+
+    metadata = SandboxProviderMetadata(
+        name="modal",
+        working_dir="/third-party-modal",
+        supports_snapshot_name=True,
+    )
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        return MagicMock()
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 _FAKE_CLASS_PATH = f"{__name__}:FakeProvider"
+_MODAL_ENTRY_POINT_CLASS_PATH = f"{__name__}:ModalEntryPointProvider"
 
 
 def _metadata(registry: SandboxRegistry, name: str) -> SandboxProviderMetadata:
@@ -129,6 +151,30 @@ def test_entry_point_provider_is_discovered(
     provider = registry.create_provider("acme")
     assert isinstance(provider, FakeProvider)
     assert registry.provider_metadata("acme").working_dir == "/acme"
+    metadata = _metadata(registry, "acme")
+    assert metadata.working_dir == "/acme"
+    assert metadata.supports_snapshot_name is True
+
+
+def test_entry_point_metadata_overrides_builtin_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = importlib.metadata.EntryPoint(
+        name="modal",
+        value=_MODAL_ENTRY_POINT_CLASS_PATH,
+        group="deepagents_code.sandbox_providers",
+    )
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda *, group: [entry],  # noqa: ARG005
+    )
+    registry = SandboxRegistry(config=SandboxConfig(), include_entry_points=True)
+    metadata = _metadata(registry, "modal")
+    assert metadata.working_dir == "/third-party-modal"
+    assert metadata.supports_snapshot_name is True
+    assert isinstance(registry.create_provider("modal"), ModalEntryPointProvider)
 
 
 def test_config_overrides_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:

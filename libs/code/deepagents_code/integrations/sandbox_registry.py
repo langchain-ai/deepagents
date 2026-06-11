@@ -192,11 +192,11 @@ class SandboxRegistry:
         )
 
     def get_metadata(self, name: str) -> SandboxProviderMetadata | None:
-        """Return metadata for `name` without instantiating the provider.
+        """Return metadata for `name`.
 
         Config providers may override `working_dir`, `package`, and capability
-        flags. Built-in and entry-point metadata is returned as-is (entry-point
-        providers fall back to a default until instantiated).
+        flags. Entry-point providers are probed for advertised metadata and
+        take precedence over built-ins with the same name.
 
         Args:
             name: Provider name.
@@ -227,12 +227,10 @@ class SandboxRegistry:
                     base.supports_snapshot_name if base else False,
                 ),
             )
+        if name in self._entry_points:
+            return self.provider_metadata(name)
         if name in BUILTIN_METADATA:
             return BUILTIN_METADATA[name]
-        if name in self._entry_points:
-            # Entry-point metadata is only authoritative after instantiation;
-            # return a placeholder so working-dir/snapshot checks have a value.
-            return SandboxProviderMetadata(name=name, working_dir="/workspace")
         return None
 
     def get_params(self, name: str) -> dict[str, object]:
@@ -280,10 +278,10 @@ class SandboxRegistry:
     def provider_metadata(self, name: str) -> SandboxProviderMetadata:
         """Return authoritative metadata for `name`.
 
-        Built-in and config providers are described statically. Entry-point
-        providers are instantiated so capability flags they expose via a
-        `metadata` attribute take effect; on failure this falls back to the
-        static placeholder.
+        Config providers are described statically. Entry-point providers are
+        instantiated so capability flags they expose via a `metadata` attribute
+        take effect; on failure this falls back to the static placeholder.
+        Built-in metadata is used only when no entry point overrides that name.
 
         Args:
             name: Provider name.

@@ -241,9 +241,6 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
-    "skills_metadata",
-    "skills_load_errors",
-    "memory_contents",
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -255,12 +252,8 @@ When returning updates:
 2. The todos and `structured_response` keys are excluded as they do not have
     a defined reducer and no clear meaning for returning them from a subagent
     to the main agent.
-3. The `skills_metadata`, `skills_load_errors`, and `memory_contents` keys are
-    automatically excluded from subagent output via `PrivateStateAttr`
-    annotations on their respective state schemas. However, they must ALSO
-    be explicitly filtered from runtime.state when invoking a subagent to
-    prevent parent state from leaking to child agents (e.g., the general-purpose
-    subagent loads its own skills via `SkillsMiddleware`).
+3. Agent-private fields on middleware state schemas are excluded from both
+    subagent output and subagent inputs.
 """
 
 
@@ -430,16 +423,6 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 
 
-class _SubagentSpec(TypedDict):
-    """Internal spec for building the task tool."""
-
-    name: str
-
-    description: str
-
-    runnable: Runnable
-
-
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -464,9 +447,63 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
+def create_sub_agent(
+    spec: SubAgent,
+    *,
+    state_schema: type | None = None,
+) -> Runnable:
+    """Create a runnable agent from a declarative `SubAgent` spec.
+
+    This is the shared entrypoint for the `create_agent` path used by
+    declarative subagent specs. Pre-compiled `CompiledSubAgent` runnables are
+    already created by the caller and are handled separately by
+    `SubAgentMiddleware`.
+
+    Args:
+        spec: Subagent spec to compile. Must specify `model` and `tools`.
+        state_schema: Base graph state schema forwarded to `create_agent` for
+            the subagent.
+
+    Returns:
+        Runnable agent ready for task-tool invocation.
+
+    Raises:
+        ValueError: If `spec` is missing `model` or `tools`.
+    """
+    if "model" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'model'"
+        raise ValueError(msg)
+    if "tools" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'tools'"
+        raise ValueError(msg)
+
+    from deepagents._models import resolve_model  # noqa: PLC0415
+
+    model = resolve_model(spec["model"])
+    middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
+
+    interrupt_on = spec.get("interrupt_on")
+    if interrupt_on:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    create_agent_kwargs: dict[str, Any] = {
+        "system_prompt": spec["system_prompt"],
+        "tools": spec["tools"],
+        "middleware": middleware,
+        "name": spec["name"],
+        "response_format": spec.get("response_format"),
+    }
+    if state_schema is not None:
+        create_agent_kwargs["state_schema"] = state_schema
+
+    return create_agent(model, **create_agent_kwargs)
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
-    subagents: list[_SubagentSpec],
+    subagents: list[CompiledSubAgent],
     task_description: str | None = None,
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
 ) -> BaseTool:
     """Create a task tool from pre-built subagent graphs.
 
@@ -474,6 +511,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagents: List of subagent specs containing name, description, and runnable.
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
+        private_state_keys: State keys marked with `PrivateStateAttr` that
+            should be stripped from parent state before invoking subagents.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -536,6 +575,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
@@ -661,6 +701,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
@@ -671,13 +712,20 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
         self._backend = backend
         self._subagents = subagents
+        self._private_state_keys = private_state_keys or frozenset()
+        self._task_description = task_description
         self._state_schema = state_schema
         subagent_specs = self._get_subagents()
+        self._subagent_specs = subagent_specs
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(subagent_specs, task_description)
+        task_tool = _build_task_tool(
+            subagent_specs,
+            task_description,
+            private_state_keys=self._private_state_keys,
+        )
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -688,57 +736,48 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         self.tools = [task_tool]
 
-    def _get_subagents(self) -> list[_SubagentSpec]:
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before invoking subagents."""
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+        task_tool = _build_task_tool(
+            self._subagent_specs,
+            task_description=self._task_description,
+            private_state_keys=value,
+        )
+        self.tools = [task_tool]
+
+    def _get_subagents(self) -> list[CompiledSubAgent]:
         """Create runnable agents from specs.
 
         Returns:
             List of subagent specs with name, description, and runnable.
         """
-        specs: list[_SubagentSpec] = []
+        specs: list[CompiledSubAgent] = []
 
         for spec in self._subagents:
             if "runnable" in spec:
                 # Use with_config (not attribute mutation) so the original runnable is
                 # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
-                runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
+                runnable = compiled["runnable"].with_config(
+                    {
+                        "metadata": {"lc_agent_name": compiled["name"]},
+                        "run_name": compiled["name"],
+                    }
+                )
                 specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
                 continue
 
-            # SubAgent - validate required fields
-            if "model" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'model'"
-                raise ValueError(msg)
-            if "tools" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'tools'"
-                raise ValueError(msg)
-
-            # Resolve model if string
-            from deepagents._models import resolve_model  # noqa: PLC0415
-
-            model = resolve_model(spec["model"])
-
-            # Use middleware as provided (caller is responsible for building full stack)
-            middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
-
-            interrupt_on = spec.get("interrupt_on")
-            if interrupt_on:
-                middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-            create_agent_kwargs: dict[str, Any] = {
-                "system_prompt": spec["system_prompt"],
-                "tools": spec["tools"],
-                "middleware": middleware,
-                "name": spec["name"],
-                "response_format": spec.get("response_format"),
-            }
-            if self._state_schema is not None:
-                create_agent_kwargs["state_schema"] = self._state_schema
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
-                    "runnable": create_agent(model, **create_agent_kwargs),
+                    "runnable": create_sub_agent(spec, state_schema=self._state_schema),
                 }
             )
 

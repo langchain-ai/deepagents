@@ -70,6 +70,38 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestMaxRetriesArg:
+    """Tests for `--max-retries` argument."""
+
+    def test_valid_int_passes_through(self) -> None:
+        """`--max-retries` stores a non-negative integer."""
+        with patch.object(sys, "argv", ["deepagents", "--max-retries", "3"]):
+            args = parse_args()
+        assert args.max_retries == 3
+
+    def test_zero_passes_through(self) -> None:
+        """`--max-retries 0` is valid."""
+        with patch.object(sys, "argv", ["deepagents", "--max-retries", "0"]):
+            args = parse_args()
+        assert args.max_retries == 0
+
+    def test_negative_rejected(self) -> None:
+        """Negative retry counts are rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-retries", "-1"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_non_int_rejected(self) -> None:
+        """Non-integer retry counts are rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-retries=foo"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+
 class TestSandboxSnapshotNameArg:
     """Tests for `--sandbox-snapshot-name` argument."""
 
@@ -95,10 +127,10 @@ class TestSandboxSnapshotNameArg:
             args = parse_args()
         assert args.sandbox_snapshot_name is None
 
-    def test_snapshot_name_without_langsmith_errors(
+    def test_snapshot_name_without_langsmith_or_runloop_errors(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """`--sandbox-snapshot-name` without `--sandbox langsmith` errors out."""
+        """`--sandbox-snapshot-name` without a supporting sandbox errors out."""
         with (
             patch.object(
                 sys,
@@ -108,7 +140,24 @@ class TestSandboxSnapshotNameArg:
             pytest.raises(SystemExit),
         ):
             parse_args()
-        assert "requires --sandbox langsmith" in capsys.readouterr().err
+        assert "requires a --sandbox provider" in capsys.readouterr().err
+
+    def test_snapshot_name_with_runloop(self) -> None:
+        """`--sandbox-snapshot-name` is allowed with `--sandbox runloop`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--sandbox",
+                "runloop",
+                "--sandbox-snapshot-name",
+                "custom-bp",
+            ],
+        ):
+            args = parse_args()
+        assert args.sandbox == "runloop"
+        assert args.sandbox_snapshot_name == "custom-bp"
 
 
 class TestStartupCmdArg:

@@ -217,7 +217,7 @@ class TestServerConfigEdgeCases:
         assert restored.sandbox_type is None
 
     def test_sandbox_snapshot_name_round_trips(self) -> None:
-        """LangSmith snapshot names survive server env serialization."""
+        """Snapshot/blueprint names survive server env serialization."""
         original = ServerConfig(
             sandbox_type="langsmith",
             sandbox_snapshot_name="customer-image",

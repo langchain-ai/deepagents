@@ -35,17 +35,18 @@ if TYPE_CHECKING:
     from textual.events import Click
 
 from deepagents_code import auth_store, theme
+from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     ModelConfig,
-    ProviderAuthSource,
     clear_caches,
     get_available_models,
+    get_base_url_env_var,
     get_credential_env_var,
+    get_default_base_url_env,
     get_provider_auth_status,
-    resolved_env_var_name,
 )
 from deepagents_code.widgets._links import open_style_link
 
@@ -195,12 +196,14 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         margin-bottom: 1;
     }
 
-    AuthPromptScreen #auth-prompt-input {
+    AuthPromptScreen #auth-prompt-input,
+    AuthPromptScreen #auth-prompt-base-url {
         margin-bottom: 1;
         border: solid $primary-lighten-2;
     }
 
-    AuthPromptScreen #auth-prompt-input:focus {
+    AuthPromptScreen #auth-prompt-input:focus,
+    AuthPromptScreen #auth-prompt-base-url:focus {
         border: solid $primary;
     }
 
@@ -245,9 +248,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # "no existing key" and surface a one-line warning at compose time.
         try:
             self._has_existing = auth_store.get_stored_key(provider) is not None
+            self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
             self._store_warning: str | None = None
         except RuntimeError as exc:
             self._has_existing = False
+            self._existing_base_url = ""
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
             )
@@ -281,9 +286,15 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 )
             if self._env_var:
                 yield Static(
-                    f"Equivalent to setting {self._env_var} (or "
-                    f"DEEPAGENTS_CODE_{self._env_var}).",
+                    Content.from_markup(
+                        "Saved here and used automatically — no need to set "
+                        "[bold]$plain[/bold] in your shell. If "
+                        "[bold]$prefixed[/bold] is set, it takes priority.",
+                        plain=self._env_var,
+                        prefixed=f"DEEPAGENTS_CODE_{self._env_var}",
+                    ),
                     classes="auth-prompt-meta",
+                    id="auth-prompt-key-meta",
                 )
             if self._store_warning:
                 yield Static(
@@ -298,6 +309,39 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 ),
                 password=True,
                 id="auth-prompt-input",
+            )
+            yield Input(
+                value=self._existing_base_url,
+                placeholder="Optional base URL",
+                id="auth-prompt-base-url",
+            )
+            # The hint lives on its own wrapping line, not in the Input
+            # placeholder (which clips to one line and can't show the full var
+            # name). Three tiers: the prefixed var that actually survives a
+            # blank save (what blank uses), else the provider's known endpoint
+            # var as a discoverability hint, else a generic line for providers
+            # with no base-URL env var at all.
+            surviving_base_url_env = get_default_base_url_env(self._provider)
+            endpoint_env = get_base_url_env_var(self._provider)
+            if surviving_base_url_env:
+                base_url_hint = Content.from_markup(
+                    "Leave blank to use [bold]$var[/bold].",
+                    var=surviving_base_url_env,
+                )
+            elif endpoint_env:
+                base_url_hint = Content.from_markup(
+                    "Leave blank for the provider default "
+                    "(endpoint var: [bold]$var[/bold]).",
+                    var=endpoint_env,
+                )
+            else:
+                base_url_hint = Content.from_markup(
+                    "Leave blank to use the provider's default endpoint."
+                )
+            yield Static(
+                base_url_hint,
+                classes="auth-prompt-meta",
+                id="auth-prompt-base-url-hint",
             )
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
             save_label = "Enter replace" if self._has_existing else "Enter save"
@@ -317,14 +361,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             container.styles.border = ("ascii", colors.success)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Validate, persist, and dismiss."""
+        """Validate, persist, and dismiss.
+
+        Reads both fields regardless of which one was submitted, so pressing
+        Enter in either the key or the base-URL input saves the pair.
+        """
         event.stop()
-        cleaned = event.value.strip()
+        cleaned = self.query_one("#auth-prompt-input", Input).value.strip()
+        base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
         if not cleaned:
             self._show_error("API key cannot be empty.")
             return
         try:
-            outcome = auth_store.set_stored_key(self._provider, cleaned)
+            outcome = auth_store.set_stored_key(
+                self._provider, cleaned, base_url=base_url or None
+            )
         except (ValueError, RuntimeError, OSError) as exc:
             # `auth_store` exception messages never include the secret value,
             # but the path can include user-controlled `DEFAULT_STATE_DIR`
@@ -347,8 +398,16 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self.dismiss(AuthResult.CANCELLED)
 
     def action_delete_stored(self) -> None:
-        """Open the delete-confirmation overlay for the stored credential."""
+        """Open the delete-confirmation overlay, or quit when nothing is stored.
+
+        Ctrl+D deletes a stored credential, but its `priority` binding also
+        intercepts the app-level Ctrl+D=quit. When there's no credential to
+        delete, fall through to quit rather than swallowing the key (mirroring
+        the thread selector). `app.exit()` is used instead of `dismiss()`, which
+        would just close the modal silently and re-swallow the key.
+        """
         if not self._has_existing:
+            self.app.exit()
             return
         self.app.push_screen(
             DeleteCredentialConfirmScreen(self._provider),
@@ -611,20 +670,7 @@ class AuthManagerScreen(ModalScreen[None]):
             A composed `Content` with the provider name and a status badge.
         """
         status = get_provider_auth_status(provider)
-        env_var = status.env_var or get_credential_env_var(provider) or ""
-        if status.source is ProviderAuthSource.STORED:
-            badge = Content.styled("[stored]", "bold $success")
-        elif status.source is ProviderAuthSource.ENV:
-            if env_var:
-                badge = Content.assemble(
-                    ("[env: ", "$text-muted"),
-                    Content.styled(resolved_env_var_name(env_var), "$text-muted"),
-                    ("]", "$text-muted"),
-                )
-            else:
-                badge = Content.styled("[env]", "$text-muted")
-        else:
-            badge = Content.styled("[missing]", "bold $warning")
+        badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=provider),
             "  ",

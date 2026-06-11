@@ -38,6 +38,7 @@ from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -673,7 +674,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            processed_spec: SubAgent = {
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
@@ -720,7 +721,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_names=_main_matched_names,
         )
 
-        general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+        general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
             "model": model,
             "tools": _tools or [],
@@ -817,6 +818,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
+    if sub_agent_middleware is not None:
+        sub_agent_middleware.private_state_keys = private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

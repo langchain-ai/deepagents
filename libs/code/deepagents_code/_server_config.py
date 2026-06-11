@@ -164,7 +164,9 @@ class ServerConfig:
 
     `None` means "fall through to whatever `settings.interpreter_ptc` resolves
     to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
-    a list is an explicit allowlist of tool names.
+    a list is an explicit allowlist of tool names that may also include the
+    `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
+    a list.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
@@ -180,7 +182,7 @@ class ServerConfig:
     """Existing sandbox ID to attach to; `None` creates a fresh sandbox."""
 
     sandbox_snapshot_name: str | None = None
-    """Sandbox snapshot name to use or create. LangSmith-only; must be `None`
+    """Sandbox snapshot (langsmith) or blueprint (runloop) name; must be `None`
     when `sandbox_id` is set."""
 
     sandbox_setup: str | None = None
@@ -365,8 +367,8 @@ class ServerConfig:
                 server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
-            sandbox_snapshot_name: Sandbox snapshot name to use or create
-                (langsmith only).
+            sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop)
+                name to use or create.
             sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.

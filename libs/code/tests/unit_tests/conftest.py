@@ -63,9 +63,45 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent provider base-URL env vars from leaking into tests.
+
+    A developer machine provisioned with the LangSmith gateway exports
+    `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`, which `get_base_url` now reads as
+    a fallback. Clear them (and the `DEEPAGENTS_CODE_` overrides) so base-URL
+    tests are deterministic. Tests that need a value set it explicitly.
+    """
+    for key in (
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+        "DEEPAGENTS_CODE_OPENAI_BASE_URL",
+        "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+        "DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local debug onboarding env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_ONBOARDING", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent update debug/loop-guard env vars from affecting tests.
+
+    `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
+    internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
+    auto-update to break a restart loop. Either leaking in (from a developer
+    shell, or a prior test exercising the production code that sets the
+    sentinel) would make the startup auto-update tests non-deterministic.
+    """
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +109,21 @@ def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local alpha event-listener env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_terminal_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop tests from leaking terminal control sequences to the real terminal.
+
+    Production code constructs `DeepAgentsApp` and exercises the spinner / theme
+    paths, which emit `OSC 11` (background color) and `OSC 9;4` (taskbar
+    progress) via `terminal_escape.write_terminal_escape`. That writer targets
+    `/dev/tty`, which pytest does not capture, so running the suite from inside
+    a real terminal (e.g. an editable install) visibly recolors the developer's
+    session. Opting out keeps the run inert. `test_terminal_escape.py` clears
+    this var in its own fixture so its assertions still exercise the real path.
+    """
+    monkeypatch.setenv("DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE", "1")
 
 
 @pytest.fixture(autouse=True)

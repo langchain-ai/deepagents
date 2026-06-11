@@ -43,6 +43,29 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def non_negative_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 0.
+
+    Args:
+        value: Raw argument string to parse.
+
+    Returns:
+        Parsed non-negative integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 0.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 0:
+        msg = f"must be a non-negative integer (>= 0), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
 def _print_option_section(*lines: str, title: str = "Options") -> None:
     """Print a help-screen options section with shared JSON/help flags.
 
@@ -97,6 +120,9 @@ def show_help() -> None:
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
+    console.print(
+        "  --max-retries N            Override max retries for transient model errors"
+    )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print("  --skill NAME               Invoke a skill when the session starts")
@@ -117,8 +143,8 @@ def show_help() -> None:
     )
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
-        "                             Sandbox snapshot name to use or create"
-        " (langsmith only)"
+        "                             Snapshot (langsmith) or blueprint (runloop)"
+        " name to use or create"
     )
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
@@ -138,7 +164,7 @@ def show_help() -> None:
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
-        "tool names"
+        "tool names (may include 'safe')"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
@@ -168,7 +194,11 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
-        "  --install EXTRA            Install an optional extra (e.g. quickjs)"
+        "  --install NAME             Install an optional extra (e.g. quickjs)"
+    )
+    console.print(
+        "  --package                  With --install, treat NAME as a package "
+        "(uv --with), not an extra"
     )
     console.print("  --yes                      Skip --install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")

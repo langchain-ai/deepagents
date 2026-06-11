@@ -286,7 +286,7 @@ async def _pause_for_strip(pilot: Pilot[None]) -> None:
 
 def _prompt_text(prompt: Static) -> str:
     """Read the current text content of a Static widget."""
-    return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
+    return str(prompt._Static__content)  # ty: ignore  # accessing internal content store
 
 
 def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
@@ -534,6 +534,38 @@ class TestHistoryNavigationFlag:
             await pilot.pause()
 
             assert text_area._skip_history_change_events == 0
+
+
+class TestSetValueAtEnd:
+    """Tests for programmatically setting input text at the end cursor position."""
+
+    async def test_places_cursor_at_end(self) -> None:
+        """set_value_at_end loads text and lands the cursor after the last char."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("ls -la")
+            await pilot.pause()
+
+            assert text_area.text == "ls -la"
+            assert text_area.cursor_location == (0, len("ls -la"))
+
+    async def test_multiline_places_cursor_at_end(self) -> None:
+        """set_value_at_end handles multi-line text by targeting the last line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("first\nsecond")
+            await pilot.pause()
+
+            assert text_area.text == "first\nsecond"
+            assert text_area.cursor_location == (1, len("second"))
 
 
 class TestHistoryBoundaryNavigation:
@@ -1548,8 +1580,8 @@ class TestSlashCompletionCursorMapping:
             assert [event.value for event in app.submitted] == [selected_label]
             assert app.submitted[0].mode == "command"
 
-    async def test_stale_enter_does_not_hide_exact_hidden_command(self) -> None:
-        """Exact hidden commands should still submit without autocomplete."""
+    async def test_stale_enter_submits_exact_restart_command(self) -> None:
+        """Exact restart command should submit without requiring autocomplete."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2373,8 +2405,8 @@ class TestPathPayloadDetectionGating:
                 replace_calls += 1
                 return original_replace(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
-            chat._apply_inline_dropped_path_replacement = counting_replace  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
+            chat._apply_inline_dropped_path_replacement = counting_replace  # ty: ignore
 
             for char in "hello":
                 await pilot.press(char)
@@ -2404,7 +2436,7 @@ class TestPathPayloadDetectionGating:
                 detect_calls += 1
                 return original_detect(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
 
             ta.text = str(target)
             await pilot.pause()
@@ -2629,6 +2661,47 @@ class TestVSCodeSpaceWorkaround:
             await pilot.pause()
 
             assert ta.text == "hello "
+
+
+class TestLockKeysDoNotType:
+    """Lock keys must never insert text.
+
+    Under the kitty keyboard protocol with associated-text reporting (iTerm2,
+    VS Code's xterm.js, etc.), pressing Caps Lock arrives as
+    Key(key='caps_lock', character='A'), which would otherwise make TextArea
+    insert a stray letter.
+    """
+
+    @pytest.mark.parametrize(
+        "lock_key",
+        [
+            "caps_lock",
+            "num_lock",
+            "scroll_lock",
+            # Modifier-prefixed variants: the lock bit can arrive alongside
+            # other modifier bits, so the key string is suffixed.
+            "ctrl+caps_lock",
+            "alt+ctrl+hyper+meta+super+caps_lock",
+        ],
+    )
+    async def test_lock_key_with_associated_text_inserts_nothing(
+        self, lock_key: str
+    ) -> None:
+        """A lock-key event carrying associated text should insert nothing."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            # iTerm2/kitty protocol reports the would-be text as `character`.
+            await ta._on_key(events.Key(lock_key, "A"))
+            await pilot.pause()
+
+            assert ta.text == "hello"
 
 
 class TestCtrlUDeleteToLineStart:
@@ -3094,3 +3167,172 @@ class TestSetCursorBlink:
             await pilot.pause()
 
             assert chat._text_area.has_focus is True
+
+
+class TestPasteBurstEnterSuppression:
+    """Multi-line pastes replayed as key events must not submit mid-stream.
+
+    Terminals without bracketed paste deliver a paste as rapid `Char`/`Enter`
+    key events. A short run of fast keystrokes arms a suppression window so the
+    embedded `enter` events insert newlines instead of submitting.
+    """
+
+    async def test_rapid_burst_with_newline_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fast keystroke run followed by enter inserts a newline."""
+        # Widen the burst gap so wall-clock delays between pilot.press calls on
+        # slow CI runners still register as a single rapid burst.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.press("w")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+
+    async def test_slow_typing_then_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deliberate typing (no burst) keeps enter as submit."""
+        # Force every inter-key gap to exceed the burst threshold.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello"
+
+    async def test_single_line_burst_then_manual_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-line paste followed by manual enter still submits."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = (
+                now - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS - 0.01
+            )
+            ta._paste_burst_window_until = (
+                now + chat_input_module._PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+            )
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
+            assert "\n" not in ta.text
+
+    async def test_suppressed_enter_rearms_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suppressed enter extends the window so trailing lines stay grouped."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            # Fresh keystroke within the char gap and an open (but nearly
+            # closed) window: this enter belongs to a replayed paste.
+            ta._paste_burst_last_key_time = now
+            original_until = now + 0.01
+            ta._paste_burst_window_until = original_until
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+            assert ta._paste_burst_window_until is not None
+            assert ta._paste_burst_window_until > original_until
+
+    async def test_blank_line_paste_keeps_consecutive_enter_grouped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed second enter in a blank-line paste does not submit."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            ta.move_cursor((0, len(ta.text)))
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = now
+            ta._paste_burst_window_until = now + 60.0
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+            assert ta.text == "abc\n"
+
+            ta._paste_burst_last_key_time = (
+                chat_input_module.time.monotonic()
+                - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert ta.text == "abc\n\n"
+
+    async def test_slash_command_enter_still_submits_during_burst(self) -> None:
+        """Slash-command context keeps enter dispatching even after a burst."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1

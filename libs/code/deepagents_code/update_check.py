@@ -17,11 +17,12 @@ import logging
 import operator
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TextIO
@@ -122,8 +123,20 @@ def _parse_version(v: str) -> Version:
     return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
+def is_installed_version_at_least(version: str) -> bool:
+    """Return whether installed package metadata is at least `version`."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version as pkg_version
+
+        installed = _parse_version(pkg_version("deepagents-code"))
+        target = _parse_version(version)
+    except (InvalidVersion, PackageNotFoundError):
+        return False
+    return installed >= target
+
+
 def _latest_from_releases(
-    releases: dict[str, list[object]],
+    releases: Mapping[str, Sequence[object]],
     *,
     include_prereleases: bool,
 ) -> str | None:
@@ -155,6 +168,49 @@ def _latest_from_releases(
             best = ver
             best_str = ver_str
     return best_str
+
+
+def get_cached_update_available() -> tuple[bool, str | None]:
+    """Check for updates using only a fresh local cache entry.
+
+    This is the startup fast path: it never contacts PyPI. Stale, missing,
+    corrupt, or unparsable cache data is treated as "no cached update answer" so
+    callers can launch immediately and let a background update check refresh the
+    cache later.
+
+    Returns:
+        A `(available, latest)` tuple. `latest` is `None` when the cache cannot
+            provide a fresh answer.
+    """
+    try:
+        installed = _parse_version(__version__)
+    except InvalidVersion:
+        logger.warning(
+            "Installed version %r is not PEP 440 compliant; "
+            "cache-only update checks disabled for this install",
+            __version__,
+        )
+        return False, None
+
+    cache_key = "version_prerelease" if installed.is_prerelease else "version"
+    try:
+        if not CACHE_FILE.exists():
+            return False, None
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False, None
+        checked_at = data.get("checked_at")
+        if not isinstance(checked_at, (int, float)):
+            return False, None
+        if time.time() - checked_at >= CACHE_TTL:
+            return False, None
+        value = data.get(cache_key)
+        if not isinstance(value, str):
+            return False, None
+        return _parse_version(value) > installed, value
+    except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
+        logger.debug("Failed to read cache-only update answer", exc_info=True)
+        return False, None
 
 
 def get_latest_version(
@@ -293,7 +349,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # type: ignore[call-overload]
+    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
     return value if isinstance(value, str) else None
 
 
@@ -812,13 +868,13 @@ async def _run_install_subprocess(
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
-                    proc.stdout,  # type: ignore[arg-type]
+                    proc.stdout,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,
                 ),
                 _read_stream(
-                    proc.stderr,  # type: ignore[arg-type]
+                    proc.stderr,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,
@@ -920,37 +976,37 @@ def is_valid_extra_name(extra: str) -> bool:
     return bool(_EXTRA_NAME_RE.fullmatch(extra))
 
 
-def install_package_command(package: str) -> str:
-    """Return the shell command that adds a package to the dcode tool env.
+def is_valid_package_name(package: str) -> bool:
+    """Return whether `package` is safe to embed in a `--with` install command.
 
     Args:
-        package: Package name to install into the existing tool environment.
+        package: Candidate package name from CLI or slash-command input.
 
     Returns:
-        Shell command string suitable for display in error messages.
-
-    Raises:
-        ValueError: If `package` is not a conservative PEP 508-style package
-            name.
+        `True` when the value is a conservative PEP 508-style package name.
     """
-    if not _PACKAGE_NAME_RE.fullmatch(package):
-        msg = (
-            f"Invalid package name {package!r}: must match PEP 508 "
-            f"({_PACKAGE_NAME_RE.pattern})"
-        )
-        raise ValueError(msg)
-    return f"uv tool install -U deepagents-code --with {package}"
+    return bool(_PACKAGE_NAME_RE.fullmatch(package))
 
 
-def install_extras_command(extras: Iterable[str]) -> str:
-    """Return the uv command that installs the exact set of dcode extras.
+def _dcode_extras_requirement(extras: Iterable[str]) -> str:
+    """Return the validated `deepagents-code[...]` requirement for a uv install.
+
+    Shared by the extra- and package-install commands so already-installed
+    extras survive a `uv tool install` reinstall — a bare `deepagents-code`
+    request would replace the tool and drop them. Returns plain
+    `deepagents-code` when no extras are selected; otherwise the single-quoted
+    bracket form, which keeps zsh from globbing the brackets.
 
     Args:
-        extras: Extra names to include in the tool reinstall.
+        extras: Extra names to encode. Each is validated against PEP 508
+            grammar before interpolation. This is the authoritative gate for
+            caller-supplied extras (`install_extras_command`) and a
+            redundant re-check for extras read from distribution metadata
+            (`install_package_command`).
 
     Returns:
-        Shell command string suitable for display in error messages and
-            execution via `perform_install_extra`.
+        Shell-safe requirement token, e.g. `deepagents-code` or
+            `'deepagents-code[baseten,nvidia]'`.
 
     Raises:
         ValueError: If any extra fails PEP 508 validation.
@@ -963,8 +1019,79 @@ def install_extras_command(extras: Iterable[str]) -> str:
                 f"({_EXTRA_NAME_RE.pattern})"
             )
             raise ValueError(msg)
+    if not names:
+        return "deepagents-code"
     extras_part = ",".join(names)
-    return f"uv tool install -U 'deepagents-code[{extras_part}]'"
+    return f"'deepagents-code[{extras_part}]'"
+
+
+def install_package_command(
+    package: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the shell command that adds a package to the dcode tool env.
+
+    The result is built for *execution* (via `perform_install_package`), not for
+    display — surfacing raw `uv tool` invocations to the user is intentionally
+    avoided. `package` is validated and then `shlex.quote`-d: the validation
+    already blocks shell metacharacters, so the quoting is defense in depth that
+    keeps the command safe even if the pattern is later loosened.
+
+    Already-installed extras are folded into the `deepagents-code[...]`
+    requirement via the shared `_dcode_extras_requirement` helper, the same way
+    `install_extras_command` builds its requirement. Without this the reinstall
+    would replace the tool with a plain `deepagents-code`, silently dropping any
+    extras the user added through `/install <extra>`.
+
+    Args:
+        package: Package name to install into the existing tool environment.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata (refused rather than risk
+            dropping them).
+        ValueError: If `package` or any already-installed extra fails PEP 508
+            validation.
+    """
+    if not _PACKAGE_NAME_RE.fullmatch(package):
+        msg = (
+            f"Invalid package name {package!r}: must match PEP 508 "
+            f"({_PACKAGE_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
+
+    try:
+        extras = installed_extra_names(distribution_name, strict=True)
+    except ExtrasIntrospectionError as exc:
+        msg = str(exc)
+        raise ExtrasIntrospectionError(msg) from exc
+    requirement = _dcode_extras_requirement(extras)
+    return f"uv tool install -U {requirement} --with {shlex.quote(package)}"
+
+
+def install_extras_command(extras: Iterable[str]) -> str:
+    """Return the uv command that installs the exact set of dcode extras.
+
+    Args:
+        extras: Extra names to include in the tool reinstall. Validated by
+            `_dcode_extras_requirement`, which raises `ValueError` on any name
+            that fails PEP 508 validation.
+
+    Returns:
+        Shell command string suitable for display in error messages and
+            execution via `perform_install_extra`.
+    """
+    return f"uv tool install -U {_dcode_extras_requirement(extras)}"
 
 
 def install_extra_command(
@@ -1027,6 +1154,20 @@ def editable_extra_hint(extra: str) -> str:
         "Rerun your `uv tool install --editable` command with "
         f"`--with 'deepagents-code[{extra}]'` added so the extra is "
         "resolved against the editable source."
+    )
+
+
+def editable_package_hint(package: str) -> str:
+    """Return the canonical action hint for editable installs needing a package.
+
+    Editable installs can't have packages added automatically, so this points
+    the user at adding it to their own development environment. Phrased without
+    a raw install command, since surfacing `uv tool` invocations to the user is
+    intentionally avoided.
+    """
+    return (
+        f"Add '{package}' to your editable checkout's environment (the one your "
+        "editable install of Deep Agents Code runs from), then relaunch."
     )
 
 
@@ -1093,6 +1234,86 @@ async def perform_install_extra(
     try:
         cmd = install_extra_command(extra)
     except (ExtrasIntrospectionError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+async def perform_install_package(
+    package: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Add an arbitrary `package` to the installed dcode tool environment.
+
+    Runs `uv tool install -U 'deepagents-code[<extras>]' --with <package>`, the
+    escape hatch for a provider whose package is not a `deepagents-code` extra
+    (e.g. a custom or in-house `class_path` model). Already-installed extras are
+    preserved so the reinstall does not drop them. Editable installs are refused
+    — the caller should rerun their `uv tool install --editable` command with
+    `--with <package>` added so it resolves against the editable source.
+
+    Args:
+        package: The package name to install. Must satisfy
+            `is_valid_package_name`; invalid names are rejected without invoking
+            uv (defense in depth against shell injection via the
+            `--force`/`--yes` bypass paths).
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        `(success, output)` — on success, *output* is the combined
+            stdout/stderr from the install. On failure it is an explanatory
+            message: when the install method is unsupported, `package` is
+            malformed, `uv` is unavailable, or the install subprocess fails or
+            times out.
+    """
+    if not is_valid_package_name(package):
+        return False, (
+            f"Invalid package name {package!r}: must match {_PACKAGE_NAME_RE.pattern}"
+        )
+    method = detect_install_method()
+    if method == "unknown":
+        return False, (
+            "Editable install detected — cannot add packages automatically.\n"
+            + editable_package_hint(package)
+        )
+    if method == "brew":
+        return False, (
+            "Homebrew install detected — packages can't be added to a brew "
+            "install. Reinstall Deep Agents Code as a uv-managed tool (see the "
+            "installation docs) to enable adding packages."
+        )
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot add packages without "
+            "knowing which environment provides `dcode`. Reinstall Deep Agents "
+            "Code as a uv-managed tool (see the installation docs) to enable "
+            "adding packages."
+        )
+
+    if not shutil.which("uv"):
+        return False, (
+            "Package installs require uv, which was not found. Reinstall Deep "
+            "Agents Code following the installation docs so packages can be "
+            "added."
+        )
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = install_package_command(package)
+    except ValueError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except ExtrasIntrospectionError as exc:
+        # Distinct from a malformed package name: the running distribution's own
+        # metadata could not be read or parsed. Leave a breadcrumb so the cause
+        # is recoverable from logs, even though the user message is unchanged.
+        logger.warning(
+            "Could not introspect installed extras for package install of %r",
+            package,
+            exc_info=True,
+        )
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 

@@ -97,14 +97,14 @@ class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
 
 
-SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
-
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.
-"""
+SUMMARIZATION_SYSTEM_PROMPT = (
+    "## Compact conversation Tool `compact_conversation`\n"
+    "\n"
+    "You have a `compact_conversation` tool that refreshes your context window "
+    "to reduce bloat and cost. Prefer compacting over carrying stale context: "
+    "when the work ahead no longer depends on the earlier conversation, call it "
+    "as your first action before starting that work.\n"
+)
 
 
 class SummarizationEvent(TypedDict):
@@ -1408,10 +1408,12 @@ class SummarizationToolMiddleware(AgentMiddleware):
             name="compact_conversation",
             description=(
                 "Compact the conversation by summarizing older messages "
-                "into a concise summary. Use this proactively when the "
-                "conversation is getting long to free up context window "
-                "space, or when the user explicitly shifts to a different, unrelated topic. "
-                "This tool takes no arguments."
+                "into a concise summary, freeing up context window space. "
+                "Call it when the conversation has grown long, when you finish "
+                "a task and its working context is no longer needed, or when "
+                "moving to a new task the prior context is irrelevant to "
+                "(e.g. switching from debugging one service to drafting an "
+                "unrelated feature spec). This tool takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,

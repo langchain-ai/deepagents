@@ -1,20 +1,25 @@
 """Conditional reasoning-verification controller for MiniMax.
 
-A single middleware that fires every turn and decides — via a cheap one-word
-classify call on the *same* model — whether the turn was a hard-reasoning /
-state-changing task that warrants a verification pass. Only then does it invoke
-an internal `RubricMiddleware` to grade the agent's work against a fixed,
-domain-agnostic process rubric and, on a real violation, inject the specific gap
-and re-run the actor once.
+A single middleware that fires every turn and decides — from the turn's tool
+activity alone, no model call — whether the agent took actions that warrant a
+verification pass. Only then does it invoke an internal `RubricMiddleware` to
+grade the agent's work against a fixed, domain-agnostic process rubric and, on a
+real violation, inject the specific gap and re-run the actor once.
 
 Design points:
+- The gate is deterministic: a turn is verified when the agent used a tool this
+  turn (state may have changed) or in an earlier turn (this final message must
+  faithfully report what was done). Pure chat/acknowledgement turns are skipped.
+  An LLM classifier was tried here and removed: it labelled ~14% of
+  state-changing turns SIMPLE — skipping verification exactly where it mattered —
+  while filtering out only ~18% of turns overall, so it cost a model call per
+  turn for a coverage hole.
 - The internal `RubricMiddleware` is NOT registered in the agent's middleware
   stack; it is owned and driven by this controller, so grading happens only when
-  the gate says so. Simple/trivial turns cost just the tiny classify call.
+  the gate says so.
 - The grader is a separate instance of the *same kind* of model (e.g. MiniMax
-  M3), used for both the classify call and grading.
-- The rubric criteria are reasoning-validity checks (not outcome templates), so
-  they reward a correct refusal of a non-permitted request rather than pushing
+  M3). The rubric criteria are reasoning-validity checks (not outcome templates),
+  so they reward a correct refusal of a non-permitted request rather than pushing
   the agent to fulfil it. The agent's system prompt (the policy) is embedded in
   the rubric so the grader can judge permission/feasibility.
 """
@@ -36,7 +41,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     hook_config,
 )
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 from deepagents.middleware.rubric import RubricMiddleware, RubricState
 
@@ -54,20 +59,22 @@ Evaluate whether the agent's work satisfies every criterion. Judge the agent's r
 5. Faithful reporting — the agent's final message reports only what it actually verified (consistent with criterion 4) and gives the user the specific information they asked for; it must not claim or imply an outcome it did not confirm.
 6. Transparency — any rule or limit that changed what the agent did was stated to the user, not applied silently."""
 
-_CLASSIFY_PROMPT = """\
-You route tasks for a verification system. Given the user's latest request (and whether the agent took any tool actions this turn), answer with ONE word:
-- COMPLEX — completing it correctly needs multi-step reasoning, tool actions, state changes, or reconciling rules/constraints.
-- SIMPLE — a trivial single-step lookup, acknowledgement, or plain chat.
-Answer with exactly COMPLEX or SIMPLE and nothing else."""
-
 _OPERATING_RULES_TEMPLATE = "{rubric}\n\n<operating_rules>\n{policy}\n</operating_rules>"
 
 
 class _ReasoningGateState(RubricState):
-    """RubricState plus a per-turn baseline marker for tool-use detection."""
+    """RubricState plus markers for cheap tool-use detection."""
 
     _gate_baseline: NotRequired[Annotated[int, PrivateStateAttr]]
     """Message count at turn start; isolates this turn's messages."""
+
+    _tool_seen: NotRequired[Annotated[bool, PrivateStateAttr]]
+    """Sticky: set once any turn uses a tool, never cleared.
+
+    Lets `_should_verify` skip re-walking prior turns — it only scans this
+    invocation's new messages and ORs in this flag, so the per-turn cost is
+    O(new messages) instead of O(whole conversation).
+    """
 
 
 def _message_text(message: object) -> str:
@@ -80,7 +87,7 @@ def _message_text(message: object) -> str:
 
 
 class ReasoningGateMiddleware(AgentMiddleware):
-    """Classify each turn; grade only the hard-reasoning ones via RubricMiddleware."""
+    """Grade every turn where the agent used a tool (now or earlier) via RubricMiddleware."""
 
     state_schema = _ReasoningGateState
 
@@ -88,15 +95,13 @@ class ReasoningGateMiddleware(AgentMiddleware):
         """Initialize the controller.
 
         Args:
-            grader_model: Model (or spec string) used for BOTH the classify call
-                and rubric grading — a separate instance of the same kind of
-                model as the actor.
+            grader_model: Model (or spec string) used for rubric grading — a
+                separate instance of the same kind of model as the actor.
             max_iterations: Rubric grade iterations. 2 = one real revision pass
                 (grade -> revise -> re-grade).
         """
         self._grader_model = grader_model
         self._max_iterations = max_iterations
-        self._model: BaseChatModel | None = None
         self._rubric: RubricMiddleware | None = None
 
     def _ensure_ready(self) -> None:
@@ -108,7 +113,6 @@ class ReasoningGateMiddleware(AgentMiddleware):
             from deepagents._models import resolve_model  # noqa: PLC0415
 
             model = resolve_model(model)
-        self._model = model
         self._rubric = RubricMiddleware(model=model, max_iterations=self._max_iterations)
 
     # -- turn boundary -------------------------------------------------------
@@ -127,11 +131,11 @@ class ReasoningGateMiddleware(AgentMiddleware):
         self._ensure_ready()
         if state.get("_rubric_status") == "needs_revision":
             return self._rubric.after_agent(state, runtime)  # type: ignore[union-attr]
-        if not self._should_verify(state, is_async=False):
+        if not self._should_verify(state):
             return None
         fresh = self._fresh_rubric_run(state)
         result = self._rubric.after_agent({**state, **fresh}, runtime) or {}  # type: ignore[union-attr]
-        return {**fresh, **result}
+        return {**fresh, **result, "_tool_seen": True}
 
     @hook_config(can_jump_to=["model"])
     async def aafter_agent(self, state: _ReasoningGateState, runtime: Runtime) -> dict[str, Any] | None:
@@ -139,48 +143,37 @@ class ReasoningGateMiddleware(AgentMiddleware):
         self._ensure_ready()
         if state.get("_rubric_status") == "needs_revision":
             return await self._rubric.aafter_agent(state, runtime)  # type: ignore[union-attr]
-        if not await self._ashould_verify(state):
+        if not self._should_verify(state):
             return None
         fresh = self._fresh_rubric_run(state)
         result = await self._rubric.aafter_agent({**state, **fresh}, runtime) or {}  # type: ignore[union-attr]
-        return {**fresh, **result}
+        return {**fresh, **result, "_tool_seen": True}
 
     # -- gate ----------------------------------------------------------------
 
-    def _classify_input(self, state: _ReasoningGateState) -> list[Any]:
-        """Build the (small) classify message list from this turn."""
+    @staticmethod
+    def _used_tools(messages: list[Any]) -> bool:
+        """Whether any message in the slice is an AI turn that called a tool."""
+        return any(isinstance(m, AIMessage) and m.tool_calls for m in messages)
+
+    def _should_verify(self, state: _ReasoningGateState) -> bool:
+        """Verify when the agent acted — this invocation or earlier.
+
+        A tool call this invocation means state may have changed; a tool call in
+        an earlier turn means this (possibly tool-free) final message must report
+        those results faithfully. A conversation with no tool calls at all is
+        plain chat and is skipped.
+
+        Prior turns are captured by the sticky `_tool_seen` flag (set the first
+        time any turn grades), so we only scan this invocation's new messages
+        (``messages[baseline:]``) rather than re-walking the whole history each
+        turn — O(new messages) per turn instead of O(whole conversation).
+        """
+        if state.get("_tool_seen"):
+            return True
         messages = state["messages"]
         baseline = state.get("_gate_baseline", 0)
-        turn_messages = messages[baseline:]
-        tools_used = any(
-            isinstance(m, AIMessage) and m.tool_calls for m in turn_messages
-        )
-        prior = messages[:baseline]
-        request = next(
-            (_message_text(m) for m in reversed(prior) if isinstance(m, HumanMessage)),
-            "",
-        )
-        prior_agent = next(
-            (_message_text(m) for m in reversed(prior) if isinstance(m, AIMessage)),
-            "",
-        )
-        payload = (
-            f"User request: {request[:1000]}\n"
-            f"Prior agent message: {prior_agent[:400]}\n"
-            f"Agent used tools this turn: {'yes' if tools_used else 'no'}"
-        )
-        return [SystemMessage(content=_CLASSIFY_PROMPT), HumanMessage(content=payload)]
-
-    @staticmethod
-    def _is_complex(response: object) -> bool:
-        """Parse the classify response; default SIMPLE on ambiguity."""
-        return "COMPLEX" in _message_text(response).upper()
-
-    def _should_verify(self, state: _ReasoningGateState, *, is_async: bool) -> bool:  # noqa: ARG002
-        return self._is_complex(self._model.invoke(self._classify_input(state)))  # type: ignore[union-attr]
-
-    async def _ashould_verify(self, state: _ReasoningGateState) -> bool:
-        return self._is_complex(await self._model.ainvoke(self._classify_input(state)))  # type: ignore[union-attr]
+        return self._used_tools(messages[baseline:])
 
     # -- rubric --------------------------------------------------------------
 

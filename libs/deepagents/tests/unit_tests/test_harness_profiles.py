@@ -436,7 +436,10 @@ class TestMiniMaxBuiltinProfile:
             assert profile.system_prompt_suffix is not None, spec
             assert "<track_and_verify>" in profile.system_prompt_suffix, spec
             assert "<report_back>" in profile.system_prompt_suffix, spec
-            assert "<clarify>" in profile.system_prompt_suffix, spec
+            assert "<clarify>" not in profile.system_prompt_suffix, spec
+            # Clarify guidance now lives in the MiniMax-scoped base prompt.
+            assert profile.base_system_prompt is not None, spec
+            assert "## Clarifying Requests" in profile.base_system_prompt, spec
             # ... paired with the reasoning-gate controller.
             mws = profile.materialize_extra_middleware()
             assert any(
@@ -527,24 +530,29 @@ class TestPreCompletionVerificationMiddleware:
 
 
 class TestReasoningGateMiddleware:
-    """Gate logic for the conditional rubric controller (model stubbed)."""
+    """Gate logic for the conditional rubric controller (grading stubbed).
 
-    def _build(self, verdict: str) -> ReasoningGateMiddleware:
-        fake = GenericFakeChatModel(messages=itertools.cycle([AIMessage(content=verdict)]))
-        mw = ReasoningGateMiddleware(grader_model=fake)
-        mw._ensure_ready()  # resolves _model=fake + builds the real internal rubric
-        mw._rubric = MagicMock()  # stub grading; these tests only exercise the gate
+    The gate is deterministic — it verifies a turn when the agent used a tool
+    this turn or in an earlier one — so no classifier model is needed; stubbing
+    the internal rubric is enough to observe whether the gate fired.
+    """
+
+    def _build(self) -> ReasoningGateMiddleware:
+        # Pre-stubbing _rubric short-circuits _ensure_ready, so grader_model is
+        # never resolved and these tests stay model-free.
+        mw = ReasoningGateMiddleware(grader_model="unused-no-resolve")
+        mw._rubric = MagicMock()
         mw._rubric.after_agent.return_value = {}
         return mw
 
-    def test_simple_turn_skips_grading(self) -> None:
-        mw = self._build("SIMPLE")
+    def test_chat_only_turn_skips_grading(self) -> None:
+        mw = self._build()
         state = {"messages": [HumanMessage("what's your name?")], "_gate_baseline": 1}
         assert mw.after_agent(state, None) is None
         mw._rubric.after_agent.assert_not_called()
 
-    def test_complex_turn_grades(self) -> None:
-        mw = self._build("COMPLEX")
+    def test_tool_using_turn_grades_and_sets_flag(self) -> None:
+        mw = self._build()
         state = {
             "messages": [
                 HumanMessage("cancel my flight and rebook to JFK"),
@@ -556,10 +564,34 @@ class TestReasoningGateMiddleware:
         mw._rubric.after_agent.assert_called_once()
         assert out is not None
         assert "rubric" in out  # fresh-run state merged in
+        assert out["_tool_seen"] is True  # sticky flag set for later turns
 
-    def test_in_progress_continues_without_classifying(self) -> None:
-        # Classifier would say SIMPLE, but an active grade loop must continue.
-        mw = self._build("SIMPLE")
+    def test_tool_free_report_turn_grades_via_flag(self) -> None:
+        # The final message uses no tools, but a prior turn did and set the
+        # sticky _tool_seen flag — the report must still be verified (the
+        # communicate-mismatch failure mode). The flag spares a prefix re-scan.
+        mw = self._build()
+        state = {
+            "messages": [AIMessage(content="All done!")],
+            "_gate_baseline": 0,
+            "_tool_seen": True,
+        }
+        mw.after_agent(state, None)
+        mw._rubric.after_agent.assert_called_once()
+
+    def test_chat_only_turn_does_not_set_flag(self) -> None:
+        # No tool this turn and no prior flag → skip, and nothing to cache.
+        mw = self._build()
+        state = {
+            "messages": [HumanMessage("hi"), AIMessage(content="hello")],
+            "_gate_baseline": 1,
+        }
+        assert mw.after_agent(state, None) is None
+        mw._rubric.after_agent.assert_not_called()
+
+    def test_in_progress_continues_without_gating(self) -> None:
+        # An active grade loop must continue regardless of tool activity.
+        mw = self._build()
         state = {
             "messages": [HumanMessage("hi")],
             "_gate_baseline": 1,

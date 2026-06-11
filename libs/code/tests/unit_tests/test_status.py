@@ -467,6 +467,40 @@ class TestConnectionIndicator:
             indicator = pilot.app.query_one("#connection-indicator", Static)
             assert str(indicator.render()) == ""
 
+    async def test_empty_indicator_is_hidden(self) -> None:
+        """An empty indicator should be `display: none` so its padding adds no gap.
+
+        The widget carries `padding: 0 1`; left visible while empty it would
+        wedge two blank columns between the auto-approve pill and the cwd.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert indicator.display is False
+
+    async def test_set_connection_shows_indicator(self) -> None:
+        """Setting a connection state should make the indicator visible again."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert indicator.display is True
+            bar.set_connection("")
+            await pilot.pause()
+            assert indicator.display is False
+
+    async def test_queued_count_shows_indicator(self) -> None:
+        """A queued count alone should also surface (and later hide) the indicator."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_queued(2)
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert indicator.display is True
+            bar.set_queued(0)
+            await pilot.pause()
+            assert indicator.display is False
+
     async def test_invalid_state_raises(self) -> None:
         """An unrecognized connection state should raise `ValueError`."""
         async with StatusBarApp().run_test() as pilot:

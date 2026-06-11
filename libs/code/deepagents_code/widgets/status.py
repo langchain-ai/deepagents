@@ -295,6 +295,9 @@ class StatusBar(Horizontal):
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
         label.model = settings.model_name or ""
+        # Reactives are `init=False`, so the connection watcher never fires on
+        # mount; render once to hide the empty indicator (and its padding).
+        self._render_connection()
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -416,7 +419,11 @@ class StatusBar(Horizontal):
             label = "message" if self.queued_count == 1 else "messages"
             parts.append(f"{self.queued_count} {label} queued")
         separator = f" {get_glyphs().bullet} "
-        widget.update(separator.join(parts))
+        text = separator.join(parts)
+        # Hide the widget entirely when empty so its `padding: 0 1` doesn't
+        # leave a 2-column gap between the auto-approve pill and the cwd.
+        widget.display = bool(text)
+        widget.update(text)
 
     def set_connection(self, state: ConnectionState) -> None:
         """Set the connection indicator state.

@@ -86,6 +86,7 @@ permissions:
 jobs:
   # Determine working directory from package input and resolve the release SHA
   setup:
+    name: 🧭 Resolve release target
     runs-on: ubuntu-latest
     outputs:
       package: ${{ steps.parse.outputs.package }}
@@ -234,6 +235,7 @@ jobs:
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
+    name: 📦 Build distribution
     needs: setup
     if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
@@ -352,6 +354,7 @@ jobs:
   # Generate release notes from CHANGELOG.md (with git log fallback)
   # and collect contributor shoutouts from merged PRs
   release-notes:
+    name: 📝 Generate release notes
     needs:
       - setup
       - build
@@ -665,6 +668,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   test-pypi-publish:
+    name: 🧪 Publish to TestPyPI
     needs:
       - setup
       - build
@@ -705,6 +709,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
+    name: ✅ Pre-release checks
     needs:
       - setup
       - build
@@ -856,6 +861,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
   publish:
+    name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
     needs:
       - setup
@@ -904,6 +910,7 @@ jobs:
 
   # Create GitHub release after checks pass
   mark-release:
+    name: 🏷️ Tag GitHub release
     needs:
       - setup
       - build

@@ -1,6 +1,9 @@
 """Unit tests for subagent loading functionality."""
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from deepagents_code.subagents import (
     _load_subagents_from_dir,
@@ -429,3 +432,71 @@ class TestListSubagents:
 
         assert len(result) == 1
         assert result[0]["model"] == "anthropic:claude-haiku-4-5-20251001"
+
+
+class TestDiagnostics:
+    """Test that discovery surfaces warnings for misconfigured subagents."""
+
+    def test_warns_on_missing_frontmatter(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A file without frontmatter logs an explanatory warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("# Just markdown\n\nNo frontmatter.")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "missing YAML frontmatter" in caplog.text
+
+    def test_warns_on_invalid_fields(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Missing required fields are named in the warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+name: helper
+---
+
+Content
+""")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "description" in caplog.text
+
+    def test_warns_on_stray_file_in_agents_dir(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A markdown file placed directly in agents/ is flagged."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "researcher.md").write_text(
+            make_subagent_content("researcher", "Research assistant")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert result == {}
+        assert "researcher.md" in caplog.text
+        assert "AGENTS.md" in caplog.text
+
+    def test_warns_on_folder_without_agents_md(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A Claude Code style folder (agent.md instead of AGENTS.md) is flagged."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "agent.md").write_text(
+            make_subagent_content("researcher", "Research assistant")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "user")
+
+        assert result == {}
+        assert "agent.md" in caplog.text
+        assert "AGENTS.md" in caplog.text

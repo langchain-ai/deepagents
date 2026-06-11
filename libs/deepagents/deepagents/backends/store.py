@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, cast
 
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
-from langgraph.store.base import BaseStore, Item
+from langgraph.store.base import BaseStore, Item, PutOp
 from langgraph.typing import ContextT, StateT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
@@ -736,8 +736,7 @@ class StoreBackend(BackendProtocol):
         if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
-        for key in to_delete:
-            store.delete(namespace, key)
+        store.batch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
 
     async def adelete(self, file_path: str) -> DeleteResult:
@@ -750,8 +749,7 @@ class StoreBackend(BackendProtocol):
         if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
-        for key in to_delete:
-            await store.adelete(namespace, key)
+        await store.abatch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
 
     # Removed legacy grep() convenience to keep lean surface

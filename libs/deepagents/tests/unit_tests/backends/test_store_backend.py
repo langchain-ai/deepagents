@@ -8,6 +8,7 @@ import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
+from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
@@ -560,6 +561,64 @@ async def test_store_backend_adelete_directory_recursive() -> None:
     assert (await be.aread("/work/a.txt")).error is not None
     assert (await be.aread("/work/sub/b.txt")).error is not None
     assert (await be.aread("/keep.txt")).error is None
+
+
+def test_store_backend_delete_uses_single_batch_call() -> None:
+    """A recursive delete issues one batched store write, not one call per key."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    # Spy on the store's batch primitive (search and delete both route through it).
+    batches: list[list] = []
+    original_batch = mem_store.batch
+
+    def spy_batch(ops):
+        ops = list(ops)
+        batches.append(ops)
+        return original_batch(ops)
+
+    mem_store.batch = spy_batch  # type: ignore[method-assign]
+
+    result = be.delete("/work")
+    assert result.error is None
+
+    # Exactly one batch carried PutOps — all the deletes in a single round-trip.
+    delete_batches = [ops for ops in batches if any(isinstance(op, PutOp) for op in ops)]
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
+
+
+async def test_store_backend_adelete_uses_single_batch_call() -> None:
+    """Async recursive delete issues one batched store write, not one per key."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    batches: list[list] = []
+    original_abatch = mem_store.abatch
+
+    async def spy_abatch(ops):
+        ops = list(ops)
+        batches.append(ops)
+        return await original_abatch(ops)
+
+    mem_store.abatch = spy_abatch  # type: ignore[method-assign]
+
+    result = await be.adelete("/work")
+    assert result.error is None
+
+    delete_batches = [ops for ops in batches if any(isinstance(op, PutOp) for op in ops)]
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
 
 
 def test_store_backend_delete_missing_returns_error() -> None:

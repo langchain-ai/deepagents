@@ -711,6 +711,9 @@ class ChatTextArea(TextArea):
             return False
         if self._paste_burst_buffer:
             return True
+        last_key = self._paste_burst_last_key_time
+        if last_key is None or (now - last_key) > _PASTE_BURST_CHAR_GAP_SECONDS:
+            return False
         until = self._paste_burst_window_until
         return until is not None and now <= until
 

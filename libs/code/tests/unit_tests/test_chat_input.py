@@ -3183,6 +3183,37 @@ class TestPasteBurstEnterSuppression:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "hello"
 
+    async def test_single_line_burst_then_manual_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-line paste followed by manual enter still submits."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = (
+                now - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS - 0.01
+            )
+            ta._paste_burst_window_until = (
+                now + chat_input_module._PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+            )
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
+            assert "\n" not in ta.text
+
     async def test_slash_command_enter_still_submits_during_burst(self) -> None:
         """Slash-command context keeps enter dispatching even after a burst."""
         app = _RecordingApp()

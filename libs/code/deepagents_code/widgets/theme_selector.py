@@ -223,15 +223,16 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Dismiss, keeping a saved terminal default or restoring the original.
+        """Dismiss, keeping a terminal default chosen this session or restoring.
 
         Pressing `t` to save a per-terminal default is a deliberate choice, so
-        Esc keeps that theme instead of reverting. `_session_terminal_default`
-        is set only after the save succeeds (see `action_set_for_terminal`), so
-        reaching the keep branch means the per-terminal mapping was written this
-        session; `dismiss(None)` then intentionally skips the global `[ui].theme`
-        write. Without a successful `t` save, Esc restores the theme that was
-        active when the picker opened.
+        Esc keeps that theme instead of reverting. `action_set_for_terminal`
+        records the choice synchronously (and clears it only if the async save
+        fails), so Esc keeps the theme even when the write is still in flight;
+        the persisted `[ui.terminal_themes]` mapping is the source of truth
+        across sessions. `dismiss(None)` intentionally skips the global
+        `[ui].theme` write. Without a `t` press — or after a failed save — Esc
+        restores the theme that was active when the picker opened.
         """
         keep = self._session_terminal_default
         target = keep if keep is not None else self._original_theme
@@ -292,6 +293,12 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             )
             return
 
+        # Record the deliberate choice synchronously so Esc keeps this theme
+        # even if the user dismisses before the async write returns (otherwise
+        # a slow write would race the cancel path and revert). The failure
+        # branches below clear it so a save that errors still reverts on Esc.
+        self._session_terminal_default = name
+
         async def _persist() -> None:
             try:
                 from deepagents_code.app import _save_terminal_theme_mapping_result
@@ -301,6 +308,10 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
             except Exception as exc:
                 logger.exception("Failed to persist terminal theme mapping")
+                # Guard against clobbering a newer `t` selection whose write
+                # is still in flight; only clear if this save is still current.
+                if self._session_terminal_default == name:
+                    self._session_terminal_default = None
                 self.app.notify(
                     f"Could not save terminal mapping ({type(exc).__name__}).",
                     severity="error",
@@ -309,6 +320,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 )
                 return
             if not status.ok:
+                if self._session_terminal_default == name:
+                    self._session_terminal_default = None
                 self.app.notify(
                     status.message or "Could not save terminal mapping.",
                     severity=status.severity,
@@ -316,9 +329,6 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                     timeout=6,
                 )
                 return
-            # Esc should only preserve a previewed theme after the terminal
-            # default has actually been saved.
-            self._session_terminal_default = name
             if status.message is not None:
                 self.app.notify(
                     status.message,

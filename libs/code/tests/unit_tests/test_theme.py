@@ -2868,3 +2868,65 @@ class TestThemeSelectorScreen:
 
         # The modal dismissed (no exception bubbled, user not trapped).
         assert results == [None]
+
+    async def test_escape_keeps_theme_when_save_still_in_flight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc keeps the `t` theme even if the config write hasn't returned.
+
+        Regression test for the race where the per-terminal save is slow
+        (disk/lock contention): pressing `t` then Esc before the write
+        completes must still keep the chosen theme, because the choice is
+        recorded synchronously rather than only after the worker resolves.
+        """
+        import asyncio
+        import threading
+
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.app import _ConfigWriteResult
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _slow_save(*_args: object, **_kwargs: object) -> _ConfigWriteResult:
+            started.set()
+            release.wait(timeout=1)
+            return _ConfigWriteResult(True)
+
+        monkeypatch.setattr(
+            "deepagents_code.app._save_terminal_theme_mapping_result", _slow_save
+        )
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = list(theme.get_registry()).index(
+                "langchain-light"
+            )
+            await pilot.pause()
+
+            await pilot.press("t")
+            # Wait until the worker is blocked inside the (still-unfinished) save.
+            assert await asyncio.to_thread(started.wait, 1)
+
+            # Cancel while the write is in flight — must keep, not revert.
+            await pilot.press("escape")
+            await pilot.pause()
+
+            release.set()
+            await app.workers.wait_for_complete()
+
+        assert app.theme == "langchain-light"

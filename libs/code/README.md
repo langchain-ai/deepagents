@@ -42,10 +42,6 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
-## ⚙️ Environment
-
-- `DEEPAGENTS_CODE_OFFLINE=1` — skip network downloads of managed tools. On first run `dcode` fetches a pinned `ripgrep` release into `~/.deepagents/bin/` so the agent's grep tool is fast out of the box; setting this disables that fetch and falls back to a slower Python regex search.
-
 ## 📖 Resources
 
 - **[Documentation](https://docs.langchain.com/deepagents-code)**

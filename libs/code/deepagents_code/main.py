@@ -2086,6 +2086,11 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
 
+        if args.command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
+
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
             from deepagents_code.config import parse_shell_allow_list
@@ -2595,10 +2600,6 @@ def cli_main() -> None:
             if args.mcp_command == "config":
                 sys.exit(run_mcp_config())
             show_mcp_help()
-        elif args.command == "config":
-            from deepagents_code.config_commands import run_config_command
-
-            sys.exit(run_config_command(args))
         elif args.command == "threads":
             from deepagents_code.sessions import (
                 delete_thread_command,

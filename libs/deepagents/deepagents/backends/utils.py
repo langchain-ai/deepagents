@@ -7,7 +7,7 @@ enable composition without fragile string parsing.
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, overload
@@ -70,6 +70,28 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+def expand_delete_keys(keys: Iterable[str], path: str) -> list[str]:
+    """Keys that a recursive delete of `path` should remove.
+
+    For key-value backends a "directory" is a key prefix: deleting `path` removes
+    the exact key `path` (a file) plus every key nested under it (anything
+    starting with `path` followed by "/"). Used by the key-value backends
+    (`StateBackend`, `StoreBackend`, `ContextHubBackend`) to give `delete`
+    the same recursive semantics directory-based backends get from removing a
+    subtree.
+
+    Args:
+        keys: All stored keys in the namespace.
+        path: The delete target path.
+
+    Returns:
+        The matching keys, empty if nothing is stored at or under `path`.
+    """
+    base = path.rstrip("/")
+    prefix = base + "/"
+    return [key for key in keys if key == base or key.startswith(prefix)]
 
 
 def _normalize_content(file_data: FileData) -> str:

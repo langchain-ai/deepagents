@@ -531,6 +531,37 @@ def test_store_backend_delete() -> None:
     assert be.read("/docs/readme.md").error is not None
 
 
+def test_store_backend_delete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    result = be.delete("/work")
+    assert result.error is None
+    assert result.path == "/work"
+    # Every key at or under /work is gone.
+    assert be.read("/work/a.txt").error is not None
+    assert be.read("/work/sub/b.txt").error is not None
+    # A sibling outside the subtree is untouched.
+    assert be.read("/keep.txt").error is None
+
+
+async def test_store_backend_adelete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    result = await be.adelete("/work")
+    assert result.error is None
+    assert (await be.aread("/work/a.txt")).error is not None
+    assert (await be.aread("/work/sub/b.txt")).error is not None
+    assert (await be.aread("/keep.txt")).error is None
+
+
 def test_store_backend_delete_missing_returns_error() -> None:
     be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
     result = be.delete("/nope.md")

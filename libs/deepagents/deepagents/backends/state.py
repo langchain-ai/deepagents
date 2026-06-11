@@ -28,6 +28,7 @@ from deepagents.backends.utils import (
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
+    expand_delete_keys,
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
@@ -292,17 +293,27 @@ class StateBackend(BackendProtocol):
         return EditResult(path=file_path, occurrences=int(occurrences))
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a file from state.
+        """Delete a file or directory from state.
 
-        The deletion is queued via `CONFIG_KEY_SEND` as a ``None`` value, which
-        the `files` channel reducer interprets as a deletion marker.
+        Deleting a path removes the exact file at `file_path` plus every nested
+        key under it (the prefix `file_path` + "/"), so a directory is removed
+        recursively. Each removal is queued via `CONFIG_KEY_SEND` as a ``None``
+        value, which the `files` channel reducer interprets as a deletion marker.
+
+        Args:
+            file_path: Path of the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if nothing is
+                stored at or under it.
         """
         files = self._read_files()
 
-        if file_path not in files:
+        to_delete = expand_delete_keys(files, file_path)
+        if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
-        self._send_files_update({file_path: None})
+        self._send_files_update(dict.fromkeys(to_delete, None))
         return DeleteResult(path=file_path)
 
     def grep(

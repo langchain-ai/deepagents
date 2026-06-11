@@ -1338,10 +1338,21 @@ class TestSandboxDelete:
         result = sandbox.delete("/file.txt")
         assert result.error is None
         assert result.path == "/file.txt"
-        # The shell command quotes the path and uses rm -f
+        # The shell command quotes the path and uses rm -rf (recursive)
         assert sandbox.last_command is not None
-        assert "rm -f" in sandbox.last_command
+        assert "rm -rf" in sandbox.last_command
         assert "/file.txt" in sandbox.last_command
+
+    def test_delete_directory_uses_recursive_rm(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/some/dir")
+        assert result.error is None
+        assert result.path == "/some/dir"
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/some/dir" in sandbox.last_command
 
     def test_delete_missing_is_noop_success(self) -> None:
         # `rm -f` ignores a missing path: exit 0, so delete reports success.
@@ -1353,7 +1364,7 @@ class TestSandboxDelete:
         assert result.path == "/missing.txt"
 
     def test_delete_failure_reports_output(self) -> None:
-        # A non-zero exit (e.g. the path is a directory) surfaces rm's stderr.
+        # A non-zero exit (e.g. a permission error) surfaces rm's stderr.
         sandbox = MockSandbox()
         sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
         sandbox._next_exit_code = 1

@@ -1397,6 +1397,44 @@ class TestDeleteFileTool:
         assert tool_messages[0].content == "Deleted file /keep.txt"
         assert set(result["files"].keys()) == {"/other.txt"}
 
+    def test_delete_directory_removes_nested_files(self) -> None:
+        """Delete on a directory removes every nested file from state (StateBackend)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/work"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete the work dir")],
+                "files": {
+                    "/work/a.txt": create_file_data("a"),
+                    "/work/sub/b.txt": create_file_data("b"),
+                    "/keep.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "success"
+        # Whole /work subtree gone; sibling preserved.
+        assert set(result["files"].keys()) == {"/keep.txt"}
+
     def test_delete_missing_returns_error(self) -> None:
         """Delete on a missing path returns an error tool message."""
         model = FixedGenericFakeChatModel(

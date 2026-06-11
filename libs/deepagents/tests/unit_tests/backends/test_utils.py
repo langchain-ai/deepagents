@@ -1,6 +1,6 @@
 """Tests for backends/utils.py utility functions."""
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages.content import ContentBlock
@@ -11,6 +11,7 @@ from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _get_file_type,
     _glob_search_files,
+    expand_delete_keys,
     perform_string_replacement,
     slice_read_response,
     to_posix_path,
@@ -353,3 +354,29 @@ class TestSliceReadResponse:
         assert isinstance(result, ReadResult)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+
+class TestExpandDeleteKeys:
+    """Prefix expansion shared by the key-value backends' recursive delete."""
+
+    KEYS: ClassVar[list[str]] = ["/work", "/work/a.txt", "/work/sub/b.txt", "/workshop/x", "/keep.txt"]
+
+    def test_exact_file_key(self):
+        assert expand_delete_keys(self.KEYS, "/keep.txt") == ["/keep.txt"]
+
+    def test_directory_prefix_includes_self_and_descendants(self):
+        assert expand_delete_keys(self.KEYS, "/work") == ["/work", "/work/a.txt", "/work/sub/b.txt"]
+
+    def test_trailing_slash_normalized(self):
+        assert expand_delete_keys(self.KEYS, "/work/") == ["/work", "/work/a.txt", "/work/sub/b.txt"]
+
+    def test_does_not_match_sibling_prefix(self):
+        # "/work" must not swallow "/workshop/x" (the prefix is "/work/", not "/work").
+        assert "/workshop/x" not in expand_delete_keys(self.KEYS, "/work")
+
+    def test_no_match_returns_empty(self):
+        assert expand_delete_keys(self.KEYS, "/missing") == []
+
+    def test_wildcard_key_treated_literally(self):
+        # A literal "*" key matches only itself, never other paths.
+        assert expand_delete_keys(["*", "/a.txt", "/b.txt"], "*") == ["*"]

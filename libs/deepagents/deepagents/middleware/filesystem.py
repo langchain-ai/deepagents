@@ -3,6 +3,7 @@
 
 import asyncio
 import concurrent.futures
+import contextlib
 import contextvars
 import mimetypes
 import threading
@@ -235,6 +236,23 @@ def _apply_permissions_to_glob_results(
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
+
+
+def _glob_timeout_message() -> str:
+    """Build the glob-timeout error string.
+
+    Reads `GLOB_TIMEOUT` at call time so tests and overrides keep the message
+    in sync with the active deadline.
+    """
+    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+
+
+def _discard_task_result(task: asyncio.Future[Any]) -> None:
+    """Consume a cancelled background task result to avoid event-loop warnings."""
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
 # Template for truncation message in read_file
@@ -765,8 +783,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._permissions = list(_permissions or [])
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
-        # Sized above 1 so a timed-out glob still occupying a worker does not
-        # stall subsequent glob calls.
+        # Timed-out worker threads keep running until the backend call returns,
+        # so the semaphore rejects overload instead of queueing behind them.
         self._glob_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=_SYNC_GLOB_WORKERS,
             thread_name_prefix="deepagents-glob",
@@ -1252,11 +1270,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/result shaping + timeout handling
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
-        def sync_glob(
+        def sync_glob(  # noqa: PLR0911 - early returns for distinct error conditions
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
@@ -1304,13 +1322,34 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except Exception:
                 self._glob_slots.release()
                 raise
-            try:
-                glob_result = future.result(timeout=GLOB_TIMEOUT)
-            except concurrent.futures.TimeoutError:
+            # Separate the wait deadline from result retrieval. On Python 3.11+
+            # `concurrent.futures.TimeoutError is TimeoutError`, so catching the
+            # future's wait-timeout would also swallow a builtin TimeoutError
+            # raised *inside* the backend glob (e.g. a sandbox RPC timeout) and
+            # misreport it as a glob-pattern timeout. `wait()` reports only
+            # whether the deadline elapsed, leaving real backend exceptions to
+            # surface through `future.result()` below.
+            done, _ = concurrent.futures.wait([future], timeout=GLOB_TIMEOUT)
+            if not done:
+                # Deadline elapsed while the worker is still running; it cannot
+                # be cancelled, so abandon it (run_glob's finally releases the
+                # slot when it eventually returns). cancel() only succeeds if
+                # the task never started, in which case release the slot here.
                 if future.cancel():
                     self._glob_slots.release()
                 return ToolMessage(
-                    content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+                    content=_glob_timeout_message(),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                glob_result = future.result()
+            except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
+                # run_glob's finally already released the slot before the
+                # exception propagated, so do not release again here.
+                return ToolMessage(
+                    content=f"Error: glob failed: {e}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -1355,14 +1394,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             backend_path = permission_path if path is not None else None
-            try:
-                glob_result = await asyncio.wait_for(
-                    resolved_backend.aglob(pattern, path=backend_path),
-                    timeout=GLOB_TIMEOUT,
-                )
-            except TimeoutError:
+            # Run the backend glob as a task and wait on the deadline separately
+            # so a `TimeoutError` raised *inside* the backend (rather than by the
+            # deadline) is not misreported as a glob-pattern timeout, mirroring
+            # the sync path. Other backend exceptions surface via `task.result()`.
+            task = asyncio.ensure_future(resolved_backend.aglob(pattern, path=backend_path))
+            done, _ = await asyncio.wait({task}, timeout=GLOB_TIMEOUT)
+            if not done:
+                task.add_done_callback(_discard_task_result)
+                task.cancel()
                 return ToolMessage(
-                    content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+                    content=_glob_timeout_message(),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                glob_result = task.result()
+            except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
+                return ToolMessage(
+                    content=f"Error: glob failed: {e}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",

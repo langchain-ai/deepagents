@@ -13,7 +13,30 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
-2. Double-click word selection. Stock Textual selects the entire widget on
+2. Kitty lock-key and sub-field handling. Two related problems with the
+    pinned Textual parser:
+
+    a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
+        text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
+        send the functional key code (`CSI 57358 ... u`) with associated text
+        set to the letter the *next* key would have produced. iTerm2 instead
+        reports the Caps Lock toggle as a bare upper-case ASCII letter (`CSI
+        65 u` → 'A') with no modifier or associated-text field — not a valid
+        encoding for a real key press per the kitty spec. Either way the chat
+        input would type a stray capital. The patch collapses both forms to a
+        single character-less `caps_lock` event, regardless of the modifier,
+        associated-text, or event-type sub-fields the terminal includes.
+
+    b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
+        *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
+        keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
+        fails to match and is re-emitted one byte at a time as literal text.
+        The patch strips the `:` sub-fields before Textual parses the sequence
+        so it resolves to a single key event.
+
+    Remove when the pinned Textual neutralizes lock keys and widens its parser.
+
+3. Double-click word selection. Stock Textual selects the entire widget on
     a click chain; these patches narrow a double-click (and double-click
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
@@ -24,6 +47,7 @@ Imported for side effect from `app.py` before any `App()` is created.
 from __future__ import annotations
 
 import logging
+import re
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
@@ -60,6 +84,99 @@ try:
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning("Textual keyboard parser patch skipped: %s", exc)
 else:
+    # Kitty functional key codes for the lock keys (Caps Lock, Scroll Lock,
+    # Num Lock). The kitty protocol assigns these Private Use Area codepoints;
+    # they appear as the leading key-code field of a `CSI ... u` sequence.
+    _KITTY_LOCK_KEY_CODES = frozenset({"57358", "57359", "57360"})
+    _KITTY_LOCK_KEY_NAMES = {
+        "57358": "caps_lock",
+        "57359": "scroll_lock",
+        "57360": "num_lock",
+    }
+
+    # Any `CSI <code>[:...][;...] u` sequence. Group 1 is the leading key-code
+    # field (before any `:` alternate-key sub-field); `_lock_key_event` checks
+    # it against the lock-key set. The match is deliberately broad so the code
+    # is extracted regardless of the modifier / associated-text / event-type
+    # sub-fields that follow, which iTerm2 and other terminals encode in
+    # varying shapes.
+    _KITTY_KEY_SEQUENCE = re.compile(r"\x1b\[(\d+)[\d;:]*u")
+
+    # Kitty extended-key sequence carrying `:` sub-fields (alternate keys or an
+    # event-type sub-field). The pinned Textual's `_re_extended_key` rejects the
+    # colons, so non-lock keys with these sub-fields would otherwise leak as
+    # literal text — strip the sub-fields so they parse to a single key event.
+    _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
+
+    # iTerm2 reports the Caps Lock toggle as a `CSI u` sequence whose primary
+    # key code is the *uppercase* ASCII letter that would be produced next
+    # (e.g. `CSI 65 u` → 'A'), with no real modifier bits and no associated
+    # text. The kitty spec requires the primary code to be the unshifted
+    # (lower-case) code point, so a bare upper-case letter here is iTerm2's
+    # Caps Lock artifact rather than a real key press. Group 1 is the code
+    # point; group 2 the optional modifier field; group 3 the optional text.
+    _KITTY_CSI_U = re.compile(
+        r"\x1b\[(\d+)(?::\d+)*(?:;(\d+)[\d:]*)?(?:;(\d+)[\d:]*)?u"
+    )
+    _ASCII_UPPER_A = 65
+    _ASCII_UPPER_Z = 90
+    # Modifier mask for the "real" modifiers (shift|alt|ctrl|super|hyper|meta);
+    # excludes the caps_lock (64) and num_lock (128) lock bits.
+    _REAL_MODIFIER_MASK = 0b111111
+
+    def _spurious_caps_lock(sequence: str) -> bool:
+        """Whether `sequence` is iTerm2's bare Caps Lock toggle report.
+
+        Matches a `CSI u` key whose primary code point is an upper-case ASCII
+        letter with no real modifiers and no associated-text field — which the
+        kitty spec never produces for a genuine key press.
+
+        Returns:
+            `True` if `sequence` is the spurious Caps Lock toggle report.
+        """
+        match = _KITTY_CSI_U.fullmatch(sequence)
+        if match is None:
+            return False
+        code = int(match.group(1))
+        if not _ASCII_UPPER_A <= code <= _ASCII_UPPER_Z:
+            return False
+        modifier_bits = (int(match.group(2)) - 1) if match.group(2) else 0
+        has_text = match.group(3) is not None
+        return modifier_bits & _REAL_MODIFIER_MASK == 0 and not has_text
+
+    def _strip_kitty_subfields(sequence: str) -> str:
+        """Drop `:` sub-fields from a kitty extended-key sequence.
+
+        Keeps the primary value of each `;`-separated field (the unicode key
+        code, modifier mask, and associated text), which is all Textual reads.
+
+        Returns:
+            The sequence with every `:` sub-field removed.
+        """
+        body, terminator = sequence[2:-1], sequence[-1]
+        primary = ";".join(field.split(":", 1)[0] for field in body.split(";"))
+        return f"\x1b[{primary}{terminator}"
+
+    def _lock_key_event(sequence: str) -> events.Key | None:
+        """Return a text-free lock-key event for a kitty lock-key sequence.
+
+        Lock keys must never produce text. Under the kitty protocol with
+        associated-text reporting, terminals (notably iTerm2) encode Caps
+        Lock as a `CSI 57358 ... u` sequence whose associated-text field is
+        the letter the *next* key would have produced — Textual then either
+        types that letter or, when `:` sub-fields are present, leaks the raw
+        sequence byte by byte. Collapsing any lock-key sequence to a single
+        character-less event stops both failure modes at the source, for
+        every widget.
+
+        Returns:
+            A `Key` event for the lock key, or `None` if `sequence` is not a
+            kitty lock-key sequence.
+        """
+        match = _KITTY_KEY_SEQUENCE.fullmatch(sequence)
+        if match is None or match.group(1) not in _KITTY_LOCK_KEY_CODES:
+            return None
+        return events.Key(_KITTY_LOCK_KEY_NAMES[match.group(1)], None)
 
     def _emit_alt(keys: tuple, character: str | None) -> Iterable[events.Key]:
         for key in keys:
@@ -68,6 +185,22 @@ else:
     def _sequence_to_key_events_with_alt(
         self: XTermParser, sequence: str, alt: bool = False
     ) -> Iterable[events.Key]:
+        # Lock keys (Caps Lock / Num Lock / Scroll Lock) must never type. Emit
+        # a single character-less event regardless of how the terminal encoded
+        # the modifiers, associated text, or event-type sub-fields.
+        if (lock_event := _lock_key_event(sequence)) is not None:
+            yield lock_event
+            return
+        # iTerm2 reports the Caps Lock toggle as a bare upper-case letter (e.g.
+        # `CSI 65 u` → 'A') rather than the kitty `57358` functional code. Drop
+        # it so the toggle never types a stray capital into the input.
+        if _spurious_caps_lock(sequence):
+            yield events.Key("caps_lock", None)
+            return
+        # Normalize any other kitty sequence with `:` sub-fields so it resolves
+        # to a single key event instead of leaking raw bytes.
+        if _KITTY_SUBFIELD_KEY.fullmatch(sequence):
+            sequence = _strip_kitty_subfields(sequence)
         # Fast path: \x1b<byte> on first pass. Short-circuits the ~100 ms
         # escape-delay wait when both bytes arrive together. Semantic side
         # effect: \x1b\x1b dispatches as `alt+escape` with no delay, matching

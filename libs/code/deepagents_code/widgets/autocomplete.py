@@ -346,29 +346,53 @@ _MIN_FUZZY_RATIO = 0.4
 """SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
+def _run_git_ls_files(git_path: str, root: Path, extra_args: list[str]) -> list[str]:
+    """Run `git ls-files` with the given arguments and return file paths.
+
+    Returns:
+        List of relative file paths, or empty list on failure.
+    """
+    try:
+        # S603: git_path is validated via shutil.which(), args are hardcoded
+        result = subprocess.run(  # noqa: S603
+            [git_path, "ls-files", *extra_args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [f for f in result.stdout.strip().split("\n") if f]
+
+
 def _get_project_files(root: Path) -> list[str]:
     """Get project files using git ls-files or fallback to glob.
+
+    Includes both tracked files and untracked files that are not ignored
+    (via `--others --exclude-standard`), so freshly created files surface
+    in `@` completion without needing to be committed first.
 
     Returns:
         List of relative file paths from project root.
     """
     git_path = _get_git_executable()
     if git_path:
-        try:
-            # S603: git_path is validated via shutil.which(), args are hardcoded
-            result = subprocess.run(  # noqa: S603
-                [git_path, "ls-files"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.returncode == 0:
-                files = result.stdout.strip().split("\n")
-                return [f for f in files if f]  # Filter empty strings
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+        tracked = _run_git_ls_files(git_path, root, [])
+        untracked = _run_git_ls_files(
+            git_path, root, ["--others", "--exclude-standard"]
+        )
+        if tracked or untracked:
+            seen: set[str] = set()
+            files: list[str] = []
+            for f in (*tracked, *untracked):
+                if f not in seen:
+                    seen.add(f)
+                    files.append(f)
+            return files
 
     # Fallback: simple glob (limited depth to avoid slowness)
     files = []

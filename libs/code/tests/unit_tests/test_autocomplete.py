@@ -19,6 +19,7 @@ from deepagents_code.widgets.autocomplete import (
     SlashCommandController,
     _fuzzy_score,
     _fuzzy_search,
+    _get_project_files,
     _is_dotpath,
     _path_depth,
 )
@@ -784,3 +785,62 @@ class TestFuzzyFileControllerWarmCacheRace:
         assert controller._project_root == sub_a
         assert controller._project_root_pending is False
         assert controller._file_cache == ["a/new.py"]
+
+
+class TestGetProjectFiles:
+    """Tests for _get_project_files."""
+
+    @staticmethod
+    def _init_repo(root: Path) -> None:
+        import subprocess
+
+        for args in (
+            ["init"],
+            ["config", "user.email", "test@example.com"],
+            ["config", "user.name", "Test"],
+        ):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+    def test_includes_tracked_and_untracked_files(self, tmp_path: Path) -> None:
+        """Both committed and untracked-but-not-ignored files are returned."""
+        import subprocess
+
+        self._init_repo(tmp_path)
+        (tmp_path / "tracked.py").write_text("x = 1\n")
+        subprocess.run(
+            ["git", "add", "tracked.py"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        (tmp_path / "untracked.py").write_text("y = 2\n")
+
+        files = _get_project_files(tmp_path)
+
+        assert "tracked.py" in files
+        assert "untracked.py" in files
+
+    def test_excludes_ignored_files(self, tmp_path: Path) -> None:
+        """Files matched by .gitignore are not returned."""
+        self._init_repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("ignored.py\n")
+        (tmp_path / "ignored.py").write_text("z = 3\n")
+        (tmp_path / "visible.py").write_text("a = 4\n")
+
+        files = _get_project_files(tmp_path)
+
+        assert "visible.py" in files
+        assert "ignored.py" not in files
+
+    def test_no_duplicate_entries(self, tmp_path: Path) -> None:
+        """A file does not appear twice across tracked/untracked sources."""
+        self._init_repo(tmp_path)
+        (tmp_path / "only.py").write_text("b = 5\n")
+
+        files = _get_project_files(tmp_path)
+
+        assert files.count("only.py") == 1

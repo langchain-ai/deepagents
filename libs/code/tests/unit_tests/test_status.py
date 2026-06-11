@@ -557,7 +557,7 @@ class TestQueuedCount:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ASCII glyph mode should not leak Unicode in the combined indicator."""
-        from deepagents_code.config import ASCII_GLYPHS
+        from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS
 
         monkeypatch.setattr(
             "deepagents_code.widgets.status.get_glyphs",
@@ -570,5 +570,8 @@ class TestQueuedCount:
             await pilot.pause()
             indicator = pilot.app.query_one("#connection-indicator", Static)
             rendered = str(indicator.render())
-            assert " - " in rendered
-            assert " · " not in rendered
+            assert f" {ASCII_GLYPHS.bullet} " in rendered
+            # Derive the forbidden separator from the Unicode glyph itself so the
+            # guard can't drift to the wrong codepoint (the bullet is U+2022 `•`,
+            # not the U+00B7 middle dot `·`).
+            assert f" {UNICODE_GLYPHS.bullet} " not in rendered

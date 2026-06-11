@@ -17,22 +17,22 @@ upstream.
     pinned Textual 8.2.7 parser:
 
     a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
-       text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
-       send the functional key code (`CSI 57358 ... u`) with associated text
-       set to the letter the *next* key would have produced. iTerm2 instead
-       reports the Caps Lock toggle as a bare upper-case ASCII letter (`CSI
-       65 u` → 'A') with no modifier or associated-text field — not a valid
-       encoding for a real key press per the kitty spec. Either way the chat
-       input would type a stray capital. The patch collapses both forms to a
-       single character-less `caps_lock` event, regardless of the modifier,
-       associated-text, or event-type sub-fields the terminal includes.
+        text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
+        send the functional key code (`CSI 57358 ... u`) with associated text
+        set to the letter the *next* key would have produced. iTerm2 instead
+        reports the Caps Lock toggle as a bare upper-case ASCII letter (`CSI
+        65 u` → 'A') with no modifier or associated-text field — not a valid
+        encoding for a real key press per the kitty spec. Either way the chat
+        input would type a stray capital. The patch collapses both forms to a
+        single character-less `caps_lock` event, regardless of the modifier,
+        associated-text, or event-type sub-fields the terminal includes.
 
     b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
-       *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
-       keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
-       fails to match and is re-emitted one byte at a time as literal text.
-       The patch strips the `:` sub-fields before Textual parses the sequence
-       so it resolves to a single key event.
+        *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
+        keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
+        fails to match and is re-emitted one byte at a time as literal text.
+        The patch strips the `:` sub-fields before Textual parses the sequence
+        so it resolves to a single key event.
 
     Remove when the pinned Textual neutralizes lock keys and widens its parser.
 

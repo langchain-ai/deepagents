@@ -128,6 +128,156 @@ class TestNonInteractiveArgument:
             assert parsed.sandbox_setup == "/path/to/setup.sh"
 
 
+class TestSandboxArgument:
+    """Tests for `--sandbox` resolution and registry validation."""
+
+    def test_builtin_provider_accepted(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            parsed = parse_args()
+            assert parsed.sandbox == "daytona"
+
+    def test_default_when_omitted_is_none_string(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task"):
+            parsed = parse_args()
+            assert parsed.sandbox == "none"
+
+    def test_unknown_provider_errors(self, mock_argv: MockArgvType) -> None:
+        with (
+            mock_argv("-n", "task", "--sandbox", "acme"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_unknown_provider_error_includes_guidance(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The unknown-provider error explains how to install or configure."""
+        with (
+            mock_argv("-n", "task", "--sandbox", "acme"),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        err = capsys.readouterr().err
+        assert "/install <package-name> --package" in err
+        assert "[sandboxes.providers.acme]" in err
+        # The error must not fabricate a specific package name.
+        assert "acme-dcode-sandbox" not in err
+
+    def test_config_provider_accepted(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            '[sandboxes.providers.acme]\nclass_path = "acme:Provider"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox", "acme"),
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "acme"
+
+    def test_bare_sandbox_resolves_config_default(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            '[sandboxes]\ndefault = "acme"\n\n'
+            '[sandboxes.providers.acme]\nclass_path = "acme:Provider"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "acme"
+
+    def test_bare_sandbox_without_default_errors(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_snapshot_name_rejected_for_unsupported_provider(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with (
+            mock_argv(
+                "-n", "task", "--sandbox", "modal", "--sandbox-snapshot-name", "snap"
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_snapshot_name_accepted_for_runloop(self, mock_argv: MockArgvType) -> None:
+        with mock_argv(
+            "-n", "task", "--sandbox", "runloop", "--sandbox-snapshot-name", "bp"
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "runloop"
+            assert parsed.sandbox_snapshot_name == "bp"
+
+    def test_sandbox_id_rejected_for_unsupported_provider(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Reject `--sandbox-id` for agentcore (supports_sandbox_id=False)."""
+        with (
+            mock_argv("-n", "task", "--sandbox", "agentcore", "--sandbox-id", "abc"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+        assert "--sandbox-id is not supported" in capsys.readouterr().err
+
+    def test_sandbox_id_accepted_for_supported_provider(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--sandbox-id", "abc"):
+            parsed = parse_args()
+            assert parsed.sandbox == "daytona"
+            assert parsed.sandbox_id == "abc"
+
+    def test_malformed_config_surfaces_note(
+        self,
+        mock_argv: MockArgvType,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A bare `--sandbox` against a malformed config explains the fault."""
+        config = tmp_path / "config.toml"
+        config.write_text("this is not = valid = toml", encoding="utf-8")
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+        assert "could not be used" in capsys.readouterr().err
+
+
 class TestNoStreamArgument:
     """Tests for --no-stream argument parsing."""
 

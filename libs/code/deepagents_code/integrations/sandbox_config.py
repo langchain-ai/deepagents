@@ -12,7 +12,7 @@ import logging
 import tomllib
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
@@ -21,6 +21,30 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_provider_configs(
+    providers: dict[str, Any],
+) -> dict[str, SandboxProviderConfig]:
+    """Drop malformed provider entries before constructing `SandboxConfig`.
+
+    Args:
+        providers: Raw provider mapping from TOML.
+
+    Returns:
+        Provider entries that are valid TOML tables.
+    """
+    normalized: dict[str, SandboxProviderConfig] = {}
+    for name, provider in providers.items():
+        if not isinstance(provider, dict):
+            logger.warning(
+                "Sandbox provider '%s' is not a table (%s); ignoring it",
+                name,
+                type(provider).__name__,
+            )
+            continue
+        normalized[name] = cast("SandboxProviderConfig", provider)
+    return normalized
 
 
 class SandboxProviderConfig(TypedDict, total=False):
@@ -128,7 +152,10 @@ class SandboxConfig:
             )
             providers = {}
 
-        config = cls(default=section.get("default"), providers=providers)
+        config = cls(
+            default=section.get("default"),
+            providers=_normalize_provider_configs(providers),
+        )
         config._validate()
         return config
 

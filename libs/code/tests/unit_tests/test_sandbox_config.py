@@ -94,6 +94,16 @@ def test_providers_not_a_table_is_ignored(tmp_path: Path) -> None:
     assert dict(config.providers) == {}
 
 
+def test_provider_entry_not_a_table_is_ignored(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = _write(tmp_path, '[sandboxes.providers]\nacme = "not-a-table"\n')
+    with caplog.at_level(logging.WARNING):
+        config = SandboxConfig.load(path)
+    assert dict(config.providers) == {}
+    assert any("is not a table" in r.message for r in caplog.records)
+
+
 def test_non_table_params_warns_and_is_ignored(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

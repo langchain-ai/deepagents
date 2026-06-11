@@ -303,6 +303,20 @@ def test_grep_with_path_prefix() -> None:
     assert paths == {"/memories/a.md"}
 
 
+def test_grep_with_glob_filter() -> None:
+    """`grep` honors the glob filter via the precompiled, hoisted matcher."""
+    backend, _ = _make_backend(
+        **{
+            "src/main.py": FileEntry(type="file", content="import os"),
+            "src/notes.md": FileEntry(type="file", content="import os"),
+        }
+    )
+    result = backend.grep("import", glob="*.py")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/src/main.py"}
+
+
 def test_grep_invalid_regex() -> None:
     backend, _ = _make_backend()
     result = backend.grep("[unclosed")

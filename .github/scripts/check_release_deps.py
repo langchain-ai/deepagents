@@ -293,6 +293,8 @@ def run_resolver(manifest: Path, log: Path) -> bool:
             "compile",
             "--no-sources",
             "--universal",
+            "--prerelease",
+            "allow",
             "--all-extras",
             str(manifest),
         ],
@@ -344,7 +346,7 @@ def check_release_dependencies(base_sha: str, head_sha: str) -> int:
     ok = True
     with tempfile.TemporaryDirectory(prefix="release-deps-") as tmp:
         tmpdir = Path(tmp)
-        for manifest_path in manifests:
+        for index, manifest_path in enumerate(manifests):
             data = tomllib.loads((REPO_ROOT / manifest_path).read_text(encoding="utf-8"))
             filtered = build_filtered_manifest(data, bumped)
             if filtered.skipped:
@@ -355,9 +357,12 @@ def check_release_dependencies(base_sha: str, head_sha: str) -> int:
             else:
                 _notice(f"{manifest_path}: no same-PR dependency pins skipped.")
 
-            temp_manifest = tmpdir / manifest_path.replace("/", "__")
+            manifest_label = manifest_path.removesuffix("/pyproject.toml").replace("/", "__")
+            manifest_dir = tmpdir / f"{index}-{manifest_label}"
+            manifest_dir.mkdir()
+            temp_manifest = manifest_dir / "pyproject.toml"
             temp_manifest.write_text(filtered.content, encoding="utf-8")
-            log = tmpdir / f"{temp_manifest.stem}.log"
+            log = tmpdir / f"{manifest_dir.name}.log"
             _notice(f"Resolving {manifest_path} against PyPI with uv pip compile --no-sources --universal")
             if not run_resolver(temp_manifest, log):
                 ok = False

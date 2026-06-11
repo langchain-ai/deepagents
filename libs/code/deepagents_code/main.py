@@ -1216,6 +1216,13 @@ def _resolve_and_validate_sandbox(
         args: Parsed namespace; `args.sandbox` is normalized in place.
         parser: The parser, used to emit errors.
     """
+    if args.sandbox in {"none", None}:
+        if args.sandbox_snapshot_name is not None:
+            parser.error("--sandbox-snapshot-name requires a --sandbox provider")
+        if args.sandbox_id is not None:
+            parser.error("--sandbox-id requires a --sandbox provider")
+        return
+
     from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
     registry = SandboxRegistry.load()
@@ -1244,13 +1251,6 @@ def _resolve_and_validate_sandbox(
                 "name explicitly or set [sandboxes].default." + _config_note()
             )
         args.sandbox = default
-
-    if args.sandbox in {"none", None}:
-        if args.sandbox_snapshot_name is not None:
-            parser.error("--sandbox-snapshot-name requires a --sandbox provider")
-        if args.sandbox_id is not None:
-            parser.error("--sandbox-id requires a --sandbox provider")
-        return
 
     if not registry.is_available(args.sandbox):
         available = ", ".join(registry.available_providers())

@@ -12858,7 +12858,8 @@ class TestStatusBarConnectionMirroring:
         app._defer_connection_status_display = True
 
         async with app.run_test() as pilot:
-            assert app._connection_status_reveal_timer is not None
+            # The ~10ms timer may fire during run_test setup or during the
+            # pause below; either way its firing is what reveals the state.
             await pilot.pause(0.05)
 
             assert app._status_bar is not None

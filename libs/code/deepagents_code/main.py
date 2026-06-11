@@ -408,6 +408,12 @@ def _is_managed_ripgrep_path(path: str | None) -> bool:
     )
 
 
+def _should_ensure_managed_ripgrep() -> bool:
+    """Return whether startup should validate or install managed ripgrep."""
+    rg_path = shutil.which("rg")
+    return rg_path is None or _is_managed_ripgrep_path(rg_path)
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -425,10 +431,9 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     from deepagents_code.model_config import is_warning_suppressed
 
     missing: list[str] = []
-    rg_path = shutil.which("rg")
-    if (
-        rg_path is None or _is_managed_ripgrep_path(rg_path)
-    ) and not is_warning_suppressed("ripgrep", config_path):
+    if _should_ensure_managed_ripgrep() and not is_warning_suppressed(
+        "ripgrep", config_path
+    ):
         missing.append("ripgrep")
 
     from deepagents_code.config import settings
@@ -2683,7 +2688,7 @@ def cli_main() -> None:
                 try:
                     warn_console = _Console(stderr=True)
                     missing_tools = check_optional_tools()
-                    if "ripgrep" in missing_tools:
+                    if _should_ensure_managed_ripgrep():
                         from deepagents_code.managed_tools import (
                             ChecksumMismatchError,
                             ensure_ripgrep,

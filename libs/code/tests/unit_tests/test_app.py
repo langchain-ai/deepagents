@@ -13751,8 +13751,8 @@ class TestEnsureManagedRipgrep:
         prepend = MagicMock()
         with (
             patch(
-                "deepagents_code.main.check_optional_tools",
-                return_value=["ripgrep"],
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
             ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
             patch(
@@ -13768,13 +13768,44 @@ class TestEnsureManagedRipgrep:
         assert app._ripgrep_ensured.is_set()
         assert app._ripgrep_install_failed is False
 
+    async def test_installs_when_ripgrep_warning_is_suppressed(self) -> None:
+        """Suppressed warning state must not skip managed `rg` installation."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock(return_value=Path("/managed/rg"))
+        prepend = MagicMock()
+        check_optional_tools = MagicMock(return_value=[])
+        with (
+            patch(
+                "deepagents_code.main.check_optional_tools",
+                check_optional_tools,
+            ),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+
+        check_optional_tools.assert_not_called()
+        ensure.assert_awaited_once()
+        prepend.assert_called_once()
+
     async def test_skips_when_ripgrep_not_missing(self) -> None:
         """A present system `rg` means no install attempt is made."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 
         ensure = AsyncMock()
         with (
-            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
         ):
             assert await app._ensure_managed_ripgrep() is True
@@ -13790,8 +13821,8 @@ class TestEnsureManagedRipgrep:
         prepend = MagicMock()
         with (
             patch(
-                "deepagents_code.main.check_optional_tools",
-                return_value=["ripgrep"],
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
             ),
             patch(
                 "deepagents_code.managed_tools.ensure_ripgrep",

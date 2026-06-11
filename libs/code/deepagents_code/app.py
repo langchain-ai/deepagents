@@ -2649,7 +2649,7 @@ class DeepAgentsApp(App):
                 return not self._ripgrep_install_failed
 
             try:
-                from deepagents_code.main import check_optional_tools
+                from deepagents_code.main import _should_ensure_managed_ripgrep
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
                     ensure_ripgrep,
@@ -2662,14 +2662,14 @@ class DeepAgentsApp(App):
                 return False
 
             try:
-                missing = await asyncio.to_thread(check_optional_tools)
+                should_ensure = await asyncio.to_thread(_should_ensure_managed_ripgrep)
             except OSError:
                 logger.debug("Failed to check for optional tools", exc_info=True)
                 self._ripgrep_install_failed = True
                 self._ripgrep_ensured.set()
                 return False
 
-            if "ripgrep" not in missing:
+            if not should_ensure:
                 self._ripgrep_ensured.set()
                 return True
 

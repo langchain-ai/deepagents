@@ -20,7 +20,7 @@ import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -212,9 +212,9 @@ class ApiClient:
         """Return all registered MCP servers in this workspace."""
         body = self._request("GET", f"{_DEPLOY_PATH}/mcp-servers")
         if isinstance(body, list):
-            return list(body)
+            return [cast("dict[str, Any]", item) for item in body]
         if isinstance(body, dict) and isinstance(body.get("servers"), list):
-            return list(body["servers"])
+            return [cast("dict[str, Any]", item) for item in body["servers"]]
         msg = "Unexpected MCP server list response."
         raise ApiError(status=0, detail=msg)
 

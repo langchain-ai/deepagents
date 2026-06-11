@@ -327,7 +327,7 @@ class ContextHubBackend(BackendProtocol):
             elif commit_error is not None:
                 # Backend-specific error string per protocol docs
                 # (FileOperationError literal union doesn't cover hub failures).
-                results.append(FileUploadResponse(path=path, error=commit_error))  # type: ignore[arg-type]
+                results.append(FileUploadResponse(path=path, error=commit_error))
             else:
                 results.append(FileUploadResponse(path=path))
         return results
@@ -340,10 +340,7 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub pull failed for %r", self._identifier)
             # Backend-specific error string per protocol docs (FileOperationError
             # literal union doesn't cover hub failures).
-            return [
-                FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")  # type: ignore[arg-type]
-                for p in paths
-            ]
+            return [FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}") for p in paths]
         results: list[FileDownloadResponse] = []
         for path in paths:
             hub_path = self._strip_prefix(path)

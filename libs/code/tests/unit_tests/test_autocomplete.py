@@ -1,11 +1,15 @@
 """Tests for autocomplete fuzzy search functionality."""
 
+import asyncio
+import threading
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.widgets import autocomplete as autocomplete_module
 from deepagents_code.widgets.autocomplete import (
     MAX_SUGGESTIONS,
     CompletionController,
@@ -590,3 +594,193 @@ class TestSlashCommandControllerUpdateCommands:
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/skill:code-review" in s[0] for s in suggestions)
+
+
+class TestFuzzyFileControllerSetCwd:
+    """Tests for FuzzyFileController.set_cwd switching completion roots."""
+
+    def test_set_cwd_defers_project_root_off_event_loop(self, tmp_path):
+        """set_cwd roots at cwd immediately and defers project-root discovery."""
+        proj = tmp_path / "proj"
+        (proj / ".git").mkdir(parents=True)
+        sub = proj / "sub"
+        sub.mkdir()
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub)
+
+        # No blocking filesystem walk here: cwd is the provisional root and the
+        # real root is resolved later in warm_cache().
+        assert controller._cwd == sub
+        assert controller._project_root == sub
+        assert controller._project_root_pending is True
+
+    async def test_warm_cache_resolves_pending_project_root(self, tmp_path):
+        """warm_cache resolves the deferred project root to the git root."""
+        proj = tmp_path / "proj"
+        (proj / ".git").mkdir(parents=True)
+        sub = proj / "sub"
+        sub.mkdir()
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+        controller.set_cwd(sub)
+
+        await controller.warm_cache()
+
+        assert controller._project_root == proj.resolve()
+        assert controller._project_root_pending is False
+
+
+class TestFuzzyFileControllerWarmCacheRace:
+    """Overlapping cwd warmers must not let stale results win.
+
+    Warmers are scheduled with `exclusive=False`, so a slow warmer for an old
+    cwd can finish after a newer cwd switch. These tests force that ordering and
+    assert the controller stays rooted/cache-warmed for the newest cwd.
+    """
+
+    async def test_stale_warmer_does_not_overwrite_project_root(
+        self, tmp_path, monkeypatch
+    ):
+        """An older project-root lookup finishing last must not win."""
+        proj_a = tmp_path / "a"
+        sub_a = proj_a / "sub"
+        sub_a.mkdir(parents=True)
+        proj_b = tmp_path / "b"
+        sub_b = proj_b / "sub"
+        sub_b.mkdir(parents=True)
+
+        entered_a = threading.Event()
+        release_a = threading.Event()
+
+        def fake_find(path: Path) -> Path | None:
+            if path == sub_a:
+                entered_a.set()
+                release_a.wait(timeout=5)
+                return proj_a
+            if path == sub_b:
+                return proj_b
+            return None
+
+        monkeypatch.setattr(autocomplete_module, "find_project_root", fake_find)
+        monkeypatch.setattr(
+            autocomplete_module,
+            "_get_project_files",
+            lambda root: [f"{root.name}/file.py"],
+        )
+
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub_a)
+        task_a = asyncio.create_task(controller.warm_cache())
+        await asyncio.to_thread(entered_a.wait, 5)
+
+        controller.set_cwd(sub_b)
+        await controller.warm_cache()
+
+        # The newer warmer fully resolved before the stale one is released.
+        assert controller._project_root == proj_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
+        release_a.set()
+        await task_a
+
+        # The stale warmer finished last but left the newer state untouched.
+        assert controller._project_root == proj_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
+    async def test_stale_warmer_does_not_overwrite_file_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """An older file-cache warm finishing last must not win."""
+        sub_a = tmp_path / "a"
+        sub_a.mkdir()
+        sub_b = tmp_path / "b"
+        sub_b.mkdir()
+
+        entered_a = threading.Event()
+        release_a = threading.Event()
+
+        def fake_files(root: Path) -> list[str]:
+            if root == sub_a:
+                entered_a.set()
+                release_a.wait(timeout=5)
+                return ["a/file.py"]
+            return ["b/file.py"]
+
+        monkeypatch.setattr(autocomplete_module, "find_project_root", lambda _: None)
+        monkeypatch.setattr(autocomplete_module, "_get_project_files", fake_files)
+
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub_a)
+        task_a = asyncio.create_task(controller.warm_cache())
+        await asyncio.to_thread(entered_a.wait, 5)
+
+        controller.set_cwd(sub_b)
+        await controller.warm_cache()
+
+        # The newer warmer fully resolved before the stale one is released.
+        assert controller._project_root == sub_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
+        release_a.set()
+        await task_a
+
+        # The stale warmer finished last but left the newer state untouched.
+        assert controller._project_root == sub_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
+    async def test_aba_stale_warmer_does_not_overwrite_file_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An older A warmer must not win after an A-to-B-to-A switch."""
+        sub_a = tmp_path / "a"
+        sub_a.mkdir()
+        sub_b = tmp_path / "b"
+        sub_b.mkdir()
+
+        entered_old_a = threading.Event()
+        release_old_a = threading.Event()
+        lock = threading.Lock()
+        a_calls = 0
+
+        def fake_files(root: Path) -> list[str]:
+            nonlocal a_calls
+
+            if root == sub_a:
+                with lock:
+                    a_calls += 1
+                    call = a_calls
+                if call == 1:
+                    entered_old_a.set()
+                    release_old_a.wait(timeout=5)
+                    return ["a/old.py"]
+                return ["a/new.py"]
+            return ["b/file.py"]
+
+        monkeypatch.setattr(autocomplete_module, "find_project_root", lambda _: None)
+        monkeypatch.setattr(autocomplete_module, "_get_project_files", fake_files)
+
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+
+        controller.set_cwd(sub_a)
+        old_task_a = asyncio.create_task(controller.warm_cache())
+        await asyncio.to_thread(entered_old_a.wait, 5)
+
+        controller.set_cwd(sub_b)
+        await controller.warm_cache()
+
+        controller.set_cwd(sub_a)
+        await controller.warm_cache()
+        assert controller._file_cache == ["a/new.py"]
+
+        release_old_a.set()
+        await old_task_a
+
+        assert controller._project_root == sub_a
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["a/new.py"]

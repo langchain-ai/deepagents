@@ -22,7 +22,7 @@ import shutil
 import sys
 import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TextIO
@@ -123,8 +123,20 @@ def _parse_version(v: str) -> Version:
     return Version(v.strip())  # raises InvalidVersion for non-PEP 440 strings
 
 
+def is_installed_version_at_least(version: str) -> bool:
+    """Return whether installed package metadata is at least `version`."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version as pkg_version
+
+        installed = _parse_version(pkg_version("deepagents-code"))
+        target = _parse_version(version)
+    except (InvalidVersion, PackageNotFoundError):
+        return False
+    return installed >= target
+
+
 def _latest_from_releases(
-    releases: dict[str, list[object]],
+    releases: Mapping[str, Sequence[object]],
     *,
     include_prereleases: bool,
 ) -> str | None:
@@ -156,6 +168,49 @@ def _latest_from_releases(
             best = ver
             best_str = ver_str
     return best_str
+
+
+def get_cached_update_available() -> tuple[bool, str | None]:
+    """Check for updates using only a fresh local cache entry.
+
+    This is the startup fast path: it never contacts PyPI. Stale, missing,
+    corrupt, or unparsable cache data is treated as "no cached update answer" so
+    callers can launch immediately and let a background update check refresh the
+    cache later.
+
+    Returns:
+        A `(available, latest)` tuple. `latest` is `None` when the cache cannot
+            provide a fresh answer.
+    """
+    try:
+        installed = _parse_version(__version__)
+    except InvalidVersion:
+        logger.warning(
+            "Installed version %r is not PEP 440 compliant; "
+            "cache-only update checks disabled for this install",
+            __version__,
+        )
+        return False, None
+
+    cache_key = "version_prerelease" if installed.is_prerelease else "version"
+    try:
+        if not CACHE_FILE.exists():
+            return False, None
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False, None
+        checked_at = data.get("checked_at")
+        if not isinstance(checked_at, (int, float)):
+            return False, None
+        if time.time() - checked_at >= CACHE_TTL:
+            return False, None
+        value = data.get(cache_key)
+        if not isinstance(value, str):
+            return False, None
+        return _parse_version(value) > installed, value
+    except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
+        logger.debug("Failed to read cache-only update answer", exc_info=True)
+        return False, None
 
 
 def get_latest_version(
@@ -294,7 +349,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # type: ignore[call-overload]
+    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
     return value if isinstance(value, str) else None
 
 
@@ -813,13 +868,13 @@ async def _run_install_subprocess(
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
-                    proc.stdout,  # type: ignore[arg-type]
+                    proc.stdout,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,
                 ),
                 _read_stream(
-                    proc.stderr,  # type: ignore[arg-type]
+                    proc.stderr,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,

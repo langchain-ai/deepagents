@@ -47,6 +47,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _resolve_backend,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -807,7 +808,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 ),
                 package="deepagents",
             )
-            return self.backend(runtime)  # ty: ignore[call-top-callable]
+            return _resolve_backend(self.backend, runtime)
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -1923,7 +1924,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             config=config,
             tool_call_id=None,
         )
-        return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+        return _resolve_backend(self.backend, tool_runtime)
 
     def _check_eviction_needed(
         self,

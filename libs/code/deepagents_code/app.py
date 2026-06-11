@@ -187,6 +187,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
+    from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
 
@@ -211,6 +212,14 @@ _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 
 Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished onboarding modal forever.
+"""
+
+_CONNECTING_STATUS_REVEAL_DELAY_SECONDS = 5.0
+"""Maximum seconds to defer initial status-bar connection progress.
+
+Fast local-server startup should not flash a spinner. If startup takes longer,
+or the user queues input while waiting, the status bar reveals the connection
+state as the single app-wide progress indicator.
 """
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
@@ -1549,8 +1558,8 @@ class DeepAgentsApp(App):
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
-                The app shows a "Connecting..." state and starts the server in
-                the background using these kwargs
+                The app shows a status-bar connection state and starts the
+                server in the background using these kwargs
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
@@ -1759,8 +1768,8 @@ class DeepAgentsApp(App):
         self._server_kwargs = server_kwargs
         """Cached kwargs for `start_server_and_get_agent`.
 
-        When non-`None`, startup is deferred and the UI begins in
-        "Connecting..." state unless `_server_startup_deferred` is set.
+        When non-`None`, startup is deferred and the UI begins in a status-bar
+        connection state unless `_server_startup_deferred` is set.
 
         Re-used so downstream features that restart the server (e.g. `/agents`)
         start from the same config.
@@ -1902,10 +1911,35 @@ class DeepAgentsApp(App):
         actually reachable.
         """
 
+        self._defer_connection_status_display = (
+            self._connecting and self._resume_thread_intent is None
+        )
+        """Whether initial connection progress is temporarily hidden.
+
+        The status bar remains the only visible connection owner; this flag
+        just avoids flashing it during fast startup. Initial startup owns this
+        flag; mid-session reconnects must not re-arm it.
+        """
+
+        self._connection_status_reveal_timer: Timer | None = None
+        """One-shot timer that reveals deferred status-bar connection progress."""
+
         self._connection_ready_event = asyncio.Event()
         """Set once the initial server connection has either succeeded or failed."""
         if not self._connecting:
             self._connection_ready_event.set()
+
+        self._reconnecting = False
+        """True while a mid-session server restart is in flight.
+
+        Distinguishes a reconnect (e.g. `/mcp reconnect`, `/restart`, agent or
+        model swap) from the initial connect so the status bar can label the
+        spinner accordingly.
+
+        Only meaningful while `_connecting` is `True`; callers must reset it to
+        `False` whenever they clear `_connecting` so the pair can't drift into
+        the meaningless `(_connecting=False, _reconnecting=True)` state.
+        """
 
         self._server_startup_error: str | None = None
         """Set when the background server fails to start; persists for the
@@ -2215,11 +2249,6 @@ class DeepAgentsApp(App):
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
                 mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
-                connecting=self._connecting,
-                resuming=self._resume_thread_intent is not None,
-                local_server=self._server_kwargs is not None,
-                defer_connecting_display=self._connecting
-                and self._resume_thread_intent is None,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -2255,6 +2284,8 @@ class DeepAgentsApp(App):
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        self._sync_status_connection()
+        self._sync_status_queued()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
@@ -3084,6 +3115,7 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
         """Handle successful background server startup."""
         self._connecting = False
+        self._reconnecting = False
         self._connection_ready_event.set()
         self._agent = event.agent
         self._server_proc = event.server_proc
@@ -3136,6 +3168,7 @@ class DeepAgentsApp(App):
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+        self._sync_status_connection()
 
         # Refresh the status bar model so a successful retry after a failed
         # startup (e.g. `/model` switching providers after `ModelConfigError`)
@@ -3212,6 +3245,7 @@ class DeepAgentsApp(App):
         )
 
         self._connecting = False
+        self._reconnecting = False
         self._connection_ready_event.set()
         headline_truncated = False
         if isinstance(event.error, MCPConfigError):
@@ -3246,6 +3280,7 @@ class DeepAgentsApp(App):
             banner.set_idle()
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
+        self._sync_status_connection()
 
         # Keep any queued messages and widgets in place — `/model` retry can
         # bring the server up, at which point `_run_session_start_sequence`
@@ -4229,6 +4264,72 @@ class DeepAgentsApp(App):
         """Update the status bar with a message."""
         if self._status_bar:
             self._status_bar.set_status_message(message)
+
+    def _sync_status_connection(self) -> None:
+        """Mirror the current connection state onto the bottom status bar.
+
+        The app-level welcome banner keeps rendering its regular footer while
+        the status bar is the single owner for connection progress. State is
+        derived from `_connecting`/`_reconnecting` so callers only have to flip
+        those flags before calling.
+        """
+        if self._status_bar is None:
+            return
+        if self._reconnecting and not self._connecting:
+            # The two flags must never drift into this meaningless pair (see
+            # `_reconnecting`). Self-heal loudly rather than silently rendering
+            # a stale reconnect label off a half-cleared state.
+            logger.warning(
+                "Connection flags drifted to (_connecting=False, "
+                "_reconnecting=True); resetting _reconnecting",
+            )
+            self._reconnecting = False
+        if not self._connecting:
+            self._defer_connection_status_display = False
+            self._cancel_connection_status_reveal_timer()
+            self._status_bar.set_connection("")
+        elif self._defer_connection_status_display:
+            self._status_bar.set_connection("")
+            self._schedule_connection_status_reveal_timer()
+        elif self._reconnecting:
+            self._status_bar.set_connection("reconnecting")
+        else:
+            self._status_bar.set_connection("connecting")
+
+    def _schedule_connection_status_reveal_timer(self) -> None:
+        """Schedule the one-shot timer that reveals deferred connection state."""
+        if self._connection_status_reveal_timer is not None:
+            return
+        self._connection_status_reveal_timer = self.set_timer(
+            _CONNECTING_STATUS_REVEAL_DELAY_SECONDS,
+            self._on_connection_status_reveal_timer,
+        )
+
+    def _cancel_connection_status_reveal_timer(self) -> None:
+        """Cancel and clear the deferred connection-status reveal timer."""
+        if self._connection_status_reveal_timer is None:
+            return
+        self._connection_status_reveal_timer.stop()
+        self._connection_status_reveal_timer = None
+
+    def _on_connection_status_reveal_timer(self) -> None:
+        """Reveal the status-bar connection indicator after the delay elapses."""
+        self._connection_status_reveal_timer = None
+        self._reveal_connection_status()
+
+    def _reveal_connection_status(self) -> None:
+        """Stop deferring and render the current status-bar connection state."""
+        if not self._defer_connection_status_display:
+            return
+        self._defer_connection_status_display = False
+        self._cancel_connection_status_reveal_timer()
+        self._sync_status_connection()
+
+    def _sync_status_queued(self) -> None:
+        """Mirror the pending-message queue depth onto the status bar."""
+        if self._status_bar is None:
+            return
+        self._status_bar.set_queued(len(self._pending_messages))
 
     def _update_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Update the token count in the status bar.
@@ -5612,12 +5713,9 @@ class DeepAgentsApp(App):
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
+            self._sync_status_queued()
             if self._connecting:
-                with suppress(NoMatches):
-                    self.query_one(
-                        "#welcome-banner",
-                        WelcomeBanner,
-                    ).reveal_connecting_footer()
+                self._reveal_connection_status()
             return
 
         await self._process_message(value, mode)
@@ -6272,6 +6370,7 @@ class DeepAgentsApp(App):
                 self._force_interrupt_active_work()
             self._pending_messages.clear()
             self._queued_widgets.clear()
+            self._sync_status_queued()
             await self._clear_messages()
             self._context_tokens = 0
             self._tokens_approximate = False
@@ -7161,6 +7260,7 @@ class DeepAgentsApp(App):
         self._processing_pending = True
         try:
             msg = self._pending_messages.popleft()
+            self._sync_status_queued()
 
             # Remove the ephemeral queued-message widget
             if self._queued_widgets:
@@ -7868,6 +7968,7 @@ class DeepAgentsApp(App):
         if not self._pending_messages:
             return
         msg = self._pending_messages.pop()
+        self._sync_status_queued()
         if self._queued_widgets:
             widget = self._queued_widgets.pop()
             widget.remove()
@@ -7935,6 +8036,7 @@ class DeepAgentsApp(App):
             w.remove()
         self._queued_widgets.clear()
         self._deferred_actions.clear()
+        self._sync_status_queued()
 
     def _force_interrupt_active_work(self) -> None:
         """Cancel in-flight work before the standard `/clear` path runs.
@@ -8252,6 +8354,7 @@ class DeepAgentsApp(App):
         # process them after the event loop is torn down, and cancel
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
+        self._cancel_connection_status_reveal_timer()
         self._discard_queue()
 
         if self._shell_running and self._shell_worker:
@@ -8954,12 +9057,14 @@ class DeepAgentsApp(App):
             # agent still live. Only Phase 2 escalates to ServerStartFailed.
             try:
                 self._connecting = True
+                self._reconnecting = True
                 self._agent = None
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.set_connecting()
                 except NoMatches:
                     pass
+                self._sync_status_connection()
 
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=False)
@@ -8997,6 +9102,7 @@ class DeepAgentsApp(App):
                         )
                 self._queued_widgets.clear()
                 self._deferred_actions.clear()
+                self._sync_status_queued()
 
                 await self._clear_messages()
                 self._context_tokens = 0
@@ -9020,8 +9126,9 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
                 # Restore the previous-agent UI state so the user isn't
-                # stuck on a permanent "Connecting..." banner.
+                # stuck in a permanent connecting state.
                 self._connecting = False
+                self._reconnecting = False
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.set_connected(
@@ -9032,6 +9139,7 @@ class DeepAgentsApp(App):
                     )
                 except NoMatches:
                     pass
+                self._sync_status_connection()
                 self.notify(
                     f"Could not prepare to switch to {agent_name!r}. "
                     "Staying on current agent.",
@@ -9067,6 +9175,8 @@ class DeepAgentsApp(App):
                     self._server_kwargs["assistant_id"] = previous_agent
                 self._agent = None
                 self._connecting = False
+                self._reconnecting = False
+                self._sync_status_connection()
                 logger.exception(
                     "Server restart failed during agent swap to %r",
                     agent_name,
@@ -9077,11 +9187,13 @@ class DeepAgentsApp(App):
             # Phase 3: confirmation. Past here all failures are
             # cosmetic — the new server is healthy.
             self._connecting = False
+            self._reconnecting = False
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(self._mcp_tool_count)
             except NoMatches:
                 pass
+            self._sync_status_connection()
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
             # SKILL.md files.
@@ -10129,13 +10241,14 @@ class DeepAgentsApp(App):
         self._refresh_welcome_banner_mcp_counts()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        """Surface login worker failures that escaped the inner error handling."""
+        """Surface worker failures that escaped a worker's inner error handling."""
         from textual.worker import WorkerState
 
         worker = event.worker
-        if not (worker.group or "").startswith("mcp-login-"):
+        group = worker.group or ""
+        if event.state != WorkerState.ERROR or worker.error is None:
             return
-        if event.state == WorkerState.ERROR and worker.error is not None:
+        if group.startswith("mcp-login-"):
             logger.warning(
                 "MCP login worker failed unexpectedly: %s",
                 worker.error,
@@ -10146,6 +10259,26 @@ class DeepAgentsApp(App):
                 ErrorMessage(
                     f"MCP login failed unexpectedly: {worker.error}. "
                     "You may need to retry.",
+                ),
+            )
+        elif group == "server-startup":
+            # `_start_server_background` normally posts ServerReady or
+            # ServerStartFailed itself, ending in SUCCESS. Reaching ERROR
+            # means an exception escaped before it could (e.g. an unguarded
+            # await early in startup). Without this net nothing would clear
+            # `_connecting`, leaving a permanent connection spinner with no
+            # error surfaced. Convert the crash into the terminal failure
+            # message so the standard reset handler runs.
+            logger.warning(
+                "Server startup worker failed unexpectedly: %s",
+                worker.error,
+                exc_info=worker.error,
+            )
+            self.post_message(
+                self.ServerStartFailed(
+                    error=worker.error
+                    if isinstance(worker.error, Exception)
+                    else RuntimeError(str(worker.error)),
                 ),
             )
 
@@ -10710,17 +10843,21 @@ class DeepAgentsApp(App):
 
         try:
             self._connecting = True
+            self._reconnecting = True
             self._agent = None
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connecting()
             except NoMatches:
                 pass
+            self._sync_status_connection()
 
             try:
                 await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
+                self._reconnecting = False
+                self._sync_status_connection()
                 logger.exception(log_message)
                 self.post_message(self.ServerStartFailed(error=exc))
                 return False
@@ -10754,6 +10891,8 @@ class DeepAgentsApp(App):
             )
         except BaseException:
             self._connecting = False
+            self._reconnecting = False
+            self._sync_status_connection()
             raise
         else:
             return True
@@ -11059,12 +11198,14 @@ class DeepAgentsApp(App):
 
         try:
             self._connecting = True
+            self._reconnecting = True
             self._agent = None
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connecting()
             except NoMatches:
                 pass
+            self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
 
@@ -11148,6 +11289,7 @@ class DeepAgentsApp(App):
             self._server_proc = previous_server
             self._mcp_server_info = previous_mcp_info
             self._connecting = False
+            self._reconnecting = False
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(
@@ -11158,6 +11300,7 @@ class DeepAgentsApp(App):
                 )
             except NoMatches:
                 pass
+            self._sync_status_connection()
             if not isinstance(exc, Exception):
                 # Cancellation / SystemExit: state is restored; let it propagate.
                 raise
@@ -11171,8 +11314,14 @@ class DeepAgentsApp(App):
             return "abort"
         else:
             # `stop()` joins the subprocess synchronously; keep the UI loop
-            # responsive while the old server drains.
-            await asyncio.to_thread(previous_server.stop)
+            # responsive while the old server drains. A stop failure here is
+            # cosmetic (the new server is already live), but must not skip the
+            # ready transition below — otherwise `_connecting` strands `True`
+            # and the freshly-built agent never gets wired up.
+            try:
+                await asyncio.to_thread(previous_server.stop)
+            except Exception:  # old-server teardown is best-effort
+                logger.exception("Failed to stop previous server after cwd switch")
             self.on_deep_agents_app_server_ready(event)
             return "continue"
 
@@ -11371,6 +11520,7 @@ class DeepAgentsApp(App):
             await self._set_spinner(None)
             self._pending_messages.clear()
             self._queued_widgets.clear()
+            self._sync_status_queued()
             await self._clear_messages()
             await self._set_spinner("Loading thread")
             self._context_tokens = 0
@@ -11766,11 +11916,13 @@ class DeepAgentsApp(App):
         self._server_startup_missing_provider_package = None
         self._server_startup_deferred = False
         self._connecting = True
+        self._reconnecting = True
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.set_connecting()
         except (NoMatches, ScreenStackError):
             logger.debug("Welcome banner not found during startup retry", exc_info=True)
+        self._sync_status_connection()
 
         if self._retry_status_widget is not None:
             with suppress(NoMatches, ScreenStackError):
@@ -11919,8 +12071,8 @@ async def run_textual_app(
     """Run the Textual application.
 
     When `server_kwargs` is provided (and `agent` is `None`), the app starts
-    immediately with a "Connecting..." banner and launches the server in the
-    background.  Server cleanup is handled automatically after the app exits.
+    immediately with a status-bar connection state and launches the server in
+    the background. Server cleanup is handled automatically after the app exits.
 
     Args:
         agent: Pre-configured LangGraph agent (optional).

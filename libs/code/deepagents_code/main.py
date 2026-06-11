@@ -614,6 +614,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "skills": ("skills_command", "show_skills_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
+    "config": ("config_command", "show_config_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -637,7 +638,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, and `mcp` commands when no
+    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
     subcommand was given.
 
     Args:
@@ -675,6 +676,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
@@ -803,6 +805,12 @@ def parse_args() -> argparse.Namespace:
     setup_mcp_parsers(
         subparsers,
         make_help_action=_make_help_action,
+    )
+
+    setup_config_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
     )
 
     threads_parser = subparsers.add_parser(
@@ -2093,6 +2101,11 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
+
+        if args.command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

@@ -6,6 +6,7 @@ post-hoc analysis of infrastructure noise in eval results.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import platform
@@ -102,54 +103,51 @@ async def collect_sandbox_metadata(backend: SandboxLike) -> InfraMetadata:
     meta.host_platform = host["host_platform"]
     meta.host_python_version = host["host_python_version"]
 
-    # Collect sandbox info via shell commands (best-effort — must never abort a trial)
-    try:
-        cpu_result = await backend.aexecute(
-            "nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0", timeout=10
-        )
-        cpu_str = cpu_result.output.strip().split("\n")[0]
+    # Collect sandbox info via shell commands (best-effort — must never abort a trial).
+    # The four probes are independent, so run them concurrently to avoid serializing
+    # four sandbox round-trips per trial.
+    async def _probe(command: str) -> str | None:
+        try:
+            result = await backend.aexecute(command, timeout=10)
+            return result.output.strip().split("\n")[0]
+        except Exception:  # noqa: BLE001  # best-effort metadata collection
+            logger.debug("Sandbox probe failed: %s", command, exc_info=True)
+            return None
+
+    mem_cmd = (
+        "grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' "
+        "|| sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}' "
+        "|| echo 0"
+    )
+    avail_cmd = "grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 0"
+
+    cpu_str, mem_str, avail_str, os_str = await asyncio.gather(
+        _probe("nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0"),
+        _probe(mem_cmd),
+        _probe(avail_cmd),
+        _probe("uname -s -r 2>/dev/null || echo unknown"),
+    )
+
+    if cpu_str is not None:
         if cpu_str.isdigit():
             meta.sandbox_cpu_count = int(cpu_str)
         else:
             logger.debug("Sandbox CPU count returned non-numeric: %r", cpu_str)
-    except Exception:  # noqa: BLE001  # best-effort metadata collection
-        logger.debug("Failed to collect sandbox CPU count", exc_info=True)
 
-    try:
-        # Linux: /proc/meminfo, fallback to macOS sysctl
-        mem_cmd = (
-            "grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' "
-            "|| sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}' "
-            "|| echo 0"
-        )
-        mem_result = await backend.aexecute(mem_cmd, timeout=10)
-        mem_str = mem_result.output.strip().split("\n")[0]
+    if mem_str is not None:
         if mem_str.isdigit():
             meta.sandbox_memory_total_mb = int(mem_str)
         else:
             logger.debug("Sandbox memory total returned non-numeric: %r", mem_str)
-    except Exception:  # noqa: BLE001  # best-effort metadata collection
-        logger.debug("Failed to collect sandbox memory total", exc_info=True)
 
-    try:
-        # Available memory (Linux only via /proc/meminfo)
-        avail_cmd = (
-            "grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 0"
-        )
-        avail_result = await backend.aexecute(avail_cmd, timeout=10)
-        avail_str = avail_result.output.strip().split("\n")[0]
+    if avail_str is not None:
         if avail_str.isdigit():
             avail = int(avail_str)
             meta.sandbox_memory_available_mb = avail if avail > 0 else None
         else:
             logger.debug("Sandbox memory available returned non-numeric: %r", avail_str)
-    except Exception:  # noqa: BLE001  # best-effort metadata collection
-        logger.debug("Failed to collect sandbox available memory", exc_info=True)
 
-    try:
-        os_result = await backend.aexecute("uname -s -r 2>/dev/null || echo unknown", timeout=10)
-        meta.sandbox_os = os_result.output.strip().split("\n")[0]
-    except Exception:  # noqa: BLE001  # best-effort metadata collection
-        logger.debug("Failed to collect sandbox OS info", exc_info=True)
+    if os_str is not None:
+        meta.sandbox_os = os_str
 
     return meta

@@ -20,6 +20,7 @@ import tempfile
 import urllib.parse
 import uuid
 from collections.abc import Awaitable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -37,6 +38,9 @@ LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain
 
 _API_KEY_ENV_VARS = ("LANGSMITH_SANDBOX_API_KEY", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Environment variables checked (in priority order) when resolving an API key."""
+
+_FEEDBACK_MAX_WORKERS = 8
+"""Upper bound on concurrent trial-feedback workers in `add_feedback`."""
 
 
 class _RegistryClient(Protocol):
@@ -656,15 +660,30 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     results = {"success": 0, "fallback": 0, "skipped": 0, "error": 0}
     client = Client()
 
-    for i, trial_dir in enumerate(trial_dirs, 1):
-        print(f"[{i}/{len(trial_dirs)}] Processing {trial_dir.name}...")
+    # Each trial issues up to three independent, blocking LangSmith calls. Process
+    # trials concurrently with a bounded thread pool instead of serializing them.
+    max_workers = min(_FEEDBACK_MAX_WORKERS, len(trial_dirs)) or 1
+    processed: list[dict[str, str]] = [{}] * len(trial_dirs)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_trial,
+                trial_dir=trial_dir,
+                project_name=project_name,
+                client=client,
+                dry_run=dry_run,
+            ): idx
+            for idx, trial_dir in enumerate(trial_dirs)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                processed[idx] = future.result()
+            except Exception as exc:  # noqa: BLE001  # surface unexpected errors per-trial
+                processed[idx] = {"status": "error", "message": f"Unexpected error: {exc}"}
 
-        result = _process_trial(
-            trial_dir=trial_dir,
-            project_name=project_name,
-            client=client,
-            dry_run=dry_run,
-        )
+    for i, (trial_dir, result) in enumerate(zip(trial_dirs, processed, strict=True), 1):
+        print(f"[{i}/{len(trial_dirs)}] Processing {trial_dir.name}...")
 
         status = result["status"]
         message = result["message"]

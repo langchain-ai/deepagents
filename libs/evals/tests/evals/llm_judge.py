@@ -12,6 +12,7 @@ delegated to openevals (https://github.com/langchain-ai/openevals).
 from __future__ import annotations
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -159,20 +160,45 @@ class LLMJudge(SuccessAssertion):
             model=self.judge_model,
         )
 
+        def _evaluate(criterion: str) -> dict[str, Any]:
+            return evaluator(outputs=conversation, criterion=criterion)
+
+        # The per-criterion judge calls are independent network calls, so run them
+        # concurrently rather than serializing one round-trip per criterion. Results
+        # are collected in criterion order so error messages stay deterministic.
+        total = len(self.criteria)
+        raw_results: list[Any] = [None] * total
+        if total > 1:
+            with ThreadPoolExecutor(max_workers=total) as executor:
+                futures = {
+                    executor.submit(_evaluate, criterion): idx
+                    for idx, criterion in enumerate(self.criteria)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        raw_results[idx] = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        raw_results[idx] = exc
+        else:
+            for idx, criterion in enumerate(self.criteria):
+                try:
+                    raw_results[idx] = _evaluate(criterion)
+                except Exception as exc:  # noqa: BLE001
+                    raw_results[idx] = exc
+
         results: list[dict[str, Any]] = []
-        for i, criterion in enumerate(self.criteria, 1):
-            try:
-                result = evaluator(outputs=conversation, criterion=criterion)
-            except Exception as exc:
+        for i, (criterion, result) in enumerate(zip(self.criteria, raw_results, strict=True), 1):
+            if isinstance(result, BaseException):
                 msg = (
-                    f"LLM judge failed on criterion {i}/{len(self.criteria)} "
+                    f"LLM judge failed on criterion {i}/{total} "
                     f"(model={self.judge_model!r}): {criterion!r}"
                 )
-                raise RuntimeError(msg) from exc
+                raise RuntimeError(msg) from result  # noqa: TRY004
             if not isinstance(result, dict) or "score" not in result:
                 msg = (
                     f"openevals returned unexpected result for criterion "
-                    f"{i}/{len(self.criteria)} {criterion!r}: {result!r}"
+                    f"{i}/{total} {criterion!r}: {result!r}"
                 )
                 raise ValueError(msg)
             results.append(result)

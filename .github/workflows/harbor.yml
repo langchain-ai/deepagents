@@ -361,13 +361,7 @@ jobs:
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
 
-          # LangSmith sandboxes are not a built-in harbor environment type,
-          # so we use --environment-import-path instead of --env.
-          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
-            env_flag="--environment-import-path deepagents_harbor.langsmith_environment:LangSmithEnvironment"
-          else
-            env_flag="--env $HARBOR_SANDBOX_ENV"
-          fi
+          env_flag="--env $HARBOR_SANDBOX_ENV"
 
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \

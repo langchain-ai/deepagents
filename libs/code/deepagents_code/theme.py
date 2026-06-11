@@ -236,6 +236,15 @@ SPINNER = "blue"
 # ---------------------------------------------------------------------------
 
 
+_textual_colors_cache: dict[tuple[str, bool], ThemeColors] = {}
+"""Cache of derived `ThemeColors` keyed on `(theme name, dark)`.
+
+Built-in Textual themes are immutable per name, so their derived colors only
+change when the active theme changes. Caching avoids re-running ~16 hex
+validations on every widget render.
+"""
+
+
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 """Matches a 7-character hex color string like `#7AA2F7`.
 
@@ -717,6 +726,7 @@ def reload_registry() -> MappingProxyType[str, ThemeEntry]:
     """
     get_registry.cache_clear()
     _builtin_names.cache_clear()
+    _textual_colors_cache.clear()
     return get_registry()
 
 
@@ -857,11 +867,19 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
     if entry is not None and entry.custom:
         return entry.colors
     # Built-in or unrecognized themes — derive from the resolved Textual
-    # theme so Python styling matches CSS.
+    # theme so Python styling matches CSS. Cache the result keyed on the
+    # active theme name + dark flag, since built-in themes are immutable.
     try:
-        return _colors_from_textual_theme(app)
+        ct = app.current_theme  # ty: ignore[unresolved-attribute]
+        key = (app.theme, bool(ct.dark))  # ty: ignore[unresolved-attribute]
+        cached = _textual_colors_cache.get(key)
+        if cached is None:
+            cached = _colors_from_textual_theme(app)
+            _textual_colors_cache[key] = cached
     except Exception:
         logger.warning("Could not resolve theme colors dynamically", exc_info=True)
         if entry is not None:
             return entry.colors
         return DARK_COLORS
+    else:
+        return cached

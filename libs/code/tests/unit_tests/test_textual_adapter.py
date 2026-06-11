@@ -779,6 +779,103 @@ def _hitl_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
     return ((), "updates", {"__interrupt__": [interrupt]})
 
 
+def _tool_chunk(
+    *,
+    name: str | None,
+    args: str,
+    chunk_id: str | None,
+    index: int = 0,
+) -> tuple[Any, ...]:
+    """Build a `messages`-stream chunk carrying one streamed tool-call fragment."""
+    from langchain_core.messages import AIMessageChunk
+
+    message = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "name": name,
+                "args": args,
+                "id": chunk_id,
+                "index": index,
+                "type": "tool_call_chunk",
+            }
+        ],
+    )
+    return ((), "messages", (message, {}))
+
+
+class TestExecuteTaskTextualToolCallStreaming:
+    """Tests for incremental tool-call argument accumulation."""
+
+    async def test_fragmented_args_mount_once_when_json_completes(self) -> None:
+        """Args streamed across many fragments parse once the JSON is whole.
+
+        The tool row mounts a single time with fully accumulated args, even
+        though the JSON arrives split across several chunks.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Split a JSON object across fragments; only the last one closes it.
+        chunks = [
+            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
+            _tool_chunk(name=None, args='"a.py", ', chunk_id=None),
+            _tool_chunk(name=None, args='"content": "x"}', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]._tool_name == "edit_file"
+        assert tool_msgs[0]._args == {"path": "a.py", "content": "x"}
+
+    async def test_incomplete_args_do_not_mount(self) -> None:
+        """A tool row stays unmounted while its JSON args are still partial."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # JSON never closes — the row must not mount with partial args.
+        chunks = [
+            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
+            _tool_chunk(name=None, args='"a.py"', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert not [m for m in mounted if isinstance(m, ToolCallMessage)]
+
+
 class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 

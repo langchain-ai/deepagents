@@ -13449,3 +13449,112 @@ class TestResumeThreadCwdSwitch:
         assert all(
             "Could not look up thread history" not in message for message in messages
         )
+
+
+class TestEnsureManagedRipgrep:
+    """`_ensure_managed_ripgrep` installs the managed `rg` once per session.
+
+    `_start_server_background` must install + prepend `PATH` before the
+    langgraph subprocess snapshots `os.environ`; the optional-tools worker
+    must reuse that result instead of installing a second time.
+    """
+
+    async def test_installs_and_prepends_once(self) -> None:
+        """First call installs; second call short-circuits via the event."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock(return_value=Path("/managed/rg"))
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+            assert await app._ensure_managed_ripgrep() is True
+
+        ensure.assert_awaited_once()
+        prepend.assert_called_once()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is False
+
+    async def test_skips_when_ripgrep_not_missing(self) -> None:
+        """A present system `rg` means no install attempt is made."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock()
+        with (
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+
+        ensure.assert_not_awaited()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is False
+
+    async def test_failed_install_marks_failure(self) -> None:
+        """A failed install records failure so callers still warn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+            # Second call returns the cached failure without re-installing.
+            assert await app._ensure_managed_ripgrep() is False
+
+        prepend.assert_not_called()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is True
+
+    async def test_start_server_background_ensures_before_spawn(self) -> None:
+        """The managed `rg` install must run before the server is spawned."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = None
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._default_assistant_id = None
+
+        call_order: list[str] = []
+
+        async def record_ensure() -> bool:
+            call_order.append("ensure")
+            await asyncio.sleep(0)
+            return True
+
+        def record_start(**_: object) -> object:
+            call_order.append("start_server")
+            msg = "stop here"
+            raise RuntimeError(msg)
+
+        with (
+            patch.object(app, "_ensure_managed_ripgrep", side_effect=record_ensure),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=record_start,
+            ),
+            patch.object(app, "post_message"),
+        ):
+            await app._start_server_background()
+
+        assert call_order[:2] == ["ensure", "start_server"], call_order

@@ -6,7 +6,6 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -582,8 +581,8 @@ class FilesystemBackend(BackendProtocol):
         results = self._ripgrep_search(pattern, base_full, glob)
         partial_error: str | None = None
         if results is None:
-            # Python fallback needs escaped pattern for literal search
-            results, partial_error = self._python_search(re.escape(pattern), base_full, glob)
+            # Python fallback does literal substring matching on the raw pattern.
+            results, partial_error = self._python_search(pattern, base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -729,7 +728,7 @@ class FilesystemBackend(BackendProtocol):
         and a wall-clock timeout.
 
         Args:
-            pattern: Escaped regex pattern (from re.escape) for literal search.
+            pattern: Literal string to search for (substring match, not regex).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
             timeout: Maximum wall-clock seconds before the search is aborted.
@@ -744,53 +743,62 @@ class FilesystemBackend(BackendProtocol):
                 should treat such results as incomplete.
         """
         deadline = time.monotonic() + timeout
-        regex = re.compile(pattern)
+        glob_matcher = wcglob.compile(include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR) if include_glob else None
 
         results: dict[str, list[tuple[int, str]]] = {}
         root = base_full if base_full.is_dir() else base_full.parent
 
+        def _timed_out_msg() -> str:
+            msg = (
+                f"Grep of '{base_full}' timed out after {timeout}s "
+                f"with {len(results)} matching file(s); try a more "
+                f"specific pattern or a narrower path."
+            )
+            logger.warning("%s", msg)
+            return msg
+
         try:
             for fp in root.rglob("*"):
                 if time.monotonic() > deadline:
-                    msg = (
-                        f"Grep of '{base_full}' timed out after {timeout}s "
-                        f"with {len(results)} matching file(s); try a more "
-                        f"specific pattern or a narrower path."
-                    )
-                    logger.warning("%s", msg)
-                    return results, msg
+                    return results, _timed_out_msg()
                 try:
                     if not fp.is_file():
                         continue
                 except (PermissionError, OSError, RuntimeError):
                     continue
-                if include_glob:
+                if glob_matcher is not None:
                     rel_path = str(fp.relative_to(root))
-                    if not wcglob.globmatch(rel_path, include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+                    if not glob_matcher.match(rel_path):
                         continue
                 try:
                     if fp.stat().st_size > self.max_file_size_bytes:
                         continue
                 except (OSError, RuntimeError):
                     continue
+                # Stream the file line-by-line so a single huge file neither
+                # blows peak memory nor monopolizes the wall-clock budget.
                 try:
-                    content = fp.read_text()
+                    with fp.open(encoding="utf-8", errors="strict") as handle:
+                        for line_num, raw_line in enumerate(handle, 1):
+                            if line_num % 2048 == 0 and time.monotonic() > deadline:
+                                return results, _timed_out_msg()
+                            if pattern not in raw_line:
+                                continue
+                            line = raw_line.rstrip("\n")
+                            if self.virtual_mode:
+                                try:
+                                    virt_path = self._to_virtual_path(fp)
+                                except ValueError:
+                                    logger.debug("Skipping grep result outside root: %s", fp)
+                                    break
+                                except (OSError, RuntimeError):
+                                    logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
+                                    break
+                            else:
+                                virt_path = str(fp)
+                            results.setdefault(virt_path, []).append((line_num, line))
                 except (UnicodeDecodeError, PermissionError, OSError, RuntimeError):
                     continue
-                for line_num, line in enumerate(content.splitlines(), 1):
-                    if regex.search(line):
-                        if self.virtual_mode:
-                            try:
-                                virt_path = self._to_virtual_path(fp)
-                            except ValueError:
-                                logger.debug("Skipping grep result outside root: %s", fp)
-                                continue
-                            except (OSError, RuntimeError):
-                                logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
-                                continue
-                        else:
-                            virt_path = str(fp)
-                        results.setdefault(virt_path, []).append((line_num, line))
         except (OSError, RuntimeError) as e:
             # `rglob` raised mid-iteration. `OSError` covers the common case
             # where a directory entry is unlinked or renamed during the walk

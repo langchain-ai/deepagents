@@ -774,6 +774,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
+        # Cache for dynamic system prompts keyed on whether the execute tool
+        # is both present and supported. The text depends only on that flag
+        # and immutable config, so it is computed at most twice per instance.
+        self._dynamic_system_prompt_cache: dict[bool, str] = {}
+
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
@@ -800,6 +805,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_grep_tool(),
             self._create_execute_tool(),
         ]
+
+    def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
+        """Build (and memoize) the dynamic system prompt.
+
+        The result depends only on `include_execution` and immutable config,
+        so it is cached per instance to avoid rebuilding on every model call.
+        """
+        cached = self._dynamic_system_prompt_cache.get(include_execution)
+        if cached is not None:
+            return cached
+        prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
+        if include_execution:
+            prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+        system_prompt = "\n\n".join(prompt_parts).strip()
+        self._dynamic_system_prompt_cache[include_execution] = system_prompt
+        return system_prompt
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -1776,18 +1797,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
+            system_prompt = self._build_dynamic_system_prompt(
+                include_execution=has_execute_tool and backend_supports_execution,
+            )
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1841,18 +1853,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
+            system_prompt = self._build_dynamic_system_prompt(
+                include_execution=has_execute_tool and backend_supports_execution,
+            )
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

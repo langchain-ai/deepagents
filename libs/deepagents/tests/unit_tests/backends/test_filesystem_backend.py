@@ -1014,6 +1014,24 @@ class TestGrepPythonFallbackTimeout:
         assert partial_error is not None
         assert "timed out" in partial_error
 
+    def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
+        """The Python fallback does literal substring matching (no regex)."""
+        (tmp_path / "code.py").write_text("def __init__(self):\n    return [a-z]\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("[a-z]", tmp_path, None)
+        assert partial_error is None
+        all_lines = [text for items in results.values() for _, text in items]
+        assert any("[a-z]" in line for line in all_lines)
+
+    def test_python_search_streams_large_file_with_per_line_timeout(self, tmp_path: Path) -> None:
+        """A single large file is interrupted by the wall-clock deadline mid-file."""
+        big = "\n".join(f"line {i}" for i in range(200_000)) + "\nneedle\n"
+        (tmp_path / "big.txt").write_text(big)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _results, partial_error = be._python_search("needle", tmp_path, None, timeout=0)
+        assert partial_error is not None
+        assert "timed out" in partial_error
+
     def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """`grep` surfaces the timeout as a partial error while still returning matches found so far."""
         (tmp_path / "file.txt").write_text("hello")

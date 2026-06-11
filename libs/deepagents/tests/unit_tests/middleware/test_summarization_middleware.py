@@ -2563,3 +2563,44 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
     # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay.
     # Use 2.5x multiplier to allow for CI scheduling jitter.
     assert elapsed < 2.5 * delay, f"Expected parallel execution (<{2.5 * delay}s) but took {elapsed:.2f}s"
+
+
+class TestTokenCountingEfficiency:
+    """The per-call token count is expensive (tool schema conversion), so it must run once."""
+
+    def _make_counting_middleware(self) -> tuple[SummarizationMiddleware, dict[str, int]]:
+        calls = {"count": 0}
+
+        def counting_token_counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            calls["count"] += 1
+            return 10  # Far below every trigger: no truncation, no summarization.
+
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("tokens", 1_000_000),
+            token_counter=counting_token_counter,
+            truncate_args_settings={
+                "trigger": ("tokens", 1_000_000),
+                "keep": ("messages", 2),
+            },
+        )
+        return middleware, calls
+
+    def test_token_counter_called_once_per_model_call(self) -> None:
+        middleware, calls = self._make_counting_middleware()
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+
+        _, captured_request = call_wrap_model_call(middleware, state, make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        assert calls["count"] == 1
+
+    async def test_token_counter_called_once_per_model_call_async(self) -> None:
+        middleware, calls = self._make_counting_middleware()
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+
+        _, captured_request = await call_awrap_model_call(middleware, state, make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        assert calls["count"] == 1

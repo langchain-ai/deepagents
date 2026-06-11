@@ -711,11 +711,26 @@ A condensed summary follows:
             }
         return tool_call
 
+    def _count_tokens(
+        self,
+        messages: list[AnyMessage],
+        system_message: SystemMessage | None,
+        tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> int:
+        """Count tokens for messages plus optional system message and tools."""
+        counted_messages = [system_message, *messages] if system_message is not None else messages
+        try:
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        except TypeError:
+            return self.token_counter(counted_messages)
+
     def _truncate_args(
         self,
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+        *,
+        total_tokens: int | None = None,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
@@ -723,16 +738,17 @@ A condensed summary follows:
             messages: Messages to potentially truncate.
             system_message: Optional system message for token counting.
             tools: Optional tools for token counting.
+            total_tokens: Precomputed token count for `messages` (plus system
+                message and tools). Counting tools is expensive (schema
+                conversion per tool), so callers that already have the count
+                pass it in rather than paying for a second pass.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        counted_messages = [system_message, *messages] if system_message is not None else messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if total_tokens is None:
+            total_tokens = self._count_tokens(messages, system_message, tools)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
@@ -960,19 +976,21 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
             request.system_message,
             request.tools,
+            total_tokens=total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1081,19 +1099,21 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
             request.system_message,
             request.tools,
+            total_tokens=total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages

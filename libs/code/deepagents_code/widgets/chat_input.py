@@ -433,6 +433,7 @@ class ChatTextArea(TextArea):
         # detected even when it doesn't begin with a quote.
         self._paste_burst_run = 0
         self._paste_burst_last_key_time: float | None = None
+        self._paste_burst_last_suppressed_enter_time: float | None = None
         # Deadline until which `enter` inserts a newline rather than submitting,
         # keeping multi-line pastes grouped across read boundaries.
         self._paste_burst_window_until: float | None = None
@@ -699,12 +700,13 @@ class ChatTextArea(TextArea):
         """Clear consecutive-keystroke tracking after non-burst input."""
         self._paste_burst_run = 0
         self._paste_burst_last_key_time = None
+        self._paste_burst_last_suppressed_enter_time = None
 
     def _enter_inserts_newline_during_burst(self, now: float) -> bool:
         """Return whether `enter` should insert a newline rather than submit.
 
-        True only when the preceding keystroke was itself part of a rapid run
-        (within `_PASTE_BURST_CHAR_GAP_SECONDS`) and the suppression window is
+        True when the preceding keystroke was part of a rapid run or the
+        previous `enter` was already suppressed, and the suppression window is
         still open. The char-gap check keeps a deliberate `enter` pressed after
         a burst settles from being swallowed; the window bounds how long a
         replayed paste's newlines stay grouped. Slash-command context always
@@ -717,11 +719,16 @@ class ChatTextArea(TextArea):
         # today. It keeps the helper's contract self-contained.
         if self._paste_burst_buffer:
             return True
-        last_key = self._paste_burst_last_key_time
-        if last_key is None or (now - last_key) > _PASTE_BURST_CHAR_GAP_SECONDS:
-            return False
         until = self._paste_burst_window_until
-        return until is not None and now <= until
+        if until is None or now > until:
+            return False
+        last_enter = self._paste_burst_last_suppressed_enter_time
+        if last_enter is not None:
+            return True
+        last_key = self._paste_burst_last_key_time
+        return (
+            last_key is not None and (now - last_key) <= _PASTE_BURST_CHAR_GAP_SECONDS
+        )
 
     def _in_slash_command_context(self) -> bool:
         """Return whether the current input is composing a slash command."""
@@ -857,6 +864,7 @@ class ChatTextArea(TextArea):
         # the paste's newlines from submitting mid-stream. `enter` is exempt so
         # newlines within a paste don't break the run.
         if event.is_printable and event.character is not None:
+            self._paste_burst_last_suppressed_enter_time = None
             self._note_paste_burst_keystroke(now)
             if (
                 self._paste_burst_run >= _PASTE_BURST_MIN_CHARS
@@ -934,8 +942,10 @@ class ChatTextArea(TextArea):
                 self._paste_burst_window_until = (
                     now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
                 )
+                self._paste_burst_last_suppressed_enter_time = now
                 self.action_insert_newline()
                 return
+            self._paste_burst_last_suppressed_enter_time = None
             if (
                 self._chat_input_owner is not None
                 and self._chat_input_owner._handle_stale_slash_enter()

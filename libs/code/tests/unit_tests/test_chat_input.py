@@ -3245,6 +3245,42 @@ class TestPasteBurstEnterSuppression:
             assert ta._paste_burst_window_until is not None
             assert ta._paste_burst_window_until > original_until
 
+    async def test_blank_line_paste_keeps_consecutive_enter_grouped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed second enter in a blank-line paste does not submit."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            ta.move_cursor((0, len(ta.text)))
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = now
+            ta._paste_burst_window_until = now + 60.0
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+            assert ta.text == "abc\n"
+
+            ta._paste_burst_last_key_time = (
+                chat_input_module.time.monotonic()
+                - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert ta.text == "abc\n\n"
+
     async def test_slash_command_enter_still_submits_during_burst(self) -> None:
         """Slash-command context keeps enter dispatching even after a burst."""
         app = _RecordingApp()

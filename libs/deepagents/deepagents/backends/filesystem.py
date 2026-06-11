@@ -714,7 +714,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(  # noqa: C901, PLR0912
+    def _python_search(  # noqa: C901, PLR0912, PLR0915
         self,
         pattern: str,
         base_full: Path,
@@ -738,14 +738,16 @@ class FilesystemBackend(BackendProtocol):
 
                 `partial_error` is `None` on a clean walk, otherwise a
                 human-readable message indicating the walk was incomplete:
-                either the wall-clock `timeout` elapsed or the walk aborted
-                early (e.g., a directory entry was removed mid-walk). Callers
+                either the wall-clock `timeout` elapsed, at least one file
+                failed after scanning started, or the walk aborted early
+                (e.g., a directory entry was removed mid-walk). Callers
                 should treat such results as incomplete.
         """
         deadline = time.monotonic() + timeout
         glob_matcher = wcglob.compile(include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR) if include_glob else None
 
         results: dict[str, list[tuple[int, str]]] = {}
+        file_errors: list[str] = []
         root = base_full if base_full.is_dir() else base_full.parent
 
         def _timed_out_msg() -> str:
@@ -756,6 +758,11 @@ class FilesystemBackend(BackendProtocol):
             )
             logger.warning("%s", msg)
             return msg
+
+        def _file_errors_msg() -> str | None:
+            if not file_errors:
+                return None
+            return "One or more files could not be fully searched:\n" + "\n".join(file_errors)
 
         try:
             for fp in root.rglob("*"):
@@ -777,27 +784,31 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 # Stream the file line-by-line so a single huge file neither
                 # blows peak memory nor monopolizes the wall-clock budget.
+                scanned_lines = 0
                 try:
+                    if self.virtual_mode:
+                        try:
+                            virt_path = self._to_virtual_path(fp)
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except (OSError, RuntimeError):
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
+                            continue
+                    else:
+                        virt_path = str(fp)
                     with fp.open(encoding="utf-8", errors="strict") as handle:
                         for line_num, raw_line in enumerate(handle, 1):
+                            scanned_lines = line_num
                             if line_num % 2048 == 0 and time.monotonic() > deadline:
                                 return results, _timed_out_msg()
                             if pattern not in raw_line:
                                 continue
                             line = raw_line.rstrip("\n")
-                            if self.virtual_mode:
-                                try:
-                                    virt_path = self._to_virtual_path(fp)
-                                except ValueError:
-                                    logger.debug("Skipping grep result outside root: %s", fp)
-                                    break
-                                except (OSError, RuntimeError):
-                                    logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
-                                    break
-                            else:
-                                virt_path = str(fp)
                             results.setdefault(virt_path, []).append((line_num, line))
-                except (UnicodeDecodeError, PermissionError, OSError, RuntimeError):
+                except (UnicodeDecodeError, PermissionError, OSError, RuntimeError) as e:
+                    if scanned_lines > 0 or virt_path in results:
+                        file_errors.append(f"- {virt_path}: {type(e).__name__} while reading file")
                     continue
         except (OSError, RuntimeError) as e:
             # `rglob` raised mid-iteration. `OSError` covers the common case
@@ -810,7 +821,7 @@ class FilesystemBackend(BackendProtocol):
             logger.warning("%s", msg, exc_info=True)
             return results, msg
 
-        return results, None
+        return results, _file_errors_msg()
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.

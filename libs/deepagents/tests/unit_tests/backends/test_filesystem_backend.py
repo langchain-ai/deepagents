@@ -4,6 +4,7 @@ import subprocess
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Self
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -1031,6 +1032,53 @@ class TestGrepPythonFallbackTimeout:
         _results, partial_error = be._python_search("needle", tmp_path, None, timeout=0)
         assert partial_error is not None
         assert "timed out" in partial_error
+
+    def test_python_search_reports_file_error_after_partial_scan(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-file read error after scanning starts is surfaced with partial matches."""
+        bad = tmp_path / "bad.txt"
+        bad.write_text("")
+
+        class BrokenHandle:
+            def __init__(self) -> None:
+                self._first = True
+
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def __iter__(self) -> Self:
+                return self
+
+            def __next__(self) -> str:
+                if self._first:
+                    self._first = False
+                    return "needle before failure\n"
+                encoding = "utf-8"
+                data = b"\xff"
+                reason = "invalid start byte"
+                raise UnicodeDecodeError(encoding, data, 0, 1, reason)
+
+        original_open = Path.open
+
+        def fake_open(path: Path, *args: object, **kwargs: object) -> BrokenHandle | object:
+            if path == bad:
+                return BrokenHandle()
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fake_open)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results == {"/bad.txt": [(1, "needle before failure")]}
+        assert partial_error is not None
+        assert "One or more files could not be fully searched" in partial_error
+        assert "- /bad.txt: UnicodeDecodeError while reading file" in partial_error
 
     def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """`grep` surfaces the timeout as a partial error while still returning matches found so far."""

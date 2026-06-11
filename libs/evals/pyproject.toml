@@ -21,7 +21,7 @@ dependencies = [
     "deepagents>=0.6.8",
     "langchain>=1.3.4,<2.0.0",
     "deepagents-code>=0.1.11",
-    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, harbor>=0.13.2)
+    # Harbor runtime, including LangSmith sandbox dependencies for our WORKDIR-preserving adapter.
     "harbor[langsmith]>=0.13.2,<0.14.0",
     # LangSmith for observability
     "langsmith>=0.8.11,<0.9.0",

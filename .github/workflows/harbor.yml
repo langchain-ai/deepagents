@@ -361,7 +361,12 @@ jobs:
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
 
-          env_flag="--env $HARBOR_SANDBOX_ENV"
+          # Keep LangSmith on our adapter so commands run from the image's Dockerfile WORKDIR.
+          if [ "$HARBOR_SANDBOX_ENV" = "langsmith" ]; then
+            env_flag="--environment-import-path deepagents_harbor.langsmith_environment:LangSmithEnvironment"
+          else
+            env_flag="--env $HARBOR_SANDBOX_ENV"
+          fi
 
           uv run harbor run \
             --agent-import-path deepagents_harbor:DeepAgentsWrapper \

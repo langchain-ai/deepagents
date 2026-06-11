@@ -363,7 +363,10 @@ def check_release_dependencies(base_sha: str, head_sha: str) -> int:
             temp_manifest = manifest_dir / "pyproject.toml"
             temp_manifest.write_text(filtered.content, encoding="utf-8")
             log = tmpdir / f"{manifest_dir.name}.log"
-            _notice(f"Resolving {manifest_path} against PyPI with uv pip compile --no-sources --universal")
+            _notice(
+                f"Resolving {manifest_path} against PyPI with "
+                "uv pip compile --no-sources --universal --prerelease allow --all-extras"
+            )
             if not run_resolver(temp_manifest, log):
                 ok = False
 

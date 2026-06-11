@@ -2109,6 +2109,26 @@ class DeepAgentsApp(App):
         self._update_install_running = False
         """True while a self-update command is running."""
 
+        self._ripgrep_ensured = asyncio.Event()
+        """Set once the managed-ripgrep install/prepend attempt has run.
+
+        `_ensure_managed_ripgrep` runs the install + `PATH` prepend exactly
+        once and signals here. `_start_server_background` awaits it before
+        spawning the langgraph subprocess so the server inherits the managed
+        `rg` on `PATH`; the optional-tools worker reuses the same result
+        instead of installing a second time.
+        """
+
+        self._ripgrep_ensure_lock = asyncio.Lock()
+        """Serializes the one-shot managed-ripgrep install across workers."""
+
+        self._ripgrep_install_failed = False
+        """True when the managed-ripgrep install attempt did not yield a binary.
+
+        Lets the optional-tools worker still surface the missing-tool notice
+        after `_start_server_background` has already attempted the install.
+        """
+
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
         """Cached skill metadata (populated by startup discovery worker,
@@ -2609,6 +2629,84 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
 
+    async def _ensure_managed_ripgrep(self) -> bool:
+        """Install the managed `rg` and prepend it to `PATH`, exactly once.
+
+        Runs at most one install attempt per session, guarded by
+        `_ripgrep_ensure_lock`. The first caller (typically
+        `_start_server_background`) does the network download so the server
+        subprocess inherits the managed binary on `PATH`; later callers
+        (the optional-tools worker) observe the cached result via
+        `_ripgrep_ensured` instead of installing again.
+
+        Returns:
+            `True` when a usable managed `rg` is on `PATH`, `False` when the
+            install was skipped or failed (caller should surface the missing
+            tool and fall back to the slow path).
+        """
+        async with self._ripgrep_ensure_lock:
+            if self._ripgrep_ensured.is_set():
+                return not self._ripgrep_install_failed
+
+            try:
+                from deepagents_code.main import _should_ensure_managed_ripgrep
+                from deepagents_code.managed_tools import (
+                    ChecksumMismatchError,
+                    ensure_ripgrep,
+                    prepend_managed_bin_to_path,
+                )
+            except ImportError:
+                logger.warning("Could not import managed-tools helpers", exc_info=True)
+                self._ripgrep_install_failed = True
+                self._ripgrep_ensured.set()
+                return False
+
+            try:
+                should_ensure = await asyncio.to_thread(_should_ensure_managed_ripgrep)
+            except OSError:
+                logger.debug("Failed to check for optional tools", exc_info=True)
+                self._ripgrep_install_failed = True
+                self._ripgrep_ensured.set()
+                return False
+
+            if not should_ensure:
+                self._ripgrep_ensured.set()
+                return True
+
+            installed = None
+            try:
+                installed = await ensure_ripgrep()
+            except ChecksumMismatchError:
+                logger.exception(
+                    "ripgrep auto-install aborted: SHA-256 mismatch on downloaded "
+                    "archive"
+                )
+                self.notify(
+                    "ripgrep auto-install aborted: checksum verification failed.",
+                    severity="error",
+                    timeout=15,
+                    markup=False,
+                )
+            except Exception:
+                logger.warning(
+                    "ripgrep auto-install failed unexpectedly", exc_info=True
+                )
+                self.notify(
+                    "ripgrep auto-install failed unexpectedly — see logs.",
+                    severity="warning",
+                    timeout=10,
+                    markup=False,
+                )
+
+            if installed is not None:
+                prepend_managed_bin_to_path()
+                self._ripgrep_ensured.set()
+                return True
+
+            self._ripgrep_install_failed = True
+            self._ripgrep_ensured.set()
+            return False
+
     async def _check_optional_tools_background(self) -> None:
         """Check for optional tools and register actionable notices.
 
@@ -2648,6 +2746,13 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             return
+
+        # Install the managed `rg` (or reuse the install already done by
+        # `_start_server_background`). `check_optional_tools` reports the
+        # managed binary as still "missing", so drop it explicitly when the
+        # ensure succeeds rather than relying on a re-check.
+        if "ripgrep" in missing and await self._ensure_managed_ripgrep():
+            missing = [tool for tool in missing if tool != "ripgrep"]
 
         if not missing:
             return
@@ -2954,6 +3059,13 @@ class DeepAgentsApp(App):
             save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
+
+        # Install the managed `rg` and prepend it to `PATH` BEFORE spawning
+        # the langgraph subprocess: `ServerProcess.start()` snapshots
+        # `os.environ` into the child, so an install that lands after the
+        # server starts would never reach the SDK's filesystem backend and
+        # grep would stay on the slow Python fallback until a restart.
+        await self._ensure_managed_ripgrep()
 
         from deepagents_code.server_manager import start_server_and_get_agent
 

@@ -8335,8 +8335,16 @@ class TestNotificationCenterIntegration:
                 return_value=[],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
         ):
             yield
@@ -9063,12 +9071,20 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
         ):
             async with app.run_test() as pilot:
@@ -9101,12 +9117,20 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
         ):
             async with app.run_test() as pilot:
@@ -9138,12 +9162,20 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
         ):
             async with app.run_test() as pilot:
@@ -9496,6 +9528,10 @@ class TestNotificationCenterIntegration:
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
             ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -9520,6 +9556,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
         ):
             async with app.run_test() as pilot:
@@ -9557,6 +9597,10 @@ class TestNotificationCenterIntegration:
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
             ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             async with app.run_test() as pilot:
                 await pilot.pause()
@@ -9578,12 +9622,20 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
             # Force TimeoutError immediately instead of waiting 5 seconds.
             patch(
@@ -13701,3 +13753,197 @@ class TestResumeThreadCwdSwitch:
         assert all(
             "Could not look up thread history" not in message for message in messages
         )
+
+
+class TestEnsureManagedRipgrep:
+    """`_ensure_managed_ripgrep` installs the managed `rg` once per session.
+
+    `_start_server_background` must install + prepend `PATH` before the
+    langgraph subprocess snapshots `os.environ`; the optional-tools worker
+    must reuse that result instead of installing a second time.
+    """
+
+    async def test_installs_and_prepends_once(self) -> None:
+        """First call installs; second call short-circuits via the event."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock(return_value=Path("/managed/rg"))
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+            assert await app._ensure_managed_ripgrep() is True
+
+        ensure.assert_awaited_once()
+        prepend.assert_called_once()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is False
+
+    async def test_installs_when_ripgrep_warning_is_suppressed(self) -> None:
+        """Suppressed warning state must not skip managed `rg` installation."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock(return_value=Path("/managed/rg"))
+        prepend = MagicMock()
+        check_optional_tools = MagicMock(return_value=[])
+        with (
+            patch(
+                "deepagents_code.main.check_optional_tools",
+                check_optional_tools,
+            ),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+
+        check_optional_tools.assert_not_called()
+        ensure.assert_awaited_once()
+        prepend.assert_called_once()
+
+    async def test_skips_when_ripgrep_not_missing(self) -> None:
+        """A present system `rg` means no install attempt is made."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock()
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+
+        ensure.assert_not_awaited()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is False
+
+    async def test_failed_install_marks_failure(self) -> None:
+        """A failed install records failure so callers still warn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+            # Second call returns the cached failure without re-installing.
+            assert await app._ensure_managed_ripgrep() is False
+
+        prepend.assert_not_called()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is True
+
+    async def test_checksum_mismatch_notifies_error(self) -> None:
+        """A checksum mismatch surfaces a loud error notice and fails closed."""
+        from deepagents_code.managed_tools import ChecksumMismatchError
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notices: list[dict[str, Any]] = []
+
+        def _capture(message: str, **kwargs: Any) -> None:
+            notices.append({"message": message, **kwargs})
+
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(side_effect=ChecksumMismatchError("bad")),
+            ),
+            patch.object(app, "notify", _capture),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+
+        assert any(note.get("severity") == "error" for note in notices), notices
+        assert app._ripgrep_install_failed is True
+
+    async def test_unexpected_failure_notifies_warning(self) -> None:
+        """An unexpected install error warns the user, not just the log.
+
+        Mirrors the headless CLI path so a crashed install is distinguishable
+        from an absent tool rather than only logged.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notices: list[dict[str, Any]] = []
+
+        def _capture(message: str, **kwargs: Any) -> None:
+            notices.append({"message": message, **kwargs})
+
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch.object(app, "notify", _capture),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+
+        assert any(note.get("severity") == "warning" for note in notices), notices
+        assert app._ripgrep_install_failed is True
+
+    async def test_start_server_background_ensures_before_spawn(self) -> None:
+        """The managed `rg` install must run before the server is spawned."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = None
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._default_assistant_id = None
+
+        call_order: list[str] = []
+
+        async def record_ensure() -> bool:
+            call_order.append("ensure")
+            await asyncio.sleep(0)
+            return True
+
+        def record_start(**_: object) -> object:
+            call_order.append("start_server")
+            msg = "stop here"
+            raise RuntimeError(msg)
+
+        with (
+            patch.object(app, "_ensure_managed_ripgrep", side_effect=record_ensure),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                side_effect=record_start,
+            ),
+            patch.object(app, "post_message"),
+        ):
+            await app._start_server_background()
+
+        assert call_order[:2] == ["ensure", "start_server"], call_order

@@ -58,6 +58,51 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
         assert parsed_args.shell_allow_list is None
 
 
+def test_parse_args_does_not_prepend_managed_bin(
+    monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
+) -> None:
+    """PATH is only changed after the managed ripgrep binary is validated."""
+    path = f"/usr/bin{os.pathsep}/bin"
+    monkeypatch.setenv("PATH", path)
+
+    with mock_argv():
+        parse_args()
+
+    assert os.environ["PATH"] == path
+
+
+def test_headless_installs_ripgrep_when_warning_is_suppressed() -> None:
+    """Suppressed warning state must not skip headless managed `rg` install."""
+    from deepagents_code.main import cli_main
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    ensure = AsyncMock(return_value=Path("/managed/rg"))
+    prepend = MagicMock()
+    with (
+        patch.object(sys, "argv", ["deepagents", "-n", "task"]),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=True,
+        ),
+        patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+        patch("deepagents_code.managed_tools.prepend_managed_bin_to_path", prepend),
+        patch(
+            "deepagents_code.non_interactive.run_non_interactive",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    ensure.assert_awaited_once()
+    prepend.assert_called_once()
+
+
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv(
@@ -351,6 +396,10 @@ class TestSkillFlagValidation:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -448,6 +497,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             # Skip the /dev/tty dance — os.open would fail in test sandboxes
             # and the real code path already tolerates that failure.
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
@@ -475,6 +528,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -494,6 +551,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
@@ -592,6 +653,10 @@ class TestTimeoutArgument:
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
@@ -620,6 +685,10 @@ class TestTimeoutArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -643,6 +712,10 @@ class TestTimeoutArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "asyncio.wait_for",
                 side_effect=asyncio.TimeoutError,
             ),
@@ -664,6 +737,10 @@ class TestTimeoutArgument:
             patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
@@ -735,6 +812,10 @@ class TestMaxRetriesForwarding:
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,

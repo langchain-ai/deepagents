@@ -937,6 +937,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("update", "check"),
         invert_toml_bool=True,
     ),
+    # --- Runtime --------------------------------------------------------
+    ConfigOption(
+        key="runtime.offline",
+        group="Runtime",
+        summary="Disable managed binary downloads and use local fallbacks.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.OFFLINE,
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",

@@ -395,6 +395,25 @@ def _ripgrep_install_hint() -> str:
     return _RIPGREP_URL
 
 
+def _is_managed_ripgrep_path(path: str | None) -> bool:
+    """Return whether `path` points at the managed `rg` binary."""
+    if path is None:
+        return False
+
+    from deepagents_code.managed_tools import managed_rg_path
+
+    managed = managed_rg_path()
+    return os.path.normcase(str(Path(path).resolve())) == os.path.normcase(
+        str(managed.resolve())
+    )
+
+
+def _should_ensure_managed_ripgrep() -> bool:
+    """Return whether startup should validate or install managed ripgrep."""
+    rg_path = shutil.which("rg")
+    return rg_path is None or _is_managed_ripgrep_path(rg_path)
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -412,7 +431,9 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     from deepagents_code.model_config import is_warning_suppressed
 
     missing: list[str] = []
-    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+    if _should_ensure_managed_ripgrep() and not is_warning_suppressed(
+        "ripgrep", config_path
+    ):
         missing.append("ripgrep")
 
     from deepagents_code.config import settings
@@ -421,6 +442,59 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
         missing.append("tavily")
 
     return missing
+
+
+def _auto_install_ripgrep_cli(
+    warn_console: "Console", missing_tools: list[str]
+) -> list[str]:
+    """Attempt the one-shot managed `rg` install for the headless CLI path.
+
+    Mirrors the interactive `DeepAgentsApp._ensure_managed_ripgrep` flow for
+    the non-interactive launch, where there is no Textual app to surface
+    notices through. A checksum mismatch is reported loudly and a generic
+    failure as a warning; both leave `"ripgrep"` in the returned list so the
+    caller still prints the standard missing-tool notice and the slow Python
+    fallback is used.
+
+    Args:
+        warn_console: `rich` console bound to stderr for user-facing notices.
+        missing_tools: Tool names reported missing by `check_optional_tools`.
+
+    Returns:
+        `missing_tools` with `"ripgrep"` removed once a usable managed binary
+        is on `PATH`, otherwise the list unchanged.
+    """
+    from deepagents_code.managed_tools import (
+        ChecksumMismatchError,
+        ensure_ripgrep,
+        prepend_managed_bin_to_path,
+    )
+
+    warn_console.print("Installing ripgrep...")
+    try:
+        installed = asyncio.run(ensure_ripgrep())
+    except ChecksumMismatchError:
+        logger.exception(
+            "ripgrep auto-install aborted: SHA-256 mismatch on downloaded archive"
+        )
+        warn_console.print(
+            "[bold red]Error:[/bold red] ripgrep auto-install aborted: downloaded "
+            "archive failed SHA-256 verification. Refusing to install."
+        )
+        return missing_tools
+    except Exception:
+        logger.warning("ripgrep auto-install failed unexpectedly", exc_info=True)
+        warn_console.print(
+            "[yellow]Warning:[/yellow] ripgrep auto-install failed unexpectedly "
+            "— see logs."
+        )
+        return missing_tools
+
+    if installed is None:
+        return missing_tools
+
+    prepend_managed_bin_to_path()
+    return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
 def build_missing_tool_notification(tool: str) -> "PendingNotification":
@@ -2664,14 +2738,29 @@ def cli_main() -> None:
                     exc_info=True,
                 )
             else:
+                warn_console = None
                 try:
                     warn_console = _Console(stderr=True)
-                    for tool in check_optional_tools():
+                    missing_tools = check_optional_tools()
+                    if _should_ensure_managed_ripgrep():
+                        missing_tools = _auto_install_ripgrep_cli(
+                            warn_console, missing_tools
+                        )
+                    for tool in missing_tools:
                         warn_console.print(
                             f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
                         )
                 except Exception:
-                    logger.debug("Failed to check for optional tools", exc_info=True)
+                    logger.warning(
+                        "Optional-tools check failed unexpectedly", exc_info=True
+                    )
+                    # A swallowed failure here must not be fully silent: surface
+                    # one stderr line so a degraded grep is at least signposted.
+                    if warn_console is not None:
+                        with contextlib.suppress(Exception):
+                            warn_console.print(
+                                "[dim]Tool availability check skipped — see logs.[/dim]"
+                            )
             # Validate sandbox provider deps before spawning server subprocess
             if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (

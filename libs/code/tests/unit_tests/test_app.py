@@ -12597,19 +12597,132 @@ class TestCanBypassQueue:
 class TestStatusBarConnectionMirroring:
     """The bottom status bar must mirror the connection + queue state.
 
-    The welcome banner's connecting footer scrolls out of view mid-thread, so
-    these tests pin that the always-visible status bar carries the same signal.
+    The welcome banner intentionally stays out of connection progress, so
+    these tests pin the always-visible status bar as the single owner.
     """
 
     async def test_mount_syncs_existing_connecting_state(self) -> None:
-        """A pre-mount startup connection should appear once the bar is mounted."""
+        """Initial startup defers the status-bar connection indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+            assert app._connection_status_reveal_timer is not None
+            app._cancel_connection_status_reveal_timer()
+
+    async def test_reveal_syncs_existing_connecting_state(self) -> None:
+        """The deferred reveal shows the current connection state on the bar."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            app._reveal_connection_status()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_connect_cancels_deferred_reveal_timer(self) -> None:
+        """Connecting resolving should clear deferral and cancel the timer."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._connection_status_reveal_timer is not None
+            app._connecting = False
+            app._sync_status_connection()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+            assert app._defer_connection_status_display is False
+            assert app._connection_status_reveal_timer is None
+
+    async def test_reveal_syncs_reconnecting_state(self) -> None:
+        """Deferred reveal should preserve reconnect labeling."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = True
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            app._reveal_connection_status()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_deferred_schedule_is_idempotent(self) -> None:
+        """Repeated syncs while deferred should not replace the timer handle."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            timer = app._connection_status_reveal_timer
+            assert timer is not None
+
+            app._sync_status_connection()
+
+            assert app._connection_status_reveal_timer is timer
+            app._cancel_connection_status_reveal_timer()
+
+    async def test_reveal_timer_callback_clears_handle(self) -> None:
+        """The timer callback clears its handle before revealing status."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._connection_status_reveal_timer is not None
+
+            app._on_connection_status_reveal_timer()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_app_banner_does_not_duplicate_connecting_state(self) -> None:
+        """The status bar, not the welcome footer, owns app connection progress."""
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._status_bar is not None
+            app._reveal_connection_status()
+            assert app._status_bar.connection_state == "connecting"
+            banner = app.query_one("#welcome-banner", WelcomeBanner)
+            assert "Connecting to server" not in banner._build_banner().plain
+
+    async def test_queued_input_does_not_reveal_banner_connection_footer(self) -> None:
+        """Queued input should update the bar without adding a second spinner."""
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._connecting = True
         app._reconnecting = False
 
         async with app.run_test():
+            await app._submit_input("queued while connecting", "normal")
+
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "connecting"
+            assert app._status_bar.queued_count == 1
+            banner = app.query_one("#welcome-banner", WelcomeBanner)
+            assert "Connecting to server" not in banner._build_banner().plain
 
     async def test_sync_reflects_reconnecting(self) -> None:
         """`_sync_status_connection` should surface a reconnect on the bar."""

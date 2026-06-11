@@ -187,6 +187,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
+    from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
 
@@ -211,6 +212,14 @@ _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 
 Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished onboarding modal forever.
+"""
+
+_CONNECTING_STATUS_REVEAL_DELAY_SECONDS = 5.0
+"""Maximum seconds to defer initial status-bar connection progress.
+
+Fast local-server startup should not flash a spinner. If startup takes longer,
+or the user queues input while waiting, the status bar reveals the connection
+state as the single app-wide progress indicator.
 """
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
@@ -1549,8 +1558,8 @@ class DeepAgentsApp(App):
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
-                The app shows a "Connecting..." state and starts the server in
-                the background using these kwargs
+                The app shows a status-bar connection state and starts the
+                server in the background using these kwargs
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
@@ -1759,8 +1768,8 @@ class DeepAgentsApp(App):
         self._server_kwargs = server_kwargs
         """Cached kwargs for `start_server_and_get_agent`.
 
-        When non-`None`, startup is deferred and the UI begins in
-        "Connecting..." state unless `_server_startup_deferred` is set.
+        When non-`None`, startup is deferred and the UI begins in a status-bar
+        connection state unless `_server_startup_deferred` is set.
 
         Re-used so downstream features that restart the server (e.g. `/agents`)
         start from the same config.
@@ -1901,6 +1910,19 @@ class DeepAgentsApp(App):
         Gates message handling so user input is queued until the agent is
         actually reachable.
         """
+
+        self._defer_connection_status_display = (
+            self._connecting and self._resume_thread_intent is None
+        )
+        """Whether initial connection progress is temporarily hidden.
+
+        The status bar remains the only visible connection owner; this flag
+        just avoids flashing it during fast startup. Initial startup owns this
+        flag; mid-session reconnects must not re-arm it.
+        """
+
+        self._connection_status_reveal_timer: Timer | None = None
+        """One-shot timer that reveals deferred status-bar connection progress."""
 
         self._connection_ready_event = asyncio.Event()
         """Set once the initial server connection has either succeeded or failed."""
@@ -2207,11 +2229,6 @@ class DeepAgentsApp(App):
                 mcp_unauthenticated=self._mcp_unauthenticated,
                 mcp_errored=self._mcp_errored,
                 mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
-                connecting=self._connecting,
-                resuming=self._resume_thread_intent is not None,
-                local_server=self._server_kwargs is not None,
-                defer_connecting_display=self._connecting
-                and self._resume_thread_intent is None,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -4145,20 +4162,53 @@ class DeepAgentsApp(App):
     def _sync_status_connection(self) -> None:
         """Mirror the current connection state onto the bottom status bar.
 
-        The welcome banner's connecting footer lives at the top of the
-        transcript and scrolls out of view mid-thread, so the status bar
-        carries the same signal where it stays visible. State is derived
-        from `_connecting`/`_reconnecting` so callers only have to flip
+        The app-level welcome banner keeps rendering its regular footer while
+        the status bar is the single owner for connection progress. State is
+        derived from `_connecting`/`_reconnecting` so callers only have to flip
         those flags before calling.
         """
         if self._status_bar is None:
             return
         if not self._connecting:
+            self._defer_connection_status_display = False
+            self._cancel_connection_status_reveal_timer()
             self._status_bar.set_connection("")
+        elif self._defer_connection_status_display:
+            self._status_bar.set_connection("")
+            self._schedule_connection_status_reveal_timer()
         elif self._reconnecting:
             self._status_bar.set_connection("reconnecting")
         else:
             self._status_bar.set_connection("connecting")
+
+    def _schedule_connection_status_reveal_timer(self) -> None:
+        """Schedule the one-shot timer that reveals deferred connection state."""
+        if self._connection_status_reveal_timer is not None:
+            return
+        self._connection_status_reveal_timer = self.set_timer(
+            _CONNECTING_STATUS_REVEAL_DELAY_SECONDS,
+            self._on_connection_status_reveal_timer,
+        )
+
+    def _cancel_connection_status_reveal_timer(self) -> None:
+        """Cancel and clear the deferred connection-status reveal timer."""
+        if self._connection_status_reveal_timer is None:
+            return
+        self._connection_status_reveal_timer.stop()
+        self._connection_status_reveal_timer = None
+
+    def _on_connection_status_reveal_timer(self) -> None:
+        """Reveal the status-bar connection indicator after the delay elapses."""
+        self._connection_status_reveal_timer = None
+        self._reveal_connection_status()
+
+    def _reveal_connection_status(self) -> None:
+        """Stop deferring and render the current status-bar connection state."""
+        if not self._defer_connection_status_display:
+            return
+        self._defer_connection_status_display = False
+        self._cancel_connection_status_reveal_timer()
+        self._sync_status_connection()
 
     def _sync_status_queued(self) -> None:
         """Mirror the pending-message queue depth onto the status bar."""
@@ -5550,11 +5600,7 @@ class DeepAgentsApp(App):
             await self._mount_message(queued_widget)
             self._sync_status_queued()
             if self._connecting:
-                with suppress(NoMatches):
-                    self.query_one(
-                        "#welcome-banner",
-                        WelcomeBanner,
-                    ).reveal_connecting_footer()
+                self._reveal_connection_status()
             return
 
         await self._process_message(value, mode)
@@ -8193,6 +8239,7 @@ class DeepAgentsApp(App):
         # process them after the event loop is torn down, and cancel
         # active workers so their subprocesses are terminated
         # (SIGTERM → SIGKILL) instead of being orphaned.
+        self._cancel_connection_status_reveal_timer()
         self._discard_queue()
 
         if self._shell_running and self._shell_worker:
@@ -8964,7 +9011,7 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
                 # Restore the previous-agent UI state so the user isn't
-                # stuck on a permanent "Connecting..." banner.
+                # stuck in a permanent connecting state.
                 self._connecting = False
                 self._reconnecting = False
                 try:
@@ -11882,8 +11929,8 @@ async def run_textual_app(
     """Run the Textual application.
 
     When `server_kwargs` is provided (and `agent` is `None`), the app starts
-    immediately with a "Connecting..." banner and launches the server in the
-    background.  Server cleanup is handled automatically after the app exits.
+    immediately with a status-bar connection state and launches the server in
+    the background. Server cleanup is handled automatically after the app exits.
 
     Args:
         agent: Pre-configured LangGraph agent (optional).

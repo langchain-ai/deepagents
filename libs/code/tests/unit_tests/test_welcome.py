@@ -373,7 +373,7 @@ class TestPointerShapeOnHover:
         """Hovering a link span should show the hand pointer."""
         widget = _make_banner(thread_id="abc")
         event = MagicMock()
-        event.style = TStyle(link="https://example.com")
+        event.style = Style(link="https://example.com")
 
         widget.on_mouse_move(event)
 
@@ -384,7 +384,7 @@ class TestPointerShapeOnHover:
         widget = _make_banner(thread_id="abc")
         widget.styles.pointer = "pointer"
         event = MagicMock()
-        event.style = TStyle()
+        event.style = Style()
 
         widget.on_mouse_move(event)
 

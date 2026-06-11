@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
+from deepagents._models import resolve_model  # noqa: PLC2701  # shared model resolver
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
@@ -994,13 +995,23 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
+REASON_TOOLS: frozenset[str] = frozenset({"execute", "task"})
+"""High-risk tools that get a model-generated `reason` on their approval prompt.
+
+Shell execution and subagent dispatch are the highest-risk gated tools, so they
+default to surfacing the model's intent. Other gated tools omit the reason to
+avoid the extra per-call model round-trip.
+"""
+
+
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
     Every tool that can have side effects or access external resources
     (shell execution, file writes/edits, web search, URL fetch, task
     delegation) is gated behind an approval prompt unless auto-approve
-    is enabled.
+    is enabled. Tools in `REASON_TOOLS` also carry `reason: True` so
+    `ReasonInterruptMiddleware` generates a justification for them.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
@@ -1008,6 +1019,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "reason": True,  # ty: ignore[invalid-key]  # CLI-only ReasonInterruptOnConfig extends InterruptOnConfig
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
@@ -1033,6 +1045,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "reason": True,  # ty: ignore[invalid-key]  # CLI-only ReasonInterruptOnConfig extends InterruptOnConfig
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
@@ -1520,6 +1533,24 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
 
+    # The main agent's HITL is provided by ReasonInterruptMiddleware so
+    # configured high-risk tools surface a model-generated reason. To avoid a
+    # second HumanInTheLoopMiddleware on the main agent, interrupt_on is NOT
+    # forwarded to create_deep_agent; subagents instead carry interrupt_on on
+    # their own specs (set below) and keep standard, reason-less gating.
+    if interrupt_on:
+        from deepagents_code.reason_interrupt import ReasonInterruptMiddleware
+
+        agent_middleware.append(
+            ReasonInterruptMiddleware(
+                interrupt_on,
+                model=resolve_model(model),
+            )
+        )
+        for spec in custom_subagents:
+            if "runnable" not in spec and "interrupt_on" not in spec:
+                spec["interrupt_on"] = interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig compatible at runtime
+
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
     # the working directory. For sandbox backends, no special routing is needed.
@@ -1564,7 +1595,9 @@ def create_cli_agent(
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,
-        interrupt_on=interrupt_on,
+        # None when ReasonInterruptMiddleware already supplies the main agent's
+        # HITL (truthy interrupt_on); the empty map otherwise (no interrupts).
+        interrupt_on=None if interrupt_on else interrupt_on,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
     ).with_config(config)

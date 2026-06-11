@@ -9,7 +9,7 @@ import json
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -187,6 +187,55 @@ def _get_ask_user_adapter() -> TypeAdapter:
 
         _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
     return _ask_user_adapter_cache
+
+
+def _restore_action_reasons(
+    validated_request: dict[str, Any], raw_value: object
+) -> None:
+    """Copy each `reason` from the raw interrupt payload onto the validated one.
+
+    The `HITLRequest` `TypeAdapter` strips the `reason` key from action
+    requests because it is not part of the upstream TypedDict. This re-attaches
+    it (positionally) so the approval widget can render it. Best-effort: silent
+    on any shape mismatch.
+
+    Args:
+        validated_request: The pydantic-validated `HITLRequest` dict.
+        raw_value: The original interrupt value before validation.
+    """
+    if not isinstance(raw_value, dict):
+        return
+    raw_actions = cast("dict[str, Any]", raw_value).get("action_requests")
+    validated_actions = validated_request.get("action_requests")
+    if not isinstance(raw_actions, list) or not isinstance(validated_actions, list):
+        return
+    for validated, raw in zip(validated_actions, raw_actions, strict=False):
+        if not isinstance(raw, dict) or not isinstance(validated, dict):
+            continue
+        raw_dict = cast("dict[str, Any]", raw)
+        validated_dict = cast("dict[str, Any]", validated)
+        reason = raw_dict.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            validated_dict["reason"] = reason
+
+
+def _is_reason_chunk(metadata: dict | None) -> bool:
+    """Whether a message chunk is from the reason-generation model call.
+
+    `ReasonInterruptMiddleware` tags its call with
+    `lc_source="reason"`; these chunks are hidden from the transcript.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk is a reason-generation chunk to filter out.
+    """
+    if metadata is None:
+        return False
+    from deepagents_code.reason_interrupt import REASON_LC_SOURCE
+
+    return metadata.get("lc_source") == REASON_LC_SOURCE
 
 
 def _is_summarization_chunk(metadata: dict | None) -> bool:
@@ -613,6 +662,11 @@ async def execute_task_textual(
                                         validated_request = (
                                             hitl_request_adapter.validate_python(iv)
                                         )
+                                        # The HITLRequest TypedDict has no
+                                        # `reason` field, so validation drops
+                                        # the model-generated reason. Re-attach
+                                        # it from the raw payload for display.
+                                        _restore_action_reasons(validated_request, iv)
                                         pending_interrupts[interrupt_obj.id] = (
                                             validated_request
                                         )
@@ -662,6 +716,11 @@ async def execute_task_textual(
                             summarization_in_progress = True
                             if adapter._set_spinner:
                                 await adapter._set_spinner("Offloading")
+                        continue
+
+                    # Hide the reason-generation model call from the transcript;
+                    # the reason is shown only on the approval prompt.
+                    if _is_reason_chunk(metadata):
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -1166,6 +1225,16 @@ async def execute_task_textual(
                             ApproveDecision(type="approve") for _ in action_requests
                         ]
                         resume_payload[interrupt_id] = {"decisions": decisions}
+                        # Surface the model's reason even when auto-approved so
+                        # the justification is never silently dropped.
+                        for req in action_requests:
+                            reason = req.get("reason")
+                            if isinstance(reason, str) and reason.strip():
+                                # reason display is best-effort
+                                with contextlib.suppress(Exception):
+                                    await adapter._mount_message(
+                                        AppMessage(f"Reason: {reason.strip()}")
+                                    )
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:

@@ -268,6 +268,11 @@ class ApprovalMenu(Container):
             title = Content(f">>> {count} Tool Calls Require Approval <<<")
         yield Static(title, classes="approval-title")
 
+        # Model-generated reason(s), shown between the title and the
+        # tool-specific content (matching Codex's treatment). Nothing is
+        # rendered when the model did not provide a reason.
+        yield from self._compose_reasons()
+
         if self._security_warnings:
             parts: list[Content] = [
                 Content.from_markup(
@@ -324,6 +329,38 @@ class ApprovalMenu(Container):
         # Help text at the very bottom
         self._help_widget = Static(self._compose_help_text(), classes="approval-help")
         yield self._help_widget
+
+    def _compose_reasons(self) -> ComposeResult:
+        """Yield `Reason:` widgets for action requests that carry one.
+
+        Rendered as `Reason: <italic text>`. For batch approvals each reason
+        is prefixed with its tool index so it lines up with the tool list.
+
+        Yields:
+            A `Static` per action request that has a non-empty `reason`.
+        """
+        multiple = len(self._action_requests) > 1
+        for i, action_request in enumerate(self._action_requests):
+            reason = action_request.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                continue
+            if multiple:
+                yield Static(
+                    Content.from_markup(
+                        "Reason ($num): [italic]$reason[/italic]",
+                        num=i + 1,
+                        reason=reason.strip(),
+                    ),
+                    classes="approval-reason",
+                )
+            else:
+                yield Static(
+                    Content.from_markup(
+                        "Reason: [italic]$reason[/italic]",
+                        reason=reason.strip(),
+                    ),
+                    classes="approval-reason",
+                )
 
     def _compose_help_text(self) -> str:
         """Build the help-line content for the current mode.

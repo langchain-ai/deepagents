@@ -125,6 +125,13 @@ Screen {
     color: $text-muted;
 }
 
+/* Model-generated reason for an approval request */
+.approval-menu .approval-reason {
+    height: auto;
+    margin: 0 0 1 0;
+    color: $text;
+}
+
 /* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
 .diff-removed {
     height: auto;

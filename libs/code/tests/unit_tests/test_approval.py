@@ -639,3 +639,58 @@ class TestRejectWithReason:
         menu._handle_selection.assert_not_called()  # ty: ignore
         assert not future.done()
         loop.close()
+
+
+class TestComposeReasons:
+    """Tests for `ApprovalMenu._compose_reasons`."""
+
+    def test_single_reason_rendered(self) -> None:
+        """A request with a reason yields one `Reason:` widget."""
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "pytest"},
+                "reason": "Validate the change end-to-end.",
+            }
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 1
+        text = widgets[0].render().plain
+        assert text == "Reason: Validate the change end-to-end."
+
+    def test_no_reason_yields_nothing(self) -> None:
+        """A request without a reason yields no widget."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "ls"}})
+        assert list(menu._compose_reasons()) == []
+
+    def test_blank_reason_yields_nothing(self) -> None:
+        """A whitespace-only reason is treated as absent."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "ls"}, "reason": "   "}
+        )
+        assert list(menu._compose_reasons()) == []
+
+    def test_batch_reasons_are_numbered(self) -> None:
+        """Each reason in a batch is prefixed with its tool index."""
+        menu = ApprovalMenu(
+            [
+                {"name": "execute", "args": {"command": "a"}, "reason": "first"},
+                {"name": "execute", "args": {"command": "b"}, "reason": "second"},
+            ]
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 2
+        assert widgets[0].render().plain == "Reason (1): first"
+        assert widgets[1].render().plain == "Reason (2): second"
+
+    def test_reason_markup_is_escaped(self) -> None:
+        """Reason text containing markup is rendered literally."""
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "ls"},
+                "reason": "check [/dim] handling",
+            }
+        )
+        widgets = list(menu._compose_reasons())
+        assert "check [/dim] handling" in widgets[0].render().plain

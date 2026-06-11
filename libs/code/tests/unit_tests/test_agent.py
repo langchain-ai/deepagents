@@ -2697,6 +2697,100 @@ def _mock_agents_dir(agents_dir: Path) -> Mock:
     return mock_settings
 
 
+class TestCreateCliAgentReasonInterruptWiring:
+    """Tests for `create_cli_agent` reason-interrupt HITL wiring."""
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = None
+        mock_settings.user_langchain_project = None
+        return mock_settings
+
+    def test_default_path_appends_reason_middleware_and_clears_interrupt_on(
+        self, tmp_path: Path
+    ) -> None:
+        """Normal HITL path: ReasonInterruptMiddleware added, interrupt_on=None."""
+        from deepagents_code.reason_interrupt import ReasonInterruptMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        # The SDK must NOT add a second HITL middleware on the main agent.
+        assert kwargs["interrupt_on"] is None
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert ReasonInterruptMiddleware in middleware_types
+
+    def test_subagents_inherit_interrupt_on(self, tmp_path: Path) -> None:
+        """Subagent specs carry interrupt_on so they keep approval gating."""
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        gp = next(s for s in subagents if s["name"] == "general-purpose")
+        assert "execute" in gp["interrupt_on"]
+
+
 class TestGetAvailableAgentNames:
     """Tests for `get_available_agent_names`."""
 

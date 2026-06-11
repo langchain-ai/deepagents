@@ -161,6 +161,54 @@ class TestPatchedSequenceToKeyEvents:
         """
         assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
 
+    @pytest.mark.parametrize(
+        "sequence",
+        [
+            # iTerm2 Caps Lock toggle: bare upper-case code point, no fields.
+            "\x1b[65u",
+            # With an explicit "no modifiers" field (value 1).
+            "\x1b[65;1u",
+            # Upper-case letters across the ASCII range.
+            "\x1b[90u",
+            # Caps-lock bit present in the modifier mask, still no text.
+            "\x1b[67;65u",
+        ],
+    )
+    def test_iterm_caps_lock_toggle_inserts_nothing(self, sequence: str) -> None:
+        r"""iTerm2's bare upper-case Caps Lock report must not type.
+
+        iTerm2 encodes the Caps Lock toggle as the upper-case letter that
+        would be produced next (`CSI 65 u` → 'A') rather than the kitty
+        functional code, with no associated-text field. The kitty spec never
+        emits an upper-case primary code point for a real press, so the patch
+        treats it as the lock toggle and drops the character.
+        """
+        assert _keys_for(sequence, alt=False) == [("caps_lock", None)]
+
+    @pytest.mark.parametrize(
+        ("sequence", "expected"),
+        [
+            # Lower-case letters are always real text.
+            ("\x1b[97u", [("a", "a")]),
+            # Shift+A reported as lower-case primary + shift modifier.
+            ("\x1b[97;2u", [("shift+a", None)]),
+            # Upper-case primary WITH associated text is a real character
+            # (e.g. caps-on typing): the text field disambiguates it.
+            ("\x1b[65;1;65u", [("A", "A")]),
+            ("\x1b[67;65;67u", [("C", "C")]),
+        ],
+    )
+    def test_iterm_caps_lock_guard_preserves_real_keys(
+        self, sequence: str, expected: list[tuple[str, str | None]]
+    ) -> None:
+        r"""The Caps Lock guard must not swallow genuine key presses.
+
+        Only a bare upper-case primary code point with no real modifiers and
+        no associated text is treated as the toggle; everything else decodes
+        normally.
+        """
+        assert _keys_for(sequence, alt=False) == expected
+
 
 def test_app_imports_textual_patches_for_side_effect() -> None:
     """`app.py` must import `_textual_patches` for the patch to install.

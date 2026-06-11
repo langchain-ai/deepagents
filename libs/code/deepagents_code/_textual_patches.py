@@ -17,11 +17,14 @@ upstream.
     pinned Textual 8.2.7 parser:
 
     a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
-       text. Under the kitty protocol with associated-text reporting, iTerm2
-       and others encode Caps Lock as `CSI 57358 ... u` with the associated
-       text set to the letter the *next* key would have produced — so the
-       chat input types a stray letter. The patch collapses any lock-key
-       sequence to a single character-less event, regardless of the modifier,
+       text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
+       send the functional key code (`CSI 57358 ... u`) with associated text
+       set to the letter the *next* key would have produced. iTerm2 instead
+       reports the Caps Lock toggle as a bare upper-case ASCII letter (`CSI
+       65 u` → 'A') with no modifier or associated-text field — not a valid
+       encoding for a real key press per the kitty spec. Either way the chat
+       input would type a stray capital. The patch collapses both forms to a
+       single character-less `caps_lock` event, regardless of the modifier,
        associated-text, or event-type sub-fields the terminal includes.
 
     b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
@@ -103,6 +106,42 @@ else:
     # literal text — strip the sub-fields so they parse to a single key event.
     _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
 
+    # iTerm2 reports the Caps Lock toggle as a `CSI u` sequence whose primary
+    # key code is the *uppercase* ASCII letter that would be produced next
+    # (e.g. `CSI 65 u` → 'A'), with no real modifier bits and no associated
+    # text. The kitty spec requires the primary code to be the unshifted
+    # (lower-case) code point, so a bare upper-case letter here is iTerm2's
+    # Caps Lock artifact rather than a real key press. Group 1 is the code
+    # point; group 2 the optional modifier field; group 3 the optional text.
+    _KITTY_CSI_U = re.compile(
+        r"\x1b\[(\d+)(?::\d+)*(?:;(\d+)[\d:]*)?(?:;(\d+)[\d:]*)?u"
+    )
+    _ASCII_UPPER_A = 65
+    _ASCII_UPPER_Z = 90
+    # Modifier mask for the "real" modifiers (shift|alt|ctrl|super|hyper|meta);
+    # excludes the caps_lock (64) and num_lock (128) lock bits.
+    _REAL_MODIFIER_MASK = 0b111111
+
+    def _spurious_caps_lock(sequence: str) -> bool:
+        """Whether `sequence` is iTerm2's bare Caps Lock toggle report.
+
+        Matches a `CSI u` key whose primary code point is an upper-case ASCII
+        letter with no real modifiers and no associated-text field — which the
+        kitty spec never produces for a genuine key press.
+
+        Returns:
+            `True` if `sequence` is the spurious Caps Lock toggle report.
+        """
+        match = _KITTY_CSI_U.fullmatch(sequence)
+        if match is None:
+            return False
+        code = int(match.group(1))
+        if not _ASCII_UPPER_A <= code <= _ASCII_UPPER_Z:
+            return False
+        modifier_bits = (int(match.group(2)) - 1) if match.group(2) else 0
+        has_text = match.group(3) is not None
+        return modifier_bits & _REAL_MODIFIER_MASK == 0 and not has_text
+
     def _strip_kitty_subfields(sequence: str) -> str:
         """Drop `:` sub-fields from a kitty extended-key sequence.
 
@@ -149,6 +188,12 @@ else:
         # the modifiers, associated text, or event-type sub-fields.
         if (lock_event := _lock_key_event(sequence)) is not None:
             yield lock_event
+            return
+        # iTerm2 reports the Caps Lock toggle as a bare upper-case letter (e.g.
+        # `CSI 65 u` → 'A') rather than the kitty `57358` functional code. Drop
+        # it so the toggle never types a stray capital into the input.
+        if _spurious_caps_lock(sequence):
+            yield events.Key("caps_lock", None)
             return
         # Normalize any other kitty sequence with `:` sub-fields so it resolves
         # to a single key event instead of leaking raw bytes.

@@ -282,11 +282,6 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             )
             return
 
-        # Record the deliberate choice synchronously so a subsequent Esc keeps
-        # this theme rather than reverting, regardless of when the async write
-        # finishes. The persisted mapping is the source of truth either way.
-        self._session_terminal_default = name
-
         async def _persist() -> None:
             try:
                 from deepagents_code.app import _save_terminal_theme_mapping_result
@@ -311,6 +306,9 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                     timeout=6,
                 )
                 return
+            # Esc should only preserve a previewed theme after the terminal
+            # default has actually been saved.
+            self._session_terminal_default = name
             if status.message is not None:
                 self.app.notify(
                     status.message,

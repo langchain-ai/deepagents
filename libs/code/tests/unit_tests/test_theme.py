@@ -1861,6 +1861,29 @@ def _register_lc_theme(app: object) -> None:
     app_any.theme = "langchain"
 
 
+def _register_lc_light_theme(app: object) -> None:
+    """Register the light LangChain theme for preview tests."""
+    from textual.theme import Theme as TextualTheme
+
+    c = LIGHT_COLORS
+    app.register_theme(  # ty: ignore
+        TextualTheme(
+            name="langchain-light",
+            primary=c.primary,
+            secondary=c.secondary,
+            accent=c.accent,
+            foreground=c.foreground,
+            background=c.background,
+            surface=c.surface,
+            panel=c.panel,
+            warning=c.warning,
+            error=c.error,
+            success=c.success,
+            dark=False,
+        )
+    )
+
+
 class TestThemeSelectorScreen:
     """ThemeSelectorScreen widget tests."""
 
@@ -2277,6 +2300,7 @@ class TestThemeSelectorScreen:
         silent no-op.
         """
         from textual.app import App
+        from textual.widgets import OptionList
 
         from deepagents_code.app import _ConfigWriteResult
         from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
@@ -2298,6 +2322,7 @@ class TestThemeSelectorScreen:
         app = App()
         async with app.run_test() as pilot:
             _register_lc_theme(app)
+            _register_lc_light_theme(app)
 
             def _capture(
                 message: str, *, severity: str = "information", **_kwargs: object
@@ -2309,13 +2334,23 @@ class TestThemeSelectorScreen:
             screen = ThemeSelectorScreen(current_theme="langchain")
             app.push_screen(screen)
             await pilot.pause()
+
+            target_key = "langchain-light"
+            target_index = list(theme.get_registry()).index(target_key)
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = target_index
+            await pilot.pause()
+
             await pilot.press("t")
             await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("escape")
             await pilot.pause()
 
         assert any(
             sev == "error" and "terminal mapping" in msg for sev, msg in notifications
         )
+        assert app.theme == "langchain"
 
     async def test_t_notifies_on_save_exception(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2326,6 +2361,7 @@ class TestThemeSelectorScreen:
         name (e.g., `OSError`) tells the user where to look.
         """
         from textual.app import App
+        from textual.widgets import OptionList
 
         from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
 
@@ -2346,6 +2382,7 @@ class TestThemeSelectorScreen:
         app = App()
         async with app.run_test() as pilot:
             _register_lc_theme(app)
+            _register_lc_light_theme(app)
 
             def _capture(
                 message: str, *, severity: str = "information", **_kwargs: object
@@ -2357,11 +2394,21 @@ class TestThemeSelectorScreen:
             screen = ThemeSelectorScreen(current_theme="langchain")
             app.push_screen(screen)
             await pilot.pause()
+
+            target_key = "langchain-light"
+            target_index = list(theme.get_registry()).index(target_key)
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = target_index
+            await pilot.pause()
+
             await pilot.press("t")
             await app.workers.wait_for_complete()
             await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
 
         assert any(sev == "error" and "OSError" in msg for sev, msg in notifications)
+        assert app.theme == "langchain"
 
     async def test_t_write_skips_rerender_after_screen_unmount(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

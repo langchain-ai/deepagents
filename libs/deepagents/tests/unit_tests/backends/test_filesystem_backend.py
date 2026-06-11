@@ -4,6 +4,7 @@ import subprocess
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Self
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -1013,6 +1014,140 @@ class TestGrepPythonFallbackTimeout:
         _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
         assert partial_error is not None
         assert "timed out" in partial_error
+
+    def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
+        """The Python fallback does literal substring matching (no regex)."""
+        (tmp_path / "code.py").write_text("def __init__(self):\n    return [a-z]\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("[a-z]", tmp_path, None)
+        assert partial_error is None
+        all_lines = [text for items in results.values() for _, text in items]
+        assert any("[a-z]" in line for line in all_lines)
+
+    def test_python_search_streams_large_file_with_per_line_timeout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The per-line deadline check interrupts a single large file mid-stream.
+
+        `time.monotonic` is stubbed to advance 1s per call. Inside
+        `_python_search` it is called once to set the deadline, once for the
+        outer per-file check, then once every 2048 lines. With the deadline
+        1.5s out, the outer check passes (so the file is opened) and the first
+        in-file check at line 2048 trips. This proves the mid-file branch runs
+        rather than the outer guard short-circuiting before any read — which is
+        what a `timeout=0` test (see `test_python_search_times_out_with_zero_timeout`)
+        cannot distinguish.
+        """
+        lines = [f"line {i}" for i in range(1, 2501)]
+        lines[0] = "needle"  # line 1 — scanned before the in-file timeout
+        lines[2499] = "needle"  # line 2500 — never reached
+        (tmp_path / "big.txt").write_text("\n".join(lines) + "\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        clock = {"t": 1000.0}
+
+        def fake_monotonic() -> float:
+            t = clock["t"]
+            clock["t"] += 1.0
+            return t
+
+        monkeypatch.setattr(fs_module.time, "monotonic", fake_monotonic)
+        results, partial_error = be._python_search("needle", tmp_path, None, timeout=1.5)
+
+        assert partial_error is not None
+        assert "timed out" in partial_error
+        collected = results.get("/big.txt", [])
+        assert (1, "needle") in collected
+        assert all(line_num != 2500 for line_num, _ in collected)
+
+    def test_python_search_does_not_match_regex_metacharacters(self, tmp_path: Path) -> None:
+        """The fallback is a literal substring search: regex metacharacters are inert.
+
+        Both patterns would match via `re.search` but must not match literally,
+        which is the load-bearing distinction now that the regex compile is gone.
+        """
+        (tmp_path / "code.py").write_text("axb\nab\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        no_dot, err_dot = be._python_search("a.b", tmp_path, None)  # regex would match "axb"
+        assert err_dot is None
+        assert no_dot == {}
+
+        no_star, err_star = be._python_search("a*b", tmp_path, None)  # regex would match "ab"
+        assert err_star is None
+        assert no_star == {}
+
+    def test_python_search_strips_carriage_returns(self, tmp_path: Path) -> None:
+        """CRLF files yield clean match text via universal-newline translation on read."""
+        (tmp_path / "crlf.txt").write_bytes(b"hit me\r\nother\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("hit", tmp_path, None)
+        assert partial_error is None
+        matches = results.get("/crlf.txt", [])
+        assert matches == [(1, "hit me")]
+
+    def test_python_search_skips_non_utf8_file(self, tmp_path: Path) -> None:
+        """A wholly-undecodable file is skipped silently while valid files still match.
+
+        The decode fails on the first byte, so no lines are scanned and the file
+        is not reported as a partial read — mirroring ripgrep's binary-file skip.
+        """
+        (tmp_path / "good.txt").write_text("needle here\n")
+        (tmp_path / "bad.bin").write_bytes(b"\xff\xfe needle \x00\x80")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results.get("/good.txt") == [(1, "needle here")]
+        assert "/bad.bin" not in results
+
+    def test_python_search_reports_file_error_after_partial_scan(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-file read error after scanning starts is surfaced with partial matches."""
+        bad = tmp_path / "bad.txt"
+        bad.write_text("")
+
+        class BrokenHandle:
+            def __init__(self) -> None:
+                self._first = True
+
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def __iter__(self) -> Self:
+                return self
+
+            def __next__(self) -> str:
+                if self._first:
+                    self._first = False
+                    return "needle before failure\n"
+                encoding = "utf-8"
+                data = b"\xff"
+                reason = "invalid start byte"
+                raise UnicodeDecodeError(encoding, data, 0, 1, reason)
+
+        original_open = Path.open
+
+        def fake_open(path: Path, *args: object, **kwargs: object) -> BrokenHandle | object:
+            if path == bad:
+                return BrokenHandle()
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fake_open)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results == {"/bad.txt": [(1, "needle before failure")]}
+        assert partial_error is not None
+        assert "One or more files could not be fully searched" in partial_error
+        assert "- /bad.txt: UnicodeDecodeError while reading file" in partial_error
 
     def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """`grep` surfaces the timeout as a partial error while still returning matches found so far."""

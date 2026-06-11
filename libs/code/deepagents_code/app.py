@@ -4169,6 +4169,15 @@ class DeepAgentsApp(App):
         """
         if self._status_bar is None:
             return
+        if self._reconnecting and not self._connecting:
+            # The two flags must never drift into this meaningless pair (see
+            # `_reconnecting`). Self-heal loudly rather than silently rendering
+            # a stale reconnect label off a half-cleared state.
+            logger.warning(
+                "Connection flags drifted to (_connecting=False, "
+                "_reconnecting=True); resetting _reconnecting",
+            )
+            self._reconnecting = False
         if not self._connecting:
             self._defer_connection_status_display = False
             self._cancel_connection_status_reveal_timer()
@@ -10126,13 +10135,14 @@ class DeepAgentsApp(App):
         self._refresh_welcome_banner_mcp_counts()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        """Surface login worker failures that escaped the inner error handling."""
+        """Surface worker failures that escaped a worker's inner error handling."""
         from textual.worker import WorkerState
 
         worker = event.worker
-        if not (worker.group or "").startswith("mcp-login-"):
+        group = worker.group or ""
+        if event.state != WorkerState.ERROR or worker.error is None:
             return
-        if event.state == WorkerState.ERROR and worker.error is not None:
+        if group.startswith("mcp-login-"):
             logger.warning(
                 "MCP login worker failed unexpectedly: %s",
                 worker.error,
@@ -10143,6 +10153,26 @@ class DeepAgentsApp(App):
                 ErrorMessage(
                     f"MCP login failed unexpectedly: {worker.error}. "
                     "You may need to retry.",
+                ),
+            )
+        elif group == "server-startup":
+            # `_start_server_background` normally posts ServerReady or
+            # ServerStartFailed itself, ending in SUCCESS. Reaching ERROR
+            # means an exception escaped before it could (e.g. an unguarded
+            # await early in startup). Without this net nothing would clear
+            # `_connecting`, leaving a permanent connection spinner with no
+            # error surfaced. Convert the crash into the terminal failure
+            # message so the standard reset handler runs.
+            logger.warning(
+                "Server startup worker failed unexpectedly: %s",
+                worker.error,
+                exc_info=worker.error,
+            )
+            self.post_message(
+                self.ServerStartFailed(
+                    error=worker.error
+                    if isinstance(worker.error, Exception)
+                    else RuntimeError(str(worker.error)),
                 ),
             )
 
@@ -11178,8 +11208,14 @@ class DeepAgentsApp(App):
             return "abort"
         else:
             # `stop()` joins the subprocess synchronously; keep the UI loop
-            # responsive while the old server drains.
-            await asyncio.to_thread(previous_server.stop)
+            # responsive while the old server drains. A stop failure here is
+            # cosmetic (the new server is already live), but must not skip the
+            # ready transition below — otherwise `_connecting` strands `True`
+            # and the freshly-built agent never gets wired up.
+            try:
+                await asyncio.to_thread(previous_server.stop)
+            except Exception:  # old-server teardown is best-effort
+                logger.exception("Failed to stop previous server after cwd switch")
             self.on_deep_agents_app_server_ready(event)
             return "continue"
 

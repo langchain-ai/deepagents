@@ -7188,6 +7188,14 @@ class TestDeferredActions:
             assert app._server_startup_missing_credentials_provider is None
             assert app._server_startup_error is None
 
+            # A `/model` retry is a mid-session reconnect, not an initial
+            # connect: both flags are set and the status bar reads
+            # "reconnecting" while the rebuilt server comes up.
+            assert app._connecting is True
+            assert app._reconnecting is True
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,
     ) -> None:
@@ -7850,6 +7858,7 @@ class TestRestartServerForAgentSwap:
             # *after* restart, not the original.
             assert app._agent._url == "http://127.0.0.1:60000"  # ty: ignore
             assert app._connecting is False
+            assert app._reconnecting is False
             assert app._agent_switching is False
             assert app._lc_thread_id != "old-thread"
 
@@ -8047,6 +8056,10 @@ class TestRestartServerForAgentSwap:
         # before posting so any code reading the flag in between sees the
         # correct value.
         assert app._connecting is False
+        # The failure path must reset `_reconnecting` in lock-step so the flags
+        # never strand in the meaningless `(_connecting=False, _reconnecting=True)`
+        # state the `_reconnecting` docstring warns against.
+        assert app._reconnecting is False
         failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
         assert len(failures) == 1
         assert failures[0].error is boom
@@ -12395,6 +12408,7 @@ class TestRespawnServer:
             assert len(failed) == 1
             assert isinstance(failed[0].error, RuntimeError)
             assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_subprocess_timeout_posts_server_start_failed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -12426,6 +12440,7 @@ class TestRespawnServer:
             assert len(failed) == 1
             assert isinstance(failed[0].error, asyncio.TimeoutError)
             assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_mcp_preload_failure_is_non_fatal(
         self, monkeypatch: pytest.MonkeyPatch
@@ -12824,6 +12839,32 @@ class TestStatusBarConnectionMirroring:
             app._pop_last_queued_message()
             assert len(app._pending_messages) == 1
             assert app._status_bar.queued_count == 1
+
+    async def test_deferred_reveal_timer_fires_after_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scheduled timer actually reveals the indicator once it elapses.
+
+        The other deferral tests invoke the reveal callback directly; this one
+        exercises the real `set_timer` wiring end-to-end (shrunk to ~10ms) so a
+        broken callback reference wouldn't pass silently.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.app._CONNECTING_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test() as pilot:
+            assert app._connection_status_reveal_timer is not None
+            await pilot.pause(0.05)
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+            assert app._defer_connection_status_display is False
 
 
 class TestResumeThreadCwdSwitch:

@@ -367,7 +367,7 @@ class StatusBar(Horizontal):
         else:
             msg_widget.update("")
 
-    def watch_connection_state(self, new_value: str) -> None:
+    def watch_connection_state(self, new_value: ConnectionState) -> None:
         """Start or stop the spinner and re-render when connection state changes."""
         if new_value in {"connecting", "reconnecting"}:
             self._start_spinner()

@@ -178,7 +178,10 @@ class WelcomeBanner(Static):
         mcp_errored: int = 0,
         mcp_awaiting_reconnect: int = 0,
     ) -> None:
-        """Transition from "connecting" to "ready" state.
+        """Render the ready banner footer after a successful connect.
+
+        The status bar owns visible connection progress; this just refreshes
+        the banner's tool counts and ready footer once the server is reachable.
 
         Args:
             mcp_tool_count: Number of MCP tools loaded during connection.

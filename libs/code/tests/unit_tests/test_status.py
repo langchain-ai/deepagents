@@ -534,6 +534,27 @@ class TestConnectionIndicator:
             assert get_glyphs().spinner_frames[0] in rendered
             assert "Reconnecting" in rendered
 
+    async def test_unmount_stops_spinner(self) -> None:
+        """Leaving the DOM must stop the timer so it can't tick detached."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+            await bar.remove()
+            await pilot.pause()
+            assert bar._spinner_timer is None
+
+    def test_start_spinner_before_mount_is_noop(self) -> None:
+        """`_start_spinner` must no-op before a live loop exists.
+
+        `set_interval` requires the widget to be running; calling it pre-mount
+        would raise, so the `not self._running` guard returns early instead.
+        """
+        bar = StatusBar()
+        bar._start_spinner()
+        assert bar._spinner_timer is None
+
 
 class TestQueuedCount:
     """Tests for the queued-message count in the connection indicator."""

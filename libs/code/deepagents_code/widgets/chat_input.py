@@ -55,13 +55,15 @@ def _default_history_path() -> Path:
 _LOCK_KEYS = frozenset({"caps_lock", "num_lock", "scroll_lock"})
 """Lock keys that must never insert text.
 
-Under the kitty keyboard protocol with associated-text reporting (used by
-iTerm2, VS Code's xterm.js, and others), pressing a lock key arrives as a
-`Key` event whose `character` is the text that *would* have been produced by
-the next key — e.g. pressing Caps Lock reports `key='caps_lock'`,
-`character='A'`. Textual's parser does not strip this, so `TextArea` inserts a
-stray letter. We drop these events entirely. See the kitty keyboard protocol
-spec (functional key definitions) for background.
+Under the kitty keyboard protocol with associated-text reporting (VS Code's
+xterm.js and others), pressing a lock key arrives as a `Key` event whose
+`character` is the text that *would* have been produced by the next key —
+e.g. pressing Caps Lock reports `key='caps_lock'`, `character='A'`. Textual's
+parser does not strip this, so `TextArea` inserts a stray letter. We drop
+these events entirely. Terminals encode lock keys in several shapes (iTerm2
+notably differs from kitty/Ghostty); `_textual_patches.py` is the canonical
+reference and neutralizes every shape at the parser. See the kitty keyboard
+protocol spec (functional key definitions) for background.
 """
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
@@ -741,8 +743,11 @@ class ChatTextArea(TextArea):
         # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
         # kitty parser patch in `_textual_patches.py` already neutralizes these
         # at the source; this is defense-in-depth in case a lock key still
-        # arrives with associated text. The key may carry modifier prefixes
-        # (e.g. 'ctrl+caps_lock'), so match on the final '+'-delimited token.
+        # arrives with associated text (e.g. if that patch failed to install or
+        # a future terminal bypasses it). Note this only shields the chat input
+        # — if the parser patch silently no-ops, other widgets stay broken. The
+        # key may carry modifier prefixes (e.g. 'ctrl+caps_lock'), so match on
+        # the final '+'-delimited token.
         if event.key.rsplit("+", 1)[-1] in _LOCK_KEYS:
             event.prevent_default()
             event.stop()

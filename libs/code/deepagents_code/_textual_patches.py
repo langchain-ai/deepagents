@@ -14,7 +14,7 @@ upstream.
     the Textual pin comment in `pyproject.toml` when that lands.
 
 2. Kitty lock-key and sub-field handling. Two related problems with the
-    pinned Textual 8.2.7 parser:
+    pinned Textual parser:
 
     a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
         text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
@@ -95,13 +95,15 @@ else:
     }
 
     # Any `CSI <code>[:...][;...] u` sequence. Group 1 is the leading key-code
-    # field (before any `:` alternate-key sub-field). Used to detect lock keys
-    # regardless of the modifier / associated-text / event-type sub-fields that
-    # follow, which iTerm2 and other terminals encode in varying shapes.
+    # field (before any `:` alternate-key sub-field); `_lock_key_event` checks
+    # it against the lock-key set. The match is deliberately broad so the code
+    # is extracted regardless of the modifier / associated-text / event-type
+    # sub-fields that follow, which iTerm2 and other terminals encode in
+    # varying shapes.
     _KITTY_KEY_SEQUENCE = re.compile(r"\x1b\[(\d+)[\d;:]*u")
 
     # Kitty extended-key sequence carrying `:` sub-fields (alternate keys or an
-    # event-type sub-field). Textual 8.2.7's `_re_extended_key` rejects the
+    # event-type sub-field). The pinned Textual's `_re_extended_key` rejects the
     # colons, so non-lock keys with these sub-fields would otherwise leak as
     # literal text — strip the sub-fields so they parse to a single key event.
     _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")

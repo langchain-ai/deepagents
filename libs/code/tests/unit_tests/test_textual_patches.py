@@ -162,6 +162,29 @@ class TestPatchedSequenceToKeyEvents:
         assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
 
     @pytest.mark.parametrize(
+        ("sequence", "key"),
+        [
+            # `~`-terminated sequence (Delete) with an event-type `:` sub-field.
+            ("\x1b[3:3~", "delete"),
+            # Cursor key (letter terminator) with a `:` sub-field on the
+            # modifier field.
+            ("\x1b[1;5:1C", "ctrl+right"),
+        ],
+    )
+    def test_kitty_subfield_strip_handles_non_u_terminators(
+        self, sequence: str, key: str
+    ) -> None:
+        r"""Sub-field stripping covers `~` and letter terminators, not just `u`.
+
+        `_KITTY_SUBFIELD_KEY` matches terminators `[u~ABCDEFHPQRS]`, so F-keys,
+        arrows, and Insert/Delete carrying `:` sub-fields are normalized rather
+        than leaked byte by byte. Every other test ends in `u`; this pins the
+        non-`u` paths against a regex regression that would reintroduce the
+        very byte-by-byte leak this patch exists to fix.
+        """
+        assert _keys_for(sequence, alt=False) == [(key, None)]
+
+    @pytest.mark.parametrize(
         "sequence",
         [
             # iTerm2 Caps Lock toggle: bare upper-case code point, no fields.
@@ -196,6 +219,9 @@ class TestPatchedSequenceToKeyEvents:
             # (e.g. caps-on typing): the text field disambiguates it.
             ("\x1b[65;1;65u", [("A", "A")]),
             ("\x1b[67;65;67u", [("C", "C")]),
+            # Upper-case primary with a real modifier (ctrl) and no text is a
+            # genuine press — the `_REAL_MODIFIER_MASK` guard must not drop it.
+            ("\x1b[65;5u", [("ctrl+A", None)]),
         ],
     )
     def test_iterm_caps_lock_guard_preserves_real_keys(

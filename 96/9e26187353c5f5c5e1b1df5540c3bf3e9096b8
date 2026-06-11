@@ -1,0 +1,20 @@
+.github/scripts/test_check_lockfiles_pre_commit.py
+  s_9351a117e895ea::t_83e5675407d68f 5
+  s_9351a117e895ea::t_2f3663c3fd3100 13-18,22-26,30-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "969e26187353c5f5c5e1b1df5540c3bf3e9096b8",
+  "prompts": {},
+  "sessions": {
+    "s_9351a117e895ea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "728e3cd1-0c8e-4435-a63b-e160b1e781e3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

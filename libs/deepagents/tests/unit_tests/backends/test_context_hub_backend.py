@@ -317,6 +317,47 @@ def test_grep_with_glob_filter() -> None:
     assert paths == {"/src/main.py"}
 
 
+def test_grep_glob_matches_full_path_not_basename() -> None:
+    """A directory-qualified glob matches against the full path, not the basename.
+
+    Context Hub matches the glob against the whole file path, so `src/*.py`
+    selects the nested file but excludes a same-named top-level file. A
+    basename-only matcher would select neither, so this pins the intended
+    full-path semantics.
+    """
+    backend, _ = _make_backend(
+        **{
+            "src/main.py": FileEntry(type="file", content="import os"),
+            "main.py": FileEntry(type="file", content="import os"),
+        }
+    )
+    result = backend.grep("import", glob="src/*.py")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/src/main.py"}
+
+
+def test_grep_glob_does_not_brace_expand() -> None:
+    """Context Hub uses `fnmatch`, which treats braces literally.
+
+    Unlike the wcmatch-backed in-memory grep helpers (which enable brace
+    expansion), `*.{py,md}` here matches a file literally named `x.{py,md}`
+    rather than expanding to `*.py` or `*.md`. This locks in the intended
+    asymmetry between the two grep paths.
+    """
+    backend, _ = _make_backend(
+        **{
+            "a.py": FileEntry(type="file", content="hit"),
+            "b.md": FileEntry(type="file", content="hit"),
+            "literal.{py,md}": FileEntry(type="file", content="hit"),
+        }
+    )
+    result = backend.grep("hit", glob="*.{py,md}")
+    assert result.matches is not None
+    paths = {m["path"] for m in result.matches}
+    assert paths == {"/literal.{py,md}"}
+
+
 def test_grep_invalid_regex() -> None:
     backend, _ = _make_backend()
     result = backend.grep("[unclosed")

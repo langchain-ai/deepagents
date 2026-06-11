@@ -167,6 +167,29 @@ _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
+def classify_env_bool(raw: str) -> bool | None:
+    """Classify a raw env-var string as a truthy, falsy, or unrecognized token.
+
+    The single source of truth for which strings count as boolean on/off
+    values; `is_env_truthy` and the config resolver both build on it so they
+    agree on what "recognizably boolean" means.
+
+    Args:
+        raw: The raw (unstripped) environment-variable value.
+
+    Returns:
+        `True` for `1`/`true`/`yes`/`on`, `False` for `0`/`false`/`no`/`off`/
+            empty string (case-insensitive), or `None` when the value
+            is neither.
+    """
+    lowered = raw.strip().lower()
+    if lowered in _TRUTHY_VALUES:
+        return True
+    if lowered in _FALSY_VALUES:
+        return False
+    return None
+
+
 def is_env_truthy(name: str, *, default: bool = False) -> bool:
     """Return whether env var *name* is set to a recognizably truthy value.
 
@@ -187,9 +210,5 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    lowered = raw.strip().lower()
-    if lowered in _TRUTHY_VALUES:
-        return True
-    if lowered in _FALSY_VALUES:
-        return False
-    return default
+    classified = classify_env_bool(raw)
+    return default if classified is None else classified

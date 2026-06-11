@@ -264,6 +264,30 @@ def test_grep_new_format():
 # ---------------------------------------------------------------------------
 
 
+def test_grep_glob_filters_by_filename():
+    """`grep_matches_from_files` honors the glob filter (cached compile path)."""
+    files = {
+        "/src/main.py": create_file_data("import os"),
+        "/src/notes.txt": create_file_data("import os"),
+    }
+    result = grep_matches_from_files(files, "import", path="/", glob="*.py")
+    assert result.matches is not None
+    assert len(result.matches) == 1
+    assert result.matches[0]["path"] == "/src/main.py"
+
+
+def test_grep_glob_brace_expansion():
+    """Brace-expansion globs match either extension via the cached matcher."""
+    files = {
+        "/a.py": create_file_data("hit"),
+        "/b.md": create_file_data("hit"),
+        "/c.txt": create_file_data("hit"),
+    }
+    result = grep_matches_from_files(files, "hit", path="/", glob="*.{py,md}")
+    paths = sorted(m["path"] for m in result.matches)
+    assert paths == ["/a.py", "/b.md"]
+
+
 def test_grep_legacy_format():
     legacy_fd = {
         "content": ["def foo():", "    return 42", "def bar():", "    return 0"],

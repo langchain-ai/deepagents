@@ -5,6 +5,7 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import functools
 import os
 import re
 from collections.abc import Sequence
@@ -70,6 +71,12 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_glob(pattern: str) -> wcglob.WcMatcher:
+    """Compile a glob pattern once and cache it (BRACE flag)."""
+    return wcglob.compile(pattern, flags=wcglob.BRACE)
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -712,7 +719,8 @@ def _grep_search_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        matcher = _compile_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
 
     results: dict[str, list[tuple[int, str]]] = {}
     for file_path, file_data in filtered.items():
@@ -753,7 +761,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        matcher = _compile_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

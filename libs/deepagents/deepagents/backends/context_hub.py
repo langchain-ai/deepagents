@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -253,10 +254,12 @@ class ContextHubBackend(BackendProtocol):
 
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
+        glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
+
         for file_path, content in cache.items():
             if prefix and not file_path.startswith(prefix):
                 continue
-            if glob and not fnmatch.fnmatch(file_path, glob):
+            if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):

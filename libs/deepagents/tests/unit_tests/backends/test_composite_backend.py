@@ -1429,6 +1429,27 @@ def test_composite_delete_routes_to_correct_backend() -> None:
     assert be.read("/memories/note.txt").error is not None
 
 
+def test_composite_delete_directory_recurses_within_route() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/memories/proj/a.txt", "a")
+    be.write("/memories/proj/sub/b.txt", "b")
+    be.write("/memories/keep.txt", "k")
+
+    # Deleting a directory inside a route removes the whole subtree there,
+    # remapped back to the original path, while siblings survive.
+    res = be.delete("/memories/proj")
+    assert res.error is None
+    assert res.path == "/memories/proj"
+    assert be.read("/memories/proj/a.txt").error is not None
+    assert be.read("/memories/proj/sub/b.txt").error is not None
+    assert be.read("/memories/keep.txt").error is None
+
+
 def test_composite_delete_missing_returns_error() -> None:
     mem_store = InMemoryStore()
     be = CompositeBackend(

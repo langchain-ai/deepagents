@@ -73,14 +73,11 @@ GrepMatch = _GrepMatch
 
 
 def expand_delete_keys(keys: Iterable[str], path: str) -> list[str]:
-    """Keys that a recursive delete of `path` should remove.
+    """Return all keys removed by a recursive delete of `path`.
 
-    For key-value backends a "directory" is a key prefix: deleting `path` removes
-    the exact key `path` (a file) plus every key nested under it (anything
-    starting with `path` followed by "/"). Used by the key-value backends
-    (`StateBackend`, `StoreBackend`, `ContextHubBackend`) to give `delete`
-    the same recursive semantics directory-based backends get from removing a
-    subtree.
+    Deleting `path` removes the exact key and any nested keys (those with the
+    prefix `path + "/"`). Used by key-value backends to provide the same
+    recursive delete semantics as directory-based backends.
 
     Args:
         keys: All stored keys in the namespace.

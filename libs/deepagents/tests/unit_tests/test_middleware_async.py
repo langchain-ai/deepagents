@@ -676,7 +676,7 @@ class TestFilesystemMiddlewareAsync:
         )
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
-        assert "Deleted file" in result.content
+        assert "Deleted" in result.content
         assert mem_store.get(("filesystem",), "/test.txt") is None
 
     async def test_adelete_invalid_path(self):

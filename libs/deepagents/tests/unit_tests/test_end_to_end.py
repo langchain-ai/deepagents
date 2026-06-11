@@ -1394,7 +1394,7 @@ class TestDeleteFileTool:
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert len(tool_messages) == 1
         assert tool_messages[0].status == "success"
-        assert tool_messages[0].content == "Deleted file /keep.txt"
+        assert tool_messages[0].content == "Deleted /keep.txt"
         assert set(result["files"].keys()) == {"/other.txt"}
 
     def test_delete_directory_removes_nested_files(self) -> None:

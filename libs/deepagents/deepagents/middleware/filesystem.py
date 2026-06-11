@@ -137,6 +137,32 @@ def _check_fs_permission(
     return "allow"
 
 
+def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Return deny-write patterns that block deleting `target`.
+
+    A recursive delete removes `target` and all descendants, so any overlapping
+    deny-write pattern prevents the operation. The check is based only on
+    permission rules and returns all matching patterns.
+
+    Args:
+        rules: Filesystem permission rules.
+        target: Absolute, validated path being deleted.
+
+    Returns:
+        Matching deny-write patterns, or an empty list if the delete is allowed.
+    """
+    denying: list[str] = []
+    seen: set[str] = set()
+    for rule in rules:
+        if rule.mode != "deny" or "write" not in rule.operations:
+            continue
+        for pattern in rule.paths:
+            if pattern not in seen and _paths_overlap(target, _glob_anchor(pattern)):
+                seen.add(pattern)
+                denying.append(pattern)
+    return denying
+
+
 def _filter_paths_by_permission(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
@@ -1270,41 +1296,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _find_delete_deny_patterns(self, target: str, limit: int = 5) -> list[str]:
-        """All-or-nothing write-deny check for a (possibly recursive) delete.
-
-        A recursive delete of `target` removes `target` plus every descendant, so
-        the operation is refused if any `deny` write rule's pattern overlaps that
-        subtree. Overlap is checked against the rule pattern's literal anchor
-        (`_glob_anchor`) in either direction, so a rule scoped inside the target
-        (`/work/secrets/**`) and a rule that the target falls under (`/work/**`)
-        both block it. The check is purely rule-based — no backend enumeration —
-        and never under-refuses relative to the on-disk contents: any real path a
-        recursive delete would touch makes the target and the rule anchor
-        comparable, so the overlap fires.
-
-        Args:
-            target: Absolute, validated target path of the delete.
-            limit: Maximum number of overlapping patterns to collect before
-                returning, so the caller can report several conflicting rules
-                without scanning every permission once enough are found.
-
-        Returns:
-            Up to `limit` overlapping `deny` write patterns, empty if the delete
-            is permitted.
-        """
-        denying: list[str] = []
-        for rule in self._permissions:
-            if rule.mode != "deny" or "write" not in rule.operations:
-                continue
-            for pattern in rule.paths:
-                if _paths_overlap(target, _glob_anchor(pattern)):
-                    denying.append(pattern)
-                    if len(denying) >= limit:
-                        return denying
-        return denying
-        return None
-
     def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
         """Create the delete tool."""
         tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
@@ -1325,7 +1316,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = self._find_delete_deny_patterns(validated_path)
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -1342,7 +1333,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted file {res.path}",
+                content=f"Deleted {res.path}",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1364,7 +1355,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = self._find_delete_deny_patterns(validated_path)
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -1381,7 +1372,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted file {res.path}",
+                content=f"Deleted {res.path}",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

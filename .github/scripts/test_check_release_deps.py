@@ -64,6 +64,7 @@ dependencies = []
     assert bumps["deepagents"] == PackageBump(
         name="deepagents",
         version="0.7.0",
+        base_version="0.6.8",
         path="pyproject.toml",
     )
 
@@ -94,10 +95,11 @@ def test_filtered_manifest_removes_only_satisfied_same_pr_pins_and_preserves_uv_
         },
     }
     bumped = {
-        "deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml"),
+        "deepagents": PackageBump("deepagents", "0.7.0", "0.6.8", "libs/deepagents/pyproject.toml"),
         "langchain-daytona": PackageBump(
             "langchain-daytona",
             "0.0.8",
+            "0.0.7",
             "libs/partners/daytona/pyproject.toml",
         ),
     }
@@ -213,13 +215,63 @@ def test_filtered_manifest_keeps_pin_not_satisfied_by_bump() -> None:
             "dependencies": ["deepagents==0.6.8"],
         },
     }
-    bumped = {"deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml")}
+    bumped = {
+        "deepagents": PackageBump("deepagents", "0.7.0", "0.6.7", "libs/deepagents/pyproject.toml")
+    }
 
     filtered = build_filtered_manifest(data, bumped)
     parsed = tomllib.loads(filtered.content)
 
     assert parsed["project"]["dependencies"] == ["deepagents==0.6.8"]
     assert filtered.skipped == ()
+
+
+def test_filtered_manifest_keeps_broad_range_satisfied_by_published_base() -> None:
+    """A broad range that the currently-published base version satisfies is kept.
+
+    Bumping ``deepagents-code`` to 0.1.13 must not strip ``>=0.1.11,<1.0.0``,
+    because the published 0.1.12 still satisfies it and resolves from PyPI.
+    """
+    data = {
+        "project": {
+            "name": "example",
+            "version": "0.1.0",
+            "dependencies": ["deepagents-code>=0.1.11,<1.0.0"],
+        },
+    }
+    bumped = {
+        "deepagents-code": PackageBump(
+            "deepagents-code", "0.1.13", "0.1.12", "libs/code/pyproject.toml"
+        )
+    }
+
+    filtered = build_filtered_manifest(data, bumped)
+    parsed = tomllib.loads(filtered.content)
+
+    assert parsed["project"]["dependencies"] == ["deepagents-code>=0.1.11,<1.0.0"]
+    assert filtered.skipped == ()
+
+
+def test_filtered_manifest_strips_range_requiring_unpublished_bump() -> None:
+    """A range only the unpublished same-PR bump satisfies is stripped."""
+    data = {
+        "project": {
+            "name": "example",
+            "version": "0.1.0",
+            "dependencies": ["deepagents-code>=0.1.13,<1.0.0"],
+        },
+    }
+    bumped = {
+        "deepagents-code": PackageBump(
+            "deepagents-code", "0.1.13", "0.1.12", "libs/code/pyproject.toml"
+        )
+    }
+
+    filtered = build_filtered_manifest(data, bumped)
+    parsed = tomllib.loads(filtered.content)
+
+    assert parsed["project"]["dependencies"] == []
+    assert filtered.skipped == ("deepagents-code>=0.1.13,<1.0.0",)
 
 
 def test_filtered_manifest_keeps_unparseable_requirement() -> None:
@@ -231,7 +283,9 @@ def test_filtered_manifest_keeps_unparseable_requirement() -> None:
             "dependencies": ["deepagents @@@ broken"],
         },
     }
-    bumped = {"deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml")}
+    bumped = {
+        "deepagents": PackageBump("deepagents", "0.7.0", "0.6.8", "libs/deepagents/pyproject.toml")
+    }
 
     filtered = build_filtered_manifest(data, bumped)
     parsed = tomllib.loads(filtered.content)

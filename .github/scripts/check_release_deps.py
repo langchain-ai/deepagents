@@ -2,8 +2,9 @@
 
 Release-please PRs can bump several packages in one coordinated change. The
 newly bumped wheels do not exist on PyPI until merge, so dependency resolution
-must ignore only the intra-PR pins that the PR itself satisfies while still
-checking every other runtime dependency against the real index.
+must ignore only the intra-PR pins that *require* the unpublished bump (i.e. the
+currently-published base version cannot satisfy them) while still checking every
+other runtime dependency against the real index.
 
 This validates only direct pins on same-PR-bumped packages. A bumped package
 that introduces a brand-new transitive dependency is not exercised here, since
@@ -48,6 +49,7 @@ class PackageBump:
 
     name: str
     version: str
+    base_version: str
     path: str
 
 
@@ -179,12 +181,19 @@ def detect_package_bumps(paths: list[str], base_sha: str) -> dict[str, PackageBu
         bumped[canonical] = PackageBump(
             name=current_name,
             version=current_version,
+            base_version=base_version,
             path=path,
         )
     return bumped
 
 
-def _requirement_is_satisfied_by_bump(dep: str, bumped: dict[str, PackageBump]) -> bool:
+def _requirement_requires_same_pr_bump(dep: str, bumped: dict[str, PackageBump]) -> bool:
+    """Report whether a dependency can only be satisfied by an unpublished same-PR bump.
+
+    A pin is stripped only when the same-PR bumped version satisfies it but the
+    currently-published (base) version does not. Broad ranges that the published
+    version already satisfies are left in place so they resolve against PyPI.
+    """
     try:
         requirement = Requirement(dep)
     except InvalidRequirement as err:
@@ -193,7 +202,10 @@ def _requirement_is_satisfied_by_bump(dep: str, bumped: dict[str, PackageBump]) 
     bump = bumped.get(canonicalize_name(requirement.name))
     if bump is None:
         return False
-    return requirement.specifier.contains(bump.version, prereleases=True)
+    specifier = requirement.specifier
+    if not specifier.contains(bump.version, prereleases=True):
+        return False
+    return not specifier.contains(bump.base_version, prereleases=True)
 
 
 def _filter_dep_list(deps: Any, bumped: dict[str, PackageBump]) -> tuple[Any, list[str]]:
@@ -202,7 +214,7 @@ def _filter_dep_list(deps: Any, bumped: dict[str, PackageBump]) -> tuple[Any, li
     kept: list[Any] = []
     skipped: list[str] = []
     for dep in deps:
-        if isinstance(dep, str) and _requirement_is_satisfied_by_bump(dep, bumped):
+        if isinstance(dep, str) and _requirement_requires_same_pr_bump(dep, bumped):
             skipped.append(dep)
         else:
             kept.append(dep)

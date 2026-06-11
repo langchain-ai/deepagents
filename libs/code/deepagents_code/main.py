@@ -20,9 +20,11 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from deepagents_code.app import AppResult
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
@@ -33,6 +35,130 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
+
+_SANDBOX_DEFAULT_SENTINEL = "\x00default"
+"""Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def _restart_current_process() -> NoReturn:
+    """Replace the current process with a fresh `deepagents_code` invocation.
+
+    Raises:
+        RuntimeError: If process replacement unexpectedly returns.
+    """
+    argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    # Re-exec the trusted interpreter with the user's own argv verbatim; the
+    # only "input" is the command the user already ran, so S606's concern
+    # (untrusted/unsanitized args to a spawned executable) does not apply.
+    os.execv(sys.executable, argv)  # noqa: S606
+    msg = "os.execv returned unexpectedly"
+    raise RuntimeError(msg)
+
+
+def _run_startup_auto_update(console: "Console") -> None:
+    """Apply enabled auto-updates before the TUI and server start.
+
+    On a successful upgrade the process is re-exec'd so the new version is
+    loaded. Any failure is fail-soft: the installed version is launched and
+    the error is surfaced, never blocking startup.
+
+    Raises:
+        SystemExit: Re-raised rather than suppressed by the fail-soft handler,
+            so a process-exit request is never swallowed (the `os.execv`
+            re-exec is simulated this way under test).
+    """
+    from rich.markup import escape
+
+    from deepagents_code._env_vars import DEBUG_UPDATE, RESTARTED_AFTER_UPDATE
+    from deepagents_code._version import __version__ as cli_version
+    from deepagents_code.config import _is_editable_install
+    from deepagents_code.update_check import (
+        create_update_log_path,
+        format_release_age_parenthetical,
+        get_cached_update_available,
+        is_auto_update_enabled,
+        perform_upgrade,
+        upgrade_command,
+    )
+
+    try:
+        if _is_editable_install() or not is_auto_update_enabled():
+            return
+        # Consume the re-exec sentinel recorded before the previous restart.
+        restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        available, latest = get_cached_update_available()
+        if not available or latest is None:
+            return
+        if restarted_for == latest:
+            # Already restarted after upgrading to this version, yet it still
+            # reports as available: the install did not change the running
+            # version. Bail out instead of upgrading and restarting forever
+            # (this runs before the TUI, so there is no in-app way to stop it).
+            cmd = upgrade_command()
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] v{latest} still reports as "
+                "available after an automatic update; skipping auto-update to "
+                f"avoid a restart loop. Update manually: [cyan]{cmd}[/cyan]\n"
+                f"Continuing with v{cli_version}.",
+                highlight=False,
+            )
+            return
+        release_age = format_release_age_parenthetical(latest)
+        console.print(
+            f"Auto-updating deepagents-code from v{cli_version} to "
+            f"v{latest}{release_age} before startup..."
+        )
+        if os.environ.get(DEBUG_UPDATE):
+            console.print("Skipped update install (debug mode).", style="dim")
+            return
+        log_path = create_update_log_path()
+        console.print(
+            f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+            style="dim",
+            highlight=False,
+            markup=False,
+        )
+        success, output = asyncio.run(perform_upgrade(log_path=log_path))
+        if success:
+            console.print(f"[green]Updated to v{latest}. Restarting...[/green]")
+            # Record the target version so the re-exec'd process can detect a
+            # no-op upgrade and break the loop (see the `restarted_for` guard).
+            os.environ[RESTARTED_AFTER_UPDATE] = latest
+            try:
+                _restart_current_process()
+            except (OSError, RuntimeError):
+                # Upgrade succeeded but the re-exec did not happen (`os.execv`
+                # raised, or returned unexpectedly). Drop the sentinel and
+                # continue on the old in-memory code; the user must restart
+                # manually to load the new version.
+                os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+                logger.warning("Restart after update failed", exc_info=True)
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] Updated to v{latest} but "
+                    "the automatic restart failed. Restart dcode manually to use "
+                    "the new version.",
+                    highlight=False,
+                )
+            return
+        cmd = upgrade_command()
+        detail = f": {escape(output[:200])}" if output else ""
+        console.print(
+            f"[bold red]Auto-update failed{detail}[/bold red]\n"
+            f"Run manually: [cyan]{cmd}[/cyan]\n"
+            f"Continuing with v{cli_version}.",
+            markup=True,
+            highlight=False,
+        )
+    except SystemExit:
+        # Process replacement (and test doubles that simulate it) must not be
+        # swallowed by the fail-soft handler below.
+        raise
+    except Exception:
+        logger.warning("Startup auto-update failed", exc_info=True)
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
+            "continuing with the installed version."
+        )
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
@@ -124,10 +250,12 @@ def _parse_interpreter_tools_flag(
 
     Returns:
         `None` when the flag is absent, the literal string `"safe"`/`"all"`,
-        or a list of trimmed tool names.
+        or a list of trimmed tool names. The list may contain `"safe"` as an
+        expandable preset (e.g. `"safe,task"` → `["safe", "task"]`).
 
-        Calls `sys.exit(2)` when the value is empty or contains only blank
-        tokens — the CLI treats that as a usage error.
+        Calls `sys.exit(2)` when the value is empty, contains only blank
+        tokens, or includes `"all"` inside a list — the CLI treats those as
+        usage errors.
     """
     if raw is None:
         return None
@@ -146,6 +274,13 @@ def _parse_interpreter_tools_flag(
         sys.stderr.write(
             "Error: --interpreter-tools list must contain at least one "
             "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if any(name.lower() == "all" for name in names):
+        sys.stderr.write(
+            "Error: --interpreter-tools 'all' cannot be combined with other "
+            "tools; use 'all' on its own or list explicit tool names "
+            "(optionally with the 'safe' preset).\n"
         )
         sys.exit(2)
     return names
@@ -780,6 +915,16 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
+    from deepagents_code.ui import non_negative_int, positive_int
+
+    parser.add_argument(
+        "--max-retries",
+        type=non_negative_int,
+        default=None,
+        metavar="N",
+        help="Override max retries for transient model errors.",
+    )
+
     parser.add_argument(
         "--profile-override",
         metavar="JSON",
@@ -855,8 +1000,6 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
-    from deepagents_code.ui import positive_int
-
     parser.add_argument(
         "--max-turns",
         dest="max_turns",
@@ -900,13 +1043,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
+        nargs="?",
+        const=_SANDBOX_DEFAULT_SENTINEL,
         default="none",
         metavar="TYPE",
         help=(
-            "Remote sandbox for code execution "
-            "(default: none - local only; langsmith is included, "
-            "agentcore/modal/daytona/runloop require downloading extras)"
+            "Remote sandbox for code execution (default: none - local only). "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Third-party and config-declared providers are also accepted. "
+            "Pass --sandbox with no value to use [sandboxes].default from "
+            "config (keep the bare form last on the command line so a "
+            "following subcommand isn't read as its value). langsmith is "
+            "bundled; others require installing an extra or package."
         ),
     )
 
@@ -963,7 +1111,8 @@ def parse_args() -> argparse.Namespace:
         dest="interpreter_tools",
         metavar="VALUE",
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
-        "list of tool names. Default is no PTC (pure REPL).",
+        "list of tool names (which may include the 'safe' preset, e.g. "
+        "'safe,task'). Default is no PTC (pure REPL).",
     )
 
     try:
@@ -1042,12 +1191,92 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.sandbox_snapshot_name is not None and args.sandbox not in {
-        "langsmith",
-        "runloop",
-    }:
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith or runloop")
+    _resolve_and_validate_sandbox(args, parser)
     return args
+
+
+def _resolve_and_validate_sandbox(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Resolve `--sandbox` against the registry and validate related flags.
+
+    Handles the bare `--sandbox` form (resolve `[sandboxes].default`), unknown
+    providers (with install/config guidance), and the `--sandbox-snapshot-name`
+    / `--sandbox-id` flags whose support is driven by provider metadata. Calls
+    `parser.error` (which exits) on invalid input.
+
+    Because `--sandbox` takes an optional value (`nargs="?"`), placing it
+    immediately before a subcommand (e.g. `dcode --sandbox agents`) makes
+    argparse consume the subcommand as the flag's value. Pass an explicit
+    provider (`--sandbox daytona`) or keep the bare form last on the command
+    line.
+
+    Args:
+        args: Parsed namespace; `args.sandbox` is normalized in place.
+        parser: The parser, used to emit errors.
+    """
+    if args.sandbox in {"none", None}:
+        if args.sandbox_snapshot_name is not None:
+            parser.error("--sandbox-snapshot-name requires a --sandbox provider")
+        if args.sandbox_id is not None:
+            parser.error("--sandbox-id requires a --sandbox provider")
+        return
+
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+    registry = SandboxRegistry.load()
+
+    def _config_note() -> str:
+        """Build a breadcrumb when the config file failed to parse.
+
+        Returns:
+            A note to append to an error message, or an empty string when the
+            config parsed cleanly.
+        """
+        if registry.config_error:
+            return (
+                f"\n\nNote: ~/.deepagents/config.toml could not be used "
+                f"({registry.config_error}); any providers or default it "
+                "declares were ignored."
+            )
+        return ""
+
+    if args.sandbox == _SANDBOX_DEFAULT_SENTINEL:
+        default = registry.default
+        if not default:
+            parser.error(
+                "--sandbox was given with no value but no [sandboxes].default "
+                "is configured in ~/.deepagents/config.toml. Pass a provider "
+                "name explicitly or set [sandboxes].default." + _config_note()
+            )
+        args.sandbox = default
+
+    if not registry.is_available(args.sandbox):
+        available = ", ".join(registry.available_providers())
+        parser.error(
+            f"Unknown sandbox provider '{args.sandbox}'.\n"
+            f"Available providers: {available}.\n\n"
+            "If this is a third-party provider, install the package that "
+            "publishes it and re-run:\n"
+            "  /install <package-name> --package\n"
+            f"or declare [sandboxes.providers.{args.sandbox}] in "
+            "~/.deepagents/config.toml." + _config_note()
+        )
+
+    metadata = registry.get_metadata(args.sandbox)
+    if args.sandbox_snapshot_name is not None and (
+        metadata is None or not metadata.supports_snapshot_name
+    ):
+        parser.error(
+            f"--sandbox-snapshot-name is not supported by provider '{args.sandbox}'"
+        )
+    if (
+        args.sandbox_id is not None
+        and metadata is not None
+        and not metadata.supports_sandbox_id
+    ):
+        parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
 async def run_textual_cli_async(
@@ -1279,7 +1508,7 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
         model_result = create_model(
@@ -1298,7 +1527,7 @@ async def _run_acp_cli_async(
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
 
-    tools: list[Any] = [fetch_url]
+    tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
         tools.append(web_search)
 
@@ -1778,6 +2007,17 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        max_retries = getattr(args, "max_retries", None)
+        if max_retries is not None:
+            from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+            if model_params is None:
+                model_params = {}
+            # Carry the flag value under an internal key; `create_model` folds it
+            # under the resolved provider's retry-param name (which may not be
+            # `max_retries` for custom providers) with top precedence.
+            model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
@@ -2420,7 +2660,7 @@ def cli_main() -> None:
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )
@@ -2491,6 +2731,7 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
+            _run_startup_auto_update(console)
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
@@ -2512,7 +2753,7 @@ def cli_main() -> None:
             thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )
@@ -2612,13 +2853,18 @@ def cli_main() -> None:
                         format_installed_age_suffix,
                         format_release_age_parenthetical,
                         is_auto_update_enabled,
+                        is_installed_version_at_least,
                         mark_update_notified,
                         should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    if latest and should_notify_update(latest):
+                    if (
+                        latest
+                        and not is_installed_version_at_least(latest)
+                        and should_notify_update(latest)
+                    ):
                         console.print()
                         release_age = format_release_age_parenthetical(latest)
                         installed_age = format_installed_age_suffix(cli_version)

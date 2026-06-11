@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import keyword
 import logging
 import os
 import re
@@ -50,6 +51,43 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 `LANGSMITH_PROJECT` override, so `.env`-only values are visible.
 """
 
+_dotenv_loaded_values: dict[str, str] = {}
+"""Environment values injected by our dotenv loader and safe to refresh later."""
+
+_INHERITED_PYTHONPATH_ENV = "DEEPAGENTS_INHERITED_PYTHONPATH"
+"""Carrier var that relays a launch-time `PYTHONPATH` to agent `execute` commands.
+
+`PYTHONPATH` is stripped from the server interpreter's environment (see
+`server._SERVER_ENV_DENYLIST`) to keep an untrusted import path off `sys.path`
+during startup. The launch-time value is instead carried in this var and
+re-applied only to the approval-gated shell backend's `execute` subprocesses by
+`agent._apply_inherited_pythonpath`.
+"""
+
+_DOTENV_DENIED_ENV_KEYS = frozenset(
+    {
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "GIT_ASKPASS",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "NODE_OPTIONS",
+        "PATH",
+        "PYTHONEXECUTABLE",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "SSH_ASKPASS",
+        _INHERITED_PYTHONPATH_ENV,
+    }
+)
+"""Environment keys that project `.env` files must not inject.
+
+`_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
+`PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
+is only meant to relay a value the user set in their launch environment."""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -79,7 +117,89 @@ except RuntimeError:
     _GLOBAL_DOTENV_PATH = Path("/nonexistent/.deepagents/.env")
 
 
-def _load_dotenv(*, start_path: Path | None = None) -> bool:
+def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
+    """Return the environment after dotenv loading without mutating `os.environ`.
+
+    Args:
+        start_path: Directory to use for project `.env` discovery.
+
+    Returns:
+        Environment mapping with project and global dotenv values applied using
+        the same first-write-wins precedence as `_load_dotenv`.
+    """
+    import dotenv
+
+    env = dict(os.environ)
+    for key, value in _dotenv_loaded_values.items():
+        if env.get(key) == value:
+            env.pop(key)
+
+    def apply_dotenv(dotenv_path: Path | None) -> None:
+        if dotenv_path is None:
+            return
+        try:
+            values = dotenv.dotenv_values(dotenv_path=dotenv_path)
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not read dotenv at %s; previewed project env vars may be "
+                "incomplete",
+                dotenv_path,
+                exc_info=True,
+            )
+            return
+        for key, value in values.items():
+            if value is not None and key not in env:
+                env[key] = value
+
+    project_dotenv: Path | None = None
+    try:
+        project_dotenv = (
+            _find_dotenv_from_start_path(start_path)
+            if start_path is not None
+            else _find_dotenv_from_start_path(Path.cwd())
+        )
+    except OSError:
+        logger.warning(
+            "Could not inspect project dotenv at %s; previewed project env vars may "
+            "be incomplete",
+            start_path or "cwd",
+            exc_info=True,
+        )
+    apply_dotenv(project_dotenv)
+
+    try:
+        global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
+    except OSError:
+        logger.warning(
+            "Could not inspect global dotenv at %s; previewed global defaults may "
+            "be incomplete",
+            _GLOBAL_DOTENV_PATH,
+            exc_info=True,
+        )
+        global_dotenv = None
+    apply_dotenv(global_dotenv)
+
+    return env
+
+
+def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
+    """Resolve an env var from a mapping using app prefix precedence.
+
+    Returns:
+        The resolved value, or `None` when absent or empty.
+    """
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    if not name.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{name}"
+        if prefixed in env:
+            return env[prefixed] or None
+    return env.get(name) or None
+
+
+def _load_dotenv(
+    *, start_path: Path | None = None, refresh_loaded: bool = False
+) -> bool:
     """Load environment variables from project and global `.env` files.
 
     Loads in order (first write wins, `override=False`):
@@ -103,6 +223,9 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     Args:
         start_path: Directory to use for project `.env` discovery.
+        refresh_loaded: Remove values previously injected by this loader before
+            applying the current project/global dotenv stack. Values modified
+            after loading are preserved.
 
     Returns:
         `True` when at least one dotenv file was loaded, `False` otherwise.
@@ -111,19 +234,36 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
 
     loaded = False
 
+    if refresh_loaded:
+        for key, value in list(_dotenv_loaded_values.items()):
+            if os.environ.get(key) == value:
+                os.environ.pop(key)
+        _dotenv_loaded_values.clear()
+
+    def apply_dotenv(dotenv_path: Path) -> bool:
+        values = dotenv.dotenv_values(dotenv_path=dotenv_path)
+        applied = False
+        for key, value in values.items():
+            if value is None or key in os.environ or key in _DOTENV_DENIED_ENV_KEYS:
+                continue
+            os.environ[key] = value
+            _dotenv_loaded_values[key] = value
+            applied = True
+        return applied
+
     # 1. Project/CWD .env — loads first so project values are set before the
     # global file, which can only fill in vars not already present.
     dotenv_path: Path | str | None = None
     try:
         if start_path is None:
-            loaded = dotenv.load_dotenv(override=False) or loaded
+            found = dotenv.find_dotenv(usecwd=True)
+            if found:
+                dotenv_path = found
+                loaded = apply_dotenv(Path(found)) or loaded
         else:
             dotenv_path = _find_dotenv_from_start_path(start_path)
             if dotenv_path is not None:
-                loaded = (
-                    dotenv.load_dotenv(dotenv_path=dotenv_path, override=False)
-                    or loaded
-                )
+                loaded = apply_dotenv(dotenv_path) or loaded
     except (OSError, ValueError):
         logger.warning(
             "Could not read project dotenv at %s; project env vars will not be loaded",
@@ -136,9 +276,7 @@ def _load_dotenv(*, start_path: Path | None = None) -> bool:
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and dotenv.load_dotenv(
-            dotenv_path=_GLOBAL_DOTENV_PATH, override=False
-        ):
+        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(_GLOBAL_DOTENV_PATH):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
     except (OSError, ValueError):
@@ -179,6 +317,14 @@ def _ensure_bootstrap() -> None:
             ctx = _get_server_project_context()
             _bootstrap_start_path = ctx.user_cwd if ctx else None
             _load_dotenv(start_path=_bootstrap_start_path)
+
+            # `configure_debug_logging` already ran at import, before the `.env`
+            # above was loaded. Re-run it so a `DEEPAGENTS_CODE_DEBUG` set only in
+            # `.env` installs the file handler now (idempotent for the same path),
+            # ensuring later failures are actually written to the debug log.
+            from deepagents_code._debug import configure_debug_logging
+
+            configure_debug_logging(logging.getLogger("deepagents_code"))
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
@@ -861,10 +1007,12 @@ def _parse_interpreter_ptc(
     Returns:
         `False` for `False`/`None`/`[]`, the string `"safe"`/`"all"` when
         either sentinel is given, otherwise a validated list of tool names.
+        A list may include the `"safe"` preset (expanded at agent-build time)
+        but never `"all"`.
 
     Raises:
-        ValueError: If `raw` is a list with empty or non-string entries, or
-            a string other than `"safe"`/`"all"`.
+        ValueError: If `raw` is a list with empty or non-string entries, a
+            list containing `"all"`, or a string other than `"safe"`/`"all"`.
     """
     if raw is None or raw is False:
         return False
@@ -894,7 +1042,15 @@ def _parse_interpreter_ptc(
                     f"got {entry!r}."
                 )
                 raise ValueError(msg)
-            names.append(entry.strip())
+            cleaned = entry.strip()
+            if cleaned.lower() == INTERPRETER_PTC_ALL_SENTINEL:
+                msg = (
+                    "`interpreter_ptc` list entries cannot include 'all'; use "
+                    "'all' as a standalone value or list explicit tool names "
+                    "(optionally with the 'safe' preset)."
+                )
+                raise ValueError(msg)
+            names.append(cleaned)
         return names
     msg = (
         f"`interpreter_ptc` must be False, 'safe', 'all', or a list of tool "
@@ -983,6 +1139,228 @@ def _resolve_interpreter_kwargs(
     return kwargs
 
 
+def _read_config_toml_retries() -> dict[str, Any] | None:
+    """Read and lightly validate `[retries]` from `~/.deepagents/config.toml`.
+
+    Provider sub-table names are checked against the set of providers the app
+    knows how to authenticate so a mistyped provider (e.g. `[retries.fireorks]`)
+    surfaces a warning rather than being silently dropped. Value validation is
+    deferred to `_resolve_retry_kwargs`, which runs per active provider.
+
+    Returns:
+        The raw `[retries]` mapping, or `None` when the section is absent or the
+            file cannot be read.
+    """
+    import tomllib
+
+    from deepagents_code.model_config import (
+        DEFAULT_CONFIG_PATH,
+        IMPLICIT_AUTH_PROVIDERS,
+        NO_AUTH_REQUIRED_PROVIDERS,
+        PROVIDER_API_KEY_ENV,
+        RETRY_PARAM_BY_PROVIDER,
+    )
+
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError:
+        return None
+    except (PermissionError, OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read retries config from %s",
+            DEFAULT_CONFIG_PATH,
+            exc_info=True,
+        )
+        return None
+
+    section = data.get("retries")
+    if not isinstance(section, dict):
+        return None
+
+    known_providers = (
+        set(PROVIDER_API_KEY_ENV)
+        | set(NO_AUTH_REQUIRED_PROVIDERS)
+        | set(IMPLICIT_AUTH_PROVIDERS)
+        | set(RETRY_PARAM_BY_PROVIDER)
+    )
+    for key, value in section.items():
+        if (
+            isinstance(value, dict)
+            and key not in known_providers
+            and "param" not in value
+        ):
+            logger.warning(
+                "Ignoring [retries.%s] in config.toml; %r is not a known provider",
+                key,
+                key,
+            )
+    return section
+
+
+def _coerce_max_retries(raw: Any, *, source: str) -> int | None:  # noqa: ANN401
+    """Validate a TOML retry count.
+
+    Args:
+        raw: Value loaded from TOML.
+        source: Human-readable config path for warnings.
+
+    Returns:
+        The retry count, or `None` when invalid.
+    """
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    logger.warning("Ignoring %s=%r in config.toml (expected int >= 0)", source, raw)
+    return None
+
+
+def _coerce_retry_param(raw: Any, *, source: str) -> str | None:  # noqa: ANN401
+    """Validate a constructor kwarg name for retry configuration.
+
+    Args:
+        raw: Value loaded from TOML.
+        source: Human-readable config path for warnings.
+
+    Returns:
+        The retry parameter name, or `None` when invalid.
+    """
+    if isinstance(raw, str) and raw.isidentifier() and not keyword.iskeyword(raw):
+        return raw
+    logger.warning(
+        "Ignoring %s=%r in config.toml (expected Python identifier string)",
+        source,
+        raw,
+    )
+    return None
+
+
+def _resolve_retry_kwargs(
+    section: dict[str, Any] | None,
+    provider: str,
+) -> dict[str, int]:
+    """Resolve the retry-count kwarg for `provider` from a `[retries]` section.
+
+    A per-provider `[retries.<provider>].max_retries` overrides the global
+    `[retries].max_retries`. Known providers use `RETRY_PARAM_BY_PROVIDER`;
+    arbitrary providers can opt in with `[retries.<provider>].param`.
+    Unknown providers without a configured parameter receive nothing, and
+    unknown or malformed keys are dropped with a warning.
+
+    Args:
+        section: Raw `[retries]` mapping from `config.toml`, or `None`.
+        provider: Provider the kwargs are being resolved for.
+
+    Returns:
+        `{retry_param_name: count}` when a valid retry count resolves, else an
+            empty dict.
+    """
+    if not section:
+        return {}
+
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    for key, value in section.items():
+        if key == "max_retries" or isinstance(value, dict):
+            continue
+        logger.warning("Ignoring [retries].%s=%r in config.toml", key, value)
+
+    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    resolved: int | None = None
+    if "max_retries" in section:
+        resolved = _coerce_max_retries(
+            section["max_retries"], source="[retries].max_retries"
+        )
+
+    provider_section = section.get(provider)
+    if provider_section is not None and not isinstance(provider_section, dict):
+        logger.warning(
+            "Ignoring [retries].%s=%r in config.toml (expected table)",
+            provider,
+            provider_section,
+        )
+    elif provider_section:
+        for key, value in provider_section.items():
+            if key not in {"max_retries", "param"}:
+                logger.warning(
+                    "Ignoring [retries.%s].%s=%r in config.toml",
+                    provider,
+                    key,
+                    value,
+                )
+        if "max_retries" in provider_section:
+            provider_value = _coerce_max_retries(
+                provider_section["max_retries"],
+                source=f"[retries.{provider}].max_retries",
+            )
+            if provider_value is not None:
+                resolved = provider_value
+        if "param" in provider_section:
+            provider_param = _coerce_retry_param(
+                provider_section["param"],
+                source=f"[retries.{provider}].param",
+            )
+            if provider_param is not None:
+                retry_param = provider_param
+
+    if retry_param is None:
+        logger.warning(
+            "Ignoring [retries] config for provider %r; provider does not support "
+            "a registered or configured retry parameter",
+            provider,
+        )
+        return {}
+
+    if resolved is None:
+        return {}
+    return {retry_param: resolved}
+
+
+CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
+"""Internal carrier key for the `--max-retries` CLI flag.
+
+`cli_main` stashes the flag value under this key in the `model_params` dict it
+forwards to the run, and `create_model` pops it before constructing the model.
+This lets the CLI value ride the existing `model_params`/`extra_kwargs` carrier
+to the one place that authoritatively resolves the provider, where it can be
+folded under the provider's *resolved* retry-param name (see
+`_resolve_retry_param_name`) rather than a hardcoded `max_retries`.
+
+The key is internal-only: it is popped before reaching any model constructor and
+is never serialized or surfaced to users. It is deliberately unlikely to collide
+with a real constructor kwarg name.
+"""
+
+
+def _resolve_retry_param_name(provider: str) -> str:
+    """Resolve the constructor kwarg name that sets `provider`'s retry count.
+
+    Honors a `[retries.<provider>].param` override in `config.toml`, then the
+    registered `RETRY_PARAM_BY_PROVIDER` mapping, and finally falls back to
+    `max_retries` -- the near-universal LangChain chat-model kwarg -- for
+    providers that are neither registered nor configured.
+
+    Args:
+        provider: Provider the retry kwarg name is being resolved for.
+
+    Returns:
+        The constructor kwarg name to use for the retry count.
+    """
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    section = _read_config_toml_retries()
+    if section:
+        provider_section = section.get(provider)
+        if isinstance(provider_section, dict) and "param" in provider_section:
+            configured = _coerce_retry_param(
+                provider_section["param"],
+                source=f"[retries.{provider}].param",
+            )
+            if configured is not None:
+                return configured
+
+    return RETRY_PARAM_BY_PROVIDER.get(provider, "max_retries")
+
+
 def _read_config_toml_skills_dirs() -> list[str] | None:
     """Read `[skills].extra_allowed_dirs` from `~/.deepagents/config.toml`.
 
@@ -1058,6 +1436,35 @@ def _parse_extra_skills_dirs(
         return dirs or None
 
     return None
+
+
+_RELOADABLE_FIELDS = (
+    "openai_api_key",
+    "anthropic_api_key",
+    "google_api_key",
+    "nvidia_api_key",
+    "tavily_api_key",
+    "google_cloud_project",
+    "deepagents_langchain_project",
+    "project_root",
+    "shell_allow_list",
+    "extra_skills_dirs",
+)
+"""Fields refreshed on `/reload` and cwd switches.
+
+Runtime model state (`model_name`, `model_provider`, `model_context_limit`) and
+the original user LangSmith project are intentionally excluded -- they are set
+once and should not change across reloads.
+"""
+
+_API_KEY_FIELDS = frozenset(
+    field for field in _RELOADABLE_FIELDS if field.endswith("_api_key")
+)
+"""Reloadable fields that hold API keys and must be masked in change reports.
+
+Derived from `_RELOADABLE_FIELDS` so new `*_api_key` fields are picked up
+automatically.
+"""
 
 
 @dataclass
@@ -1157,11 +1564,13 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` intersected with the
-        live toolset.
-    - `"all"`: every live tool is exposed. Requires
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
+    - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names, validated at agent-build time.
+    - `list[str]`: explicit tool names. The list may also include the `"safe"`
+        preset (expanded to `INTERPRETER_PTC_SAFE_PRESET`); `"all"` is rejected
+        inside a list. Names are matched against the live tool registry at
+        runtime, so names not present are simply not exposed.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
@@ -1248,64 +1657,18 @@ class Settings:
             **interpreter_kwargs,
         )
 
-    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
-        """Reload selected settings from environment variables and project files.
-
-        This refreshes only fields that are expected to change at runtime
-        (API keys, Google Cloud project, project root, shell allow-list, and
-        LangSmith tracing project).
-
-        Runtime model state (`model_name`, `model_provider`,
-        `model_context_limit`) and the original user LangSmith project
-        (`user_langchain_project`) are intentionally preserved -- they are
-        not in `reloadable_fields` and are never touched by this method.
-
-        !!! note
-
-            `.env` files are loaded with `override=False`, so shell-exported
-            variables always take precedence.  To override a shell-exported key
-            from `.env`, use the `DEEPAGENTS_CODE_` prefix (e.g.
-            `DEEPAGENTS_CODE_OPENAI_API_KEY`).
-
-        Args:
-            start_path: Directory to start project detection from (defaults to cwd).
+    @staticmethod
+    def _reload_values(
+        *,
+        start_path: Path | None,
+        env: dict[str, str],
+        previous: dict[str, object],
+    ) -> dict[str, object]:
+        """Resolve reloadable settings from an environment mapping.
 
         Returns:
-            A list of human-readable change descriptions.
+            Reloadable setting values keyed by field name.
         """
-        _load_dotenv(start_path=start_path)
-
-        api_key_fields = {
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-        }
-        """Fields that hold API keys — used to mask values in change reports
-        so secrets are not logged as plaintext."""
-
-        reloadable_fields = (
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-            "google_cloud_project",
-            "deepagents_langchain_project",
-            "project_root",
-            "shell_allow_list",
-            "extra_skills_dirs",
-        )
-        """Fields refreshed on `/reload`.
-
-        Runtime model state (`model_name`, `model_provider`, `model_context_limit`)
-        and the original user LangSmith project are intentionally excluded —
-        they are set once and should not change across reloads.
-        """
-
-        previous = {field: getattr(self, field) for field in reloadable_fields}
-
         from deepagents_code._env_vars import (
             EXTRA_SKILLS_DIRS,
             LANGSMITH_PROJECT,
@@ -1313,7 +1676,7 @@ class Settings:
         )
 
         try:
-            shell_allow_list = parse_shell_allow_list(os.environ.get(SHELL_ALLOW_LIST))
+            shell_allow_list = parse_shell_allow_list(env.get(SHELL_ALLOW_LIST))
         except ValueError:
             logger.warning(
                 "Invalid %s during reload; keeping previous value",
@@ -1331,23 +1694,118 @@ class Settings:
             )
             project_root = previous["project_root"]
 
-        from deepagents_code.model_config import resolve_env_var
+        try:
+            extra_skills_dirs = _parse_extra_skills_dirs(
+                env.get(EXTRA_SKILLS_DIRS),
+                _read_config_toml_skills_dirs(),
+            )
+        except (OSError, ValueError):
+            # Path resolution can fail (e.g. broken symlink loop). Keep the
+            # previous value rather than letting the failure escape reload --
+            # callers such as the cwd switch run this after `os.chdir`, where an
+            # uncaught error would strand the process in a half-applied cwd.
+            logger.warning(
+                "Could not resolve %s during reload; keeping previous value",
+                EXTRA_SKILLS_DIRS,
+                exc_info=True,
+            )
+            extra_skills_dirs = previous["extra_skills_dirs"]
 
-        refreshed = {
-            "openai_api_key": resolve_env_var("OPENAI_API_KEY"),
-            "anthropic_api_key": resolve_env_var("ANTHROPIC_API_KEY"),
-            "google_api_key": resolve_env_var("GOOGLE_API_KEY"),
-            "nvidia_api_key": resolve_env_var("NVIDIA_API_KEY"),
-            "tavily_api_key": resolve_env_var("TAVILY_API_KEY"),
-            "google_cloud_project": resolve_env_var("GOOGLE_CLOUD_PROJECT"),
-            "deepagents_langchain_project": resolve_env_var(LANGSMITH_PROJECT),
+        return {
+            "openai_api_key": _resolve_env_var_from(env, "OPENAI_API_KEY"),
+            "anthropic_api_key": _resolve_env_var_from(env, "ANTHROPIC_API_KEY"),
+            "google_api_key": _resolve_env_var_from(env, "GOOGLE_API_KEY"),
+            "nvidia_api_key": _resolve_env_var_from(env, "NVIDIA_API_KEY"),
+            "tavily_api_key": _resolve_env_var_from(env, "TAVILY_API_KEY"),
+            "google_cloud_project": _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT"),
+            "deepagents_langchain_project": _resolve_env_var_from(
+                env,
+                LANGSMITH_PROJECT,
+            ),
             "project_root": project_root,
             "shell_allow_list": shell_allow_list,
-            "extra_skills_dirs": _parse_extra_skills_dirs(
-                os.environ.get(EXTRA_SKILLS_DIRS),
-                _read_config_toml_skills_dirs(),
-            ),
+            "extra_skills_dirs": extra_skills_dirs,
         }
+
+    @staticmethod
+    def _format_reload_changes(
+        previous: dict[str, object], refreshed: dict[str, object]
+    ) -> list[str]:
+        """Format changed reloadable settings for logs and messages.
+
+        Returns:
+            Human-readable change descriptions.
+        """
+
+        def display(field: str, value: object) -> str:
+            if field in _API_KEY_FIELDS:
+                return "set" if value else "unset"
+            return str(value)
+
+        changes: list[str] = []
+        for field in _RELOADABLE_FIELDS:
+            old_value = previous[field]
+            new_value = refreshed[field]
+            if old_value != new_value:
+                changes.append(
+                    f"{field}: {display(field, old_value)} -> "
+                    f"{display(field, new_value)}"
+                )
+        return changes
+
+    def preview_reload_from_environment(
+        self, *, start_path: Path | None = None
+    ) -> list[str]:
+        """Preview runtime settings changes without applying them.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions that would be produced by
+            `reload_from_environment`.
+        """
+        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        env = _preview_dotenv_environ(start_path=start_path)
+        refreshed = self._reload_values(
+            start_path=start_path,
+            env=env,
+            previous=previous,
+        )
+        return self._format_reload_changes(previous, refreshed)
+
+    def reload_from_environment(self, *, start_path: Path | None = None) -> list[str]:
+        """Reload selected settings from environment variables and project files.
+
+        This refreshes only fields that are expected to change at runtime
+        (API keys, Google Cloud project, project root, shell allow-list, and
+        LangSmith tracing project).
+
+        Runtime model state (`model_name`, `model_provider`,
+        `model_context_limit`) and the original user LangSmith project
+        (`user_langchain_project`) are intentionally preserved -- they are
+        not in `_RELOADABLE_FIELDS` and are never touched by this method.
+
+        !!! note
+
+            Shell-exported variables always take precedence. Values previously
+            injected from `.env` files are refreshed so an accepted cwd switch
+            can pick up the resumed project's `.env`.
+
+        Args:
+            start_path: Directory to start project detection from (defaults to cwd).
+
+        Returns:
+            A list of human-readable change descriptions.
+        """
+        _load_dotenv(start_path=start_path, refresh_loaded=True)
+
+        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        refreshed = self._reload_values(
+            start_path=start_path,
+            env=dict(os.environ),
+            previous=previous,
+        )
 
         for field, value in refreshed.items():
             setattr(self, field, value)
@@ -1356,7 +1814,7 @@ class Settings:
         # the change
         new_project = refreshed["deepagents_langchain_project"]
         if new_project:
-            os.environ["LANGSMITH_PROJECT"] = new_project
+            os.environ["LANGSMITH_PROJECT"] = str(new_project)
         elif previous["deepagents_langchain_project"]:
             # Override was previously active but new value is unset; restore.
             if _original_langsmith_project:
@@ -1364,21 +1822,7 @@ class Settings:
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
 
-        def _display(field: str, value: object) -> str:
-            if field in api_key_fields:
-                return "set" if value else "unset"
-            return str(value)
-
-        changes: list[str] = []
-        for field in reloadable_fields:
-            old_value = previous[field]
-            new_value = refreshed[field]
-            if old_value != new_value:
-                changes.append(
-                    f"{field}: {_display(field, old_value)} -> "
-                    f"{_display(field, new_value)}"
-                )
-        return changes
+        return self._format_reload_changes(previous, refreshed)
 
     @property
     def has_openai(self) -> bool:
@@ -2328,6 +2772,11 @@ def _get_provider_kwargs(
                         client_kwargs["headers"] = headers
                         result["client_kwargs"] = client_kwargs
 
+    retry_section = _read_config_toml_retries()
+    retry_kwargs = _resolve_retry_kwargs(retry_section, provider)
+    for key, value in retry_kwargs.items():
+        result.setdefault(key, value)
+
     return result
 
 
@@ -2573,7 +3022,7 @@ def _apply_profile_overrides(
     profile = getattr(model, "profile", None)
     merged = {**profile, **overrides} if isinstance(profile, dict) else overrides
     try:
-        model.profile = merged  # type: ignore[union-attr]
+        model.profile = merged  # ty: ignore[invalid-assignment]
     except (AttributeError, TypeError, ValueError) as exc:
         if raise_on_failure:
             msg = (
@@ -2613,6 +3062,11 @@ def create_model(
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file.
+
+            A `CLI_MAX_RETRIES_KEY` entry (set by the `--max-retries` flag) is
+            treated specially: it is popped here and re-applied under the
+            provider's resolved retry-param name with top precedence, rather than
+            being forwarded verbatim to the constructor.
         profile_overrides: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides (dcode wins).
@@ -2733,9 +3187,22 @@ def create_model(
             )
             raise ModelConfigError(msg) from exc
 
-    # App --model-params take highest priority
+    # App --model-params take highest priority. Copy defensively before popping
+    # the CLI sentinel so a caller that retains and reuses this dict (e.g. the
+    # app re-creating the model on a runtime `/model` switch) keeps the sentinel
+    # for the next provider's resolution.
+    cli_max_retries: int | None = None
     if extra_kwargs:
+        extra_kwargs = dict(extra_kwargs)
+        cli_max_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
         kwargs.update(extra_kwargs)
+
+    # `--max-retries` outranks everything: fold it under the provider's resolved
+    # retry-param name (honoring `[retries.<provider>].param`) so a custom
+    # provider whose kwarg is not `max_retries` is still served. Applied after
+    # the `extra_kwargs` merge so it wins over a `max_retries` in `--model-params`.
+    if cli_max_retries is not None:
+        kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()

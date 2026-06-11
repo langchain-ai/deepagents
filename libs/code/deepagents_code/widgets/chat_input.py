@@ -316,7 +316,7 @@ class CompletionPopup(VerticalScroll):
         """Hide the popup."""
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
-        self.styles.display = "none"  # type: ignore[assignment]  # Textual accepts string display values at runtime
+        self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
 
     def show(self) -> None:
         """Show the popup."""
@@ -866,14 +866,14 @@ class ChatTextArea(TextArea):
         if not self.text or not self.selection.is_empty:
             return False
 
-        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
         span = self._find_image_placeholder_span(cursor_offset, backwards=backwards)
         if span is None:
             return False
 
         start, end = span
-        start_location = self.document.get_location_from_index(start)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
-        end_location = self.document.get_location_from_index(end)  # type: ignore[attr-defined]
+        start_location = self.document.get_location_from_index(start)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        end_location = self.document.get_location_from_index(end)  # ty: ignore[unresolved-attribute]
         self.delete(start_location, end_location)
         self.move_cursor(start_location)
         return True
@@ -951,11 +951,15 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self.text = text
         if cursor_at_end:
-            lines = text.split("\n")
-            last_row = len(lines) - 1
-            self.move_cursor((last_row, len(lines[last_row])))
+            self.move_cursor_to_end()
         else:
             self.move_cursor((0, 0))
+
+    def move_cursor_to_end(self) -> None:
+        """Move the cursor to the end of the current text."""
+        lines = self.text.split("\n")
+        last_row = len(lines) - 1
+        self.move_cursor((last_row, len(lines[last_row])))
 
     def clear_text(self) -> None:
         """Clear the text area."""
@@ -1205,7 +1209,7 @@ class ChatInput(Vertical):
             [
                 self._slash_controller,
                 self._file_controller,
-            ]  # type: ignore[list-item]  # Controller types are compatible at runtime
+            ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
 
         self._rebuild_argument_hints(SLASH_COMMANDS)
@@ -1216,6 +1220,22 @@ class ChatInput(Vertical):
             exit_on_error=False,
         )
         self._text_area.focus()
+
+    def set_cwd(self, cwd: str | Path) -> None:
+        """Update file completion to use a new cwd.
+
+        Re-roots the file controller and schedules a background cache warm so
+        the project-root walk runs off the event loop.
+        """
+        self._cwd = Path(cwd)
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is not None:
+            file_controller.set_cwd(self._cwd)
+            self.run_worker(
+                file_controller.warm_cache(),
+                exclusive=False,
+                exit_on_error=False,
+            )
 
     def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.
@@ -1766,8 +1786,7 @@ class ChatInput(Vertical):
 
         self._applying_inline_path_replacement = True
         self._text_area.text = replacement
-        lines = replacement.split("\n")
-        self._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        self._text_area.move_cursor_to_end()
         return True
 
     def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
@@ -2072,6 +2091,13 @@ class ChatInput(Vertical):
         """Set the input value."""
         if self._text_area:
             self._text_area.text = val
+
+    def set_value_at_end(self, val: str) -> None:
+        """Set the input value and place the cursor at the end of the text."""
+        if not self._text_area:
+            return
+        self._text_area.text = val
+        self._text_area.move_cursor_to_end()
 
     @property
     def input_widget(self) -> ChatTextArea | None:

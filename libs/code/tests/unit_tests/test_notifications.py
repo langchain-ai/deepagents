@@ -87,7 +87,7 @@ class TestPendingNotificationInvariants:
 
         entry = _dep_entry()
         with pytest.raises(FrozenInstanceError):
-            entry.key = "other"  # type: ignore[misc]
+            entry.key = "other"  # ty: ignore
 
 
 class TestNotificationRegistry:

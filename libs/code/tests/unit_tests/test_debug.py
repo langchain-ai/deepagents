@@ -8,7 +8,10 @@ import os
 from unittest.mock import patch
 
 import deepagents_code
-from deepagents_code._debug import configure_debug_logging
+from deepagents_code._debug import (
+    configure_debug_logging,
+    installed_debug_log_path,
+)
 
 
 class TestConfigureDebugLogging:
@@ -166,6 +169,74 @@ class TestConfigureDebugLogging:
         assert len(logger.handlers) == original_count
         captured = capsys.readouterr()
         assert "Warning" in captured.err
+
+
+class TestInstalledDebugLogPath:
+    def test_returns_none_when_no_handler(self) -> None:
+        """Absent a tagged handler, the helper reports no log file."""
+        logger = logging.getLogger("deepagents_code")
+        original = list(logger.handlers)
+        for h in logger.handlers[:]:
+            if getattr(h, "_deepagents_code_debug_handler", False):
+                logger.removeHandler(h)
+        try:
+            assert installed_debug_log_path() is None
+        finally:
+            for h in logger.handlers[:]:
+                if h not in original:
+                    logger.removeHandler(h)
+            for h in original:
+                if h not in logger.handlers:
+                    logger.addHandler(h)
+
+    def test_returns_path_when_handler_installed(self, tmp_path) -> None:
+        """The helper returns the path of the actually-installed handler."""
+        logger = logging.getLogger("deepagents_code")
+        log_file = tmp_path / "installed.log"
+        with patch.dict(
+            os.environ,
+            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+        ):
+            configure_debug_logging(logger)
+        installed = [
+            h
+            for h in logger.handlers
+            if getattr(h, "_deepagents_code_debug_handler", False)
+        ]
+        try:
+            assert installed_debug_log_path() == log_file
+        finally:
+            for h in installed:
+                h.close()
+                logger.removeHandler(h)
+
+    def test_ignores_untagged_file_handler(self, tmp_path) -> None:
+        """A foreign FileHandler does not count as an installed debug log.
+
+        Mirrors the divergence the helper exists to catch: a truthy
+        `DEEPAGENTS_CODE_DEBUG` set after import (e.g. via `.env`) never installs
+        our tagged handler, so the helper must report `None` regardless of any
+        unrelated handlers present.
+        """
+        logger = logging.getLogger("deepagents_code")
+        pre_existing = [
+            h
+            for h in logger.handlers
+            if getattr(h, "_deepagents_code_debug_handler", False)
+        ]
+        for h in pre_existing:
+            logger.removeHandler(h)
+        foreign = logging.FileHandler(str(tmp_path / "foreign.log"), mode="a")
+        logger.addHandler(foreign)
+        try:
+            with patch.dict(os.environ, {"DEEPAGENTS_CODE_DEBUG": "1"}, clear=True):
+                # Env is truthy but no tagged handler was installed.
+                assert installed_debug_log_path() is None
+        finally:
+            foreign.close()
+            logger.removeHandler(foreign)
+            for h in pre_existing:
+                logger.addHandler(h)
 
     def test_package_import_configures_package_logger(self, tmp_path) -> None:
         logger = logging.getLogger("deepagents_code")

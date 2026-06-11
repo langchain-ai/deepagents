@@ -20,7 +20,7 @@ from deepagents_code.widgets.mcp_viewer import (
 
 def _widget_text(widget: Widget) -> str:
     """Extract plain text content from a Static widget."""
-    content = widget._Static__content  # type: ignore[attr-defined]
+    content = widget._Static__content  # ty: ignore
     return str(content)
 
 
@@ -1075,7 +1075,7 @@ class TestMCPViewerScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert screen._selected_index == 1
-            assert screen._row_widgets[1]._expanded  # type: ignore[union-attr]
+            assert screen._row_widgets[1]._expanded  # ty: ignore
 
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             initial_offset = scroll.scroll_offset.y
@@ -1361,7 +1361,7 @@ class TestMCPViewerScreen:
 
             # `unauthenticated` servers are floated to the top, so github
             # is now the first row and starts selected.
-            assert screen._row_widgets[0]._server.name == "github"  # type: ignore[union-attr]
+            assert screen._row_widgets[0]._server.name == "github"  # ty: ignore
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1407,7 +1407,7 @@ class TestMCPViewerScreen:
             for _ in range(4):
                 await pilot.press("down")
                 await pilot.pause()
-            assert screen._row_widgets[4]._server.name == "broken"  # type: ignore[union-attr]
+            assert screen._row_widgets[4]._server.name == "broken"  # ty: ignore
 
             await pilot.press("enter")
             await pilot.pause()
@@ -1437,7 +1437,7 @@ class TestMCPViewerScreen:
 
             await pilot.press("down")
             await pilot.pause()
-            assert screen._row_widgets[1]._server.name == "notion"  # type: ignore[union-attr]
+            assert screen._row_widgets[1]._server.name == "notion"  # ty: ignore
 
             await pilot.press("enter")
             await pilot.pause()

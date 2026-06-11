@@ -677,9 +677,9 @@ class TestMCPSessionManager:
     async def test_configure_noop_when_connections_match(self) -> None:
         """`configure` is a no-op if the same connection dict is re-applied."""
         conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
-        manager = MCPSessionManager(connections=conn)  # ty: ignore[invalid-argument-type]
+        manager = MCPSessionManager(connections=conn)  # ty: ignore
         # Should not raise even without any sessions yet.
-        manager.configure(dict(conn))  # ty: ignore[no-matching-overload]
+        manager.configure(dict(conn))  # ty: ignore
 
     @pytest.mark.usefixtures("fake_home")
     async def test_configure_accepts_equivalent_oauth_connections(self) -> None:
@@ -736,7 +736,7 @@ class TestMCPSessionManager:
             yield session
 
         conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
-        manager = MCPSessionManager(connections=conn)  # ty: ignore[invalid-argument-type]
+        manager = MCPSessionManager(connections=conn)  # ty: ignore
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             await manager.get_session("filesystem")
 
@@ -1000,7 +1000,7 @@ class TestGetMCPTools:
         _tools, manager, server_infos = await get_mcp_tools(path)
 
         assert server_infos[0].tools[0].input_schema == rich_schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_extraction_survives_attribute_error(
         self,
@@ -1036,14 +1036,14 @@ class TestGetMCPTools:
 
         session.list_tools = AsyncMock(
             return_value=_make_tool_page(
-                [_ExplodingSchemaTool()]  # type: ignore[list-item]
+                [_ExplodingSchemaTool()]  # ty: ignore
             )
         )
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 
         assert server_infos[0].tools[0].input_schema is None
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_pairs_when_tool_name_starts_with_server_prefix(
         self,
@@ -1073,7 +1073,7 @@ class TestGetMCPTools:
         info = server_infos[0]
         assert [t.name for t in info.tools] == ["srv_srv_read"]
         assert info.tools[0].input_schema == schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_paired_to_post_filter_tools(
         self,
@@ -1109,7 +1109,7 @@ class TestGetMCPTools:
         names = [t.name for t in server_infos[0].tools]
         assert names == ["srv_read_file"]
         assert server_infos[0].tools[0].input_schema == read_schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -1756,7 +1756,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke({})  # ty: ignore
 
         assert len(sessions) == 2
         sessions[1].call_tool.assert_awaited_once_with("echo", {})
@@ -1796,8 +1796,8 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            await tools[0].ainvoke({})  # ty: ignore
+            await tools[0].ainvoke({})  # ty: ignore
 
         # Reuse is the observable: the runtime session services both
         # calls. Counting sessions is implementation detail — await_count
@@ -1846,19 +1846,19 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            await tools[0].ainvoke({})  # ty: ignore
 
         assert call_counter["n"] == 3
         sessions[2].call_tool.assert_awaited_once()
         await manager.cleanup()
 
-    async def test_repeated_transient_error_surfaces_tool_exception(
+    async def test_repeated_transient_error_surfaces_tool_message(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A second transient failure becomes a `ToolException`."""
+        """A second transient failure becomes a tool-local error message."""
         from anyio import ClosedResourceError
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1888,9 +1888,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="failed after one retry"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "failed after one retry" in result.content
         assert call_counter["n"] == 3
         await manager.cleanup()
 
@@ -1900,7 +1904,7 @@ class TestCachedSessionProxy:
         fake_tool_result: Any,  # noqa: ANN401
     ) -> None:
         """Generic `OSError`s do not trigger session invalidation and retry."""
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1932,11 +1936,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            # Non-transient exceptions now surface as `ToolException` so the
-            # agent sees a structured error instead of a raw `OSError`.
-            with pytest.raises(ToolException, match="socket glitch"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "socket glitch" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 
@@ -1944,8 +1950,8 @@ class TestCachedSessionProxy:
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A logical tool failure propagates without retrying the session."""
-        from langchain_core.tools import ToolException
+        """MCP `isError=True` returns a failed `ToolMessage` without retrying."""
+        from langchain_core.messages import ToolMessage
         from mcp.types import CallToolResult, TextContent
 
         path = write_config(
@@ -1983,20 +1989,78 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="boom"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-1"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == "boom"
         assert call_counter["n"] == 2
         assert runtime_session is not None
         assert runtime_session.call_tool.await_count == 1
         await manager.cleanup()
 
-    async def test_reauth_signal_surfaces_tool_exception_without_retry(
+    async def test_empty_mcp_error_content_uses_placeholder_tool_message(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Runtime re-auth signals surface as actionable `ToolException`s."""
-        from langchain_core.tools import ToolException
+        """Empty MCP error content gets the adapter placeholder text block."""
+        from langchain_core.messages import ToolMessage
+        from mcp.types import CallToolResult
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+        runtime_session: AsyncMock | None = None
+
+        def _new_session() -> AsyncMock:
+            nonlocal runtime_session
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            session.call_tool = AsyncMock(
+                return_value=CallToolResult(content=[], isError=True)
+            )
+            runtime_session = session
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == (
+            "MCP tool returned an error with empty content."
+        )
+        assert runtime_session is not None
+        assert runtime_session.call_tool.await_count == 1
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_reauth_signal_surfaces_tool_message_without_retry(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Runtime re-auth signals surface as actionable tool messages."""
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {
@@ -2037,9 +2101,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="re-authentication"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "re-authentication" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 
@@ -2089,7 +2157,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = asyncio.run(get_mcp_tools(path))
-            result = asyncio.run(tools[0].ainvoke({}))  # ty: ignore[missing-typed-dict-key]
+            result = asyncio.run(tools[0].ainvoke({}))  # ty: ignore
             assert manager is not None
             asyncio.run(manager.cleanup())
 
@@ -2527,7 +2595,11 @@ class TestToolFilterEndToEnd:
             _mcp_callbacks: object | None = None,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
-            yield sessions_by_url.get(connection.get("url"), fs_session)
+            url = connection.get("url")
+            if isinstance(url, str):
+                yield sessions_by_url.get(url, fs_session)
+            else:
+                yield fs_session
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)

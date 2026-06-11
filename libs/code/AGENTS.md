@@ -57,10 +57,56 @@ Charset-dependent characters and animations have **single sources of truth**. Re
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+- For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
+- Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
+- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal.
+
+### Typing and test doubles
+
+When fixing `ty` diagnostics, do not mechanically replace `# type: ignore[...]` with `cast(...)`. First try to improve the actual type shape: narrower annotations, typed futures/callbacks, covariant read-only types such as `Mapping`/`Sequence`, local mock variables, or `monkeypatch.setattr(...)`. Treat `cast("Any", ...)` as a last resort.
+
+For Textual tests that intentionally replace concrete app methods with `MagicMock` or `AsyncMock`, prefer `monkeypatch.setattr(...)` or one small documented dynamic helper over repeated `cast("Any", app)` expressions. Assert on local mock variables instead of re-reading mocked methods from the concrete object when possible.
+
+Casts are acceptable when the type violation is the point of the test (for example, passing a wrong runtime type to exercise defensive validation) or when a third-party overload is narrower than verified runtime behavior. In those cases, keep the cast narrowly scoped and add a short comment explaining why it is intentional.
 
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+
+## Local dev installs
+
+Keep the released CLI and editable development CLI separate:
+
+- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
+- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
+
+This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
+
+`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
+
+Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
+
+```bash
+uv venv ~/.local/share/dcode-dev --python 3.13
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
+ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
+```
+
+When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
+
+```bash
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
+```
+
+Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
+
+```bash
+which dcode
+which dcode-dev
+dcode --version
+dcode-dev --version
+~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
+```
 
 ## Startup performance
 
@@ -103,7 +149,8 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
 2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
 3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-4. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
+5. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
 
 ### `PROVIDER_BASE_URL_ENV` guidelines
 

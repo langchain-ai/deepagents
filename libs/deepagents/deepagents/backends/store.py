@@ -4,7 +4,7 @@ import base64
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, cast
 
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
@@ -259,8 +259,10 @@ class StoreBackend(BackendProtocol):
                 runtime = get_runtime()
             except (RuntimeError, KeyError):
                 runtime = None
-            compat = _NamespaceRuntimeCompat(runtime)
-            return _validate_namespace(self._namespace(compat))  # type: ignore[arg-type]
+            # `_NamespaceRuntimeCompat` deliberately duck-types `Runtime` for
+            # legacy factories; cast because `Runtime` itself is not structural.
+            compat = cast("Runtime[Any]", _NamespaceRuntimeCompat(runtime))
+            return _validate_namespace(self._namespace(compat))
 
         return self._get_namespace_legacy()
 

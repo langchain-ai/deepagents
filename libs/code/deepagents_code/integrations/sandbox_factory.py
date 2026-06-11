@@ -123,8 +123,9 @@ def create_sandbox(
         )
         raise ValueError(msg)
 
-    # Get provider instance
-    provider_obj = _get_provider(provider)
+    # Get provider instance (reuse the registry already built above so we
+    # don't re-read the config file and re-scan entry points).
+    provider_obj = _get_provider(provider, registry=registry)
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
@@ -172,8 +173,9 @@ def create_sandbox(
 def _get_registry() -> SandboxRegistry:
     """Build a `SandboxRegistry` from the current user config.
 
-    The registry is cheap to construct and reflects the latest config and
-    entry points on each call, so it is not cached here.
+    Not cached: each call re-reads the config file and re-scans entry points so
+    the registry reflects the latest state. Reuse a single instance within one
+    operation (see `create_sandbox`) rather than calling this repeatedly.
 
     Returns:
         A fresh `SandboxRegistry`.
@@ -843,18 +845,24 @@ class _AgentCoreProvider(SandboxProvider):
             )
 
 
-def _get_provider(provider_name: str) -> SandboxProvider:
+def _get_provider(
+    provider_name: str,
+    registry: SandboxRegistry | None = None,
+) -> SandboxProvider:
     """Get a `SandboxProvider` instance for the specified provider (internal).
 
     Args:
         provider_name: Name of the provider. Resolved through the registry so
             built-in, entry-point, and config providers are all supported.
+        registry: An already-built registry to reuse. A fresh one is loaded
+            when omitted.
 
     Returns:
-        `SandboxProvider` instance. Raises `ValueError` (via the registry) if
-            `provider_name` is unknown.
+        `SandboxProvider` instance. Propagates `ValueError` from the registry
+            if `provider_name` is unknown.
     """
-    return _get_registry().create_provider(provider_name)
+    reg = registry if registry is not None else _get_registry()
+    return reg.create_provider(provider_name)
 
 
 def verify_sandbox_deps(provider: str) -> None:

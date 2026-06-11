@@ -54,7 +54,6 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         working_dir="/root",  # `$HOME` in the LangSmith sandbox
         # Bundled with `deepagents-code` via `langsmith[sandbox]`; no extra.
         supports_snapshot_name=True,
-        snapshot_name_label="snapshot",
     ),
     "modal": SandboxProviderMetadata(
         name="modal",
@@ -67,7 +66,6 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         working_dir="/home/user",
         install=SandboxInstallHint(kind="extra", name="runloop"),
         supports_snapshot_name=True,
-        snapshot_name_label="blueprint",
         backend_module="langchain_runloop",
     ),
 }
@@ -174,6 +172,14 @@ class SandboxRegistry:
         """The configured default provider, if any."""
         return self._config.default
 
+    @property
+    def config_error(self) -> str | None:
+        """Why the config file failed to load, if it existed but couldn't parse.
+
+        `None` when the config parsed cleanly or simply wasn't present.
+        """
+        return self._config.parse_error
+
     def available_providers(self) -> list[str]:
         """Return all known provider names, sorted."""
         names = (
@@ -226,6 +232,11 @@ class SandboxRegistry:
                     "supports_snapshot_name",
                     base.supports_snapshot_name if base else False,
                 ),
+                # Carry the built-in's probe module so a config override of a
+                # built-in keeps its dependency pre-flight check. A pure config
+                # provider (no base) leaves this `None`; its package is resolved
+                # when the provider class is imported.
+                backend_module=base.backend_module if base else None,
             )
         if name in self._entry_points:
             return self.provider_metadata(name)
@@ -246,8 +257,8 @@ class SandboxRegistry:
             name: Provider name.
 
         Returns:
-            A `SandboxProvider` instance. Raises `ImportError` (via
-                `_load_class` / `EntryPoint.load`) if a config or entry-point
+            A `SandboxProvider` instance. Propagates `ImportError` from
+                `_load_class` / `EntryPoint.load` if a config or entry-point
                 class cannot be imported.
 
         Raises:

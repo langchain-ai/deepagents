@@ -16,6 +16,8 @@ from deepagents_code.integrations.sandbox_provider import (
 from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from deepagents.backends.protocol import SandboxBackendProtocol
 
 
@@ -61,8 +63,28 @@ class ModalEntryPointProvider(SandboxProvider):
         return None
 
 
+class RaisingProvider(SandboxProvider):
+    """Entry-point provider whose constructor fails (e.g. missing creds)."""
+
+    def __init__(self) -> None:
+        msg = "no credentials configured"
+        raise RuntimeError(msg)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        return MagicMock()
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        return None
+
+
 _FAKE_CLASS_PATH = f"{__name__}:FakeProvider"
 _MODAL_ENTRY_POINT_CLASS_PATH = f"{__name__}:ModalEntryPointProvider"
+_RAISING_CLASS_PATH = f"{__name__}:RaisingProvider"
 
 
 def _metadata(registry: SandboxRegistry, name: str) -> SandboxProviderMetadata:
@@ -200,3 +222,84 @@ def test_config_overrides_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_create_unknown_provider_raises() -> None:
     with pytest.raises(ValueError, match="Unknown sandbox provider: acme"):
         _empty_registry().create_provider("acme")
+
+
+def test_builtin_supports_sandbox_id_flags() -> None:
+    """`supports_sandbox_id` reflects each built-in's capability."""
+    registry = _empty_registry()
+    assert _metadata(registry, "agentcore").supports_sandbox_id is False
+    assert _metadata(registry, "daytona").supports_sandbox_id is True
+
+
+def test_config_override_of_builtin_carries_backend_module() -> None:
+    """Overriding a built-in keeps its probe module so deps stay verifiable."""
+    config = SandboxConfig(
+        providers={
+            "daytona": {
+                "class_path": _FAKE_CLASS_PATH,
+                "package": "my-daytona",
+            }
+        }
+    )
+    registry = SandboxRegistry(config=config, include_entry_points=False)
+    metadata = _metadata(registry, "daytona")
+    # Probe module inherited from the built-in base...
+    assert metadata.backend_module == "langchain_daytona"
+    # ...while the install hint reflects the user's package override.
+    assert metadata.install is not None
+    assert metadata.install.kind == "package"
+    assert metadata.install.name == "my-daytona"
+    # Working dir falls back to the built-in default when not overridden.
+    assert metadata.working_dir == "/home/daytona"
+
+
+def test_pure_config_provider_has_no_backend_module() -> None:
+    """A config provider with no built-in base skips the dependency probe."""
+    config = SandboxConfig(providers={"acme": {"class_path": _FAKE_CLASS_PATH}})
+    registry = SandboxRegistry(config=config, include_entry_points=False)
+    assert _metadata(registry, "acme").backend_module is None
+
+
+def test_discover_entry_points_failure_is_handled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure enumerating entry points degrades to built-ins only."""
+
+    def boom(*, group: str) -> list[importlib.metadata.EntryPoint]:  # noqa: ARG001
+        msg = "broken dist-info"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", boom)
+    registry = SandboxRegistry(config=SandboxConfig(), include_entry_points=True)
+    # Built-ins still resolve; discovery failure didn't crash construction.
+    assert registry.is_available("daytona")
+    assert "daytona" in registry.available_providers()
+
+
+def test_provider_metadata_falls_back_when_instantiation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry-point provider that can't construct yields a safe placeholder."""
+    entry = importlib.metadata.EntryPoint(
+        name="acme",
+        value=_RAISING_CLASS_PATH,
+        group="deepagents_code.sandbox_providers",
+    )
+    monkeypatch.setattr(
+        importlib.metadata,
+        "entry_points",
+        lambda *, group: [entry],  # noqa: ARG005
+    )
+    registry = SandboxRegistry(config=SandboxConfig(), include_entry_points=True)
+    metadata = registry.provider_metadata("acme")
+    assert metadata.name == "acme"
+    assert metadata.working_dir == "/workspace"
+
+
+def test_config_error_surfaces_through_registry(tmp_path: Path) -> None:
+    """A malformed config file is reported via `config_error`."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("this is not = valid = toml", encoding="utf-8")
+    registry = SandboxRegistry.load(config_path)
+    assert registry.config_error is not None
+    assert "invalid TOML" in registry.config_error

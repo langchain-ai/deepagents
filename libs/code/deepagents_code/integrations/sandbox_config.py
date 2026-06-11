@@ -70,6 +70,15 @@ class SandboxConfig:
     providers: Mapping[str, SandboxProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
+    parse_error: str | None = None
+    """Set when the config file existed but could not be read or parsed.
+
+    `load()` degrades to an empty config on malformed TOML or an unreadable
+    file so unrelated startup keeps working, but the user explicitly opted into
+    a sandbox. Callers surface this so the failure isn't invisible (a bare
+    `logger.warning` never reaches the TUI).
+    """
+
     def __post_init__(self) -> None:
         """Freeze the providers dict into a read-only proxy."""
         if not isinstance(self.providers, MappingProxyType):
@@ -102,15 +111,15 @@ class SandboxConfig:
                 config_path,
                 e,
             )
-            return cls()
+            return cls(parse_error=f"invalid TOML syntax: {e}")
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            return cls()
+            return cls(parse_error=f"could not read config file: {e}")
 
         section = data.get("sandboxes", {})
         if not isinstance(section, dict):
             logger.warning("[sandboxes] is not a table; ignoring sandbox config")
-            return cls()
+            return cls(parse_error="[sandboxes] is not a table")
 
         providers = section.get("providers", {})
         if not isinstance(providers, dict):
@@ -137,6 +146,13 @@ class SandboxConfig:
                     "must be in module.path:ClassName format",
                     name,
                     class_path,
+                )
+            params = provider.get("params")
+            if params is not None and not isinstance(params, dict):
+                logger.warning(
+                    "Sandbox provider '%s' has non-table 'params' (%s); ignoring it",
+                    name,
+                    type(params).__name__,
                 )
 
     def get_params(self, provider_name: str) -> dict[str, Any]:

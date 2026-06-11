@@ -43,8 +43,11 @@ class SandboxInstallHint:
 class SandboxProviderMetadata:
     """Static description of a sandbox provider used by the registry.
 
-    Carries everything the CLI and registry need without instantiating the
-    provider (which may require credentials or optional dependencies).
+    Lets the CLI and registry describe built-in and config providers without
+    instantiating them (which may require credentials or optional
+    dependencies). Entry-point providers expose their own instance via the
+    `SandboxProvider.metadata` property, which the registry reads only when it
+    already needs to construct the provider.
     """
 
     name: str
@@ -52,7 +55,6 @@ class SandboxProviderMetadata:
     install: SandboxInstallHint | None = None
     supports_sandbox_id: bool = True
     supports_snapshot_name: bool = False
-    snapshot_name_label: str = "snapshot"
     backend_module: str | None = None
     """Importable backend module checked by the pre-flight dependency probe.
 
@@ -76,6 +78,19 @@ class SandboxNotFoundError(SandboxError):
 
 class SandboxProvider(ABC):
     """Interface for creating and deleting sandbox backends."""
+
+    @property
+    def metadata(self) -> SandboxProviderMetadata | None:
+        """Static metadata describing this provider.
+
+        Third-party providers published under the
+        `deepagents_code.sandbox_providers` entry-point group override this so
+        the registry can surface their working directory and capability flags
+        (snapshot/sandbox-id support) instead of falling back to a generic
+        placeholder. Returns `None` by default; the registry then synthesizes a
+        minimal default.
+        """
+        return None
 
     @abstractmethod
     def get_or_create(

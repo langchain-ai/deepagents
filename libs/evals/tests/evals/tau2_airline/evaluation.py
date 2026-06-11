@@ -266,6 +266,15 @@ def _args_match(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_amounts(text: str) -> str:
+    """Strip thousands separators and currency symbols before matching.
+
+    Lets a communicated amount match regardless of formatting, e.g. expected
+    "1286" against the agent's natural "$1,286".
+    """
+    return text.replace(",", "").replace("$", "")
+
+
 def check_communicate(
     messages: list[Message],
     task: dict[str, Any],
@@ -283,8 +292,8 @@ def check_communicate(
     if not expected:
         return 1.0
 
-    agent_text = " ".join(m.content for m in messages if m.role == "assistant")
-    found = sum(1 for info in expected if str(info) in agent_text)
+    agent_text = _normalize_amounts(" ".join(m.content for m in messages if m.role == "assistant"))
+    found = sum(1 for info in expected if _normalize_amounts(str(info)) in agent_text)
     return found / len(expected)
 
 

@@ -289,6 +289,49 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={})[0] is False
 
 
+def test_thread_relative_time_default_matches_runtime_loader() -> None:
+    """Fresh thread config shows relative timestamps by default."""
+    opt = get_option("threads.relative_time")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={}) == (True, "default")
+
+
+def test_auto_update_resolves_persisted_config() -> None:
+    """`set_auto_update()` writes the TOML path surfaced by the manifest."""
+    opt = get_option("update.auto_update")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"update": {"auto_update": True}}) == (
+        True,
+        "config.toml",
+    )
+
+
+def test_no_update_check_env_uses_presence_semantics(monkeypatch) -> None:
+    """Any non-empty no-update-check env var disables checks, including '0'."""
+    opt = get_option("update.no_update_check")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL_PRESENCE
+    monkeypatch.setenv(_env_vars.NO_UPDATE_CHECK, "0")
+    assert resolve_scalar(opt, toml_data={}) == (
+        True,
+        f"env ({_env_vars.NO_UPDATE_CHECK})",
+    )
+
+
+def test_no_update_check_resolves_inverted_persisted_check() -> None:
+    """`[update].check = false` means the effective no-check flag is enabled."""
+    opt = get_option("update.no_update_check")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"update": {"check": False}}) == (
+        True,
+        "config.toml",
+    )
+    assert resolve_scalar(opt, toml_data={"update": {"check": True}}) == (
+        False,
+        "config.toml",
+    )
+
+
 def test_resolve_ptc_delegates_to_parser() -> None:
     """The PTC kind routes through the dedicated allowlist parser."""
     opt = get_option("interpreter.ptc")
@@ -434,6 +477,22 @@ def test_config_option_rejects_default_on_structured() -> None:
     with pytest.raises(TypeError, match="must not declare a default"):
         ConfigOption(
             key="x", group="g", summary="s", kind=OptionKind.STRUCTURED, default="x"
+        )
+
+
+def test_config_option_rejects_inverted_non_bool_toml() -> None:
+    """Only boolean TOML options can use inverted config-file semantics."""
+    import pytest
+
+    with pytest.raises(TypeError, match="requires a boolean option kind"):
+        ConfigOption(
+            key="x",
+            group="g",
+            summary="s",
+            kind=OptionKind.STR,
+            default="x",
+            toml_keys=("section", "key"),
+            invert_toml_bool=True,
         )
 
 

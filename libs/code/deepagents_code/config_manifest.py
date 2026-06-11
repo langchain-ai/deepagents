@@ -154,6 +154,9 @@ class ConfigOption:
     toml_keys: tuple[str, ...] | None = None
     """Section/key path within `config.toml`, or `None`."""
 
+    invert_toml_bool: bool = False
+    """Whether a TOML bool should be negated after validation."""
+
     cli_flag: str | None = None
     """Representative CLI flag that sets the option, or `None`."""
 
@@ -191,6 +194,8 @@ class ConfigOption:
         """
         default = self.default
         if default is None:
+            if self.invert_toml_bool:
+                self._validate_invert_toml_bool()
             return
         if isinstance(default, (list, dict, set)):
             msg = (
@@ -201,6 +206,8 @@ class ConfigOption:
         if self.kind is OptionKind.STRUCTURED:
             msg = f"{self.key}: STRUCTURED options must not declare a default"
             raise TypeError(msg)
+        if self.invert_toml_bool:
+            self._validate_invert_toml_bool()
         expected = _KIND_DEFAULT_TYPES.get(self.kind)
         if expected is None:
             # Delegate kinds validate their own (immutable) default shapes.
@@ -214,6 +221,19 @@ class ConfigOption:
                 f"{self.key}: default {default!r} is not valid for kind "
                 f"{self.kind.value}"
             )
+            raise TypeError(msg)
+
+    def _validate_invert_toml_bool(self) -> None:
+        """Validate the inverted TOML bool marker is only used where coherent.
+
+        Raises:
+            TypeError: When the marker is used without a boolean TOML source.
+        """
+        if self.kind not in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+            msg = f"{self.key}: invert_toml_bool requires a boolean option kind"
+            raise TypeError(msg)
+        if self.toml_keys is None:
+            msg = f"{self.key}: invert_toml_bool requires toml_keys"
             raise TypeError(msg)
 
     @property
@@ -345,7 +365,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
 
     if kind in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
         if isinstance(raw, bool):
-            return raw
+            return not raw if option.invert_toml_bool else raw
     elif kind is OptionKind.INT:
         if isinstance(raw, int) and not isinstance(raw, bool):
             return raw
@@ -838,7 +858,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Threads",
         summary="Show thread timestamps as relative time.",
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         toml_keys=("threads", "relative_time"),
         cli_flag="--relative",
     ),
@@ -874,15 +894,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.AUTO_UPDATE,
+        toml_keys=("update", "auto_update"),
         cli_flag="--set-auto-update",
     ),
     ConfigOption(
         key="update.no_update_check",
         group="Updates",
         summary="Disable automatic update checking.",
-        kind=OptionKind.BOOL,
+        kind=OptionKind.BOOL_PRESENCE,
         default=False,
         env_var=_env_vars.NO_UPDATE_CHECK,
+        toml_keys=("update", "check"),
+        invert_toml_bool=True,
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(

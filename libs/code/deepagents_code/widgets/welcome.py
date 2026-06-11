@@ -14,7 +14,6 @@ from textual.widgets import Static
 
 if TYPE_CHECKING:
     from textual.events import Click, MouseMove
-    from textual.timer import Timer
 
 from deepagents_code import theme
 from deepagents_code._env_vars import (
@@ -68,23 +67,6 @@ _TIPS: dict[str, int] = {
 One is picked per session. Higher weights are picked more often.
 """
 
-_CONNECTING_FOOTER_DELAY_SECONDS = 5.0
-"""Upper bound on how long the banner waits before revealing "Connecting...".
-
-Startup is usually fast enough that flashing the spinner makes the app feel
-slower than it is; the welcome footer renders immediately and the connecting
-footer only appears if startup is genuinely taking a while or the user
-submits a message before the agent is reachable. The timer is cancelled
-early when `set_connected`, `set_idle`, or `set_connecting` runs first, so
-this delay is the maximum — not a fixed wait.
-"""
-
-_DOT_FRAMES: tuple[str, ...] = (".", "..", "...")
-"""Ellipsis animation frames cycled by the connecting-footer dot timer."""
-
-_DOT_INTERVAL = 0.4
-"""Seconds between connecting-footer ellipsis frame advances."""
-
 
 def _pick_tip() -> str:
     """Pick a tip from `_TIPS` weighted by its associated weight.
@@ -123,10 +105,6 @@ class WelcomeBanner(Static):
         mcp_unauthenticated: int = 0,
         mcp_errored: int = 0,
         mcp_awaiting_reconnect: int = 0,
-        connecting: bool = False,
-        resuming: bool = False,
-        local_server: bool = False,
-        defer_connecting_display: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the welcome banner.
@@ -139,21 +117,6 @@ class WelcomeBanner(Static):
             mcp_awaiting_reconnect: Number of MCP servers that completed OAuth
                 login but are waiting for `/mcp reconnect` before their tools
                 can load.
-            connecting: When `True`, show a "Connecting..." footer instead of
-                the normal ready prompt. Call `set_connected` to transition.
-            resuming: When `True`, the connecting footer says "Resuming..."
-                instead of any `'Connecting...'` variant.
-            local_server: When `True`, the connecting footer qualifies the
-                server as "local" (i.e. a server process).
-
-                Ignored when `resuming` is `True`.
-            defer_connecting_display: When `True` and `connecting` is `True`,
-                suppress the connecting footer initially so a fast startup
-                feels instantaneous; the welcome footer remains visible until
-                startup resolves. The connecting footer is revealed by
-                `reveal_connecting_footer` (called when the user submits a
-                message during startup) or automatically after
-                `_CONNECTING_FOOTER_DELAY_SECONDS`.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
@@ -162,15 +125,7 @@ class WelcomeBanner(Static):
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
-        self._connecting = connecting
-        self._resuming = resuming
-        self._local_server = local_server
-        self._reconnecting = False
         self._idle = False
-        self._defer_connecting_display = defer_connecting_display and connecting
-        self._defer_timer: Timer | None = None
-        self._dot_frame: int = len(_DOT_FRAMES) - 1
-        self._dot_timer: Timer | None = None
         self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
         self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
         self._project_name: str | None = (
@@ -186,63 +141,6 @@ class WelcomeBanner(Static):
         self.watch(self.app, "theme", self._on_theme_change, init=False)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
-        if self._defer_connecting_display:
-            self._defer_timer = self.set_timer(
-                _CONNECTING_FOOTER_DELAY_SECONDS, self._on_defer_timer_fired
-            )
-        elif self._connecting:
-            self._start_dot_animation()
-
-    def _cancel_defer_timer(self) -> None:
-        """Stop and drop the deferred-display timer if it is still pending."""
-        if self._defer_timer is not None:
-            self._defer_timer.stop()
-            self._defer_timer = None
-
-    def _start_dot_animation(self) -> None:
-        """Start the ellipsis animation for the connecting footer.
-
-        No-op when the widget is not yet running (e.g., called before mount
-        or from sync test code): `set_interval` requires a live event loop.
-        """
-        if self._dot_timer is not None or not self._running:
-            return
-        self._dot_frame = len(_DOT_FRAMES) - 1
-        self._dot_timer = self.set_interval(_DOT_INTERVAL, self._tick_dots)
-
-    def _stop_dot_animation(self) -> None:
-        """Stop the ellipsis animation and reset to full dots."""
-        if self._dot_timer is not None:
-            self._dot_timer.stop()
-            self._dot_timer = None
-        self._dot_frame = len(_DOT_FRAMES) - 1
-
-    def _tick_dots(self) -> None:
-        """Advance the ellipsis frame and re-render the banner."""
-        self._dot_frame = (self._dot_frame + 1) % len(_DOT_FRAMES)
-        self.update(self._build_banner(self._project_url))
-
-    def _on_defer_timer_fired(self) -> None:
-        """Reveal the connecting footer once the deferral window expires."""
-        self._defer_timer = None
-        self.reveal_connecting_footer()
-
-    def reveal_connecting_footer(self) -> None:
-        """Stop deferring the "Connecting..." footer and render it now.
-
-        No-op once the deferred state has been cleared (by reveal, connect,
-        idle, or because deferral was never active). Two callers reach this:
-        the deferral timer (`_on_defer_timer_fired`) when the wait window
-        elapses, and the app when the user submits a message during startup
-        so the queued state has explicit feedback.
-        """
-        if not self._defer_connecting_display:
-            return
-        self._cancel_defer_timer()
-        self._defer_connecting_display = False
-        if self._connecting:
-            self._start_dot_animation()
-            self.update(self._build_banner(self._project_url))
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
@@ -280,7 +178,10 @@ class WelcomeBanner(Static):
         mcp_errored: int = 0,
         mcp_awaiting_reconnect: int = 0,
     ) -> None:
-        """Transition from "connecting" to "ready" state.
+        """Render the ready banner footer after a successful connect.
+
+        The status bar owns visible connection progress; this just refreshes
+        the banner's tool counts and ready footer once the server is reachable.
 
         Args:
             mcp_tool_count: Number of MCP tools loaded during connection.
@@ -290,12 +191,7 @@ class WelcomeBanner(Static):
                 login but are waiting for `/mcp reconnect` before their tools
                 can load.
         """
-        self._connecting = False
-        self._reconnecting = False
         self._idle = False
-        self._defer_connecting_display = False
-        self._cancel_defer_timer()
-        self._stop_dot_animation()
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
@@ -303,25 +199,16 @@ class WelcomeBanner(Static):
         self.update(self._build_banner(self._project_url))
 
     def set_connecting(self) -> None:
-        """Transition back to the "connecting" state.
+        """Render the regular banner footer during a reconnect.
 
-        Used when the server is being restarted mid-session (e.g., switching
-        agents via `/agents`), so the banner reflects that no agent is
-        currently reachable. Mid-session swaps show the connecting footer
-        immediately — only the initial app launch defers it.
+        The status bar owns visible connection progress. This method only
+        ensures the banner is no longer in the idle failure state.
         """
-        self._stop_dot_animation()
-        self._connecting = True
-        self._reconnecting = True
         self._idle = False
-        self._resuming = False
-        self._defer_connecting_display = False
-        self._cancel_defer_timer()
-        self._start_dot_animation()
         self.update(self._build_banner(self._project_url))
 
     def set_idle(self) -> None:
-        """Transition to a neutral state with no connecting spinner or footer.
+        """Transition to a neutral state with no footer.
 
         Used after a fatal startup failure so the banner stops claiming
         progress (the failure is communicated via the chat surface). The
@@ -329,12 +216,7 @@ class WelcomeBanner(Static):
         LangSmith project, thread ID) but appends no footer line, leaving
         the chat error as the sole source of failure context.
         """
-        self._connecting = False
-        self._reconnecting = False
         self._idle = True
-        self._defer_connecting_display = False
-        self._cancel_defer_timer()
-        self._stop_dot_animation()
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -487,17 +369,7 @@ class WelcomeBanner(Static):
                 ]
             )
 
-        show_connecting = self._connecting and not self._defer_connecting_display
-        if show_connecting:
-            parts.append(
-                build_connecting_footer(
-                    resuming=self._resuming,
-                    local_server=self._local_server,
-                    reconnecting=self._reconnecting,
-                    dots=_DOT_FRAMES[self._dot_frame],
-                )
-            )
-        elif not self._idle:
+        if not self._idle:
             ready_color = "bold" if ansi else colors.primary
             parts.append(
                 build_welcome_footer(
@@ -506,44 +378,8 @@ class WelcomeBanner(Static):
                     show_tip=not self._hide_splash_tips,
                 )
             )
-        # `_idle` ⇒ no footer; chat-surface owns the failure message.
+        # `_idle` means no footer; chat-surface owns the failure message.
         return Content.assemble(*parts)
-
-
-def build_connecting_footer(
-    *,
-    resuming: bool = False,
-    local_server: bool = False,
-    reconnecting: bool = False,
-    dots: str = "...",
-) -> Content:
-    """Build a footer shown while waiting for the server to connect.
-
-    `resuming` wins over the other branches; otherwise `local_server`
-    selects between the local and generic variants, and `reconnecting`
-    swaps the verb only when `local_server` is `True`.
-
-    Args:
-        resuming: Show `'Resuming...'` instead of any `'Connecting...'` variant.
-        local_server: Qualify the server as "local" in the connecting message.
-            Honored only when `resuming` is `False`.
-        reconnecting: Use `'Reconnecting'` instead of `'Connecting'` for
-            mid-session restarts. Honored only when `local_server` is `True`
-            and `resuming` is `False`.
-        dots: Ellipsis string appended to the status text. Pass an animated
-            frame (e.g. `"."`, `".."`, `"..."`) to show a cycling indicator.
-
-    Returns:
-        Content with a connecting status message.
-    """
-    if resuming:
-        text = f"\nResuming{dots}\n"
-    elif local_server:
-        verb = "Reconnecting" if reconnecting else "Connecting"
-        text = f"\n{verb} to local server{dots}\n"
-    else:
-        text = f"\nConnecting to server{dots}\n"
-    return Content.styled(text, "dim")
 
 
 def build_welcome_footer(

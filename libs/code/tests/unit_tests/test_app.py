@@ -7188,6 +7188,14 @@ class TestDeferredActions:
             assert app._server_startup_missing_credentials_provider is None
             assert app._server_startup_error is None
 
+            # A `/model` retry is a mid-session reconnect, not an initial
+            # connect: both flags are set and the status bar reads
+            # "reconnecting" while the rebuilt server comes up.
+            assert app._connecting is True
+            assert app._reconnecting is True
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,
     ) -> None:
@@ -7850,6 +7858,7 @@ class TestRestartServerForAgentSwap:
             # *after* restart, not the original.
             assert app._agent._url == "http://127.0.0.1:60000"  # ty: ignore
             assert app._connecting is False
+            assert app._reconnecting is False
             assert app._agent_switching is False
             assert app._lc_thread_id != "old-thread"
 
@@ -8047,6 +8056,10 @@ class TestRestartServerForAgentSwap:
         # before posting so any code reading the flag in between sees the
         # correct value.
         assert app._connecting is False
+        # The failure path must reset `_reconnecting` in lock-step so the flags
+        # never strand in the meaningless `(_connecting=False, _reconnecting=True)`
+        # state the `_reconnecting` docstring warns against.
+        assert app._reconnecting is False
         failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
         assert len(failures) == 1
         assert failures[0].error is boom
@@ -12395,6 +12408,7 @@ class TestRespawnServer:
             assert len(failed) == 1
             assert isinstance(failed[0].error, RuntimeError)
             assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_subprocess_timeout_posts_server_start_failed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -12426,6 +12440,7 @@ class TestRespawnServer:
             assert len(failed) == 1
             assert isinstance(failed[0].error, asyncio.TimeoutError)
             assert app._connecting is False
+            assert app._reconnecting is False
 
     async def test_mcp_preload_failure_is_non_fatal(
         self, monkeypatch: pytest.MonkeyPatch
@@ -12592,6 +12607,265 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class TestStatusBarConnectionMirroring:
+    """The bottom status bar must mirror the connection + queue state.
+
+    The welcome banner intentionally stays out of connection progress, so
+    these tests pin the always-visible status bar as the single owner.
+    """
+
+    async def test_mount_syncs_existing_connecting_state(self) -> None:
+        """Initial startup defers the status-bar connection indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+            assert app._connection_status_reveal_timer is not None
+            app._cancel_connection_status_reveal_timer()
+
+    async def test_reveal_syncs_existing_connecting_state(self) -> None:
+        """The deferred reveal shows the current connection state on the bar."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            app._reveal_connection_status()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_connect_cancels_deferred_reveal_timer(self) -> None:
+        """Connecting resolving should clear deferral and cancel the timer."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._connection_status_reveal_timer is not None
+            app._connecting = False
+            app._sync_status_connection()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+            assert app._defer_connection_status_display is False
+            assert app._connection_status_reveal_timer is None
+
+    async def test_reveal_syncs_reconnecting_state(self) -> None:
+        """Deferred reveal should preserve reconnect labeling."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = True
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            app._reveal_connection_status()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_deferred_schedule_is_idempotent(self) -> None:
+        """Repeated syncs while deferred should not replace the timer handle."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            timer = app._connection_status_reveal_timer
+            assert timer is not None
+
+            app._sync_status_connection()
+
+            assert app._connection_status_reveal_timer is timer
+            app._cancel_connection_status_reveal_timer()
+
+    async def test_reveal_timer_callback_clears_handle(self) -> None:
+        """The timer callback clears its handle before revealing status."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._connection_status_reveal_timer is not None
+
+            app._on_connection_status_reveal_timer()
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+
+    async def test_app_banner_does_not_duplicate_connecting_state(self) -> None:
+        """The status bar, not the welcome footer, owns app connection progress."""
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test():
+            assert app._status_bar is not None
+            app._reveal_connection_status()
+            assert app._status_bar.connection_state == "connecting"
+            banner = app.query_one("#welcome-banner", WelcomeBanner)
+            assert "Connecting to server" not in banner._build_banner().plain
+
+    async def test_queued_input_does_not_reveal_banner_connection_footer(self) -> None:
+        """Queued input should update the bar without adding a second spinner."""
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+
+        async with app.run_test():
+            await app._submit_input("queued while connecting", "normal")
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._status_bar.queued_count == 1
+            banner = app.query_one("#welcome-banner", WelcomeBanner)
+            assert "Connecting to server" not in banner._build_banner().plain
+
+    async def test_sync_reflects_reconnecting(self) -> None:
+        """`_sync_status_connection` should surface a reconnect on the bar."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+
+    async def test_sync_reflects_connecting(self) -> None:
+        """An initial connect (not a reconnect) reads as connecting."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = False
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_sync_clears_when_connected(self) -> None:
+        """Clearing `_connecting` should empty the connection indicator."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+            app._connecting = False
+            app._reconnecting = False
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
+
+    async def test_queue_depth_mirrored_on_submit_and_drain(self) -> None:
+        """Queuing during a reconnect shows the count; draining clears it."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            processed: list[tuple[str, str]] = []
+
+            async def _process(value: str, mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                processed.append((value, mode))
+
+            app._process_message = _process  # ty: ignore
+
+            await app._submit_input("queued while reconnecting", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 1
+
+            app._connecting = False
+            await app._process_next_from_queue()
+            assert processed == [("queued while reconnecting", "normal")]
+            assert app._status_bar.queued_count == 0
+
+    async def test_discard_queue_clears_count(self) -> None:
+        """Discarding the queue (ESC-interrupt, force-clear, `/restart`) zeroes it."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            async def _process(_value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                return
+
+            app._process_message = _process  # ty: ignore
+
+            await app._submit_input("first", "normal")
+            await app._submit_input("second", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 2
+
+            app._discard_queue()
+            assert not app._pending_messages
+            assert app._status_bar.queued_count == 0
+
+    async def test_pop_last_queued_message_updates_count(self) -> None:
+        """Retracting the most recent queued message decrements the badge."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._sync_status_connection()
+
+            async def _process(_value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+                return
+
+            app._process_message = _process  # ty: ignore
+
+            await app._submit_input("first", "normal")
+            await app._submit_input("second", "normal")
+            assert app._status_bar is not None
+            assert app._status_bar.queued_count == 2
+
+            app._pop_last_queued_message()
+            assert len(app._pending_messages) == 1
+            assert app._status_bar.queued_count == 1
+
+    async def test_deferred_reveal_timer_fires_after_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scheduled timer actually reveals the indicator once it elapses.
+
+        The other deferral tests invoke the reveal callback directly; this one
+        exercises the real `set_timer` wiring end-to-end (shrunk to ~10ms) so a
+        broken callback reference wouldn't pass silently.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.app._CONNECTING_STATUS_REVEAL_DELAY_SECONDS", 0.01
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._connecting = True
+        app._reconnecting = False
+        app._defer_connection_status_display = True
+
+        async with app.run_test() as pilot:
+            # The ~10ms timer may fire during run_test setup or during the
+            # pause below; either way its firing is what reveals the state.
+            await pilot.pause(0.05)
+
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+            assert app._connection_status_reveal_timer is None
+            assert app._defer_connection_status_display is False
 
 
 class TestResumeThreadCwdSwitch:
@@ -12963,6 +13237,8 @@ class TestResumeThreadCwdSwitch:
         app._server_proc = old_server
         app._server_kwargs = {"assistant_id": "agent"}
         app._mcp_preload_kwargs = None
+        status_bar = MagicMock()
+        app._status_bar = status_bar
         new_agent = MagicMock()
         new_server = MagicMock()
         ready: list[Any] = []
@@ -12983,6 +13259,7 @@ class TestResumeThreadCwdSwitch:
         assert result == "continue"
         assert Path.cwd() == target
         old_server.stop.assert_called_once_with()
+        status_bar.set_connection.assert_called_once_with("reconnecting")
         assert len(ready) == 1
         assert ready[0].agent is new_agent
         assert ready[0].server_proc is new_server
@@ -13059,6 +13336,8 @@ class TestResumeThreadCwdSwitch:
         app._server_kwargs = {"assistant_id": "agent"}
         app._mcp_preload_kwargs = None
         app._mcp_server_info = ["prev"]
+        status_bar = MagicMock()
+        app._status_bar = status_bar
 
         async def boom(**_kwargs: object) -> tuple[Any, Any, None]:  # noqa: RUF029
             msg = "server failed"
@@ -13080,6 +13359,11 @@ class TestResumeThreadCwdSwitch:
         assert app._server_proc is old_server
         assert app._mcp_server_info == ["prev"]
         assert app._connecting is False
+        assert app._reconnecting is False
+        assert status_bar.set_connection.call_args_list == [
+            call("reconnecting"),
+            call(""),
+        ]
         old_server.stop.assert_not_called()
 
     async def test_replace_server_failure_rolls_back_project_dotenv(

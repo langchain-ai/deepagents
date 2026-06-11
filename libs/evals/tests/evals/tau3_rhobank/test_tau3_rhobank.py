@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 pytestmark = [
     pytest.mark.eval_category("conversation"),
     pytest.mark.eval_category("tau3"),
+    pytest.mark.eval_tier("hillclimb"),
 ]
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def test_tau3_rhobank(model: BaseChatModel, task_id: str) -> None:
     user_sim = UserSimulator(
         model=user_model,
         scenario=task.get("user_scenario", {}),
-        user_tools=active_user_tools if active_user_tools else None,
+        user_tools=active_user_tools or None,
     )
 
     combined_log = agent_tool_log

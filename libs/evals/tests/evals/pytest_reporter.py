@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 import sys
 from datetime import UTC, datetime
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,9 +14,10 @@ if TYPE_CHECKING:
     import pytest
 
 from deepagents._version import __version__
-from deepagents.graph import get_default_model
 
 import tests.evals.utils as _evals_utils
+
+logger = logging.getLogger(__name__)
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -38,6 +41,12 @@ _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 
 _EXPERIMENT_LINKS: list[dict[str, str]] = []
 """LangSmith experiment link dicts with "name", "url", and optional "public_url" keys, collected at session teardown."""
+
+_FAILURES: list[dict[str, str]] = []
+"""Per-test failure details (`test_name`, `category`, `failure_message`) for post-run analysis."""
+
+_MAX_FAILURE_MSG_LEN = 30_000
+"""Truncate failure messages beyond this length (~7500 tokens) to stay within LLM context limits."""
 
 
 def _micro_step_ratio() -> float | None:
@@ -103,8 +112,6 @@ def pytest_configure(config: pytest.Config) -> None:
 def _langsmith_version() -> str:
     """Return the installed langsmith version, or "unknown" on failure."""
     try:
-        from importlib.metadata import version as pkg_version
-
         return pkg_version("langsmith")
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -126,8 +133,9 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         return
 
     try:
-        from langsmith import client as ls_client  # noqa: I001
-        from langsmith.testing._internal import (
+        # langsmith is an optional dep; localized so missing-package skips.
+        from langsmith import client as ls_client  # noqa: I001, PLC0415
+        from langsmith.testing._internal import (  # noqa: PLC0415
             _LangSmithTestSuite,
             _get_test_suite,
             _start_experiment,
@@ -140,10 +148,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         client = ls_client.Client()
         dataset = _get_test_suite(client, test_suite_name)
 
-        model_opt = session.config.getoption("--model", default=None)
-        model_name = model_opt or str(get_default_model().model)
         experiment_metadata = {
-            "model": model_name,
+            "model": session.config.getoption("--model"),
             "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
             "deepagents_version": __version__,
         }
@@ -233,6 +239,19 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _RESULTS[outcome] += 1
 
     categories = _NODEID_TO_CATEGORY.get(report.nodeid)
+
+    if outcome == "failed":
+        msg = report.longreprtext
+        if len(msg) > _MAX_FAILURE_MSG_LEN:
+            msg = msg[:_MAX_FAILURE_MSG_LEN] + "\n\n... [truncated]"
+        _FAILURES.append(
+            {
+                "test_name": report.nodeid,
+                "category": ",".join(categories) if categories else "",
+                "failure_message": msg,
+            }
+        )
+
     if categories and outcome in {"passed", "failed"}:
         for category in categories:
             bucket = _CATEGORY_RESULTS.setdefault(category, {"passed": 0, "failed": 0, "total": 0})
@@ -280,7 +299,8 @@ def _collect_experiment_links() -> list[dict[str, str]]:
     any failure.
     """
     try:
-        from langsmith.testing._internal import _LangSmithTestSuite
+        # langsmith is an optional dep; localized so missing-package skips.
+        from langsmith.testing._internal import _LangSmithTestSuite  # noqa: PLC0415
     except ImportError:
         return []
 
@@ -313,12 +333,7 @@ def _collect_experiment_links() -> list[dict[str, str]]:
             msg = f"warning: found {len(instances)} LangSmith test suite(s) but could not extract any experiment URLs"
             print(msg, file=sys.stderr)  # noqa: T201
     except Exception as exc:  # noqa: BLE001  # private API; best-effort
-        try:
-            from importlib.metadata import version as pkg_version
-
-            ls_ver = pkg_version("langsmith")
-        except Exception:  # noqa: BLE001
-            ls_ver = "unknown"
+        ls_ver = _langsmith_version()
         msg = f"warning: failed to collect experiment links (langsmith=={ls_ver}): {exc!r}"
         print(msg, file=sys.stderr)  # noqa: T201
         return []
@@ -328,7 +343,16 @@ def _collect_experiment_links() -> list[dict[str, str]]:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     _ = exitstatus
-    if session.exitstatus == 1:
+    # Test failures alone shouldn't fail the CI step — aggregation/reporting
+    # steps need to run even when some evals regress. But if no tests ran, the
+    # session is either misconfigured (e.g. unknown `--eval-category` value) or
+    # crashed before collection; preserve the non-zero exit so the step fails
+    # loudly instead of silently producing an empty report. `_RESULTS["total"]`
+    # is incremented only on the `call` phase, so marked-skip runs (setup-only
+    # reports) also leave `total == 0` and are treated as "no tests ran".
+    # Non-1 exit codes (interrupt, internal error, usage error, no-tests-
+    # collected) are never rewritten.
+    if session.exitstatus == 1 and _RESULTS["total"] > 0:
         session.exitstatus = 0
 
     if not _EXPERIMENT_LINKS:
@@ -348,9 +372,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
-        "model": session.config.getoption("--model")
-        or str(session.config._inicache.get("model", ""))
-        or str(get_default_model().model),
+        "model": session.config.getoption("--model"),
         **_RESULTS,
         "correctness": correctness,
         "category_scores": category_scores,
@@ -360,6 +382,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "median_duration_s": median_duration_s,
         "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
         "experiment_links": _EXPERIMENT_LINKS,
+        "failures": _FAILURES,
     }
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")
@@ -399,6 +422,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:
+        return
+
+    # Don't clobber an existing report with a `model: null` payload when the
+    # session aborted before `--model` validation in `pytest_configure`.
+    if not payload["model"]:
+        logger.warning(
+            "Skipping report write to %s: session aborted before --model validation.",
+            report_path_opt,
+        )
         return
 
     report_path = Path(str(report_path_opt))

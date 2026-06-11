@@ -1,20 +1,24 @@
 import warnings
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Never
+from unittest.mock import patch
 
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langgraph.runtime import Runtime
 from langgraph.store.memory import InMemoryStore
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
-from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
+from deepagents.backends.store import BackendContext, StoreBackend, _NamespaceRuntimeCompat, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def test_store_backend_crud_and_search():
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
@@ -46,9 +50,29 @@ def test_store_backend_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
-def test_store_backend_ls_nested_directories():
+def test_store_backend_write_rejects_existing_file():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+
+    # Create the file
+    result = be.write("/charmander.txt", "Hello world")
+    assert result.error is None
+
+    # Attempt to overwrite — should fail
+    result = be.write("/charmander.txt", "New content")
+    assert result.error is not None
+    assert "Cannot write" in result.error
+    assert "already exists" in result.error
+
+    # Original content preserved
+    read_result = be.read("/charmander.txt")
+    assert read_result.file_data is not None
+    assert "Hello world" in read_result.file_data["content"]
+
+
+def test_store_backend_ls_nested_directories():
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -94,7 +118,7 @@ def test_store_backend_ls_nested_directories():
 
 def test_store_backend_ls_trailing_slash():
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -122,7 +146,7 @@ def test_store_backend_intercept_large_tool_result(file_format):
     """Test that StoreBackend properly handles large tool result interception."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
         tool_token_limit_before_evict=1000,
     )
 
@@ -159,7 +183,7 @@ class UserContext:
 def test_store_backend_namespace_user_scoped() -> None:
     """Test namespace factory with user_id captured in closure."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "alice"))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem", "alice"))
 
     # Write a file
     be.write("/test.txt", "hello alice")
@@ -180,7 +204,7 @@ def test_store_backend_namespace_multi_level() -> None:
     mem_store = InMemoryStore()
     be = StoreBackend(
         store=mem_store,
-        namespace=lambda _ctx: (
+        namespace=lambda _rt: (
             "workspace",
             "ws-123",
             "user",
@@ -202,11 +226,11 @@ def test_store_backend_namespace_isolation() -> None:
     mem_store = InMemoryStore()
 
     # User alice
-    be_alice = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "alice"))
+    be_alice = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem", "alice"))
     be_alice.write("/notes.txt", "alice notes")
 
     # User bob
-    be_bob = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "bob"))
+    be_bob = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem", "bob"))
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
@@ -228,7 +252,7 @@ def test_store_backend_namespace_isolation() -> None:
 def test_store_backend_namespace_error_handling() -> None:
     """Test that factory errors propagate correctly."""
 
-    def bad_factory(_ctx: BackendContext[Any, Any]) -> Never:
+    def bad_factory(_rt: Runtime[Any]) -> Never:
         msg = "user_id"
         raise KeyError(msg)
 
@@ -264,7 +288,7 @@ def test_store_backend_namespace_with_context() -> None:
     mem_store = InMemoryStore()
 
     def namespace_from_user(uid: str):
-        return lambda _ctx: ("threads", uid)
+        return lambda _rt: ("threads", uid)
 
     be = StoreBackend(store=mem_store, namespace=namespace_from_user("ctx-user"))
 
@@ -275,6 +299,104 @@ def test_store_backend_namespace_with_context() -> None:
     items = mem_store.search(("threads", "ctx-user"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
+
+
+# --- Backwards compatibility tests for _NamespaceRuntimeCompat ---
+
+
+def test_compat_wrapper_old_style_runtime_access_warns() -> None:
+    """Old-style factories accessing .runtime get a deprecation warning."""
+    compat = _NamespaceRuntimeCompat(runtime=None)
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = compat.runtime
+        assert result is None
+        assert len(w) == 1
+        assert w[0].category is LangChainDeprecationWarning
+        assert ".runtime" in str(w[0].message)
+        assert "0.7.0" in str(w[0].message)
+
+
+def test_compat_wrapper_old_style_state_access_warns() -> None:
+    """Old-style factories accessing .state get a deprecation warning."""
+    compat = _NamespaceRuntimeCompat(runtime=None, state={"messages": []})
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = compat.state
+        assert result == {"messages": []}
+        assert len(w) == 1
+        assert w[0].category is LangChainDeprecationWarning
+        assert ".state" in str(w[0].message)
+        assert "0.7.0" in str(w[0].message)
+
+
+def test_compat_wrapper_proxies_runtime_attrs() -> None:
+    """New-style factories can access Runtime attributes directly through the wrapper."""
+
+    @dataclass
+    class Ctx:
+        user_id: str
+
+    rt = Runtime(context=Ctx(user_id="alice"))
+    compat = _NamespaceRuntimeCompat(runtime=rt)
+
+    # New-style access: no warning, proxied to Runtime
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert compat.context.user_id == "alice"  # type: ignore[union-attr]
+        assert compat.store is None  # type: ignore[union-attr]
+        # No deprecation warnings for direct Runtime attr access
+        assert len(w) == 0
+
+
+def test_compat_wrapper_old_style_factory_end_to_end() -> None:
+    """An old-style namespace factory using ctx.runtime.context still works."""
+
+    @dataclass
+    class Ctx:
+        user_id: str
+
+    rt = Runtime(context=Ctx(user_id="bob"))
+    compat = _NamespaceRuntimeCompat(runtime=rt)
+
+    # Old-style factory
+    def old_factory(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
+        return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = old_factory(compat)  # type: ignore[arg-type]
+        assert result == ("bob", "filesystem")
+        assert len(w) == 1  # one warning from .runtime access
+
+
+def test_compat_wrapper_new_style_factory_end_to_end() -> None:
+    """A new-style namespace factory using rt.context works without warnings."""
+    rt = Runtime(
+        context=None,
+        server_info=SimpleNamespace(user=SimpleNamespace(identity="carol")),  # type: ignore[arg-type]
+    )
+    compat = _NamespaceRuntimeCompat(runtime=rt)
+
+    # New-style factory
+    def new_factory(rt: Runtime) -> tuple[str, ...]:  # type: ignore[type-arg]
+        return (rt.server_info.user.identity, "filesystem")
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = new_factory(compat)  # type: ignore[arg-type]
+        assert result == ("carol", "filesystem")
+        assert len(w) == 0  # no warnings
+
+
+def test_compat_wrapper_no_runtime_raises_on_attr_access() -> None:
+    """Accessing Runtime attrs when runtime is None raises AttributeError."""
+    compat = _NamespaceRuntimeCompat(runtime=None)
+
+    with pytest.raises(AttributeError, match="running outside graph execution"):
+        _ = compat.context  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(
@@ -292,7 +414,7 @@ def test_store_backend_namespace_with_context() -> None:
 def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_file: str) -> None:
     """Test that grep performs literal search with regex special characters."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Create files with various special regex characters
     files = {
@@ -370,7 +492,26 @@ class TestValidateNamespace:
 def test_store_backend_rejects_wildcard_namespace() -> None:
     """Ensure StoreBackend rejects namespace tuples with wildcard characters."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem", "*"))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem", "*"))
 
     with pytest.raises(ValueError, match="disallowed characters"):
         be.write("/test.txt", "content")
+
+
+def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
+    """Ensure the legacy namespace path validates assistant_id from config metadata.
+
+    A wildcard or otherwise malformed assistant_id must raise ValueError and
+    never reach the store, closing the injection gap in _get_namespace_legacy.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store)  # No namespace factory — triggers legacy path
+
+    malicious_ids = ["*", "user*", "a b", "path/to", "$var", "ns[0]", "ns{a}"]
+
+    for bad_id in malicious_ids:
+        fake_cfg = {"metadata": {"assistant_id": bad_id}}
+        with patch("deepagents.backends.store.get_config", return_value=fake_cfg), warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with pytest.raises(ValueError, match="disallowed characters"):
+                be.write("/test.txt", "content")

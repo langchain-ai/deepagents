@@ -299,6 +299,102 @@ class FinalTextExcludes(SuccessAssertion):
 
 
 @dataclass(frozen=True)
+class FinalTextContainsAny(SuccessAssertion):
+    """Assert that the final agent text contains at least ONE of the given substrings.
+
+    Useful when a behavior can be expressed in several equivalent phrasings
+    (e.g., a "value is missing" acknowledgement that could be worded as
+    "unknown", "no data", "n/a", "unable to look up", "cannot be ranked",
+    etc.). The any-of group still proves the behavior — a model that fakes
+    or hallucinates instead of acknowledging the gap would not include any
+    of these phrases.
+
+    Attributes:
+        texts: The set of substrings to look for; the check passes if any
+            one of them is present.
+        case_insensitive: Whether the comparison should ignore case.
+    """
+
+    texts: tuple[str, ...]
+    case_insensitive: bool = False
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that the final step text contains at least one of ``self.texts``.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the final text contains any of the expected substrings.
+        """
+        haystack = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        if self.case_insensitive:
+            haystack = haystack.lower()
+        for text in self.texts:
+            needle = _strip_common_zero_width(text)
+            if self.case_insensitive:
+                needle = needle.lower()
+            if needle in haystack:
+                return True
+        return False
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the final-text-contains-any check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        return (
+            f"Expected final text to contain at least one of "
+            f"{list(self.texts)!r} (case_insensitive={self.case_insensitive}), "
+            f"got: {final_text!r}"
+        )
+
+
+@dataclass(frozen=True)
+class FinalTextMinLength(SuccessAssertion):
+    """Assert that the final agent text is at least ``n`` chars (after strip).
+
+    Useful for filtering out short recap-style wrap-up messages that may
+    happen to contain expected substrings but aren't the substantive
+    answer the user asked for.
+
+    Attributes:
+        n: Minimum length of ``trajectory.steps[-1].action.text.strip()``.
+    """
+
+    n: int
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that the stripped final text is at least ``self.n`` chars.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the final text meets the minimum length.
+        """
+        return len(trajectory.steps[-1].action.text.strip()) >= self.n
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the final-text-min-length check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        actual = len(final_text.strip())
+        return f"Expected final text length >= {self.n}, got {actual}: {final_text!r}"
+
+
+@dataclass(frozen=True)
 class FileEquals(SuccessAssertion):
     """Assert that a file in the trajectory has exactly the expected content.
 
@@ -489,6 +585,46 @@ class ToolCallRequests(EfficiencyAssertion):
 
 
 @dataclass(frozen=True)
+class MaxToolCallRequests(EfficiencyAssertion):
+    """Assert that the trajectory has AT MOST ``n`` total tool call requests.
+
+    Use this when a trivial task should not invoke tools at all (or invoke
+    them rarely): a model that lost its "skip for simple tasks" guidance
+    and cargo-cults a planning tool on every query produces 4+ tool calls
+    where 0-1 was expected.
+
+    Attributes:
+        n: Maximum allowed number of tool call requests in the trajectory.
+    """
+
+    n: int
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that total tool call requests do not exceed ``self.n``.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the tool call count is at or below the maximum.
+        """
+        actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
+        return actual <= self.n
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the max-tool-call-requests check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
+        return f"Expected at most {self.n} tool call requests, got {actual}"
+
+
+@dataclass(frozen=True)
 class ToolCall(EfficiencyAssertion):
     """Assert that a specific tool call occurred in the trajectory.
 
@@ -609,6 +745,35 @@ def final_text_excludes(
     return FinalTextExcludes(text=text, case_insensitive=case_insensitive)
 
 
+def final_text_contains_any(
+    *texts: str,
+    case_insensitive: bool = False,
+) -> FinalTextContainsAny:
+    """Create a ``FinalTextContainsAny`` success assertion.
+
+    Args:
+        *texts: The substrings to look for; the check passes if any one of
+            them is present.
+        case_insensitive: Whether the comparison should ignore case.
+
+    Returns:
+        A ``FinalTextContainsAny`` assertion instance.
+    """
+    return FinalTextContainsAny(texts=tuple(texts), case_insensitive=case_insensitive)
+
+
+def final_text_min_length(n: int) -> FinalTextMinLength:
+    """Create a ``FinalTextMinLength`` success assertion.
+
+    Args:
+        n: Minimum length of the final agent text (after stripping).
+
+    Returns:
+        A ``FinalTextMinLength`` assertion instance.
+    """
+    return FinalTextMinLength(n=n)
+
+
 def file_equals(path: str, content: str) -> FileEquals:
     """Create a ``FileEquals`` success assertion.
 
@@ -670,6 +835,18 @@ def tool_call_requests(n: int) -> ToolCallRequests:
         A ``ToolCallRequests`` assertion instance.
     """
     return ToolCallRequests(n=n)
+
+
+def max_tool_call_requests(n: int) -> MaxToolCallRequests:
+    """Create a ``MaxToolCallRequests`` efficiency assertion.
+
+    Args:
+        n: Maximum allowed number of tool call requests.
+
+    Returns:
+        A ``MaxToolCallRequests`` assertion instance.
+    """
+    return MaxToolCallRequests(n=n)
 
 
 def tool_call(
@@ -900,6 +1077,57 @@ def _assert_expectations(
 # ---------------------------------------------------------------------------
 
 
+def _build_invoke_inputs(
+    query: str | list[AnyMessage],
+    initial_files: dict[str, str] | None,
+    extra_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the input payload passed to the agent invoke methods."""
+    if isinstance(query, str):
+        invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
+    else:
+        invoke_inputs = {"messages": query}
+    if initial_files is not None:
+        invoke_inputs["files"] = {
+            path: create_file_data(content) for path, content in initial_files.items()
+        }
+    if extra_state:
+        # Shallow merge so callers can populate middleware-owned state fields
+        # (e.g. `rubric` for RubricMiddleware) without clobbering `messages`/`files`.
+        for key, value in extra_state.items():
+            invoke_inputs[key] = value
+    return invoke_inputs
+
+
+def _build_logged_inputs(
+    model: BaseChatModel,
+    eval_metadata: dict[str, object] | None,
+) -> dict[str, Any]:
+    """Build the LangSmith input payload for the current test run."""
+    run_tree = get_current_run_tree()
+    model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
+    logged_inputs: dict[str, Any] = {
+        "test_name": run_tree.name if run_tree else "unknown",
+        "model": model_str,
+    }
+    if eval_metadata is not None:
+        logged_inputs["eval_metadata"] = eval_metadata
+    return logged_inputs
+
+
+def _log_run_inputs(logged_inputs: dict[str, Any]) -> None:
+    """Replace LangSmith auto-captured inputs with a minimal eval payload."""
+    t.log_inputs(logged_inputs)
+    run_tree = get_current_run_tree()
+    if run_tree is not None:
+        run_tree.inputs = logged_inputs
+    else:
+        logger.debug(
+            "run_tree is None; run_tree.inputs will not be overridden "
+            "(sync_example may record auto-captured inputs)"
+        )
+
+
 def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
@@ -909,6 +1137,7 @@ def run_agent(
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
 
@@ -920,6 +1149,8 @@ def run_agent(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -927,45 +1158,66 @@ def run_agent(
     Raises:
         TypeError: If the invoke result is not a `Mapping`.
     """
-    if isinstance(query, str):
-        invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
-    else:
-        invoke_inputs = {"messages": query}
-    if initial_files is not None:
-        invoke_inputs["files"] = {
-            path: create_file_data(content) for path, content in initial_files.items()
-        }
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
 
     if thread_id is None:
         thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Build clean inputs for the LangSmith dataset example. The
-    # @pytest.mark.langsmith decorator auto-captures all test function params
-    # (e.g. tmp_path) via inspect.signature into run_tree.inputs. Calling
-    # t.log_inputs() only *merges* into run_tree.inputs (via add_inputs),
-    # so the unwanted auto-captured keys persist. We also assign
-    # run_tree.inputs directly to fully replace them, since _end_run passes
-    # run_tree.inputs (not _TestCase.inputs) to sync_example when
-    # creating/updating the dataset example.
-    run_tree = get_current_run_tree()
-    model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
-    logged_inputs: dict[str, Any] = {
-        "test_name": run_tree.name if run_tree else "unknown",
-        "model": model_str,
-    }
-    if eval_metadata is not None:
-        logged_inputs["eval_metadata"] = eval_metadata
-
-    t.log_inputs(logged_inputs)
-    if run_tree is not None:
-        run_tree.inputs = logged_inputs
-    else:
-        logger.debug(
-            "run_tree is None; run_tree.inputs will not be overridden "
-            "(sync_example may record auto-captured inputs)"
-        )
+    logged_inputs = _build_logged_inputs(model, eval_metadata)
+    _log_run_inputs(logged_inputs)
     result = agent.invoke(invoke_inputs, config)
+    t.log_outputs(result)
+
+    if not isinstance(result, Mapping):
+        msg = f"Expected invoke result to be Mapping, got {type(result)}"
+        raise TypeError(msg)
+
+    trajectory = _trajectory_from_result(result)
+    if scorer is not None:
+        _assert_expectations(trajectory, scorer)
+    return trajectory
+
+
+async def run_agent_async(
+    agent: CompiledStateGraph[Any, Any],
+    *,
+    query: str | list[AnyMessage],
+    model: BaseChatModel,
+    initial_files: dict[str, str] | None = None,
+    scorer: TrajectoryScorer | None = None,
+    thread_id: str | None = None,
+    eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
+) -> AgentTrajectory:
+    """Run agent eval asynchronously against the given query.
+
+    Args:
+        agent: The compiled state graph to invoke.
+        query: A string prompt or list of messages.
+        model: The chat model (used for logging only).
+        initial_files: Optional initial files to seed the agent with.
+        scorer: Optional trajectory expectations to validate.
+        thread_id: Optional thread ID for the invocation.
+        eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
+
+    Returns:
+        The resulting `AgentTrajectory`.
+
+    Raises:
+        TypeError: If the invoke result is not a `Mapping`.
+    """
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
+
+    if thread_id is None:
+        thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    logged_inputs = _build_logged_inputs(model, eval_metadata)
+    _log_run_inputs(logged_inputs)
+    result = await agent.ainvoke(invoke_inputs, config)
     t.log_outputs(result)
 
     if not isinstance(result, Mapping):

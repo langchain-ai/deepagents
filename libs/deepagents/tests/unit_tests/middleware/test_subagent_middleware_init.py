@@ -1,14 +1,19 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
+from typing import get_type_hints
+
 import pytest
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langgraph.graph import START, MessagesState, StateGraph
 
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
+    create_sub_agent,
 )
 
 
@@ -33,7 +38,7 @@ class TestSubagentMiddlewareInit:
             subagents=[
                 {
                     **GENERAL_PURPOSE_SUBAGENT,
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
@@ -42,6 +47,60 @@ class TestSubagentMiddlewareInit:
         assert "Available subagent types:" in middleware.system_prompt
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
+
+    def test_public_init_type_hints_are_runtime_resolvable(self) -> None:
+        """Public constructor annotations should support runtime introspection."""
+        hints = get_type_hints(SubAgentMiddleware.__init__)
+        create_hints = get_type_hints(create_sub_agent)
+
+        assert "state_schema" in hints
+        assert "state_schema" in create_hints
+        assert "return" in create_hints
+
+    def test_create_sub_agent_compiles_declarative_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The public helper should own the declarative create_agent path."""
+        graph = self._make_echo_graph()
+        calls: dict[str, object] = {}
+
+        class CustomState(MessagesState):
+            pass
+
+        def fake_resolve_model(model: object) -> object:
+            calls["model_spec"] = model
+            return "resolved-model"
+
+        def fake_create_agent(model: object, **kwargs: object) -> object:
+            calls["model"] = model
+            calls["kwargs"] = kwargs
+            return graph
+
+        monkeypatch.setattr("deepagents._models.resolve_model", fake_resolve_model)
+        monkeypatch.setattr("deepagents.middleware.subagents.create_agent", fake_create_agent)
+
+        runnable = create_sub_agent(
+            {
+                "name": "worker",
+                "description": "Does work.",
+                "system_prompt": "Work on the task.",
+                "model": "test-model",
+                "tools": [get_weather],
+                "interrupt_on": {"get_weather": True},
+            },
+            state_schema=CustomState,
+        )
+
+        assert runnable is graph
+        assert calls["model_spec"] == "test-model"
+        assert calls["model"] == "resolved-model"
+        kwargs = calls["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["system_prompt"] == "Work on the task."
+        assert kwargs["tools"] == [get_weather]
+        assert kwargs["name"] == "worker"
+        assert kwargs["state_schema"] is CustomState
+        middleware = kwargs["middleware"]
+        assert isinstance(middleware, list)
+        assert middleware[-1].__class__.__name__ == "HumanInTheLoopMiddleware"
 
     def test_subagent_middleware_with_custom_subagent(self) -> None:
         """Test SubAgentMiddleware initialization with a custom subagent."""
@@ -52,7 +111,7 @@ class TestSubagentMiddlewareInit:
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [get_weather],
                 }
             ],
@@ -71,7 +130,7 @@ class TestSubagentMiddlewareInit:
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
@@ -115,16 +174,132 @@ class TestSubagentMiddlewareInit:
                         "name": "test",
                         "description": "Test",
                         "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
+                        "model": "gpt-5.4-mini",
                         # Missing "tools"
                     }
                 ],
             )
 
+    def _make_echo_graph(self) -> object:
+        """Build a minimal MessagesState graph for use in CompiledSubAgent tests."""
+
+        def echo_node(_state: MessagesState) -> dict:
+            return {"messages": [AIMessage(content="hello")]}
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("echo", echo_node)
+        builder.add_edge(START, "echo")
+        return builder.compile()
+
+    def test_compiled_subagent_name_propagated_via_config(self) -> None:
+        """CompiledSubAgent.name is forwarded into metadata.lc_agent_name and run_name."""
+        graph = self._make_echo_graph()
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        runnable = specs[0]["runnable"]
+        assert runnable.config is not None
+        assert runnable.config.get("metadata", {}).get("lc_agent_name") == "my-subagent"
+        assert runnable.config.get("run_name") == "my-subagent"
+
+    def test_compiled_subagent_does_not_mutate_original_runnable(self) -> None:
+        """_get_subagents must not mutate the original runnable passed by the caller."""
+        graph = self._make_echo_graph()
+        original_config = getattr(graph, "config", None)
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        middleware._get_subagents()
+
+        assert graph.config == original_config, "Original runnable was mutated by _get_subagents(); use with_config instead of attribute assignment"
+
+    def test_same_runnable_reused_across_multiple_subagents(self) -> None:
+        """Same runnable registered under two different names must not cross-contaminate configs."""
+        graph = self._make_echo_graph()
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "agent-alpha",
+                    "description": "First binding",
+                    "runnable": graph,
+                },
+                {
+                    "name": "agent-beta",
+                    "description": "Second binding",
+                    "runnable": graph,
+                },
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        assert len(specs) == 2
+
+        alpha_runnable = specs[0]["runnable"]
+        beta_runnable = specs[1]["runnable"]
+
+        assert alpha_runnable.config.get("metadata", {}).get("lc_agent_name") == "agent-alpha"
+        assert beta_runnable.config.get("metadata", {}).get("lc_agent_name") == "agent-beta"
+        assert alpha_runnable.config.get("run_name") == "agent-alpha"
+        assert beta_runnable.config.get("run_name") == "agent-beta"
+        assert alpha_runnable is not beta_runnable
+        assert graph.config is None
+
+    def test_middleware_delegates_to_create_sub_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Middleware should use the shared entrypoint for declarative subagents."""
+        graph = self._make_echo_graph()
+        calls: list[tuple[object, type | None]] = []
+
+        class CustomState(MessagesState):
+            pass
+
+        def fake_create_sub_agent(spec: object, *, state_schema: type | None = None) -> object:
+            calls.append((spec, state_schema))
+            return graph
+
+        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
+
+        SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "agent-alpha",
+                    "description": "First binding",
+                    "system_prompt": "Work on the task.",
+                    "model": "test-model",
+                    "tools": [],
+                },
+            ],
+            state_schema=CustomState,
+        )
+
+        assert len(calls) == 1
+        assert calls[0][1] is CustomState
+
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""
         agent = create_agent(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             system_prompt="Use the task tool to call subagents.",
             middleware=[
                 SubAgentMiddleware(
@@ -134,7 +309,7 @@ class TestSubagentMiddlewareInit:
                             "name": "subagent1",
                             "description": "First subagent.",
                             "system_prompt": "You are subagent 1.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },
@@ -142,7 +317,7 @@ class TestSubagentMiddlewareInit:
                             "name": "subagent2",
                             "description": "Second subagent.",
                             "system_prompt": "You are subagent 2.",
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },

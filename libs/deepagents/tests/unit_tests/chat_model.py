@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from pydantic import Field
 from typing_extensions import override
 
 
@@ -27,12 +28,15 @@ class GenericFakeChatModel(BaseChatModel):
 
     Args:
         messages: An iterator over messages (use `iter()` to convert a list)
-        stream_delimiter: How to chunk content when streaming. Options:
+        stream_delimiter: How to chunk content when streaming.
+
+            Options:
+
             - None (default): Return content in a single chunk (no streaming)
             - A string delimiter (e.g., " "): Split content on this delimiter,
-              preserving the delimiter as separate chunks
+                preserving the delimiter as separate chunks
             - A regex pattern (e.g., r"(\\s)"): Split using the pattern with a capture
-              group to preserve delimiters
+                group to preserve delimiters
 
     Examples:
         # No streaming - single chunk
@@ -59,7 +63,7 @@ class GenericFakeChatModel(BaseChatModel):
         print(model.call_history[0]["kwargs"])
     """
 
-    messages: Iterator[AIMessage | str]
+    messages: Iterator[AIMessage | str] = Field(exclude=True)
     """Get an iterator over messages.
 
     This can be expanded to accept other types like Callables / dicts / strings
@@ -67,6 +71,10 @@ class GenericFakeChatModel(BaseChatModel):
 
     !!! note
         if you want to pass a list, you can use `iter` to convert it to an iterator.
+
+    Excluded from pydantic serialization so that callers which dump this model
+    (e.g. LangSmith tracing with `mode="json"`) do not consume the iterator
+    before `_generate` pulls from it.
     """
 
     call_history: list[Any] = []  # noqa: RUF012  # Test-only model class

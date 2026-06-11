@@ -1,7 +1,5 @@
 """Async tests for StoreBackend."""
 
-from functools import partial
-
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
@@ -15,7 +13,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 async def test_store_backend_async_crud_and_search():
     """Test async CRUD and search operations."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # awrite new file
     msg = await be.awrite("/docs/readme.md", "hello store")
@@ -50,7 +48,7 @@ async def test_store_backend_async_crud_and_search():
 async def test_store_backend_als_nested_directories():
     """Test async ls with nested directories."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -97,7 +95,7 @@ async def test_store_backend_als_nested_directories():
 async def test_store_backend_als_trailing_slash():
     """Test async ls with trailing slash behavior."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -123,7 +121,7 @@ async def test_store_backend_als_trailing_slash():
 async def test_store_backend_async_errors():
     """Test async error handling."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # aedit missing file
     err = await be.aedit("/missing.txt", "a", "b")
@@ -137,7 +135,7 @@ async def test_store_backend_async_errors():
 async def test_store_backend_aedit_replace_all():
     """Test async edit with replace_all option."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Write file with multiple occurrences
     res = await be.awrite("/test.txt", "foo bar foo baz")
@@ -170,7 +168,7 @@ async def test_store_backend_aedit_replace_all():
 async def test_store_backend_aread_with_offset_and_limit():
     """Test async read with offset and limit."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Write file with multiple lines
     lines = "\n".join([f"Line {i}" for i in range(1, 11)])
@@ -191,7 +189,7 @@ async def test_store_backend_aread_with_offset_and_limit():
 async def test_store_backend_agrep_with_glob():
     """Test async grep with glob filter."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Write multiple files
     files = {
@@ -214,7 +212,7 @@ async def test_store_backend_agrep_with_glob():
 async def test_store_backend_aglob_patterns():
     """Test async glob with various patterns."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Write files in nested directories
     files = {
@@ -246,7 +244,7 @@ async def test_store_backend_aglob_patterns():
 async def test_store_backend_aupload_adownload():
     """Test async upload and download operations."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     # Upload files
     files_to_upload = [
@@ -269,7 +267,7 @@ async def test_store_backend_aupload_adownload():
 async def test_store_backend_agrep_invalid_regex():
     """Test async grep with special characters (literal search, not regex)."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     res = await be.awrite("/test.txt", "some content")
     assert res.error is None
@@ -284,7 +282,7 @@ async def test_store_backend_intercept_large_tool_result_async(file_format):
     """Test that StoreBackend properly handles large tool result interception in async context."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=partial(StoreBackend, store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
         tool_token_limit_before_evict=1000,
     )
 
@@ -315,7 +313,7 @@ async def test_store_backend_aintercept_large_tool_result_async(file_format):
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=partial(StoreBackend, store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
         tool_token_limit_before_evict=1000,
     )
 

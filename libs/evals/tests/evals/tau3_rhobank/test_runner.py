@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 from tests.evals.tau3_rhobank.runner import run_multi_turn
 from tests.evals.tau3_rhobank.user_sim import UserResponse
+
+pytestmark = [pytest.mark.eval_tier("baseline")]
 
 
 class _FakeTool:

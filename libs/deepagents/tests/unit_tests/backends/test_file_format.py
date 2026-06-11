@@ -28,7 +28,7 @@ from deepagents.backends.utils import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-NS = lambda _ctx: ("filesystem",)  # noqa: E731
+NS = lambda _rt: ("filesystem",)  # noqa: E731
 
 # ---------------------------------------------------------------------------
 # 1. Text round-trip

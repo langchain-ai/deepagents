@@ -1,15 +1,17 @@
-"""Parametrized pytest tests for 15 failing tau2 airline tasks.
+"""Parametrized pytest tests for 15 tau2 airline tasks.
 
 Each test creates a fresh airline environment, runs a multi-turn conversation
 between a deepagents agent and an LLM user simulator, then evaluates the
 result using tau2's DB state + communicate info scoring.
 
-Based on τ-bench / τ²-bench by Sierra Research (MIT License).
-See LICENSE in this directory. Source: https://github.com/sierra-research/tau-bench
+Based on τ-bench / τ²-bench / τ³-bench by Sierra Research (MIT License).
+See LICENSE in this directory. Task data updated to τ³-bench v1.0.0 which
+includes corrections to all 15 evaluated tasks.
+Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 
 Usage:
-    uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-20250514
-    uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-20250514
+    uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-6
+    uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-6
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("conversation")]
+"""Apply conversation category to all tests in this module. Tier is set per-test."""
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,7 @@ def _task_id_label(task_id: str) -> str:
     return f"task_{task_id}"
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
 def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:

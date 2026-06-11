@@ -15,6 +15,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!libs/cli/frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -136,13 +137,30 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
 .envrc
+env.local
+*.env.local
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local credentials and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+credentials.json
+token.json
+Cookies
+Cookies.db
+cookies.sqlite
+cookies.txt
 
 # Spyder project settings
 .spyderproject
@@ -212,6 +230,9 @@ __marimo__/
 #claude
 .claude
 
+# Harbor local job output
+jobs/
+
 .idea
 TEXTUAL_REFACTOR_PLAN.md
 libs/cli/TEXTUAL_PROGRESS.md
@@ -223,3 +244,9 @@ libs/cli/TEXTUAL_PROGRESS.md
 */tmp/.DS_Store
 
 CLAUDE.md
+.worktrees/
+
+# Frontend build artifacts (source tree; package data under libs/cli/deepagents_cli/deploy/frontend_dist/ is tracked)
+libs/cli/frontend/node_modules/
+libs/cli/frontend/dist/
+node_modules/

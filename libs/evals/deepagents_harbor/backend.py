@@ -238,7 +238,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             return WriteResult(error=f"Failed to write file '{file_path}': {error}")
         finally:
             try:
-                tmp_path.unlink()
+                await asyncio.to_thread(tmp_path.unlink)
             except OSError:
                 logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
@@ -435,13 +435,14 @@ done
         """
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
-    async def aglob(self, pattern: str, path: str = "/") -> GlobResult:
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching glob pattern using shell commands.
 
         Please note that this implementation does not currently support all glob
         patterns.
         """
-        safe_path = shlex.quote(path)
+        search_path = path or "/"
+        safe_path = shlex.quote(search_path)
         safe_pattern = shlex.quote(pattern)
 
         cmd = f"""
@@ -462,7 +463,7 @@ done
         if result.exit_code != 0:
             detail = result.output.strip() if result.output else ""
             return GlobResult(
-                error=f"Path not found or not accessible: {path}"
+                error=f"Path not found or not accessible: {search_path}"
                 + (f" ({detail})" if detail else "")
             )
 
@@ -488,7 +489,7 @@ done
 
         return GlobResult(matches=file_infos)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching glob pattern using shell commands."""
         raise NotImplementedError(_SYNC_NOT_SUPPORTED)
 
@@ -520,7 +521,7 @@ done
                 results.append(FileUploadResponse(path=path, error=error))
             finally:
                 try:
-                    tmp_path.unlink()
+                    await asyncio.to_thread(tmp_path.unlink)
                 except OSError:
                     logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
         return results

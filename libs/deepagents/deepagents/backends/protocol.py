@@ -9,14 +9,15 @@ import abc
 import asyncio
 import inspect
 import logging
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Literal, NotRequired, TypeAlias
+from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+from deepagents._api.deprecation import deprecated, warn_deprecated
 
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
@@ -29,6 +30,16 @@ r"""File storage format version.
 """
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_GREP_TIMEOUT: Final = 30
+"""Default timeout in seconds for one sync grep phase."""
+
+ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
+"""Timeout in seconds for the async grep wrapper.
+
+This gives `FilesystemBackend` enough headroom to finish the worst-case sync
+path: ripgrep timeout, then Python fallback timeout.
+"""
 
 FileOperationError = Literal[
     "file_not_found",
@@ -46,6 +57,14 @@ potentially fix:
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
 """
+
+# Named constants for each `FileOperationError` literal. Use these instead of
+# bare string literals at producer/consumer sites so a rename in one place
+# surfaces as a type error (rather than silently reverting to a fallback branch).
+FILE_NOT_FOUND: Final = "file_not_found"
+PERMISSION_DENIED: Final = "permission_denied"
+IS_DIRECTORY: Final = "is_directory"
+INVALID_PATH: Final = "invalid_path"
 
 
 @dataclass
@@ -72,7 +91,7 @@ class FileDownloadResponse:
     content: bytes | None = None
     """File contents as bytes on success, `None` on failure."""
 
-    error: FileOperationError | None = None
+    error: FileOperationError | str | None = None
     """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -104,8 +123,8 @@ class FileUploadResponse:
     error messages.
     """
 
-    error: FileOperationError | None = None
-    """error: A `FileOperationError` literal for known conditions, or a
+    error: FileOperationError | str | None = None
+    """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
     `None` on success.
@@ -188,9 +207,18 @@ def _normalize_files_update(
     if isinstance(files_update, _Unset):
         return None
 
-    warnings.warn(
-        "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
-        DeprecationWarning,
+    # `stacklevel=3` lifts attribution past `__init__` and this helper to the
+    # user's `WriteResult(...)` / `EditResult(...)` call site.
+    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/deepagents/issues/3220  # noqa: FIX002
+    warn_deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        message=(
+            "`files_update` was deprecated in deepagents 0.5.0 and will be "
+            "removed in deepagents==0.7.0. State updates are now handled "
+            "internally by the backend."
+        ),
+        package="deepagents",
         stacklevel=3,
     )
     return files_update
@@ -304,19 +332,21 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     Backends can store files in different locations (state, filesystem, database, etc.)
     and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure::
+    All file data is represented as dicts with the following structure:
 
-        {
-            "content": str,  # Text content (utf-8) or base64-encoded binary
-            "encoding": str,  # "utf-8" for text, "base64" for binary data
-            "created_at": str,  # ISO format timestamp
-            "modified_at": str,  # ISO format timestamp
-        }
+    ```python
+    {
+        "content": str,  # Text content (utf-8) or base64-encoded binary
+        "encoding": str,  # "utf-8" for text, "base64" for binary data
+        "created_at": str,  # ISO format timestamp
+        "modified_at": str,  # ISO format timestamp
+    }
+    ```
 
     Note:
         Legacy data may still contain `"content": list[str]` (lines split on
-        `\\n`).  Backends accept this for backwards compatibility and emit a
-        `DeprecationWarning`.
+        `\\n`). Backends accept this for backwards compatibility and emit a
+        `LangChainDeprecationWarning` (a `DeprecationWarning` subclass).
     """
 
     def ls(self, path: str) -> "LsResult":
@@ -326,13 +356,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             path: Absolute path to the directory to list. Must start with '/'.
 
         Returns:
-            LsResult with directory entries or error.
+            `LsResult` with directory entries or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `ls` (or
+                the legacy `ls_info`).
         """
         if type(self).ls_info is not BackendProtocol.ls_info:
-            warnings.warn(
-                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`ls_info` is deprecated and will be removed in deepagents==0.7.0; rename to `ls` instead."),
+                package="deepagents",
             )
             return LsResult(entries=self.ls_info(path))
 
@@ -412,12 +447,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Returns:
             `GrepResult` with matches or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `grep` (or
+                the legacy `grep_raw`).
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
-            warnings.warn(
-                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`grep_raw` is deprecated and will be removed in deepagents==0.7.0; rename to `grep` instead."),
+                package="deepagents",
             )
             result = self.grep_raw(pattern, path, glob)
             if isinstance(result, str):
@@ -432,10 +472,30 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         path: str | None = None,
         glob: str | None = None,
     ) -> "GrepResult":
-        """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        """Async version of `grep`.
 
-    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
+        Wraps the sync call with an async timeout as a safety net. The timeout
+        bounds how long the caller waits; it does not stop the worker thread
+        created by `asyncio.to_thread`.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.grep, pattern, path, glob),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
         Args:
@@ -448,26 +508,31 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches a single character
                 - `[abc]` matches one character from set
 
-            path: Base directory to search from.
+            path: Optional base directory to search from.
 
-                Default: `'/'` (root).
+                If omitted, the backend chooses its default search root.
 
                 The pattern is applied relative to this path.
 
         Returns:
-            GlobResult with matching files or error.
+            `GlobResult` with matching files or error.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `glob` (or
+                the legacy `glob_info`).
         """
         if type(self).glob_info is not BackendProtocol.glob_info:
-            warnings.warn(
-                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=("`glob_info` is deprecated and will be removed in deepagents==0.7.0; rename to `glob` instead."),
+                package="deepagents",
             )
-            return GlobResult(matches=self.glob_info(pattern, path))
+            return GlobResult(matches=self.glob_info(pattern, path or "/"))
 
         raise NotImplementedError
 
-    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Async version of `glob`."""
         return await asyncio.to_thread(self.glob, pattern, path)
 
@@ -590,78 +655,87 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
     # -- deprecated methods --------------------------------------------------
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="ls",
+        package="deepagents",
+    )
     def ls_info(self, path: str) -> list["FileInfo"]:
         """List all files in a directory with metadata.
 
         !!! warning "Deprecated"
-
-            Use `ls` instead.
+            Use `ls` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = self.ls(path)
         if result.error is not None:
             msg = "This behavior is only available via the new `ls` API."
             raise NotImplementedError(msg)
         return result.entries or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="als",
+        package="deepagents",
+    )
     async def als_info(self, path: str) -> list["FileInfo"]:
         """Async version of `ls_info`.
 
         !!! warning "Deprecated"
 
-            Use `als` instead.
+            Use `als` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = await self.als(path)
         if result.error is not None:
             msg = "This behavior is only available via the new `als` API."
             raise NotImplementedError(msg)
         return result.entries or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="glob",
+        package="deepagents",
+    )
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
 
         !!! warning "Deprecated"
 
-            Use `glob` instead.
+            Use `glob` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = self.glob(pattern, path)
         if result.error is not None:
             msg = "This behavior is only available via the new `glob` API."
             raise NotImplementedError(msg)
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="aglob",
+        package="deepagents",
+    )
     async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Async version of `glob_info`.
 
         !!! warning "Deprecated"
 
-            Use `aglob` instead.
+            Use `aglob` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = await self.aglob(pattern, path)
         if result.error is not None:
             msg = "This behavior is only available via the new `aglob` API."
             raise NotImplementedError(msg)
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="grep",
+        package="deepagents",
+    )
     def grep_raw(
         self,
         pattern: str,
@@ -672,18 +746,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         !!! warning "Deprecated"
 
-            Use `grep` instead.
+            Use `grep` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = self.grep(pattern, path, glob)
         if result.error is not None:
             return result.error
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.7.0",
+        alternative="agrep",
+        package="deepagents",
+    )
     async def agrep_raw(
         self,
         pattern: str,
@@ -694,13 +769,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         !!! warning "Deprecated"
 
-            Use `agrep` instead.
+            Use `agrep` instead. Will be removed in `deepagents==0.7.0`.
         """
-        warnings.warn(
-            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         result = await self.agrep(pattern, path, glob)
         if result.error is not None:
             return result.error
@@ -790,7 +860,8 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """
@@ -807,5 +878,14 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return "timeout" in sig.parameters
 
 
-BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
-BACKEND_TYPES = BackendProtocol | BackendFactory
+BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]
+BACKEND_TYPES: TypeAlias = BackendProtocol | BackendFactory
+
+
+def _resolve_backend(backend: BACKEND_TYPES, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
+    """Resolve a backend instance or deprecated backend factory."""
+    if isinstance(backend, BackendProtocol):
+        return backend
+    # Use the nominal backend ABC for narrowing instead of `callable()` because
+    # `ty` does not narrow callable unions to the factory return type.
+    return backend(runtime)

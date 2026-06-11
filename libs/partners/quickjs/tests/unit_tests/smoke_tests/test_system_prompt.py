@@ -1,18 +1,28 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from collections.abc import (
+    Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
+)
+from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.graph import BASE_AGENT_PROMPT
-from deepagents.middleware._utils import append_to_system_message
+import pytest
+from deepagents import create_deep_agent
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from pydantic import Field
 from typing_extensions import TypedDict
 
+from langchain_quickjs import CodeInterpreterMiddleware
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
-    from langchain_core.messages import SystemMessage
-
-from langchain_quickjs.middleware import QuickJSMiddleware
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatResult
 
 
 class UserLookup(TypedDict):
@@ -50,70 +60,169 @@ def get_city_for_location(location_id: int) -> str:
     return f"City {location_id}"
 
 
+@tool
 def normalize_name(name: str) -> str:
     """Normalize a user name for matching."""
     return name.strip().lower()
 
 
+@tool
 async def fetch_weather(city: str) -> str:
     """Fetch the current weather for a city."""
     return f"Weather for {city}"
+
+
+class _SmokeChatModel(GenericFakeChatModel):
+    """GenericFakeChatModel with call-history capture and stable tool binding."""
+
+    messages: Iterator[AIMessage | str] = Field(exclude=True)
+    call_history: list[dict[str, Any]] = Field(default_factory=list)
+
+    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _SmokeChatModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.call_history.append({"messages": messages, "kwargs": kwargs})
+        return super()._generate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+
+
+def _smoke_model() -> _SmokeChatModel:
+    """Return a fake model with enough canned responses for prompt snapshot tests."""
+    return _SmokeChatModel(
+        messages=iter([AIMessage(content="hello!") for _ in range(4)])
+    )
 
 
 def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
-    return "\n".join(
+    return "".join(
         str(part.get("text", "")) if isinstance(part, dict) else str(part)
         for part in content
     )
+
+
+# Insert a blank line after a `##` heading when the next line is non-blank.
+# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
+# blank line; the fix is on `langchain` `main` and will land in the next
+# release. Drop this normalization once we pin a `langchain` version that
+# includes it.
+_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
+
+
+def _normalize_heading_blanks(text: str) -> str:
+    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
 
 
 def _assert_snapshot(
     snapshot_path: Path, actual: str, *, update_snapshots: bool
 ) -> None:
     if update_snapshots or not snapshot_path.exists():
-        snapshot_path.write_text(actual)
+        snapshot_path.write_text(actual, encoding="utf-8")
         if update_snapshots:
             return
         msg = f"Created snapshot at {snapshot_path}. Re-run tests."
         raise AssertionError(msg)
 
-    expected = snapshot_path.read_text()
-    assert actual == expected
+    expected = snapshot_path.read_text(encoding="utf-8")
+    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
 
 
-def _capture_system_prompt(middleware: QuickJSMiddleware) -> str:
-    system_message = append_to_system_message(None, BASE_AGENT_PROMPT)
-    system_message = append_to_system_message(
-        system_message, middleware._format_repl_system_prompt()
-    )
-    return _system_message_as_text(system_message)
+def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:
+    """Invoke the agent and tolerate fake-model exhaustion after the first call."""
+    try:
+        if not hasattr(agent, "invoke"):
+            msg = f"Expected compiled agent with invoke(), got {type(agent)!r}"
+            raise TypeError(msg)
+        agent.invoke(payload)
+    except RuntimeError as exc:
+        if "StopIteration" not in str(exc):
+            raise
 
 
+def _capture_system_prompt(model: _SmokeChatModel) -> str:
+    history = model.call_history
+    assert len(history) >= 1
+
+    messages = history[0]["messages"]
+    system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+    assert len(system_messages) >= 1
+    return _system_message_as_text(system_messages[0]).rstrip("\n") + "\n"
+
+
+def _snapshot_name_for_mode(
+    *, base: str, mode: Literal["thread", "turn", "call"]
+) -> str:
+    if mode == "thread":
+        return f"{base}.md"
+    return f"{base}_{mode}.md"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_no_tools(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
-    prompt = _capture_system_prompt(QuickJSMiddleware())
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_no_tools.md"
+    model = _smoke_model()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(mode=mode)],
+    )
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+    prompt = _capture_system_prompt(model)
+
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_no_tools",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["thread", "turn", "call"],
+)
 def test_system_prompt_snapshot_with_mixed_foreign_functions(
-    snapshots_dir: Path, *, update_snapshots: bool
+    snapshots_dir: Path,
+    mode: Literal["thread", "turn", "call"],
+    *,
+    update_snapshots: bool,
 ) -> None:
-    prompt = _capture_system_prompt(
-        QuickJSMiddleware(
-            ptc=[
-                find_users_by_name,
-                get_user_location,
-                get_city_for_location,
-                normalize_name,
-                fetch_weather,
-            ],
-            add_ptc_docs=True,
-        )
+    mixed_tools = [
+        find_users_by_name,
+        get_user_location,
+        get_city_for_location,
+        normalize_name,
+        fetch_weather,
+    ]
+    model = _smoke_model()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools, mode=mode)],
+        tools=mixed_tools,
     )
-    snapshot_path = snapshots_dir / "quickjs_system_prompt_mixed_foreign_functions.md"
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+    prompt = _capture_system_prompt(model)
+
+    snapshot_path = snapshots_dir / _snapshot_name_for_mode(
+        base="quickjs_system_prompt_mixed_foreign_functions",
+        mode=mode,
+    )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)

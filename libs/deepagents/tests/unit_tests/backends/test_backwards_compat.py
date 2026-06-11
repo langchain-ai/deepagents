@@ -27,7 +27,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_write_read_roundtrip(self):
         """Write a file in v1 mode, then read it back successfully."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         result = be.write("/project/main.py", "import os\nprint('hello')\n")
         assert result.error is None
@@ -48,7 +48,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_write_edit_read_lifecycle(self):
         """Write -> edit -> read cycle works entirely in v1 mode."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         write_res = be.write("/app.py", "def greet():\n    return 'hi'\n")
         assert write_res.error is None
@@ -72,7 +72,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted file data."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         write_res = be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
         assert write_res.error is None
@@ -90,7 +90,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_download_works_with_v1_data(self):
         """download_files can retrieve v1-formatted data as bytes."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         write_res = be.write("/data.txt", "line1\nline2\nline3")
         assert write_res.error is None
@@ -106,7 +106,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_ls_works_with_v1_data(self):
         """ls_info works correctly with v1-formatted file data."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         write_res = be.write("/dir/file.txt", "content here")
         assert write_res.error is None
@@ -119,7 +119,7 @@ class TestV1StyleWritesStoreBackendDirect:
     def test_glob_works_with_v1_data(self):
         """Glob works correctly with v1-formatted file data."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v1")
 
         be.write("/src/a.py", "aaa")
         be.write("/src/b.txt", "bbb")
@@ -136,7 +136,7 @@ class TestV1StyleWritesStoreBackend:
     def test_write_read_roundtrip(self):
         """Write a file in v1 mode, then read it back successfully."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("fs",), file_format="v1")
 
         result = be.write("/project/main.py", "import os\nprint('hello')\n")
         assert result.error is None
@@ -159,7 +159,7 @@ class TestV1StyleWritesStoreBackend:
     def test_write_edit_read_lifecycle(self):
         """Write -> edit -> read cycle works entirely in v1 mode."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("fs",), file_format="v1")
 
         be.write("/app.py", "def greet():\n    return 'hi'\n")
 
@@ -184,7 +184,7 @@ class TestV1StyleWritesStoreBackend:
     def test_grep_works_with_v1_data(self):
         """Grep can search through v1-formatted store data."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("fs",), file_format="v1")
 
         be.write("/src/utils.py", "import sys\ndef helper():\n    pass\nimport os\n")
 
@@ -198,7 +198,7 @@ class TestV1StyleWritesStoreBackend:
     def test_download_works_with_v1_data(self):
         """download_files can retrieve v1-formatted store data as bytes."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("fs",), file_format="v1")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("fs",), file_format="v1")
 
         be.write("/data.txt", "line1\nline2\nline3")
 
@@ -231,7 +231,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("hello\nworld")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/old/file.txt", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -251,7 +251,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("foo\nbar\nbaz")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/old/code.py", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -272,7 +272,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("def foo():\n    return 1\ndef bar():\n    return 2")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/src/funcs.py", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -288,7 +288,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("alpha\nbeta\ngamma")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/data.csv", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -303,7 +303,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("some content")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/dir/file.txt", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         infos = be.ls("/dir").entries
         assert infos is not None
@@ -319,7 +319,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/src/a.py", v1_py)
         mem_store.put(("filesystem",), "/src/b.txt", v1_txt)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         infos = be.glob("**/*.py", path="/").matches
         paths = [fi["path"] for fi in infos]
@@ -331,7 +331,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         v1_data = self._make_v1_file_data("old content")
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/old/file.txt", v1_data)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         result = be.write("/new/file.txt", "new content")
         assert result.error is None
@@ -353,7 +353,7 @@ class TestV2LoadsV1CheckpointStoreBackendDirect:
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/config.env", v1_config)
         mem_store.put(("filesystem",), "/src/db.py", v1_code)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
         # Step 2: V2 backend reads v1 data
         with warnings.catch_warnings(record=True):
@@ -417,7 +417,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
         ns = ("fs",)
         self._seed_v1_store_item(mem_store, ns, "/old/file.txt", "hello\nworld")
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns, file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns, file_format="v2")
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -438,7 +438,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
         ns = ("fs",)
         self._seed_v1_store_item(mem_store, ns, "/code.py", "foo\nbar\nbaz")
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns, file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns, file_format="v2")
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -459,7 +459,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
         ns = ("fs",)
         self._seed_v1_store_item(mem_store, ns, "/funcs.py", "def foo():\n    pass\ndef bar():\n    pass")
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns)
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -474,7 +474,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
         ns = ("fs",)
         self._seed_v1_store_item(mem_store, ns, "/data.txt", "line1\nline2")
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns)
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -493,7 +493,7 @@ class TestV2LoadsV1CheckpointStoreBackend:
         self._seed_v1_store_item(mem_store, ns, "/config.env", "DB_HOST=localhost\nDB_PORT=5432")
         self._seed_v1_store_item(mem_store, ns, "/src/db.py", "def connect():\n    pass")
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns, file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns, file_format="v2")
 
         # Read v1 data
         with warnings.catch_warnings(record=True):
@@ -554,7 +554,7 @@ class TestBareV1DataNoEncodingField:
         }
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/legacy.txt", bare_v1)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -583,7 +583,7 @@ class TestBareV1DataNoEncodingField:
             },
         )
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns)
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -604,7 +604,7 @@ class TestBareV1DataNoEncodingField:
         }
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/legacy.txt", bare_v1)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",), file_format="v2")
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format="v2")
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -625,7 +625,7 @@ class TestBareV1DataNoEncodingField:
         }
         mem_store = InMemoryStore()
         mem_store.put(("filesystem",), "/legacy.txt", bare_v1)
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
@@ -649,7 +649,7 @@ class TestBareV1DataNoEncodingField:
             },
         )
 
-        be = StoreBackend(store=mem_store, namespace=lambda _ctx: ns)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ns)
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")

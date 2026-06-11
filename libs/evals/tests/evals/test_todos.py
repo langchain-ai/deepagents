@@ -19,8 +19,10 @@ if TYPE_CHECKING:
 from tests.evals.utils import TrajectoryScorer, final_text_contains, run_agent, tool_call
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> None:
     """Creates a 5-item todo list and updates it 5 times, then responds with text."""
@@ -46,6 +48,7 @@ def test_write_todos_sequential_updates_returns_text(model: BaseChatModel) -> No
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_write_todos_three_steps_returns_text(model: BaseChatModel) -> None:
     """Creates a 3-item todo list and updates it twice, then responds with text."""

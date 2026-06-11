@@ -8,7 +8,14 @@ correctly.
 
 import base64
 import json
+import os
 import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -32,6 +39,7 @@ class MockSandbox(BaseSandbox):
     def __init__(self) -> None:
         self.last_command: str | None = None
         self._next_output: str = "1"
+        self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
 
@@ -47,8 +55,10 @@ class MockSandbox(BaseSandbox):
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
         output = self._next_output
+        exit_code = self._next_exit_code
         self._next_output = "1"
-        return ExecuteResponse(output=output, exit_code=0, truncated=False)
+        self._next_exit_code = 0
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
         """Simulate the server-side temp-file edit script.
@@ -260,6 +270,233 @@ def test_read_allows_truncated_paginated_output() -> None:
         "encoding": "utf-8",
         "content": truncated_content,
     }
+
+
+# -- ls tests -----------------------------------------------------------------
+
+
+def test_ls_returns_entries_for_directory_with_files() -> None:
+    """ls() parses one JSON object per line into FileInfo entries."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"path": "/test/a.txt", "is_dir": False}) + "\n" + json.dumps({"path": "/test/sub", "is_dir": True})
+
+    result = sandbox.ls("/test")
+
+    assert result.error is None
+    assert result.entries == [
+        {"path": "/test/a.txt", "is_dir": False},
+        {"path": "/test/sub", "is_dir": True},
+    ]
+
+
+def test_ls_empty_directory_returns_empty_entries_no_error() -> None:
+    """A genuinely empty directory yields entries=[] with error=None."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.ls("/test/empty")
+
+    assert result.error is None
+    assert result.entries == []
+
+
+def test_ls_nonexistent_path_sets_error() -> None:
+    """When the inline script reports a missing path, ls() surfaces it on .error.
+
+    Mirrors read()/edit(): the sandbox emits a short snake_case code; the host
+    wraps it with the path prefix.
+    """
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "path_not_found"})
+
+    result = sandbox.ls("/test/does_not_exist")
+
+    assert result.entries is None
+    assert result.error == "Path '/test/does_not_exist': path_not_found"
+
+
+def test_ls_permission_denied_sets_error() -> None:
+    """When the inline script reports permission denied, ls() surfaces it on .error."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "permission_denied"})
+
+    result = sandbox.ls("/test/locked")
+
+    assert result.entries is None
+    assert result.error == "Path '/test/locked': permission_denied"
+
+
+def test_ls_not_a_directory_sets_error() -> None:
+    """When the inline script reports the path is a file, ls() surfaces it on .error."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "not_a_directory"})
+
+    result = sandbox.ls("/test/file.txt")
+
+    assert result.entries is None
+    assert result.error == "Path '/test/file.txt': not_a_directory"
+
+
+def test_ls_error_line_amongst_entries_takes_precedence() -> None:
+    """If any line is an error record, entries=None and error is reported.
+
+    A top-level scandir failure raises before any entries are emitted, but
+    `entry.is_dir()` can raise per-entry after some entries have already been
+    printed (e.g., a child becomes unreadable mid-scan). The parser is
+    defensive: any error line wins over partial entries, preserving the
+    documented contract (entries=None on failure).
+    """
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"path": "/test/a.txt", "is_dir": False}) + "\n" + json.dumps({"error": "permission_denied"})
+
+    result = sandbox.ls("/test")
+
+    assert result.entries is None
+    assert result.error == "Path '/test': permission_denied"
+
+
+def test_ls_command_base64_encodes_path() -> None:
+    """The path is base64-encoded into the inline script to prevent injection."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    sandbox.ls("/test/dir")
+
+    assert sandbox.last_command is not None
+    expected_b64 = base64.b64encode(b"/test/dir").decode("ascii")
+    assert expected_b64 in sandbox.last_command
+    assert "python3 -c" in sandbox.last_command
+
+
+# -- grep tests ---------------------------------------------------------------
+
+
+def test_grep_parses_matches() -> None:
+    """grep() parses path, line number, and matched text from grep output."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/file.txt",
+            "line": 12,
+            "text": "needle here",
+        }
+    ]
+
+
+def test_grep_parses_matches_with_colons_in_filename_and_text() -> None:
+    """grep() handles colon-containing filenames and matched text."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/foo:bar.txt\00012:http://example.com"
+
+    result = sandbox.grep("http", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/foo:bar.txt",
+            "line": 12,
+            "text": "http://example.com",
+        }
+    ]
+
+
+def test_grep_preserves_matches_when_later_output_is_malformed() -> None:
+    """grep() keeps parsed matches when one output line is malformed."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here\nmalformed output"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "/test/file.txt",
+            "line": 12,
+            "text": "needle here",
+        }
+    ]
+
+
+def test_grep_defaults_path_to_current_directory() -> None:
+    """grep() searches the current directory when no path is provided."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "./file.txt\0001:needle"
+
+    result = sandbox.grep("needle")
+
+    assert result.error is None
+    assert result.matches == [
+        {
+            "path": "./file.txt",
+            "line": 1,
+            "text": "needle",
+        }
+    ]
+    assert sandbox.last_command is not None
+    assert " ." in sandbox.last_command
+
+
+def test_grep_passes_glob_include() -> None:
+    """grep() passes the optional glob through to grep include."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.py\0001:needle"
+
+    result = sandbox.grep("needle", "/test", "*.py")
+
+    assert result.error is None
+    assert sandbox.last_command is not None
+    assert "--include='*.py'" in sandbox.last_command
+
+
+def test_grep_returns_empty_matches_for_successful_empty_output() -> None:
+    """grep() returns no matches when grep succeeds with no output."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == []
+
+
+def test_grep_returns_error_for_backend_exec_failure() -> None:
+    """grep() surfaces container exec failures instead of parsing stderr text."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "OCI runtime exec failed: chdir /does-not-exist: exec failed"
+    sandbox._next_exit_code = 126
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': OCI runtime exec failed: chdir /does-not-exist: exec failed"
+
+
+def test_grep_returns_exit_code_when_backend_exec_failure_has_no_output() -> None:
+    """grep() includes the exit code when the backend failure has no diagnostic."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+    sandbox._next_exit_code = 126
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': exit code 126"
+
+
+def test_grep_returns_error_for_malformed_output_with_zero_exit() -> None:
+    """grep() does not crash if backend diagnostics leak with a zero exit code."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "OCI runtime exec failed: chdir /does-not-exist: exec failed"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.matches is None
+    assert result.error == "Path '/test': OCI runtime exec failed: chdir /does-not-exist: exec failed"
 
 
 # -- write tests --------------------------------------------------------------
@@ -630,7 +867,7 @@ def test_sandbox_grep_literal_search() -> None:
             # -F can appear as standalone "-F" or combined like "-rHnF"
             assert "-F" in command or "F" in command.split("grep", 1)[1].split(maxsplit=1)[0], "grep should use -F flag for literal search"
             return ExecuteResponse(
-                output="/test/code.py:1:def __init__(self):\n/test/types.py:1:str | int",
+                output="/test/code.py\0001:def __init__(self):\n/test/types.py\0001:str | int",
                 exit_code=0,
                 truncated=False,
             )
@@ -647,9 +884,26 @@ def test_sandbox_grep_literal_search() -> None:
     matches = sandbox.grep("str | int", path="/test").matches
     assert matches is not None
 
-    # Verify the command uses grep -rHnF for literal search (combined flags)
+    # Verify the command uses grep -rHnFZ for literal search and NUL-delimited paths.
     assert sandbox.last_command is not None
-    assert "grep -rHnF" in sandbox.last_command
+    assert "grep -rHnFZ" in sandbox.last_command
+
+
+def test_sandbox_grep_quotes_include_glob() -> None:
+    """Test that grep shell-quotes the include glob pattern."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox.execute = mock_execute
+
+    sandbox.grep("needle", path="/test", glob="x' ; echo injected ; #")
+
+    assert sandbox.last_command is not None
+    assert "--include='x'\"'\"' ; echo injected ; #'" in sandbox.last_command
+    assert "--include='x'\"'\"' ; echo injected ; #' -e needle /test" in sandbox.last_command
 
 
 # -- upload/download failure tests --------------------------------------------
@@ -814,3 +1068,261 @@ def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
     assert "unexpected server response" in result.error
     assert len(cleanup_commands) == 1
     assert ".deepagents_edit_" in cleanup_commands[0]
+
+
+# -- read script binary-detection behavior -----------------------------------
+# Direct execution of the formatted _READ_COMMAND_TEMPLATE script via
+# subprocess. Exercises the binary-vs-text classification logic that
+# _FakeSandbox-style tests cannot reach because they stub execute() output.
+
+
+def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000) -> dict:
+    cmd = _READ_COMMAND_TEMPLATE.format(
+        path_b64=base64.b64encode(str(target).encode("utf-8")).decode("ascii"),
+        file_type=file_type,
+        offset=offset,
+        limit=limit,
+    )
+    _, _, tail = cmd.partition('python3 -c "')
+    script, _, _ = tail.rpartition('" 2>&1')
+    proc = subprocess.run(  # noqa: S603  # script is the project's own _READ_COMMAND_TEMPLATE, not user input
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(proc.stdout.strip())
+
+
+def test_read_script_cjk_at_prefix_boundary(tmp_path: Path) -> None:
+    """3-byte CJK char straddling byte 8192 must classify as text, not binary."""
+    target = tmp_path / "cjk.md"
+    target.write_bytes((b"a" * 8190) + "가나다".encode())
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"
+    assert result["content"].endswith("가나다")
+
+
+@pytest.mark.parametrize("pad", [8189, 8190, 8191])
+def test_read_script_emoji_at_prefix_boundary(tmp_path: Path, pad: int) -> None:
+    """4-byte emoji at any sub-boundary offset must classify as text."""
+    target = tmp_path / f"emoji_{pad}.md"
+    target.write_bytes((b"a" * pad) + "😀tail".encode())
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"
+    assert "😀tail" in result["content"]
+
+
+def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
+    target = tmp_path / "bin.dat"
+    target.write_bytes(b"\x00\x01\x02\xff\xfe" * 2000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "base64"
+
+
+def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
+    """Corruption inside the prefix must still route to base64 (not swallowed)."""
+    target = tmp_path / "midbad.dat"
+    target.write_bytes(b"a" * 100 + b"\xff\xff" + b"a" * 9000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "base64"
+
+
+def test_read_script_ascii_larger_than_prefix(tmp_path: Path) -> None:
+    """Pure-ASCII control: file >8192 bytes must classify as text."""
+    target = tmp_path / "ascii.txt"
+    target.write_bytes(b"hello\n" * 2000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"
+
+
+# -- script-level permission/error tests --------------------------------------
+# Direct subprocess runs of read/edit/glob inline scripts on the local FS,
+# exercising the OSError-handling branches that mock-bypassed tests cannot
+# reach.
+
+
+_PERMISSION_DENIED_SKIP = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 000 does not deny access on Windows or as root",
+)
+
+
+def _run_edit_script(
+    path: Path,
+    old: str,
+    new: str,
+    replace_all: bool = False,  # noqa: FBT001, FBT002
+) -> dict:
+    payload = json.dumps({"path": str(path), "old": old, "new": new, "replace_all": replace_all})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+    _, _, tail = cmd.partition('python3 -c "')
+    script, _, _ = tail.partition('" 2>&1')
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        input=payload_b64,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return json.loads(proc.stdout.strip())
+
+
+def _run_glob_script(path: Path, pattern: str) -> str:
+    cmd = _GLOB_COMMAND_TEMPLATE.format(
+        path_b64=base64.b64encode(str(path).encode("utf-8")).decode("ascii"),
+        pattern_b64=base64.b64encode(pattern.encode("utf-8")).decode("ascii"),
+    )
+    _, _, tail = cmd.partition('python3 -c "')
+    script, _, _ = tail.partition('" 2>&1')
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout
+
+
+@_PERMISSION_DENIED_SKIP
+def test_read_script_permission_denied(tmp_path: Path) -> None:
+    """Read script must surface permission_denied, not crash with a traceback."""
+    target = tmp_path / "locked.txt"
+    target.write_text("secret")
+    target.chmod(0o000)
+    try:
+        result = _run_read_script(target)
+        assert result == {"error": "permission_denied"}
+    finally:
+        target.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_read_script_is_a_directory(tmp_path: Path) -> None:
+    """Read script must surface a structured error when path is a directory."""
+    result = _run_read_script(tmp_path)
+    assert result.get("error") == "not_a_file"
+
+
+@_PERMISSION_DENIED_SKIP
+def test_edit_script_permission_denied(tmp_path: Path) -> None:
+    """Edit script must surface permission_denied, not crash with a traceback."""
+    target = tmp_path / "locked.txt"
+    target.write_text("old content")
+    target.chmod(0o000)
+    try:
+        result = _run_edit_script(target, "old", "new")
+        assert result == {"error": "permission_denied"}
+    finally:
+        target.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_glob_script_path_not_found(tmp_path: Path) -> None:
+    """Glob script must surface path_not_found instead of crashing on chdir."""
+    missing = tmp_path / "does_not_exist"
+    output = _run_glob_script(missing, "*.py")
+    data = json.loads(output.strip().split("\n")[0])
+    assert data == {"error": "path_not_found"}
+
+
+@_PERMISSION_DENIED_SKIP
+def test_glob_script_permission_denied(tmp_path: Path) -> None:
+    """Glob script must surface permission_denied instead of crashing on chdir."""
+    locked = tmp_path / "locked_dir"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        output = _run_glob_script(locked, "*.py")
+        data = json.loads(output.strip().split("\n")[0])
+        assert data == {"error": "permission_denied"}
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+
+# -- glob host-side error surfacing -------------------------------------------
+
+
+def test_glob_surfaces_error_from_script() -> None:
+    """When the inline script emits an error JSON line, GlobResult.error is set.
+
+    Mirrors read()/ls() convention: sandbox emits a short code; host wraps
+    with the path prefix and reports entries=None.
+    """
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "permission_denied"})
+
+    result = sandbox.glob("*.py", path="/locked")
+
+    assert result.matches is None
+    assert result.error == "Path '/locked': permission_denied"
+
+
+def test_glob_path_not_found_sets_error() -> None:
+    """Glob path_not_found code is wrapped with the search path."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "path_not_found"})
+
+    result = sandbox.glob("*.py", path="/missing")
+
+    assert result.matches is None
+    assert result.error == "Path '/missing': path_not_found"
+
+
+def test_glob_empty_returns_empty_matches() -> None:
+    """Empty stdout still means a successful, empty search."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.glob("*.py", path="/some/dir")
+
+    assert result.error is None
+    assert result.matches == []
+
+
+# -- _map_edit_error coverage for new codes -----------------------------------
+
+
+def test_map_edit_error_permission_denied() -> None:
+    """_map_edit_error returns a readable message for permission_denied."""
+    result = BaseSandbox._map_edit_error("permission_denied", "/test/file.txt", "old")
+    assert result.error is not None
+    assert "permission" in result.error.lower()
+    assert "/test/file.txt" in result.error
+
+
+# -- read host-side error wrapping for new codes -----------------------------
+
+
+def test_read_permission_denied_surfaces_error() -> None:
+    """read() wraps permission_denied from the inline script onto ReadResult.error."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "permission_denied"})
+
+    result = sandbox.read("/test/locked.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "permission_denied" in result.error
+    assert "/test/locked.txt" in result.error
+
+
+def test_sandbox_edit_inline_permission_denied() -> None:
+    """edit() (inline) wraps permission_denied from the inline script."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "permission_denied"})
+
+    result = sandbox.edit("/test/locked.txt", "old", "new")
+
+    assert result.error is not None
+    assert "permission" in result.error.lower()
+    assert "/test/locked.txt" in result.error

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
 from acp import (
@@ -15,6 +15,7 @@ from acp import (
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     run_agent as run_acp_agent,
+    schema as _acp_schema,
     start_edit_tool_call,
     start_tool_call,
     text_block,
@@ -38,7 +39,7 @@ from acp.schema import (
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
-    SessionConfigOption,
+    SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionModeState,
@@ -54,13 +55,6 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from acp.interfaces import Client
-    from deepagents.graph import Checkpointer
-    from langchain_core.runnables import RunnableConfig
-
 from deepagents_acp.utils import (
     contains_dangerous_patterns,
     convert_audio_block_to_content_blocks,
@@ -72,6 +66,60 @@ from deepagents_acp.utils import (
     format_execute_result,
     truncate_execute_command_for_display,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from acp.interfaces import Client
+    from deepagents.graph import Checkpointer
+    from langchain_core.runnables import RunnableConfig
+
+# agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
+# options are now bare SessionConfigOptionSelect instances. Resolve dynamically
+# so the module imports cleanly under both v0.8.x and v0.9+.
+SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
+"""Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
+
+McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
+"""Type alias for ACP MCP server configuration variants."""
+
+_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
+"""Runtime MCP server classes used to detect legacy positional `new_session` calls."""
+
+
+def _normalize_new_session_args(
+    additional_directories: list[str] | list[McpServer] | None,
+    mcp_servers: list[McpServer] | None,
+) -> tuple[list[str] | None, list[McpServer]]:
+    """Normalize `new_session` arguments while preserving old positional calls."""
+    if mcp_servers is not None:
+        return (
+            additional_directories if _is_additional_directories(additional_directories) else None,
+            mcp_servers,
+        )
+    if additional_directories is None:
+        return None, []
+    if _is_additional_directories(additional_directories):
+        return additional_directories, []
+    if _is_mcp_servers(additional_directories):
+        return None, additional_directories
+    return None, []
+
+
+def _is_additional_directories(
+    additional_directories: list[str] | list[McpServer] | None,
+) -> TypeGuard[list[str]]:
+    """Return whether a value is the ACP `additional_directories` argument."""
+    return additional_directories is not None and all(
+        isinstance(directory, str) for directory in additional_directories
+    )
+
+
+def _is_mcp_servers(
+    mcp_servers: list[str] | list[McpServer],
+) -> TypeGuard[list[McpServer]]:
+    """Return whether a value is the ACP `mcp_servers` argument."""
+    return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +175,7 @@ class AgentServerACP(ACPAgent):
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
+        self._session_mcp_servers: dict[str, list[McpServer]] = {}
         self._allowed_command_types: dict[
             str, set[tuple[str, str | None]]
         ] = {}  # Track allowed command types per session
@@ -135,14 +184,17 @@ class AgentServerACP(ACPAgent):
         """Store the client connection for sending session updates."""
         self._conn = conn
 
-    def _build_config_options(self, session_id: str) -> list[SessionConfigOption]:
+    def _build_config_options(
+        self,
+        session_id: str,
+    ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
         """Build the list of session configuration options.
 
         Returns a list combining mode and model selectors if available.
         Modes are mapped to config options with category='mode'.
         Models are exposed as config options with category='model'.
         """
-        config_options: list[SessionConfigOption] = []
+        config_options: list[SessionConfigOptionSelect | SessionConfigOptionBoolean] = []
 
         # Add mode selector if modes are configured
         if self._modes is not None:
@@ -156,18 +208,18 @@ class AgentServerACP(ACPAgent):
                 for mode in self._modes.available_modes
             ]
 
-            mode_config = SessionConfigOption(
-                root=SessionConfigOptionSelect(
-                    id="mode",
-                    name="Session Mode",
-                    description="Controls how the agent requests permission",
-                    category="mode",
-                    type="select",
-                    current_value=current_mode,
-                    options=mode_options,
-                )
+            mode_select = SessionConfigOptionSelect(
+                id="mode",
+                name="Session Mode",
+                description="Controls how the agent requests permission",
+                category="mode",
+                type="select",
+                current_value=current_mode,
+                options=mode_options,
             )
-            config_options.append(mode_config)
+            config_options.append(
+                SessionConfigOption(root=mode_select) if SessionConfigOption else mode_select,
+            )
 
         # Add model selector if models are configured
         if self._models is not None and len(self._models) > 0:
@@ -181,18 +233,18 @@ class AgentServerACP(ACPAgent):
                 for model in self._models
             ]
 
-            model_config = SessionConfigOption(
-                root=SessionConfigOptionSelect(
-                    id="model",
-                    name="Model",
-                    description="The LLM model to use for this session",
-                    category="model",
-                    type="select",
-                    current_value=current_model,
-                    options=model_options,
-                )
+            model_select = SessionConfigOptionSelect(
+                id="model",
+                name="Model",
+                description="The LLM model to use for this session",
+                category="model",
+                type="select",
+                current_value=current_model,
+                options=model_options,
             )
-            config_options.append(model_config)
+            config_options.append(
+                SessionConfigOption(root=model_select) if SessionConfigOption else model_select,
+            )
 
         return config_options
 
@@ -216,14 +268,15 @@ class AgentServerACP(ACPAgent):
     async def new_session(
         self,
         cwd: str,
-        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        additional_directories: list[str] | list[McpServer] | None = None,
+        mcp_servers: list[McpServer] | None = None,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:
         """Create a new agent session with the given working directory."""
-        if mcp_servers is None:
-            mcp_servers = []
+        _, mcp_servers = _normalize_new_session_args(additional_directories, mcp_servers)
         session_id = uuid4().hex
         self._session_cwds[session_id] = cwd
+        self._session_mcp_servers[session_id] = mcp_servers
 
         # Initialize session state
         if self._modes is not None:
@@ -266,7 +319,7 @@ class AgentServerACP(ACPAgent):
         self,
         config_id: str,
         session_id: str,
-        value: str,
+        value: str | bool,  # noqa: FBT001  # signature fixed by ACP protocol interface
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
         """Update a configuration option for the session.
@@ -274,6 +327,11 @@ class AgentServerACP(ACPAgent):
         Handles both mode and model switching. When switching models,
         the agent is reset to use the new model.
         """
+        # Only select-type options (mode, model) are supported; reject boolean values.
+        if not isinstance(value, str):
+            msg = f"Config option {config_id!r} expects a string value, got {type(value).__name__}"
+            raise RequestError(-32602, msg)
+
         if config_id == "mode":
             # Handle mode switching
             if self._modes is not None and session_id in self._session_mode_states:
@@ -583,20 +641,19 @@ class AgentServerACP(ACPAgent):
             | EmbeddedResourceContentBlock
         ],
         session_id: str,
+        message_id: str | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
         """Process a user prompt and stream the agent response."""
         if self._agent is None:
             self._reset_agent(session_id)
 
-            if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = (
-                    MemorySaver()
-                )  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
-
         if self._agent is None:
             msg = "Agent initialization failed"
             raise RuntimeError(msg)
+
+        if getattr(self._agent, "checkpointer", None) is None:
+            self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
         agent = self._agent
 
         # Reset cancellation flag for new prompt
@@ -951,7 +1008,7 @@ class AgentServerACP(ACPAgent):
 
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
-    from dotenv import load_dotenv  # Lazy import for dev-only entry point
+    from dotenv import load_dotenv  # noqa: PLC0415  # lazy import for dev-only entry point
 
     load_dotenv()
 

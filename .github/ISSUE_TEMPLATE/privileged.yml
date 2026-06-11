@@ -31,6 +31,16 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+        - label: code
+        - label: talon
+        - label: acp
+        - label: evals
+        - label: harbor
+        - label: daytona
+        - label: modal
+        - label: quickjs
+        - label: runloop
+        - label: langsmith-sandbox
         - label: Other / not sure / general
   - type: markdown
     attributes:

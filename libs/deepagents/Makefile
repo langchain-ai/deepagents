@@ -1,4 +1,4 @@
-.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -35,7 +35,7 @@ coverage: ## Run unit tests with coverage
 
 integration_test: ## Run integration tests
 integration_test integration_tests:
-	uv run --group test pytest -n auto -vvv --timeout 30 $(TEST_FILE)
+	uv run --group test pytest -n auto -vvv --timeout 30 --benchmark-disable $(TEST_FILE)
 
 
 test_watch: ## Run tests in watch mode
@@ -43,6 +43,12 @@ test_watch: ## Run tests in watch mode
 
 benchmark: ## Run benchmark tests
 	uv run --group test pytest ./tests/benchmarks -m benchmark
+
+bench: ## Run benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m benchmark --codspeed
+
+bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m memory_benchmark --codspeed
 
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .

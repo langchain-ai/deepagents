@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/langchain-runloop?label=%20)](https://pypi.org/project/langchain-runloop/#history)
 [![PyPI - License](https://img.shields.io/pypi/l/langchain-runloop)](https://opensource.org/licenses/MIT)
 [![PyPI - Downloads](https://img.shields.io/pepy/dt/langchain-runloop)](https://pypistats.org/packages/langchain-runloop)
-[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
+[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain_oss)
 
 Looking for the JS/TS version? Check out [LangChain.js](https://github.com/langchain-ai/langchainjs).
 
@@ -16,22 +16,27 @@ pip install langchain-runloop
 ```python
 import os
 
-from runloop_api_client import RunloopSDK
-
-from langchain_runloop import RunloopSandbox
+from langchain_runloop import RunloopProvider
 
 api_key = os.environ["RUNLOOP_API_KEY"]
-client = RunloopSDK(bearer_token=api_key)
+provider = RunloopProvider(api_key=api_key)
 
-devbox = client.devbox.create()
-sandbox = RunloopSandbox(devbox=devbox)
-
+sandbox = provider.get_or_create()
 try:
     result = sandbox.execute("echo hello")
     print(result.output)
 finally:
-    devbox.shutdown()
+    provider.delete(sandbox_id=sandbox.id)
 ```
+
+Boot from a named blueprint (create-if-missing, same idea as LangSmith snapshots):
+
+```python
+sandbox = provider.get_or_create(snapshot="my-blueprint")
+```
+
+Or pin via env: `RUNLOOP_SANDBOX_BLUEPRINT_NAME`, `RUNLOOP_SANDBOX_BLUEPRINT_ID`
+(ID wins; skips auto-build).
 
 ## 🤔 What is this?
 

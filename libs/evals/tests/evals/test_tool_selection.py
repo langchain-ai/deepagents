@@ -17,7 +17,10 @@ from deepagents import create_deep_agent
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from langchain_core.language_models import BaseChatModel
+    from langgraph.graph.state import CompiledStateGraph
 
 from tests.evals.utils import (
     TrajectoryScorer,
@@ -27,6 +30,7 @@ from tests.evals.utils import (
 )
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
+"""Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
 # Mock tools — lightweight stubs that return a fixed string
@@ -72,7 +76,12 @@ def gmail_send_email(to: str, subject: str, body: str) -> str:
 @tool
 def web_search(query: str) -> str:
     """Search the web for information."""
-    return f"Search results for: {query}"
+    return (
+        f"Top 3 results for {query!r}:\n"
+        f"1. Official documentation page covering the topic.\n"
+        f"2. Recent blog post discussing updates and features.\n"
+        f"3. Community discussion thread with examples."
+    )
 
 
 @tool
@@ -93,15 +102,21 @@ ALL_TOOLS = [
 ]
 
 
+def _make_agent(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Build a deep agent with the standard tool pool for these evals."""
+    return create_deep_agent(model=model, tools=ALL_TOOLS)
+
+
 # ---------------------------------------------------------------------------
 # Test cases — direct requests (user names the tool explicitly)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_direct_request_slack_dm(model: BaseChatModel) -> None:
     """Agent uses the Slack DM tool when explicitly asked."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -120,10 +135,11 @@ def test_direct_request_slack_dm(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_direct_request_github_pr(model: BaseChatModel) -> None:
     """Agent uses the GitHub PR tool when explicitly asked."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -147,10 +163,11 @@ def test_direct_request_github_pr(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_direct_request_multiple_tools(model: BaseChatModel) -> None:
     """Agent uses both Linear and GitHub issue tools when asked for both."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -178,10 +195,11 @@ def test_direct_request_multiple_tools(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_indirect_schedule_meeting(model: BaseChatModel) -> None:
     """Agent infers the calendar tool from a scheduling request."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -200,10 +218,11 @@ def test_indirect_schedule_meeting(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_indirect_notify_team(model: BaseChatModel) -> None:
     """Agent infers the Slack channel post tool from a 'notify the team' request."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -227,10 +246,11 @@ def test_indirect_notify_team(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_indirect_email_report(model: BaseChatModel) -> None:
     """Agent infers the Gmail tool from 'email a report' request."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -259,10 +279,11 @@ def test_indirect_email_report(model: BaseChatModel) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_chain_search_then_email(model: BaseChatModel) -> None:
     """Agent searches the web then emails results — two tools in sequence."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,
@@ -282,10 +303,11 @@ def test_chain_search_then_email(model: BaseChatModel) -> None:
     )
 
 
+@pytest.mark.eval_tier("hillclimb")
 @pytest.mark.langsmith
 def test_chain_create_issue_then_notify(model: BaseChatModel) -> None:
     """Agent creates a GitHub issue then notifies Slack — two tools in sequence."""
-    agent = create_deep_agent(model=model, tools=ALL_TOOLS)
+    agent = _make_agent(model)
     run_agent(
         agent,
         model=model,

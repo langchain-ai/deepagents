@@ -1,12 +1,21 @@
 """Version information and lightweight constants for `deepagents-cli`."""
 
-__version__ = "0.0.34"  # x-release-please-version
+# Keep the `x-release-please-version` annotation — release-please uses it to
+# bump `__version__` in sync with `pyproject.toml` on every release PR.
+__version__ = "0.2.2"  # x-release-please-version
 
 DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
 """URL for `deepagents-cli` documentation."""
 
 PYPI_URL = "https://pypi.org/pypi/deepagents-cli/json"
 """PyPI JSON API endpoint for version checks."""
+
+SDK_PYPI_URL = "https://pypi.org/pypi/deepagents/json"
+"""PyPI JSON API endpoint for reading `deepagents` SDK release metadata.
+
+The CLI only reads release-age metadata from this endpoint; it never
+performs SDK update checks.
+"""
 
 CHANGELOG_URL = (
     "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"

@@ -746,7 +746,7 @@ dependencies = [
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langgraph-checkpoint-sqlite" },
-    { name = "langsmith", extra = ["sandbox"] },
+    { name = "langsmith" },
     { name = "markdownify" },
     { name = "modal" },
     { name = "pillow" },
@@ -840,7 +840,7 @@ dependencies = [
     { name = "harbor", extra = ["langsmith"] },
     { name = "langchain-anthropic" },
     { name = "langchain-openai" },
-    { name = "langsmith", extra = ["sandbox"] },
+    { name = "langsmith" },
     { name = "modal" },
 ]
 
@@ -1209,7 +1209,7 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.13.1"
+version = "0.13.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "claude-agent-sdk" },
@@ -1234,14 +1234,15 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/44/5a/89fe6831dba01c53cffed5afb0dd9cfa7dd1e62c0d6b531294742270e30c/harbor-0.13.1.tar.gz", hash = "sha256:4c9f8a345a3bda772dbba2053ee68bc735ca641d083b083f7e81a3c3fb6fb2cc", size = 1094654, upload-time = "2026-06-03T20:45:47.738Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/d2/8ea1fa703ebc8acd15fffc020555259dd1bb4f4188e830b5467ca0fd1950/harbor-0.13.2.tar.gz", hash = "sha256:e5cf94f9dac9bb465d61f37a689679b69ecd1987bae1ad48714dc641bea2f699", size = 1154370, upload-time = "2026-06-11T00:15:35.44Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/d9/640ae0d85f0c63bdda20341f3eee1dbdcd22448258d0ca4970a8523f7eb5/harbor-0.13.1-py3-none-any.whl", hash = "sha256:6116305f7d756ae919b50ce1c5363e14ea377ae924dfd68b10ed00dc20f6f432", size = 1247918, upload-time = "2026-06-03T20:45:49.273Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/ae/fc41d4d2bf830a878cf778877aafe90c05ef45651dab05dee3df7e463e1d/harbor-0.13.2-py3-none-any.whl", hash = "sha256:7a60207965755268fb0a4748a553ce92ed91ce7b32805e7f0c8fea1ed61567b6", size = 1313409, upload-time = "2026-06-11T00:15:36.98Z" },
 ]
 
 [package.optional-dependencies]
 langsmith = [
     { name = "harbor-langsmith" },
+    { name = "langsmith" },
 ]
 
 [[package]]
@@ -1687,7 +1688,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.8.3"
+version = "0.8.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1697,17 +1698,13 @@ dependencies = [
     { name = "requests" },
     { name = "requests-toolbelt" },
     { name = "uuid-utils" },
+    { name = "websockets" },
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/8a/1e8ea5e8bab2a65fa95bd36229ef38e8723ec46e430e20ca2d953487a7f1/langsmith-0.8.3.tar.gz", hash = "sha256:767ff7a8d136ed42926bf99059ac631dc6883542d6e3104b32e71c7625e1fa05", size = 4460330, upload-time = "2026-05-07T19:56:56.18Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/0c/9e4284d9c279490a2407249bd780e1075c2dd29bf6fa77e2b71e91859227/langsmith-0.8.14.tar.gz", hash = "sha256:a3e8feb178540a2866ed39faf11521a4b9e476bf94ab3acdb1491ee6f804cfda", size = 4499898, upload-time = "2026-06-10T19:55:10.607Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/a9/51e644c1f1dbc3dd7d22dfd6412eab206d538c81e024e4f287373544bdcb/langsmith-0.8.3-py3-none-any.whl", hash = "sha256:b2e40e308222fa0beb2dccee3b4b30bfee9062d7a4f20a3e3e93df3c51a08ab4", size = 399048, upload-time = "2026-05-07T19:56:53.994Z" },
-]
-
-[package.optional-dependencies]
-sandbox = [
-    { name = "websockets" },
+    { url = "https://files.pythonhosted.org/packages/18/06/402c8f09994d8b11600918ad19c3b210c7eb40f883c12276534ad3398225/langsmith-0.8.14-py3-none-any.whl", hash = "sha256:f4e50906449ebede47a1f01f65e035b653a3729942871d51b61396349219be7c", size = 481242, upload-time = "2026-06-10T19:55:08.728Z" },
 ]
 
 [[package]]

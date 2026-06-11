@@ -75,6 +75,22 @@ _PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 _PASTE_BURST_START_CHARS = {"'", '"'}
 """Characters that can start dropped-path payloads."""
 
+_PASTE_BURST_MIN_CHARS = 3
+"""Consecutive fast keystrokes before a stream is treated as a paste burst.
+
+Terminals that lack bracketed paste replay a paste as individual key events.
+Counting a short run of rapid chars distinguishes that from human typing,
+which has much larger inter-key gaps.
+"""
+
+_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS = 0.12
+"""Window after recent burst activity during which `enter` inserts a newline.
+
+Keeps multi-line pastes grouped as one input even when newlines arrive as
+`enter` key events slightly after the surrounding characters (e.g. across
+terminal read boundaries), instead of submitting mid-paste.
+"""
+
 _BACKSLASH_ENTER_GAP_SECONDS = 0.15
 """Maximum gap between a `\\` key and a following `enter` key to treat the
 pair as a terminal-emitted shift+enter sequence.
@@ -422,12 +438,19 @@ class ChatTextArea(TextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
-        # Buffer quote-prefixed high-frequency key bursts from terminals that
-        # emulate paste via rapid key events instead of dispatching a paste
-        # event.
+        # Buffer high-frequency key bursts from terminals that emulate paste via
+        # rapid key events instead of dispatching a paste event.
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
+        # Counts consecutive rapid keystrokes so a paste-like stream can be
+        # detected even when it doesn't begin with a quote.
+        self._paste_burst_run = 0
+        self._paste_burst_last_key_time: float | None = None
+        self._paste_burst_last_suppressed_enter_time: float | None = None
+        # Deadline until which `enter` inserts a newline rather than submitting,
+        # keeping multi-line pastes grouped across read boundaries.
+        self._paste_burst_window_until: float | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
 
@@ -665,6 +688,7 @@ class ChatTextArea(TextArea):
         """Start buffering a paste-like keystroke burst."""
         self._paste_burst_buffer = char
         self._paste_burst_last_char_time = now
+        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
 
     def _append_paste_burst(self, text: str, now: float) -> None:
@@ -674,13 +698,66 @@ class ChatTextArea(TextArea):
             return
         self._paste_burst_buffer += text
         self._paste_burst_last_char_time = now
+        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
+
+    def _note_paste_burst_keystroke(self, now: float) -> None:
+        """Track inter-key timing to count consecutive rapid keystrokes."""
+        last = self._paste_burst_last_key_time
+        if last is not None and (now - last) <= _PASTE_BURST_CHAR_GAP_SECONDS:
+            self._paste_burst_run += 1
+        else:
+            self._paste_burst_run = 1
+        self._paste_burst_last_key_time = now
+
+    def _reset_paste_burst_run(self) -> None:
+        """Clear consecutive-keystroke tracking after non-burst input."""
+        self._paste_burst_run = 0
+        self._paste_burst_last_key_time = None
+        self._paste_burst_last_suppressed_enter_time = None
+
+    def _enter_inserts_newline_during_burst(self, now: float) -> bool:
+        """Return whether `enter` should insert a newline rather than submit.
+
+        True when the preceding keystroke was part of a rapid run or the
+        previous `enter` was already suppressed, and the suppression window is
+        still open. The char-gap check keeps a deliberate `enter` pressed after
+        a burst settles from being swallowed; the window bounds how long a
+        replayed paste's newlines stay grouped. Slash-command context always
+        keeps `enter`'s submit/dispatch semantics.
+        """
+        if self._in_slash_command_context():
+            return False
+        # Defensive: the plain-Enter caller appends-and-returns or flushes any
+        # active buffer before this helper runs, so this branch is unreachable
+        # today. It keeps the helper's contract self-contained.
+        if self._paste_burst_buffer:
+            return True
+        until = self._paste_burst_window_until
+        if until is None or now > until:
+            return False
+        last_enter = self._paste_burst_last_suppressed_enter_time
+        if last_enter is not None:
+            return True
+        last_key = self._paste_burst_last_key_time
+        return (
+            last_key is not None and (now - last_key) <= _PASTE_BURST_CHAR_GAP_SECONDS
+        )
+
+    def _in_slash_command_context(self) -> bool:
+        """Return whether the current input is composing a slash command."""
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            return True
+        return self.text.startswith("/")
 
     def _should_start_paste_burst(self, char: str) -> bool:
         """Return whether a keypress should start paste-burst buffering.
 
         Restricting to quote-prefixed input at an empty cursor reduces false
-        positives for normal typing and slash-command entry.
+        positives for normal typing and slash-command entry. General multi-line
+        pastes are handled by the Enter-suppression window instead, which keeps
+        their newlines from submitting without rerouting text insertion.
         """
         if char not in _PASTE_BURST_START_CHARS:
             return False
@@ -809,6 +886,23 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
+        # Track rapid keystroke runs so a terminal replaying a paste as key
+        # events (no bracketed paste) arms the Enter-suppression window, keeping
+        # the paste's newlines from submitting mid-stream. `enter` is exempt so
+        # newlines within a paste don't break the run.
+        if event.is_printable and event.character is not None:
+            self._paste_burst_last_suppressed_enter_time = None
+            self._note_paste_burst_keystroke(now)
+            if (
+                self._paste_burst_run >= _PASTE_BURST_MIN_CHARS
+                and not self._in_slash_command_context()
+            ):
+                self._paste_burst_window_until = (
+                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+                )
+        elif event.key != "enter":
+            self._reset_paste_burst_run()
+
         # Some terminals (e.g. VSCode built-in) send a literal backslash
         # followed by enter for shift+enter.  When enter arrives shortly
         # after a backslash, delete the backslash and insert a newline.
@@ -864,10 +958,21 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             return
 
-        # Plain Enter submits
+        # Plain Enter submits, unless a recent keystroke burst suggests this
+        # newline is part of a paste replayed as key events; then insert a
+        # newline and keep the window alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream.
         if event.key == "enter":
             event.prevent_default()
             event.stop()
+            if self._enter_inserts_newline_during_burst(now):
+                self._paste_burst_window_until = (
+                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+                )
+                self._paste_burst_last_suppressed_enter_time = now
+                self.action_insert_newline()
+                return
+            self._paste_burst_last_suppressed_enter_time = None
             if (
                 self._chat_input_owner is not None
                 and self._chat_input_owner._handle_stale_slash_enter()
@@ -973,6 +1078,8 @@ class ChatTextArea(TextArea):
         """
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
         self._skip_history_change_events += 1
@@ -996,6 +1103,8 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
         self.text = ""

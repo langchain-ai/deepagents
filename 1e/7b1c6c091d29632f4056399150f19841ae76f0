@@ -1,0 +1,63 @@
+libs/code/tests/unit_tests/test_sandbox_provider.py
+  s_e0343beca003e9::t_946ee9cb85d1a9 42-43,47
+  s_e0343beca003e9::t_27d14836055eb2 27-29,31
+  s_e0343beca003e9::t_085cf9e28ace42 5
+  s_e0343beca003e9::t_c93f0933bb7474 1-4,6-26,30,32-41,44-46,48-50
+libs/code/deepagents_code/integrations/sandbox_provider.py
+  s_e0343beca003e9::t_be2e7742ff3b62 46-50
+  s_e0343beca003e9::t_87779794d6cf7d 82-94
+libs/code/deepagents_code/main.py
+  s_e0343beca003e9::t_d24c9a43b8f76c 1279
+  s_e0343beca003e9::t_cd698a85a0e651 1055-1057
+  s_e0343beca003e9::t_eea5664960e8c6 1205-1213,1223,1230-1237,1244,1251-1252,1260-1264,1267-1278
+  s_e0343beca003e9::t_073a73ee73e6b1 1224-1229
+libs/code/deepagents_code/integrations/sandbox_factory.py
+  s_e0343beca003e9::t_caa6b0be69cc75 848-851,857-858,864-865
+  s_e0343beca003e9::t_f0f0eb955f60f2 176-178
+  s_e0343beca003e9::t_dbc8abde2f10c7 861-862
+  s_e0343beca003e9::t_1532ba592b87d1 126-128
+libs/code/deepagents_code/integrations/sandbox_config.py
+  s_e0343beca003e9::t_c45dfcbcd9e48b 73-81
+  s_e0343beca003e9::t_4c80b60a95b69b 150-152,154-156
+  s_e0343beca003e9::t_707a601822fc7b 114,117,122
+  s_e0343beca003e9::t_d24c9a43b8f76c 153
+libs/code/deepagents_code/integrations/sandbox_registry.py
+  s_e0343beca003e9::t_de6baf161c40a4 175-182
+  s_e0343beca003e9::t_bfbb5d1c038a18 235-239
+  s_e0343beca003e9::t_93b78ab0671bf1 260-261
+libs/code/tests/unit_tests/test_sandbox_registry.py
+  s_e0343beca003e9::t_8511398962f0e5 19-20
+  s_e0343beca003e9::t_21ed22aa18e80e 225-305
+  s_e0343beca003e9::t_446abe0b376b26 66-84,87
+libs/code/tests/unit_tests/test_sandbox_factory.py
+  s_e0343beca003e9::t_d24c9a43b8f76c 531
+  s_e0343beca003e9::t_3ae21f1b7614fb 529
+  s_e0343beca003e9::t_ae0186af971062 528,530,532-603
+  s_e0343beca003e9::t_6918482791d4fc 11,18-25
+libs/code/tests/unit_tests/test_main_args.py
+  s_e0343beca003e9::t_14348e0096cd49 152-161,163-166
+  s_e0343beca003e9::t_50f7cfc0f0ba5d 239-241,243-264,266-279
+  s_e0343beca003e9::t_752d427d9647a0 242
+  s_e0343beca003e9::t_c1163db8d938b2 265
+  s_e0343beca003e9::t_0f9c238b4850f8 162
+libs/code/tests/unit_tests/test_sandbox_config.py
+  s_e0343beca003e9::t_970349038b0429 66-114
+  s_e0343beca003e9::t_c55116a9f5a1f7 5
+  s_e0343beca003e9::t_950f8c796d87ec 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "1e7b1c6c091d29632f4056399150f19841ae76f0",
+  "prompts": {},
+  "sessions": {
+    "s_e0343beca003e9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e4e2edd-9876-462a-bdf5-93ce864b81a3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

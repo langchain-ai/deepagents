@@ -1,0 +1,23 @@
+.github/scripts/check_release_deps.py
+  s_d2b94a64456852::t_00b551a8b73226 296-297
+  s_d2b94a64456852::t_c94f05b7eb8f47 349,360-363,365
+.github/scripts/test_check_release_deps.py
+  s_d2b94a64456852::t_6fb48a5f62f7ae 3,13,167-196
+  s_d2b94a64456852::t_013bf0314eff65 7,10,123-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "5fb66990f030f1bdf26fd7676e8b1505fc5a6d9d",
+  "prompts": {},
+  "sessions": {
+    "s_d2b94a64456852": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb5a8-e982-7393-8280-383187231f02",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

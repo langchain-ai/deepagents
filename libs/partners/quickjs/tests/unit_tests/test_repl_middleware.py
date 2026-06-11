@@ -181,7 +181,7 @@ def test_system_prompt_injected_once() -> None:
     assert "7.0s per call" in sys_text
     assert "32 MB total" in sys_text
     assert "across multiple turns for this conversation thread" in sys_text
-    assert "### Dispatching Subagents with `subagent`" not in sys_text
+    assert "### Dispatching Subagents with `task`" not in sys_text
 
 
 def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> None:
@@ -220,8 +220,8 @@ def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> Non
         for block in seen[0].system_message.content_blocks
         if block["type"] == "text"
     )
-    assert "### Dispatching Subagents with `subagent`" in sys_text
-    assert "await subagent({" in sys_text
+    assert "### Dispatching Subagents with `task`" in sys_text
+    assert "await task({" in sys_text
 
 
 def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
@@ -260,8 +260,8 @@ def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
         for block in seen[0].system_message.content_blocks
         if block["type"] == "text"
     )
-    assert "### Dispatching Subagents with `subagent`" not in sys_text
-    assert "await subagent({" not in sys_text
+    assert "### Dispatching Subagents with `task`" not in sys_text
+    assert "await task({" not in sys_text
 
 
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
@@ -1103,14 +1103,14 @@ async def test_eval_tool_does_not_install_subagent_when_disabled() -> None:
             )
         )
 
-        result = await tool.coroutine(runtime=runtime, code="typeof subagent")
+        result = await tool.coroutine(runtime=runtime, code="typeof task")
 
         assert "<result>undefined</result>" in result.content
     finally:
         mw._registry.close()
 
 
-async def test_async_subagent_global_invokes_runner(repl: _ThreadREPL) -> None:
+async def test_async_task_global_invokes_runner(repl: _ThreadREPL) -> None:
     calls: list[dict[str, Any]] = []
 
     def _sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
@@ -1124,13 +1124,13 @@ async def test_async_subagent_global_invokes_runner(repl: _ThreadREPL) -> None:
     runnable = RunnableLambda(_sync, afunc=_async)
 
     outcome = await repl.eval_async(
-        "globalThis.subagent = null;"
-        "delete globalThis.subagent;"
-        "subagent.extra = 1;"
-        "if (!Object.isFrozen(subagent) || subagent.extra !== undefined) {"
-        "  throw new Error('subagent binding is mutable');"
+        "globalThis.task = null;"
+        "delete globalThis.task;"
+        "task.extra = 1;"
+        "if (!Object.isFrozen(task) || task.extra !== undefined) {"
+        "  throw new Error('task binding is mutable');"
         "}"
-        "JSON.stringify(await subagent({"
+        "JSON.stringify(await task({"
         "description: 'work', "
         "subagent_type: 'worker'"
         "}))",
@@ -1144,7 +1144,7 @@ async def test_async_subagent_global_invokes_runner(repl: _ThreadREPL) -> None:
     assert calls[0]["config"]["configurable"]["ls_agent_type"] == "subagent"
 
 
-async def test_async_subagent_global_not_installed_when_disabled(
+async def test_async_task_global_not_installed_when_disabled(
     worker: ThreadWorker,
     runtime: Runtime,
 ) -> None:
@@ -1157,7 +1157,7 @@ async def test_async_subagent_global_not_installed_when_disabled(
         subagents_enabled=False,
     )
 
-    outcome = await disabled.eval_async("typeof subagent")
+    outcome = await disabled.eval_async("typeof task")
 
     assert outcome.error_type is None
     assert outcome.result == "undefined"
@@ -1167,24 +1167,24 @@ async def test_async_subagent_global_not_installed_when_disabled(
     ("code", "message"),
     [
         (
-            "await subagent({subagent_type: 'worker'})",
-            "subagent() requires non-empty string field `description`",
+            "await task({subagent_type: 'worker'})",
+            "task() requires non-empty string field `description`",
         ),
         (
-            "await subagent({description: 'work'})",
-            "subagent() requires non-empty string field `subagent_type`",
+            "await task({description: 'work'})",
+            "task() requires non-empty string field `subagent_type`",
         ),
         (
-            "await subagent({"
+            "await task({"
             "description: 'work', "
             "subagent_type: 'worker', "
             "response_schema: 'bad'"
             "})",
-            "subagent() field `response_schema` must be an object when provided",
+            "task() field `response_schema` must be an object when provided",
         ),
     ],
 )
-async def test_async_subagent_global_validation_errors_surface_as_eval_errors(
+async def test_async_task_global_validation_errors_surface_as_eval_errors(
     repl: _ThreadREPL, code: str, message: str
 ) -> None:
     runnable = RunnableLambda(
@@ -1200,7 +1200,7 @@ async def test_async_subagent_global_validation_errors_surface_as_eval_errors(
     assert message in formatted
 
 
-async def test_async_subagent_global_missing_task_tool_surfaces_as_eval_error(
+async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
     repl: _ThreadREPL,
 ) -> None:
     runtime = ToolRuntime(
@@ -1214,15 +1214,15 @@ async def test_async_subagent_global_missing_task_tool_surfaces_as_eval_error(
     )
 
     outcome = await repl.eval_async(
-        "await subagent({description: 'work', subagent_type: 'worker'})",
+        "await task({description: 'work', subagent_type: 'worker'})",
         outer_runtime=runtime,
     )
 
     assert outcome.error_type == "RuntimeError"
-    assert "subagent task tool not configured for this eval" in outcome.error_message
+    assert "task tool not configured for this eval" in outcome.error_message
 
 
-async def test_async_subagent_global_returns_declarative_structured_response_object(
+async def test_async_task_global_returns_declarative_structured_response_object(
     repl: _ThreadREPL,
 ) -> None:
     outcome = await repl.eval_async(
@@ -1231,12 +1231,12 @@ async def test_async_subagent_global_returns_declarative_structured_response_obj
         "properties: {label: {type: 'string'}, score: {type: 'number'}}, "
         "required: ['label', 'score']"
         "};"
-        "const first = await subagent({"
+        "const first = await task({"
         "description: 'work', "
         "subagent_type: 'worker', "
         "response_schema: schema"
         "});"
-        "const second = await subagent({"
+        "const second = await task({"
         "description: 'work again', "
         "subagent_type: 'worker', "
         "response_schema: schema"
@@ -1256,7 +1256,7 @@ async def test_async_subagent_global_returns_declarative_structured_response_obj
     )
 
 
-async def test_async_subagent_global_rejects_compiled_response_schema(
+async def test_async_task_global_rejects_compiled_response_schema(
     repl: _ThreadREPL,
 ) -> None:
     runnable = RunnableLambda(
@@ -1264,7 +1264,7 @@ async def test_async_subagent_global_rejects_compiled_response_schema(
     )
 
     outcome = await repl.eval_async(
-        "await subagent({"
+        "await task({"
         "description: 'work', "
         "subagent_type: 'worker', "
         "response_schema: {"
@@ -1283,7 +1283,7 @@ async def test_async_subagent_global_rejects_compiled_response_schema(
     )
 
 
-async def test_async_subagent_global_uses_last_non_empty_ai_message(
+async def test_async_task_global_uses_last_non_empty_ai_message(
     repl: _ThreadREPL,
 ) -> None:
     async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
@@ -1296,10 +1296,7 @@ async def test_async_subagent_global_uses_last_non_empty_ai_message(
     )
 
     outcome = await repl.eval_async(
-        "JSON.stringify(await subagent({"
-        "description: 'work', "
-        "subagent_type: 'worker'"
-        "}))",
+        "JSON.stringify(await task({description: 'work', subagent_type: 'worker'}))",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1307,7 +1304,7 @@ async def test_async_subagent_global_uses_last_non_empty_ai_message(
     assert outcome.result == '"final"'
 
 
-async def test_async_subagent_global_rejects_state_without_messages(
+async def test_async_task_global_rejects_state_without_messages(
     repl: _ThreadREPL,
 ) -> None:
     async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
@@ -1320,7 +1317,7 @@ async def test_async_subagent_global_rejects_state_without_messages(
     )
 
     outcome = await repl.eval_async(
-        "await subagent({description: 'work', subagent_type: 'worker'})",
+        "await task({description: 'work', subagent_type: 'worker'})",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1328,7 +1325,7 @@ async def test_async_subagent_global_rejects_state_without_messages(
     assert "messages" in outcome.error_message
 
 
-async def test_async_subagent_global_limits_concurrency_per_repl(
+async def test_async_task_global_limits_concurrency_per_repl(
     repl: _ThreadREPL,
 ) -> None:
     class _CountingRunner:
@@ -1372,7 +1369,7 @@ async def test_async_subagent_global_limits_concurrency_per_repl(
     outcome = await repl.eval_async(
         "const calls = [];"
         "for (let i = 0; i < 64; i++) {"
-        "  calls.push(subagent({description: String(i), subagent_type: 'worker'}));"
+        "  calls.push(task({description: String(i), subagent_type: 'worker'}));"
         "}"
         "(await Promise.all(calls)).length",
         outer_runtime=_subagent_runtime(runnable),

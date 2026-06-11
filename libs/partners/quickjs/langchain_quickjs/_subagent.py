@@ -29,7 +29,7 @@ _SUBAGENT_TASK_TOOL_FIELDS = frozenset({"description", "subagent_type"})
 
 
 def find_subagent_task_tool(tools: Sequence[BaseTool]) -> BaseTool | None:
-    """Return the Deep Agents task tool that backs top-level `subagent()`."""
+    """Return the Deep Agents task tool that backs top-level `task()`."""
     for tool in tools:
         if (
             getattr(tool, "name", None) == "task"
@@ -64,7 +64,7 @@ async def call_subagent_task_tool(
 ) -> Any:
     """Call the Deep Agents task tool and return a JavaScript-friendly value."""
     if runtime is None:
-        msg = "subagent() requires an active ToolRuntime"
+        msg = "task() requires an active ToolRuntime"
         raise RuntimeError(msg)
 
     parse_json_output = response_schema is not None

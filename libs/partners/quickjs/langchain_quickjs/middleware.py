@@ -165,13 +165,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         capture_console: If `True`, install a `console` object that
             buffers `console.log/warn/error` calls and emits them in
             `<stdout>` blocks alongside the result. Default `True`.
-        subagents: If `True`, expose the top-level `subagent(...)`
+        subagents: If `True`, expose the top-level `task(...)`
             JavaScript API when the current agent has a Deep Agents `task`
             tool. Set to `False` to require subagent dispatch through the
             normal parent `task` tool path instead.
 
             !!! warning
-                `subagent(...)` calls run inside an already-approved `eval`
+                `task(...)` calls run inside an already-approved `eval`
                 invocation and do not trigger parent-level `interrupt_on` /
                 HITL approval per dispatch. Gate the `eval` tool itself, add
                 approval middleware inside subagent specs, or set

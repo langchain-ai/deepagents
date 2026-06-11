@@ -32,23 +32,23 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
-### Dispatching Subagents with `subagent`
+### Dispatching Subagents with `task`
 
-`subagent` is your primitive for running configured subagents from inside the
+`task` is your primitive for running configured subagents from inside the
 JavaScript REPL. You orchestrate everything else - fan-out, filtering,
 deduplication, multi-stage flow, and synthesis - in plain JavaScript.
 
 #### The primitive
 
 ```javascript
-await subagent({
+await task({
   description,      // full autonomous task prompt
   subagent_type,    // configured subagent name
   response_schema,  // optional JSON Schema for structured output
 }); // -> Promise<unknown>
 ```
 
-`subagent` runs a full agentic loop for the selected configured subagent. The
+`task` runs a full agentic loop for the selected configured subagent. The
 subagent can use whatever tools it was configured with, iterate, inspect
 context, and return one final result. `subagent_type` is required; use one of
 the configured subagent names.
@@ -67,7 +67,7 @@ their runnable is already compiled.
 
 #### Approval model
 
-`subagent` dispatches from inside the already-running `{tool_name}` call. It
+`task` dispatches from inside the already-running `{tool_name}` call. It
 does not route through the parent agent's `ToolNode`-managed `task` tool and
 does not trigger parent-level `interrupt_on` / HITL approval for each dispatch.
 Declarative subagents still honor approval middleware configured inside their
@@ -89,7 +89,7 @@ re-establish state.
 
 Dispatch independent work in parallel with `Promise.all`, but in explicit
 batches around 10 so you do not launch hundreds of subagents at once. The bridge
-enforces a hard per-REPL cap of 32 concurrent subagent calls.
+enforces a hard per-REPL cap of 32 concurrent `task` calls.
 
 ```javascript
 const batchSize = 10;
@@ -97,7 +97,7 @@ const reviewed = [];
 for (let i = 0; i < items.length; i += batchSize) {
   const batch = items.slice(i, i + batchSize);
   reviewed.push(...(await Promise.all(batch.map(async (it) => {
-    const result = await subagent({
+    const result = await task({
       description: "Review " + it.file + " for SQL injection. Cite line numbers.",
       subagent_type: "reviewer",
       response_schema: {
@@ -132,7 +132,7 @@ If the `tools.*` namespace is exposed, also use it to pre-read files or collect
 shared data once, then pass only the relevant content to each subagent in
 `description`.
 
-Use `subagent` for work that benefits from an autonomous agentic loop: reading
+Use `task` for work that benefits from an autonomous agentic loop: reading
 or searching with the subagent's own tools, inspecting multiple files, following
 leads, making judgment calls, or producing a final synthesized report.
 
@@ -156,7 +156,7 @@ const results = [];
 for (let i = 0; i < items.length; i += batchSize) {
   const batch = items.slice(i, i + batchSize);
   results.push(...(await Promise.all(batch.map(async (it) => {
-    const finding = await subagent({
+    const finding = await task({
       description:
         "Review this file for auth bypasses. Return concrete findings only.\\n\\n" +
         "File: " + it.file + "\\n\\n" +
@@ -186,7 +186,7 @@ const tagged = [];
 for (let i = 0; i < items.length; i += 10) {
   const batch = items.slice(i, i + 10);
   tagged.push(...(await Promise.all(batch.map(async (it) => {
-    const tag = await subagent({
+    const tag = await task({
       description: "Classify " + it.file + " as handler, util, test, or config.",
       subagent_type: "reviewer",
       response_schema: {
@@ -204,7 +204,7 @@ const deepReviews = [];
 for (let i = 0; i < riskyHandlers.length; i += 10) {
   const batch = riskyHandlers.slice(i, i + 10);
   deepReviews.push(...(await Promise.all(batch.map(async (it) => {
-    const review = await subagent({
+    const review = await task({
       description: "Deep security review of " + it.file + ". Cite line numbers.",
       subagent_type: "reviewer",
     });
@@ -280,7 +280,7 @@ def render_repl_system_prompt(
 
 
 def render_subagent_system_prompt(*, tool_name: str = "eval") -> str:
-    """Render guidance for the top-level QuickJS `subagent` global."""
+    """Render guidance for the top-level QuickJS `task` global."""
     return _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name)
 
 

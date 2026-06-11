@@ -52,8 +52,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MAX_SUBAGENT_CALLS_PER_THREAD = 32
-_SUBAGENT_FUNCTION_NAME = "subagent"
+_MAX_TASK_CALLS_PER_THREAD = 32
+_TASK_FUNCTION_NAME = "task"
 
 
 def _clear_exception_references(exc: BaseException) -> None:
@@ -107,8 +107,8 @@ class _PTCCallBudgetExceededError(RuntimeError):
         )
 
 
-class _SubagentBridgeError(RuntimeError):
-    """Wrap errors from the top-level `subagent()` host function."""
+class _TaskBridgeError(RuntimeError):
+    """Wrap errors from the top-level `task()` host function."""
 
     def __init__(self, exc: Exception) -> None:
         self.error_type = type(exc).__name__
@@ -394,7 +394,7 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
-        self._subagent_calls: asyncio.Semaphore | None = None
+        self._task_calls: asyncio.Semaphore | None = None
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -405,8 +405,8 @@ class _ThreadREPL:
         if self._capture_console:
             self._install_console()
         if self._subagents_enabled:
-            self._subagent_calls = asyncio.Semaphore(_MAX_SUBAGENT_CALLS_PER_THREAD)
-            self._register_subagent_bridge()
+            self._task_calls = asyncio.Semaphore(_MAX_TASK_CALLS_PER_THREAD)
+            self._register_task_bridge()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -497,13 +497,13 @@ class _ThreadREPL:
         self._active_tool_names = target_names
         self._tools_installed = True
 
-    async def _ainvoke_subagent_on_outer_loop(
+    async def _ainvoke_task_on_outer_loop(
         self,
         payload: dict[str, Any],
         *,
         state: _PTCState,
     ) -> Any:
-        """Validate JS `subagent()` input and invoke the runner on the right loop.
+        """Validate JS `task()` input and invoke the runner on the right loop.
 
         The QuickJS host call runs on the REPL worker loop, but subagent runnables
         should execute on the parent LangGraph loop when one exists so callbacks,
@@ -511,27 +511,27 @@ class _ThreadREPL:
         """
         description = payload.get("description")
         if not isinstance(description, str) or not description:
-            msg = "subagent() requires non-empty string field `description`"
+            msg = "task() requires non-empty string field `description`"
             raise ValueError(msg)
 
         subagent_type = payload.get("subagent_type")
         if not isinstance(subagent_type, str) or not subagent_type:
-            msg = "subagent() requires non-empty string field `subagent_type`"
+            msg = "task() requires non-empty string field `subagent_type`"
             raise ValueError(msg)
 
         response_schema = payload.get("response_schema")
         if response_schema is not None and not isinstance(response_schema, dict):
-            msg = "subagent() field `response_schema` must be an object when provided"
+            msg = "task() field `response_schema` must be an object when provided"
             raise ValueError(msg)
 
         async def _call() -> Any:
             runtime = state.outer_runtime
             if runtime is None:
-                msg = "subagent() requires an active ToolRuntime"
+                msg = "task() requires an active ToolRuntime"
                 raise RuntimeError(msg)
             task_tool = find_subagent_task_tool(getattr(runtime, "tools", ()) or ())
             if task_tool is None:
-                msg = "subagent task tool not configured for this eval"
+                msg = "task tool not configured for this eval"
                 raise RuntimeError(msg)
             return await call_subagent_task_tool(
                 task_tool,
@@ -554,24 +554,24 @@ class _ThreadREPL:
             future.cancel()
             raise
 
-    def _register_subagent_bridge(self) -> None:
-        """Install the async host function backing top-level ``subagent()``."""
+    def _register_task_bridge(self) -> None:
+        """Install the async host function backing top-level ``task()``."""
         ctx = self._require_ctx()
 
         async def _bridge(raw_input: Any = None) -> Any:
             state = self._ptc_state
             if state is None:
-                msg = "subagent bridge called outside active eval"
+                msg = "task bridge called outside active eval"
                 raise ConcurrentEvalError(msg)
-            subagent_calls = self._subagent_calls
-            if subagent_calls is None:
-                msg = "subagent call limiter not initialized"
+            task_calls = self._task_calls
+            if task_calls is None:
+                msg = "task call limiter not initialized"
                 raise RuntimeError(msg)
 
             payload = _normalize_tool_input(raw_input)
-            async with subagent_calls:
+            async with task_calls:
                 try:
-                    result = await self._ainvoke_subagent_on_outer_loop(
+                    result = await self._ainvoke_task_on_outer_loop(
                         payload,
                         state=state,
                     )
@@ -579,14 +579,14 @@ class _ThreadREPL:
                     # Subagent dispatches are part of the eval language, not
                     # PTC calls. Surface their validation/runtime failures as
                     # eval errors without changing normal `tools.*` semantics.
-                    raise _SubagentBridgeError(e) from e
+                    raise _TaskBridgeError(e) from e
             return coerce_tool_output_for_ptc(result)
 
-        ctx.register(_SUBAGENT_FUNCTION_NAME, _bridge, is_async=True)
+        ctx.register(_TASK_FUNCTION_NAME, _bridge, is_async=True)
         ctx.eval(
-            "Object.freeze(globalThis.subagent);"
-            "Object.defineProperty(globalThis, 'subagent', {"
-            " value: globalThis.subagent,"
+            "Object.freeze(globalThis.task);"
+            "Object.defineProperty(globalThis, 'task', {"
+            " value: globalThis.task,"
             " writable: false,"
             " configurable: false,"
             "}); undefined"
@@ -836,7 +836,7 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
             _clear_exception_references(e)
-        except _SubagentBridgeError as e:
+        except _TaskBridgeError as e:
             outcome.error_type = e.error_type
             outcome.error_message = e.error_message
             _clear_exception_references(e)

@@ -160,8 +160,8 @@ async def test_quickjs_async_ptc_task_subagent_loop_affinity_e2e() -> None:
     assert all(loop_id == outer_loop_id for loop_id in subagent_loop_ids)
 
 
-async def test_quickjs_subagent_global_available_without_ptc_e2e() -> None:
-    """E2E: top-level `subagent()` works without exposing PTC tools."""
+async def test_quickjs_task_global_available_without_ptc_e2e() -> None:
+    """E2E: top-level `task()` works without exposing PTC tools."""
 
     def _subagent_sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
         del state, config
@@ -175,7 +175,7 @@ async def test_quickjs_subagent_global_available_without_ptc_e2e() -> None:
     agent = create_deep_agent(
         model=_FakeChatModel(
             messages=_script(
-                "await subagent({description: 'say hi', subagent_type: 'researcher'})",
+                "await task({description: 'say hi', subagent_type: 'researcher'})",
                 final_message="done",
             )
         ),
@@ -194,12 +194,10 @@ async def test_quickjs_subagent_global_available_without_ptc_e2e() -> None:
     result = await agent.ainvoke(
         {
             "messages": [
-                HumanMessage(
-                    content="Use eval and call the researcher through subagent."
-                )
+                HumanMessage(content="Use eval and call the researcher through task.")
             ]
         },
-        config={"configurable": {"thread_id": "subagent-global-no-ptc"}},
+        config={"configurable": {"thread_id": "task-global-no-ptc"}},
     )
     tool_message = _eval_tool_message(result)
     _assert_result_contains(tool_message.content, "subagent-ok")

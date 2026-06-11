@@ -738,12 +738,11 @@ class ChatTextArea(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
-        # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. Under
-        # the kitty keyboard protocol with associated-text reporting (iTerm2,
-        # VS Code's xterm.js, etc.), pressing Caps Lock arrives as
-        # Key(key='caps_lock', character='A'), so TextArea would insert a stray
-        # letter. The key may also carry modifier prefixes (e.g.
-        # 'ctrl+caps_lock'), so match on the final '+'-delimited token.
+        # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
+        # kitty parser patch in `_textual_patches.py` already neutralizes these
+        # at the source; this is defense-in-depth in case a lock key still
+        # arrives with associated text. The key may carry modifier prefixes
+        # (e.g. 'ctrl+caps_lock'), so match on the final '+'-delimited token.
         if event.key.rsplit("+", 1)[-1] in _LOCK_KEYS:
             event.prevent_default()
             event.stop()

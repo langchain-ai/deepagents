@@ -13,15 +13,25 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
-2. Kitty key sub-field tolerance. Textual 8.2.7's `_re_extended_key` only
-    accepts `;`-separated numeric fields, so any kitty sequence that carries
-    `:`-separated sub-fields — alternate keys (`unicode:shifted:base`) or an
-    event-type (`modifiers:event`) — fails to match and is re-emitted one
-    byte at a time as literal text. iTerm2 sends these forms (e.g. Caps Lock
-    reports `\x1b[57358:65;1;65u`), which leaks `[57358...` into the input.
-    The patch strips the `:` sub-fields before Textual parses the sequence so
-    it resolves to a single key event. Remove when the pinned Textual widens
-    its parser.
+2. Kitty lock-key and sub-field handling. Two related problems with the
+    pinned Textual 8.2.7 parser:
+
+    a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
+       text. Under the kitty protocol with associated-text reporting, iTerm2
+       and others encode Caps Lock as `CSI 57358 ... u` with the associated
+       text set to the letter the *next* key would have produced — so the
+       chat input types a stray letter. The patch collapses any lock-key
+       sequence to a single character-less event, regardless of the modifier,
+       associated-text, or event-type sub-fields the terminal includes.
+
+    b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
+       *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
+       keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
+       fails to match and is re-emitted one byte at a time as literal text.
+       The patch strips the `:` sub-fields before Textual parses the sequence
+       so it resolves to a single key event.
+
+    Remove when the pinned Textual neutralizes lock keys and widens its parser.
 
 3. Double-click word selection. Stock Textual selects the entire widget on
     a click chain; these patches narrow a double-click (and double-click
@@ -71,9 +81,26 @@ try:
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning("Textual keyboard parser patch skipped: %s", exc)
 else:
-    # Kitty extended-key sequences carrying `:` sub-fields (alternate keys or
-    # an event-type sub-field). Textual 8.2.7's `_re_extended_key` rejects the
-    # colons, so these leak as literal text — strip the sub-fields first.
+    # Kitty functional key codes for the lock keys (Caps Lock, Scroll Lock,
+    # Num Lock). The kitty protocol assigns these Private Use Area codepoints;
+    # they appear as the leading key-code field of a `CSI ... u` sequence.
+    _KITTY_LOCK_KEY_CODES = frozenset({"57358", "57359", "57360"})
+    _KITTY_LOCK_KEY_NAMES = {
+        "57358": "caps_lock",
+        "57359": "scroll_lock",
+        "57360": "num_lock",
+    }
+
+    # Any `CSI <code>[:...][;...] u` sequence. Group 1 is the leading key-code
+    # field (before any `:` alternate-key sub-field). Used to detect lock keys
+    # regardless of the modifier / associated-text / event-type sub-fields that
+    # follow, which iTerm2 and other terminals encode in varying shapes.
+    _KITTY_KEY_SEQUENCE = re.compile(r"\x1b\[(\d+)[\d;:]*u")
+
+    # Kitty extended-key sequence carrying `:` sub-fields (alternate keys or an
+    # event-type sub-field). Textual 8.2.7's `_re_extended_key` rejects the
+    # colons, so non-lock keys with these sub-fields would otherwise leak as
+    # literal text — strip the sub-fields so they parse to a single key event.
     _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
 
     def _strip_kitty_subfields(sequence: str) -> str:
@@ -89,6 +116,27 @@ else:
         primary = ";".join(field.split(":", 1)[0] for field in body.split(";"))
         return f"\x1b[{primary}{terminator}"
 
+    def _lock_key_event(sequence: str) -> events.Key | None:
+        """Return a text-free lock-key event for a kitty lock-key sequence.
+
+        Lock keys must never produce text. Under the kitty protocol with
+        associated-text reporting, terminals (notably iTerm2) encode Caps
+        Lock as a `CSI 57358 ... u` sequence whose associated-text field is
+        the letter the *next* key would have produced — Textual then either
+        types that letter or, when `:` sub-fields are present, leaks the raw
+        sequence byte by byte. Collapsing any lock-key sequence to a single
+        character-less event stops both failure modes at the source, for
+        every widget.
+
+        Returns:
+            A `Key` event for the lock key, or `None` if `sequence` is not a
+            kitty lock-key sequence.
+        """
+        match = _KITTY_KEY_SEQUENCE.fullmatch(sequence)
+        if match is None or match.group(1) not in _KITTY_LOCK_KEY_CODES:
+            return None
+        return events.Key(_KITTY_LOCK_KEY_NAMES[match.group(1)], None)
+
     def _emit_alt(keys: tuple, character: str | None) -> Iterable[events.Key]:
         for key in keys:
             yield events.Key(f"alt+{key.value}", character)
@@ -96,9 +144,14 @@ else:
     def _sequence_to_key_events_with_alt(
         self: XTermParser, sequence: str, alt: bool = False
     ) -> Iterable[events.Key]:
-        # Normalize kitty sequences with `:` sub-fields before any other
-        # handling so they resolve to a single key event instead of leaking
-        # raw bytes (e.g. iTerm2 Caps Lock `\x1b[57358:65;1;65u`).
+        # Lock keys (Caps Lock / Num Lock / Scroll Lock) must never type. Emit
+        # a single character-less event regardless of how the terminal encoded
+        # the modifiers, associated text, or event-type sub-fields.
+        if (lock_event := _lock_key_event(sequence)) is not None:
+            yield lock_event
+            return
+        # Normalize any other kitty sequence with `:` sub-fields so it resolves
+        # to a single key event instead of leaking raw bytes.
         if _KITTY_SUBFIELD_KEY.fullmatch(sequence):
             sequence = _strip_kitty_subfields(sequence)
         # Fast path: \x1b<byte> on first pass. Short-circuits the ~100 ms

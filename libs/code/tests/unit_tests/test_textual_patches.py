@@ -9,6 +9,7 @@ import ast
 import importlib.util
 from pathlib import Path
 
+import pytest
 from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
@@ -120,28 +121,43 @@ class TestPatchedSequenceToKeyEvents:
         """
         assert _keys_for("\x1bZ", alt=False) == []
 
-    def test_kitty_alternate_key_subfield_resolves_to_single_key(self) -> None:
-        r"""iTerm2 Caps Lock `CSI 57358:65;1;65u` must decode to `caps_lock`.
+    @pytest.mark.parametrize(
+        ("sequence", "key"),
+        [
+            # Plain press, no associated text.
+            ("\x1b[57358u", "caps_lock"),
+            # Conformant flags-25 form: modifier + associated text.
+            ("\x1b[57358;1;65u", "caps_lock"),
+            # Lock bit set in the modifier mask.
+            ("\x1b[57358;65;65u", "caps_lock"),
+            # Other modifier bits set alongside the lock key.
+            ("\x1b[57358;64;65u", "caps_lock"),
+            # Alternate-key sub-field (iTerm2): `unicode:shifted`.
+            ("\x1b[57358:65;1;65u", "caps_lock"),
+            # Event-type sub-field on the modifier field.
+            ("\x1b[57358;1:1;65u", "caps_lock"),
+            # Num Lock and Scroll Lock use the same encoding family.
+            ("\x1b[57360;1;65u", "num_lock"),
+            ("\x1b[57359;1;65u", "scroll_lock"),
+        ],
+    )
+    def test_kitty_lock_keys_never_carry_text(self, sequence: str, key: str) -> None:
+        r"""Lock keys must decode to a single character-less event.
 
-        Upstream Textual's parser rejects the `:`-separated alternate-key
-        sub-field, so the whole sequence leaks as literal text (`[57358...`).
-        The patch strips the sub-field so it resolves to one key event.
+        Under the kitty protocol with associated-text reporting, terminals
+        (notably iTerm2) encode Caps Lock with the letter the next key would
+        have produced. Without the patch Textual either types that letter or,
+        when `:` sub-fields are present, leaks the raw sequence byte by byte.
+        The patch collapses every lock-key sequence to a text-free event.
         """
-        assert _keys_for("\x1b[57358:65;1;65u", alt=False) == [("caps_lock", "A")]
-
-    def test_kitty_event_type_subfield_resolves_to_single_key(self) -> None:
-        r"""`CSI 57358;1:1u` (event-type sub-field) must decode to `caps_lock`.
-
-        The event-type sub-field on the modifier field also uses a colon and
-        would otherwise leak as literal text.
-        """
-        assert _keys_for("\x1b[57358;1:1;65u", alt=False) == [("caps_lock", "A")]
+        assert _keys_for(sequence, alt=False) == [(key, None)]
 
     def test_kitty_subfield_strip_preserves_normal_keys(self) -> None:
         r"""Alternate-key sub-fields on text keys still decode to the key.
 
         `CSI 97:65;1;65u` is the `a` key with shifted alternate `A`; only the
-        primary code point and associated text matter to Textual.
+        primary code point and associated text matter to Textual. This guards
+        against the sub-field strip swallowing real characters.
         """
         assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
 

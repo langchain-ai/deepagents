@@ -4,28 +4,26 @@
 
 ## [0.1.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.12...deepagents-code==0.1.13) (2026-06-11)
 
-
 ### Features
 
-* **code:** add config command and canonical config manifest ([#3763](https://github.com/langchain-ai/deepagents/issues/3763)) ([79899a3](https://github.com/langchain-ai/deepagents/commit/79899a306d01de6217a1dfcc013ae92c808a47a0))
-* **code:** auto-install ripgrep on first run ([#3348](https://github.com/langchain-ai/deepagents/issues/3348)) ([fecf22b](https://github.com/langchain-ai/deepagents/commit/fecf22b0909e79ff7bdf180baf20abf5fdf1f390))
-* **code:** confirm modal for `/install --package` ([#3840](https://github.com/langchain-ai/deepagents/issues/3840)) ([3d75026](https://github.com/langchain-ai/deepagents/commit/3d75026e2f241648fae78d9e1de2cbb4985f58ff))
-* **code:** copy focused input selection on `Ctrl+C` ([#3841](https://github.com/langchain-ai/deepagents/issues/3841)) ([99f782c](https://github.com/langchain-ai/deepagents/commit/99f782cf08336c200d02a24ae4edaa650af67ed2))
-* **code:** first-class `[retries]` config ([#3772](https://github.com/langchain-ai/deepagents/issues/3772)) ([9334d91](https://github.com/langchain-ai/deepagents/commit/9334d91ef94997e46d5373daca9c146fa9498763))
-* **code:** pluggable third-party sandbox backends ([#3842](https://github.com/langchain-ai/deepagents/issues/3842)) ([2b635a7](https://github.com/langchain-ai/deepagents/commit/2b635a7e6e6b50ca8ce783c2ac96ed8643ae0224))
-* **code:** show connection state in the status bar ([#3710](https://github.com/langchain-ai/deepagents/issues/3710)) ([3e3e8fe](https://github.com/langchain-ai/deepagents/commit/3e3e8feb0e6e1b77be75a7756fbf32e5c9497c28))
-* **code:** surface LangSmith tracing projects in `LocalContextMiddleware` ([#3836](https://github.com/langchain-ai/deepagents/issues/3836)) ([676abec](https://github.com/langchain-ai/deepagents/commit/676abecf892ff537fcb1425ba5929cace3c5d503))
-
+* Pluggable third-party sandbox backends ([#3842](https://github.com/langchain-ai/deepagents/issues/3842)) ([2b635a7](https://github.com/langchain-ai/deepagents/commit/2b635a7e6e6b50ca8ce783c2ac96ed8643ae0224))
+* Auto-install ripgrep on first run ([#3348](https://github.com/langchain-ai/deepagents/issues/3348)) ([fecf22b](https://github.com/langchain-ai/deepagents/commit/fecf22b0909e79ff7bdf180baf20abf5fdf1f390))
+* `config` command and canonical config manifest ([#3763](https://github.com/langchain-ai/deepagents/issues/3763)) ([79899a3](https://github.com/langchain-ai/deepagents/commit/79899a306d01de6217a1dfcc013ae92c808a47a0))
+* Confirm modal for `/install --package` ([#3840](https://github.com/langchain-ai/deepagents/issues/3840)) ([3d75026](https://github.com/langchain-ai/deepagents/commit/3d75026e2f241648fae78d9e1de2cbb4985f58ff))
+* Copy focused input selection on `Ctrl+C` ([#3841](https://github.com/langchain-ai/deepagents/issues/3841)) ([99f782c](https://github.com/langchain-ai/deepagents/commit/99f782cf08336c200d02a24ae4edaa650af67ed2))
+* `[retries]` config ([#3772](https://github.com/langchain-ai/deepagents/issues/3772)) ([9334d91](https://github.com/langchain-ai/deepagents/commit/9334d91ef94997e46d5373daca9c146fa9498763))
+* Show connection state in the status bar ([#3710](https://github.com/langchain-ai/deepagents/issues/3710)) ([3e3e8fe](https://github.com/langchain-ai/deepagents/commit/3e3e8feb0e6e1b77be75a7756fbf32e5c9497c28))
+* Surface LangSmith tracing projects in `LocalContextMiddleware` ([#3836](https://github.com/langchain-ai/deepagents/issues/3836)) ([676abec](https://github.com/langchain-ai/deepagents/commit/676abecf892ff537fcb1425ba5929cace3c5d503))
 
 ### Bug Fixes
 
-* **code:** add debug-log guidance for truncated startup errors ([#3849](https://github.com/langchain-ai/deepagents/issues/3849)) ([cd1ef30](https://github.com/langchain-ai/deepagents/commit/cd1ef303cf5d0e9d746c787eb09a4a89437e965a))
-* **code:** drop lock-key events so Caps Lock in iTerm2 doesn't type ([#3855](https://github.com/langchain-ai/deepagents/issues/3855)) ([110f1a7](https://github.com/langchain-ai/deepagents/commit/110f1a7a975743efda12e181cb3afc8404202254))
-* **code:** hand pointer over splash tracing project link ([#3858](https://github.com/langchain-ai/deepagents/issues/3858)) ([ea7dae5](https://github.com/langchain-ai/deepagents/commit/ea7dae58a37cfb1d2b96544eb7c941aad331b280))
-* **code:** keep terminal-default theme on Esc in `/theme` selector ([#3854](https://github.com/langchain-ai/deepagents/issues/3854)) ([c3bc67b](https://github.com/langchain-ai/deepagents/commit/c3bc67b0cdeda6f4dbcc6360ddd72b455aec4fe7))
-* **code:** preserve inherited `PYTHONPATH` for server subprocess ([#3833](https://github.com/langchain-ai/deepagents/issues/3833)) ([4689569](https://github.com/langchain-ai/deepagents/commit/4689569f94138987319cd9cbb45ce66a1f496934))
-* **code:** resolve interpreter PTC allowlist against the runtime tool registry ([#3845](https://github.com/langchain-ai/deepagents/issues/3845)) ([c59a27e](https://github.com/langchain-ai/deepagents/commit/c59a27ef2405b8e04c4351ce7ffa53d8d16d519c))
-* **code:** treat multi-line key-event pastes as one input ([#3856](https://github.com/langchain-ai/deepagents/issues/3856)) ([6bb15d4](https://github.com/langchain-ai/deepagents/commit/6bb15d4bd97bd16f47504f937c8458d1b53d9cc4))
+* Add debug-log guidance for truncated startup errors ([#3849](https://github.com/langchain-ai/deepagents/issues/3849)) ([cd1ef30](https://github.com/langchain-ai/deepagents/commit/cd1ef303cf5d0e9d746c787eb09a4a89437e965a))
+* Drop lock-key events so Caps Lock in iTerm2 doesn't type ([#3855](https://github.com/langchain-ai/deepagents/issues/3855)) ([110f1a7](https://github.com/langchain-ai/deepagents/commit/110f1a7a975743efda12e181cb3afc8404202254))
+* Hand pointer over splash tracing project link ([#3858](https://github.com/langchain-ai/deepagents/issues/3858)) ([ea7dae5](https://github.com/langchain-ai/deepagents/commit/ea7dae58a37cfb1d2b96544eb7c941aad331b280))
+* Keep terminal-default theme on Esc in `/theme` selector ([#3854](https://github.com/langchain-ai/deepagents/issues/3854)) ([c3bc67b](https://github.com/langchain-ai/deepagents/commit/c3bc67b0cdeda6f4dbcc6360ddd72b455aec4fe7))
+* Preserve inherited `PYTHONPATH` for server subprocess ([#3833](https://github.com/langchain-ai/deepagents/issues/3833)) ([4689569](https://github.com/langchain-ai/deepagents/commit/4689569f94138987319cd9cbb45ce66a1f496934))
+* Resolve interpreter PTC allowlist against the runtime tool registry ([#3845](https://github.com/langchain-ai/deepagents/issues/3845)) ([c59a27e](https://github.com/langchain-ai/deepagents/commit/c59a27ef2405b8e04c4351ce7ffa53d8d16d519c))
+* Treat multi-line key-event pastes as one input ([#3856](https://github.com/langchain-ai/deepagents/issues/3856)) ([6bb15d4](https://github.com/langchain-ai/deepagents/commit/6bb15d4bd97bd16f47504f937c8458d1b53d9cc4))
 
 ## [0.1.12](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.11...deepagents-code==0.1.12) (2026-06-10)
 

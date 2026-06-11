@@ -8335,6 +8335,10 @@ class TestNotificationCenterIntegration:
                 return_value=[],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=False,
             ),
@@ -9067,6 +9071,10 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
@@ -9109,6 +9117,10 @@ class TestNotificationCenterIntegration:
                 return_value=["ripgrep"],
             ),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
                 "deepagents_code.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
             ),
@@ -9148,6 +9160,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.main.check_optional_tools",
                 return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
             ),
             patch(
                 "deepagents_code.main._ripgrep_install_hint",
@@ -9604,6 +9620,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.main.check_optional_tools",
                 return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
             ),
             patch(
                 "deepagents_code.main._ripgrep_install_hint",
@@ -13839,6 +13859,60 @@ class TestEnsureManagedRipgrep:
 
         prepend.assert_not_called()
         assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is True
+
+    async def test_checksum_mismatch_notifies_error(self) -> None:
+        """A checksum mismatch surfaces a loud error notice and fails closed."""
+        from deepagents_code.managed_tools import ChecksumMismatchError
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notices: list[dict[str, Any]] = []
+
+        def _capture(message: str, **kwargs: Any) -> None:
+            notices.append({"message": message, **kwargs})
+
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(side_effect=ChecksumMismatchError("bad")),
+            ),
+            patch.object(app, "notify", _capture),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+
+        assert any(note.get("severity") == "error" for note in notices), notices
+        assert app._ripgrep_install_failed is True
+
+    async def test_unexpected_failure_notifies_warning(self) -> None:
+        """An unexpected install error warns the user, not just the log.
+
+        Mirrors the headless CLI path so a crashed install is distinguishable
+        from an absent tool rather than only logged.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notices: list[dict[str, Any]] = []
+
+        def _capture(message: str, **kwargs: Any) -> None:
+            notices.append({"message": message, **kwargs})
+
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch.object(app, "notify", _capture),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+
+        assert any(note.get("severity") == "warning" for note in notices), notices
         assert app._ripgrep_install_failed is True
 
     async def test_start_server_background_ensures_before_spawn(self) -> None:

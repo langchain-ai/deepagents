@@ -106,10 +106,6 @@ deepagents mcp-servers connect <id|name|url>  # start OAuth for a server
 or URL — a non-id value is resolved against `mcp-servers list` (URLs are matched
 ignoring case and trailing slash).
 
-## ⚙️ Environment
-
-- `DEEPAGENTS_CLI_OFFLINE=1` — skip network downloads of managed tools. On first run the CLI fetches a pinned `ripgrep` release into `~/.deepagents/bin/` so the agent's grep tool is fast out of the box; setting this disables that fetch and falls back to a slower Python regex search.
-
 ## 📖 Resources
 
 - **[CLI Documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)**

@@ -2691,6 +2691,12 @@ class DeepAgentsApp(App):
                 logger.warning(
                     "ripgrep auto-install failed unexpectedly", exc_info=True
                 )
+                self.notify(
+                    "ripgrep auto-install failed unexpectedly — see logs.",
+                    severity="warning",
+                    timeout=10,
+                    markup=False,
+                )
 
             if installed is not None:
                 prepend_managed_bin_to_path()

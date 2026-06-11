@@ -635,3 +635,56 @@ def test_download_to_enforces_total_deadline(
     dest = tmp_path / "archive"
     with pytest.raises(TimeoutError, match="deadline"):
         managed_tools._download_to("https://example.invalid/x", dest)
+
+
+def test_download_to_rejects_non_200_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A non-200 response is rejected before any bytes are written.
+
+    Guards against a proxy interstitial or unfollowed redirect being
+    streamed to disk and only caught later as a misleading checksum failure.
+    """
+    import urllib.error
+    from typing import Self
+
+    class _Non200Response:
+        status = 503
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            msg = "read must not be called on a non-200 response"
+            raise AssertionError(msg)
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *_args, **_kwargs: _Non200Response()
+    )
+
+    dest = tmp_path / "archive"
+    with pytest.raises(urllib.error.URLError, match="HTTP 503"):
+        managed_tools._download_to("https://example.invalid/x", dest)
+    assert dest.read_bytes() == b""
+
+
+def test_extract_tar_data_reraises_unrelated_typeerror(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unrelated `TypeError` propagates instead of falling to legacy tar."""
+    archive = tmp_path / "ripgrep-test.tar.gz"
+    archive.write_bytes(_make_fake_tarball(b"payload"))
+
+    def _boom_extractall(
+        _self: tarfile.TarFile, *_args: object, **_kwargs: object
+    ) -> None:
+        msg = "something else entirely"
+        raise TypeError(msg)
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", _boom_extractall)
+
+    with pytest.raises(TypeError, match="something else entirely"):
+        managed_tools._extract_rg(archive, tmp_path / "unpacked")

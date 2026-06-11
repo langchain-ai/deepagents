@@ -169,17 +169,26 @@ def _managed_binary_is_current(binary: Path) -> bool:
 
 
 def _download_to(url: str, dest: Path) -> None:
-    """Stream `url` to `dest` with a total wall-clock deadline.
+    """Stream `url` to `dest`, bounded by a wall-clock deadline.
 
     `urlopen(timeout=...)` only bounds per-operation socket waits, so a
     slow trickle of bytes from a flaky peer could otherwise stretch the
     transfer well beyond the configured timeout. The chunked read here
-    enforces a single end-to-end deadline.
+    enforces an end-to-end deadline, checked between chunk reads.
+
+    A non-200 response is rejected before any bytes are written: a proxy
+    interstitial or an unfollowed redirect returned with a non-200 status
+    must not be streamed to disk and then surface downstream as a
+    misleading SHA-256 failure (which reads as a supply-chain anomaly).
+    `urlopen` already raises `HTTPError` for 4xx/5xx, so this guards the
+    residual 2xx/3xx cases.
 
     Raises:
         TimeoutError: When total transfer time exceeds the deadline.
+        urllib.error.URLError: When the response status is not 200.
     """
     import time
+    import urllib.error
     import urllib.request
 
     deadline = time.monotonic() + _DOWNLOAD_TIMEOUT_SECONDS
@@ -187,6 +196,10 @@ def _download_to(url: str, dest: Path) -> None:
         urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as resp,  # noqa: S310  # fixed https GitHub release URL
         dest.open("wb") as fh,
     ):
+        status = getattr(resp, "status", None)
+        if status is not None and status != 200:  # noqa: PLR2004  # HTTP 200 OK
+            msg = f"Unexpected HTTP {status} response fetching {url}"
+            raise urllib.error.URLError(msg)
         while True:
             if time.monotonic() > deadline:
                 msg = (
@@ -244,9 +257,10 @@ def _validate_legacy_tar_member(member: tarfile.TarInfo, extract_root: Path) -> 
 def _extract_tar_data(tf: tarfile.TarFile, extract_root: Path) -> None:
     """Extract a tar archive with `data` filtering when available.
 
-    Python 3.11.0-3.11.3 lacks the `filter` keyword on `extractall`, but
-    this package supports those patch versions. The fallback validates the
-    pinned release archive before using the legacy API.
+    Python versions before the PEP 706 backport (3.11.0-3.11.3) lack the
+    `filter` keyword on `extractall`, and this package supports those patch
+    versions. The fallback validates the pinned release archive before
+    using the legacy API.
 
     Raises:
         TypeError: Re-raised when `extractall` rejects a non-`filter`
@@ -357,7 +371,11 @@ async def ensure_ripgrep() -> Path | None:
 
     1. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
     2. Otherwise, if a system `rg` is on `PATH` and no managed binary
-        exists, return its resolved path.
+        exists, return its resolved path. This is gated on the *absence*
+        of a managed binary: once a managed `rg` exists, the pinned
+        version always wins, so a stale managed binary is re-fetched
+        rather than deferring to a system `rg` and the resolved version
+        stays deterministic.
     3. If offline, on an unsupported platform, or no asset matches the
         platform/arch, return `None` so callers fall back to the existing
         notification + slow path.

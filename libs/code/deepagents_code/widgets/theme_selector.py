@@ -36,8 +36,8 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     Displays available themes in an `OptionList`. Navigating the option list
     applies a live preview by swapping the app theme. Returns the selected
     theme name on Enter, or `None` on Esc. Esc normally restores the original
-    theme, but if the user set a per-terminal default with `t` this session,
-    Esc keeps that theme active instead of reverting.
+    theme, but if a per-terminal default was saved with `t` this session, Esc
+    keeps that theme active instead of reverting.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -49,9 +49,10 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     ]
     """Key bindings for the selector.
 
-    Esc dismisses, restoring the original theme unless `t` set a per-terminal
-    default this session (in which case that theme is kept). Arrow keys and Enter are
-    handled natively by the embedded `OptionList`; Tab / Shift+Tab are bound
+    Esc dismisses, restoring the original theme unless a `t` save set a
+    per-terminal default this session (in which case that theme is kept).
+    Arrow keys and Enter are handled natively by the embedded `OptionList`;
+    Tab / Shift+Tab are bound
     here to advance the option list cursor for consistency with other
     selector screens (where Tab cycles focus across multiple widgets).
     `action_toggle_names` toggles between human-readable labels and canonical
@@ -222,18 +223,27 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Dismiss, keeping a terminal default set this session or restoring.
+        """Dismiss, keeping a saved terminal default or restoring the original.
 
-        Pressing `t` saves a per-terminal default and is treated as a
-        deliberate choice, so Esc keeps that theme active instead of
-        reverting. `dismiss(None)` skips the global `[ui].theme` write — the
-        per-terminal mapping was already persisted by `action_set_for_terminal`.
-        Without a `t` press, Esc restores the original theme as before.
+        Pressing `t` to save a per-terminal default is a deliberate choice, so
+        Esc keeps that theme instead of reverting. `_session_terminal_default`
+        is set only after the save succeeds (see `action_set_for_terminal`), so
+        reaching the keep branch means the per-terminal mapping was written this
+        session; `dismiss(None)` then intentionally skips the global `[ui].theme`
+        write. Without a successful `t` save, Esc restores the theme that was
+        active when the picker opened.
         """
         keep = self._session_terminal_default
         target = keep if keep is not None else self._original_theme
-        self.app.theme = target
-        self._sync_terminal_background()
+        try:
+            self.app.theme = target
+            self._sync_terminal_background()
+        except Exception:
+            # A theme can be unregistered mid-session; never trap the user in
+            # the modal. Log and dismiss regardless so Esc always closes.
+            logger.warning(
+                "Failed to apply theme '%s' on cancel", target, exc_info=True
+            )
         self.dismiss(None)
 
     def action_cursor_down(self) -> None:

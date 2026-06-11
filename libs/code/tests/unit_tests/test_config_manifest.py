@@ -84,9 +84,9 @@ def test_api_key_credentials_are_secret() -> None:
         looks_secret = any(
             marker in opt.env_var for marker in ("KEY", "TOKEN", "APIKEY")
         )
-        assert opt.secret is looks_secret, (
-            f"{opt.key} secret={opt.secret} but env_var {opt.env_var!r} "
-            f"implies secret={looks_secret}"
+        assert opt.redacted is looks_secret, (
+            f"{opt.key} redacted={opt.redacted} but env_var {opt.env_var!r} "
+            f"implies redacted={looks_secret}"
         )
 
 
@@ -95,20 +95,20 @@ def test_google_cloud_project_is_not_secret() -> None:
     opt = get_option("credentials.google_vertexai")
     assert opt is not None
     assert opt.env_var == "GOOGLE_CLOUD_PROJECT"
-    assert opt.secret is False
+    assert opt.redacted is False
 
 
 def test_display_value_redacts_secrets() -> None:
     """A secret option never renders its raw value, only configured state."""
-    secret = ConfigOption(
+    option = ConfigOption(
         key="x",
         group="Credentials",
         summary="",
         kind=OptionKind.STR,
-        secret=True,
+        redacted=True,
     )
-    assert _display_value(secret, is_set=True, value="sk-supersecret") == "configured"
-    assert _display_value(secret, is_set=False, value=None) == "not configured"
+    assert _display_value(option, is_set=True, value="sk-supersecret") == "configured"
+    assert _display_value(option, is_set=False, value=None) == "not configured"
 
 
 def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
@@ -118,7 +118,7 @@ def test_display_value_uses_credential_language_for_non_secret_unset() -> None:
         group="Credentials",
         summary="",
         kind=OptionKind.STR,
-        secret=False,
+        redacted=False,
     )
     assert _display_value(option, is_set=False, value=None) == "not configured"
 
@@ -130,7 +130,7 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
         group="Credentials",
         summary="",
         kind=OptionKind.STR,
-        secret=True,
+        redacted=True,
         dependency_module="langchain_missing_provider",
         install_extra="missing-provider",
     )
@@ -251,7 +251,7 @@ def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
     assert run_config_command(args) == 0
     rows = json.loads(capsys.readouterr().out)["data"]
     assert any(r["key"] == "credentials.anthropic" and r["set"] for r in rows)
-    assert all(r["value"] is None for r in rows if r["secret"])
+    assert all(r["value"] is None for r in rows if r["redacted"])
 
 
 def test_resolve_int_falls_back_to_toml_then_default() -> None:

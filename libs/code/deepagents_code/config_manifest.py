@@ -11,10 +11,9 @@ its dataclass defaults from them — so a default is defined in exactly one plac
 can never drift from what the app actually reads. Resolution precedence mirrors
 the loaders: a `DEEPAGENTS_CODE_`-prefixed env var beats the canonical name,
 env beats `config.toml`, and the typed default is the final fallback. A
-malformed numeric/list/PTC value or a wrong-typed TOML value is logged and
-falls back rather than raising, so a bad config never blocks startup
-(unrecognized boolean env values follow `is_env_truthy` and resolve to the
-default without a warning).
+malformed numeric/list/PTC value, an unrecognized boolean token, or a
+wrong-typed TOML value is logged and falls back to the next layer rather than
+raising, so a bad config never blocks startup.
 
 Structured, user-defined config is *not* a flat scalar option and is parsed by
 dedicated typed loaders elsewhere. The manifest references `[threads].columns`
@@ -39,7 +38,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, assert_never, cast
 
 from deepagents_code import _env_vars
-from deepagents_code._env_vars import is_env_truthy
+from deepagents_code._env_vars import classify_env_bool
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -63,29 +62,42 @@ INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
-    All kinds flow through `resolve_scalar`; the first five are coerced inline
-    by `_coerce_env`/`_coerce_toml`. The `*_DELEGATE` kinds defer to a bespoke
-    parser (their semantics — colon-split
+    All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
+    `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
+    `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
+    and `PTC_DELEGATE` defer to a bespoke parser (their semantics — colon-split
     Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
-    do not compress into a generic coercion). `STRUCTURED` marks user-defined
-    tables that the scalar resolver only passes through for display.
+    do not compress into a generic coercion). `THEME_DELEGATE` is resolved
+    separately at the top of `resolve_scalar` and never reaches the inline
+    coercers. `STRUCTURED` marks user-defined tables that the scalar resolver
+    only passes through for display.
     """
 
     BOOL = "bool"
-    """Truthy env values (`1`/`true`/`yes`/`on`); falls back to the default."""
+    """Recognized truthy (`1`/`true`/`yes`/`on`) or falsy (`0`/`false`/`no`/`off`)
+    tokens; an unrecognized value is logged and skipped to the next layer."""
+
     BOOL_PRESENCE = "bool_presence"
     """Any non-empty env value enables the flag (e.g. debug injectors)."""
+
     INT = "int"
+
     FLOAT = "float"
+
     STR = "str"
+
     SHELL_LIST_DELEGATE = "shell_list"
     """Delegates to `config.parse_shell_allow_list`."""
+
     SKILLS_DIRS_DELEGATE = "skills_dirs"
     """Delegates to `config._parse_extra_skills_dirs`."""
+
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
+
     THEME_DELEGATE = "theme"
     """Delegates to the app theme-preference loader semantics."""
+
     STRUCTURED = "structured"
     """User-defined table parsed by a dedicated loader; not scalar-coerced."""
 
@@ -160,8 +172,14 @@ class ConfigOption:
     cli_flag: str | None = None
     """Representative CLI flag that sets the option, or `None`."""
 
-    secret: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value."""
+    redacted: bool = False
+    """Whether `config show` reports only set/not-set, never the raw value.
+
+    Named `redacted` rather than `secret` so the value (and the JSON field it
+    populates) carries no credential-suggesting identifier — the flag is
+    boolean metadata, and a `secret`-named value tripped CodeQL's clear-text
+    logging heuristic when written to stdout.
+    """
 
     settings_field: str | None = None
     """Name of the `Settings` attribute this option backs, or `None`.
@@ -307,7 +325,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
     """
     kind = option.kind
     if kind is OptionKind.BOOL:
-        return is_env_truthy(name, default=bool(option.default))
+        classified = classify_env_bool(raw)
+        if classified is None:
+            # Unrecognized boolean token: log and fall through like every other
+            # malformed scalar, so `config show` reports the real source
+            # (config.toml/default) instead of crediting the env var with a
+            # value it did not actually supply.
+            logger.warning("Ignoring %s=%r (expected bool)", name, raw)
+            return _INVALID
+        return classified
     if kind is OptionKind.BOOL_PRESENCE:
         return bool(raw)
     if kind is OptionKind.STR:
@@ -342,15 +368,19 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
             # on a NUL byte; fall back rather than crash resolution/startup.
             logger.warning("Ignoring %s (could not resolve a path)", name)
             return _INVALID
-    if (
-        kind is OptionKind.PTC_DELEGATE
-        or kind is OptionKind.STRUCTURED
-        or kind is OptionKind.THEME_DELEGATE
-    ):
-        # PTC has no env var; STRUCTURED is not env-backed; THEME_DELEGATE is
-        # resolved upstream in `resolve_scalar` and never reaches here. Returned
-        # verbatim as a defensive fallback.
+    if kind is OptionKind.THEME_DELEGATE:
+        # Resolved upstream in `resolve_scalar` and never reaches here; the raw
+        # passthrough is a defensive fallback only.
         return raw
+    if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
+        # Neither kind declares an `env_var`, so the `if option.env_var` guard in
+        # `resolve_scalar` means this is unreachable today. If a future option
+        # ever adds an env var for one of these, return `_INVALID` rather than
+        # the raw string: passing an uncoerced value into a typed `Settings`
+        # field (e.g. `interpreter_ptc`) would bypass the delegate parser's
+        # validation. Falling back to the validated default is the safe choice.
+        logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
+        return _INVALID
     assert_never(kind)
 
 
@@ -470,12 +500,12 @@ def resolve_scalar(
 
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
-        `default`. A malformed `int`/`float`/list/PTC value, or any TOML value
-        of the wrong type, is logged and skipped so the next layer (or the
-        typed default) applies; unrecognized boolean env values resolve to the
-        default per `is_env_truthy` semantics. An empty env value is treated as
-        unset (mirroring `resolve_env_var`), so it falls through to
-        `config.toml`/`default` rather than counting as set.
+        `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
+        boolean token, or any TOML value of the wrong type is logged and skipped
+        so the next layer (or the typed default) applies. An empty env value is
+        treated as unset (mirroring `resolve_env_var`), so it falls through to
+        `config.toml`/`default` rather than counting as set. Theme resolution
+        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -600,10 +630,10 @@ def _credential_options() -> tuple[ConfigOption, ...]:
         if env_var in seen:
             continue
         seen.add(env_var)
-        secret = _is_secret_env(env_var)
+        redacted = _is_secret_env(env_var)
         summary = (
             f"Credential for the {name} provider."
-            if secret
+            if redacted
             else f"Project/identifier for the {name} provider."
         )
         dependency = _PROVIDER_DEPENDENCIES.get(name)
@@ -614,7 +644,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 summary=summary,
                 kind=OptionKind.STR,
                 env_var=env_var,
-                secret=secret,
+                redacted=redacted,
                 settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,

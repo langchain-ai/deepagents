@@ -10,14 +10,17 @@ Secret-flagged options (API keys and other credentials) are never printed by
 value — `config show`/`config get` report only whether they are set and from
 which source, so the output is safe to paste into a bug report.
 
-Help rendering for a bare `config` invocation goes through the startup
-fast-path (`ui.show_config_help`) and must not import this module, so the heavy
-manifest/runtime imports here stay confined to the subcommands.
+Help rendering for a bare `config` invocation is served by `ui.show_config_help`,
+which does not import this module. The heavy manifest/runtime imports here are
+function-local to the subcommands, so a bare `config`/`config -h` invocation
+never pulls them onto the startup path (`parse_args` does import this module to
+register the subparsers, but only its light top-level imports run then).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +32,8 @@ if TYPE_CHECKING:
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.output import OutputFormat
+
+logger = logging.getLogger(__name__)
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -151,7 +156,7 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
     if option.group == "Credentials":
         if value is None:
             return _with_availability(option, "not configured")
-        if option.secret:
+        if option.redacted:
             status = "configured" if is_set else "not configured"
             return _with_availability(option, status)
     if value is None:
@@ -233,9 +238,9 @@ def _run_show(output_format: OutputFormat) -> int:
                     "group": opt.group,
                     "source": source,
                     "set": is_set,
-                    "secret": opt.secret,
+                    "redacted": opt.redacted,
                     # Redact secret values: report presence only.
-                    "value": None if opt.secret else value,
+                    "value": None if opt.redacted else value,
                 }
                 for opt, is_set, source, value in resolved
             ],
@@ -286,7 +291,7 @@ def _run_list(output_format: OutputFormat) -> int:
                     "summary": opt.summary,
                     "type": opt.type,
                     "default": opt.default,
-                    "secret": opt.secret,
+                    "redacted": opt.redacted,
                     "env_var": opt.env_var,
                     "toml_path": opt.toml_path,
                     "cli_flag": opt.cli_flag,
@@ -346,8 +351,8 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
                 "key": option.key,
                 "source": source,
                 "set": is_set,
-                "secret": option.secret,
-                "value": None if option.secret else value,
+                "redacted": option.redacted,
+                "value": None if option.redacted else value,
             },
         )
         return 0
@@ -473,6 +478,10 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
         try:
             exists = path.exists()
         except OSError:
+            # A permission/transient FS error is not the same as "missing"; log
+            # it (at debug, to keep normal output clean) so a developer can tell
+            # the two apart when triaging a `config path` report.
+            logger.debug("Could not stat %s", path, exc_info=True)
             exists = False
         rows.append((label, path, exists))
     return rows

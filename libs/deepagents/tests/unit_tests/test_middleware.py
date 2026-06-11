@@ -426,14 +426,103 @@ class TestFilesystemMiddleware:
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
+            start = time.monotonic()
             result = glob_search_tool.invoke(
                 {
                     "pattern": "**/*",
                     "runtime": _runtime(),
                 }
             )
+            elapsed = time.monotonic() - start
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        # The tool must return as soon as the timeout fires, not block until
+        # the runaway glob (2s) finishes in its worker thread.
+        assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"
+
+    def test_glob_timeout_does_not_stall_subsequent_calls(self):
+        """A timed-out glob still running in a worker must not block the next glob."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        call_count = 0
+
+        def stuck_then_fast_glob(*args: object, **kwargs: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                time.sleep(2)
+            return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
+        ):
+            first_start = time.monotonic()
+            first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+            first_elapsed = time.monotonic() - first_start
+            start = time.monotonic()
+            second = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+            elapsed = time.monotonic() - start
+
+        assert "timed out" in first.content
+        # The first (timing-out) call must itself return at the 0.5s timeout
+        # rather than block until its 2s worker finishes - an independent guard
+        # against the original `with`-block regression, where the timeout did
+        # not bound wall-clock latency.
+        assert first_elapsed < 1.5, f"first glob blocked for {first_elapsed:.2f}s past its 0.5s timeout"
+        assert second.status == "success"
+        assert elapsed < 1.0, f"second glob waited {elapsed:.2f}s behind a stuck one"
+
+    def test_glob_surfaces_backend_exception_as_error(self):
+        """A non-timeout exception from the backend glob is returned as a tool error, not propagated."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def boom(*_args: object, **_kwargs: object) -> object:
+            msg = "path traversal not allowed"
+            raise ValueError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=boom),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert result.content == "Error: glob failed: path traversal not allowed"
+
+    def test_glob_backend_timeouterror_not_misreported_as_glob_timeout(self):
+        """A `TimeoutError` raised inside the backend must not be reported as a glob-pattern timeout.
+
+        `concurrent.futures.TimeoutError is TimeoutError` on Python 3.11+, so a
+        single `except concurrent.futures.TimeoutError` around the future's wait
+        would also swallow a backend-raised builtin `TimeoutError` and misreport
+        it as the glob pattern timing out.
+        """
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def raise_timeout(*_args: object, **_kwargs: object) -> object:
+            msg = "backend RPC timed out"
+            raise TimeoutError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=raise_timeout),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert "timed out after" not in result.content
+        assert result.content == "Error: glob failed: backend RPC timed out"
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""

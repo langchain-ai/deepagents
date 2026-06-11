@@ -2679,3 +2679,192 @@ class TestThemeSelectorScreen:
             await pilot.pause()
 
         assert app.theme == "langchain"
+
+    async def test_escape_keeps_last_terminal_default_after_multiple_t(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The last successful `t` wins; Esc keeps it over earlier saves.
+
+        Pressing `t` on a second theme supersedes the first, and a later
+        preview (without `t`) does not override the saved default — Esc
+        restores the most recently saved per-terminal theme.
+        """
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+            # `textual-light` is a Textual builtin, registered on every App and
+            # present in the deepagents registry — usable as a second target.
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            registry = list(theme.get_registry())
+            option_list = screen.query_one("#theme-options", OptionList)
+
+            # First `t`: save langchain-light.
+            option_list.highlighted = registry.index("langchain-light")
+            await pilot.pause()
+            await pilot.press("t")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Second `t`: save textual-light, superseding the first.
+            option_list.highlighted = registry.index("textual-light")
+            await pilot.pause()
+            await pilot.press("t")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Preview the original (no `t`) — this must not win on Esc.
+            option_list.highlighted = registry.index("langchain")
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert app.theme == "textual-light"
+
+    async def test_escape_keeps_terminal_default_over_later_preview(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc restores the `t`-saved theme even after previewing another.
+
+        After `t` saves a default, browsing to a different theme live-previews
+        it; Esc must roll back to the saved default, not the last preview.
+        """
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            registry = list(theme.get_registry())
+            option_list = screen.query_one("#theme-options", OptionList)
+
+            option_list.highlighted = registry.index("langchain-light")
+            await pilot.pause()
+            await pilot.press("t")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Preview a different, registered theme without pressing `t`.
+            option_list.highlighted = registry.index("textual-light")
+            await pilot.pause()
+            assert app.theme == "textual-light"
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert app.theme == "langchain-light"
+
+    async def test_escape_restores_original_when_t_with_term_program_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`t` no-ops without `TERM_PROGRAM`, so Esc reverts the preview.
+
+        The early return in `action_set_for_terminal` never arms the
+        keep-on-Esc behavior, so Esc restores the original theme and nothing
+        is persisted.
+        """
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            registry = list(theme.get_registry())
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = registry.index("langchain-light")
+            await pilot.pause()
+            assert app.theme == "langchain-light"
+
+            await pilot.press("t")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert app.theme == "langchain"
+        assert not config.exists()
+
+    async def test_escape_dismisses_when_kept_theme_unregistered_midsession(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc never traps the user even if the kept theme can't be applied.
+
+        If the saved per-terminal theme is unregistered after `t` (so
+        reapplying it raises `InvalidThemeError`), `action_cancel` logs and
+        still dismisses rather than leaving the modal stuck open.
+        """
+        from textual.app import App
+        from textual.widgets import OptionList
+
+        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+        results: list[str | None] = []
+
+        app = App()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            _register_lc_light_theme(app)
+
+            def on_result(result: str | None) -> None:
+                results.append(result)
+
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen, on_result)
+            await pilot.pause()
+
+            registry = list(theme.get_registry())
+            option_list = screen.query_one("#theme-options", OptionList)
+            option_list.highlighted = registry.index("langchain-light")
+            await pilot.pause()
+            await pilot.press("t")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            # Move off the saved theme, then pull it out from under Esc.
+            option_list.highlighted = registry.index("langchain")
+            await pilot.pause()
+            app.unregister_theme("langchain-light")
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        # The modal dismissed (no exception bubbled, user not trapped).
+        assert results == [None]

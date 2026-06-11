@@ -5,6 +5,7 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import functools
 import os
 import re
 from collections.abc import Sequence
@@ -70,6 +71,12 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_glob(pattern: str) -> wcglob.WcMatcher:
+    """Compile a glob pattern once and cache it (BRACE flag)."""
+    return wcglob.compile(pattern, flags=wcglob.BRACE)
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -673,61 +680,6 @@ def _format_grep_results(
     return "\n".join(lines)
 
 
-def _grep_search_files(
-    files: dict[str, Any],
-    pattern: str,
-    path: str | None = None,
-    glob: str | None = None,
-    output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
-) -> str:
-    r"""Search file contents for regex pattern.
-
-    Args:
-        files: Dictionary of file paths to FileData.
-        pattern: Regex pattern to search for.
-        path: Base path to search from.
-        glob: Optional glob pattern to filter files (e.g., "*.py").
-        output_mode: Output format - "files_with_matches", "content", or "count".
-
-    Returns:
-        Formatted search results. Returns "No matches found" if no results.
-
-    Example:
-        ```python
-        files = {"/file.py": FileData(content="import os\nprint('hi')", ...)}
-        _grep_search_files(files, "import", "/")
-        # Returns: "/file.py" (with output_mode="files_with_matches")
-        ```
-    """
-    try:
-        regex = re.compile(pattern)
-    except re.error as e:
-        return f"Invalid regex pattern: {e}"
-
-    try:
-        normalized_path = _normalize_path(path)
-    except ValueError:
-        return "No matches found"
-
-    filtered = _filter_files_by_path(files, normalized_path)
-
-    if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
-
-    results: dict[str, list[tuple[int, str]]] = {}
-    for file_path, file_data in filtered.items():
-        content_str = _normalize_content(file_data)
-        for line_num, line in enumerate(content_str.split("\n"), 1):
-            if regex.search(line):
-                if file_path not in results:
-                    results[file_path] = []
-                results[file_path].append((line_num, line))
-
-    if not results:
-        return "No matches found"
-    return _format_grep_results(results, output_mode)
-
-
 # -------- Structured helpers for composition --------
 
 
@@ -753,7 +705,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        matcher = _compile_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

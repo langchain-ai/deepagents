@@ -36,6 +36,9 @@ from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
 
+_SANDBOX_DEFAULT_SENTINEL = "\x00default"
+"""Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
 
 def _restart_current_process() -> NoReturn:
     """Replace the current process with a fresh `deepagents_code` invocation.
@@ -1040,13 +1043,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
+        nargs="?",
+        const=_SANDBOX_DEFAULT_SENTINEL,
         default="none",
         metavar="TYPE",
         help=(
-            "Remote sandbox for code execution "
-            "(default: none - local only; langsmith is included, "
-            "agentcore/modal/daytona/runloop require downloading extras)"
+            "Remote sandbox for code execution (default: none - local only). "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Third-party and config-declared providers are also accepted. "
+            "Pass --sandbox with no value to use [sandboxes].default from "
+            "config (keep the bare form last on the command line so a "
+            "following subcommand isn't read as its value). langsmith is "
+            "bundled; others require installing an extra or package."
         ),
     )
 
@@ -1183,12 +1191,92 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.sandbox_snapshot_name is not None and args.sandbox not in {
-        "langsmith",
-        "runloop",
-    }:
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith or runloop")
+    _resolve_and_validate_sandbox(args, parser)
     return args
+
+
+def _resolve_and_validate_sandbox(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Resolve `--sandbox` against the registry and validate related flags.
+
+    Handles the bare `--sandbox` form (resolve `[sandboxes].default`), unknown
+    providers (with install/config guidance), and the `--sandbox-snapshot-name`
+    / `--sandbox-id` flags whose support is driven by provider metadata. Calls
+    `parser.error` (which exits) on invalid input.
+
+    Because `--sandbox` takes an optional value (`nargs="?"`), placing it
+    immediately before a subcommand (e.g. `dcode --sandbox agents`) makes
+    argparse consume the subcommand as the flag's value. Pass an explicit
+    provider (`--sandbox daytona`) or keep the bare form last on the command
+    line.
+
+    Args:
+        args: Parsed namespace; `args.sandbox` is normalized in place.
+        parser: The parser, used to emit errors.
+    """
+    if args.sandbox in {"none", None}:
+        if args.sandbox_snapshot_name is not None:
+            parser.error("--sandbox-snapshot-name requires a --sandbox provider")
+        if args.sandbox_id is not None:
+            parser.error("--sandbox-id requires a --sandbox provider")
+        return
+
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+    registry = SandboxRegistry.load()
+
+    def _config_note() -> str:
+        """Build a breadcrumb when the config file failed to parse.
+
+        Returns:
+            A note to append to an error message, or an empty string when the
+            config parsed cleanly.
+        """
+        if registry.config_error:
+            return (
+                f"\n\nNote: ~/.deepagents/config.toml could not be used "
+                f"({registry.config_error}); any providers or default it "
+                "declares were ignored."
+            )
+        return ""
+
+    if args.sandbox == _SANDBOX_DEFAULT_SENTINEL:
+        default = registry.default
+        if not default:
+            parser.error(
+                "--sandbox was given with no value but no [sandboxes].default "
+                "is configured in ~/.deepagents/config.toml. Pass a provider "
+                "name explicitly or set [sandboxes].default." + _config_note()
+            )
+        args.sandbox = default
+
+    if not registry.is_available(args.sandbox):
+        available = ", ".join(registry.available_providers())
+        parser.error(
+            f"Unknown sandbox provider '{args.sandbox}'.\n"
+            f"Available providers: {available}.\n\n"
+            "If this is a third-party provider, install the package that "
+            "publishes it and re-run:\n"
+            "  /install <package-name> --package\n"
+            f"or declare [sandboxes.providers.{args.sandbox}] in "
+            "~/.deepagents/config.toml." + _config_note()
+        )
+
+    metadata = registry.get_metadata(args.sandbox)
+    if args.sandbox_snapshot_name is not None and (
+        metadata is None or not metadata.supports_snapshot_name
+    ):
+        parser.error(
+            f"--sandbox-snapshot-name is not supported by provider '{args.sandbox}'"
+        )
+    if (
+        args.sandbox_id is not None
+        and metadata is not None
+        and not metadata.supports_sandbox_id
+    ):
+        parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
 async def run_textual_cli_async(
@@ -2572,7 +2660,7 @@ def cli_main() -> None:
                 except Exception:
                     logger.debug("Failed to check for optional tools", exc_info=True)
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )
@@ -2665,7 +2753,7 @@ def cli_main() -> None:
             thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )

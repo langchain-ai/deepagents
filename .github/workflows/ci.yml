@@ -369,7 +369,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: "📦 Install Dependencies"
-        run: python -m pip install pyyaml pytest
+        run: python -m pip install packaging pyyaml pytest
       - name: "🔍 Check workflow helper scripts"
         run: python -m pytest .github/scripts/test_*.py -v
 

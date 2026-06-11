@@ -1,0 +1,50 @@
+# Resolve release PR runtime dependencies against real PyPI.
+#
+# Coordinated release-please bumps can update multiple packages in one PR. The
+# bumped wheels are not on PyPI until merge, so the helper strips only the
+# dependency pins satisfied by packages bumped in this same PR, then resolves the
+# rest with `uv pip compile --no-sources --universal`.
+
+name: "📦 Check Release Dependencies"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - "libs/**/pyproject.toml"
+      - "release-please-config.json"
+      - ".github/scripts/check_release_deps.py"
+      - ".github/workflows/check_release_deps.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-release-deps:
+    name: "resolve release dependencies"
+    if: >-
+      startsWith(github.event.pull_request.title, 'release(') &&
+      !contains(github.event.pull_request.labels.*.name, 'release-deps: acknowledged')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: "🐍 Set up Python and uv"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
+      - name: "🔍 Resolve changed release package dependencies"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uv run --no-project --with packaging python .github/scripts/check_release_deps.py

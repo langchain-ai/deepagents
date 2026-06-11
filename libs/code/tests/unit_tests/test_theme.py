@@ -2925,7 +2925,12 @@ class TestThemeSelectorScreen:
             # Cancel while the write is in flight — must keep, not revert.
             await pilot.press("escape")
             await pilot.pause()
+            assert app.theme == "langchain-light"
 
+            # Let the still-blocked save finish. The screen is already
+            # dismissed, so suppress the badge rerender (its option list is
+            # gone) to mirror real mid-write teardown before draining workers.
+            screen._is_mounted = False
             release.set()
             await app.workers.wait_for_complete()
 

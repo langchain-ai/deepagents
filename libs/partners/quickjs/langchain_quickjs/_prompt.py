@@ -30,6 +30,210 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+_SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
+
+### Dispatching Subagents with `subagent`
+
+`subagent` is your primitive for running configured subagents from inside the
+JavaScript REPL. You orchestrate everything else - fan-out, filtering,
+deduplication, multi-stage flow, and synthesis - in plain JavaScript.
+
+#### The primitive
+
+```javascript
+await subagent({
+  description,      // full autonomous task prompt
+  subagent_type,    // configured subagent name
+  response_schema,  // optional JSON Schema for structured output
+}); // -> Promise<unknown>
+```
+
+`subagent` runs a full agentic loop for the selected configured subagent. The
+subagent can use whatever tools it was configured with, iterate, inspect
+context, and return one final result. `subagent_type` is required; use one of
+the configured subagent names.
+
+`description` is the only prompt the subagent receives for this dispatch. Make
+it complete: include the goal, constraints, relevant context, what to inspect,
+and the exact shape or level of detail you expect back. Each dispatch is
+stateless from the caller's perspective; you cannot send follow-up messages to
+the same subagent run.
+
+`response_schema` is optional. When provided, the resolved value is already a
+typed JavaScript value matching the schema. Do not call `JSON.parse` unless the
+subagent intentionally returned a JSON string. Dynamic schemas work for
+declarative subagents; runnable-backed subagents reject dynamic schemas because
+their runnable is already compiled.
+
+#### Approval model
+
+`subagent` dispatches from inside the already-running `{tool_name}` call. It
+does not route through the parent agent's `ToolNode`-managed `task` tool and
+does not trigger parent-level `interrupt_on` / HITL approval for each dispatch.
+Declarative subagents still honor approval middleware configured inside their
+own spec. If you need approval before launching a subagent from the parent, use
+the normal `task` tool outside JavaScript or ensure the `{tool_name}` call
+itself is approval-gated.
+
+#### Mental model
+
+Hold your work in JS: an array of items in, an array of results out. Merge each
+dispatch result back onto its item. Multi-stage analysis means: run a pass,
+filter or regroup the array in JS, then run another pass over the survivors.
+
+Prefer one `{tool_name}` call that performs the whole workflow. Splitting the
+workflow across multiple `{tool_name}` calls costs model turns and forces you to
+re-establish state.
+
+#### Fan out with bounded concurrency
+
+Dispatch independent work in parallel with `Promise.all`, but in explicit
+batches around 10 so you do not launch hundreds of subagents at once. The bridge
+enforces a hard per-REPL cap of 32 concurrent subagent calls.
+
+```javascript
+const batchSize = 10;
+const reviewed = [];
+for (let i = 0; i < items.length; i += batchSize) {
+  const batch = items.slice(i, i + batchSize);
+  reviewed.push(...(await Promise.all(batch.map(async (it) => {
+    const result = await subagent({
+      description: "Review " + it.file + " for SQL injection. Cite line numbers.",
+      subagent_type: "reviewer",
+      response_schema: {
+        type: "object",
+        properties: {
+          vulnerabilities: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string" },
+                line: { type: "number" },
+                evidence: { type: "string" },
+              },
+              required: ["type", "line", "evidence"],
+            },
+          },
+        },
+        required: ["vulnerabilities"],
+      },
+    });
+    return { ...it, ...result };
+  }))));
+}
+```
+
+#### Use parent JS for cheap work; use subagents for agentic work
+
+Use JavaScript in the parent REPL for deterministic orchestration: joining
+arrays, deduping, sorting, filtering, grouping, batching, and merging results.
+If the `tools.*` namespace is exposed, also use it to pre-read files or collect
+shared data once, then pass only the relevant content to each subagent in
+`description`.
+
+Use `subagent` for work that benefits from an autonomous agentic loop: reading
+or searching with the subagent's own tools, inspecting multiple files, following
+leads, making judgment calls, or producing a final synthesized report.
+
+#### Pre-read shared context in the parent when useful
+
+If many subagents need the same source list or file content and `tools.*` is
+available, gather that context once in the parent REPL before dispatching:
+
+```javascript
+const files = (await tools.glob({ pattern: "src/**/*.ts" }))
+  .split("\\n")
+  .filter(Boolean);
+
+const items = await Promise.all(files.map(async (file) => {
+  const content = await tools.readFile({ file_path: file });
+  return { file, content };
+}));
+
+const batchSize = 10;
+const results = [];
+for (let i = 0; i < items.length; i += batchSize) {
+  const batch = items.slice(i, i + batchSize);
+  results.push(...(await Promise.all(batch.map(async (it) => {
+    const finding = await subagent({
+      description:
+        "Review this file for auth bypasses. Return concrete findings only.\\n\\n" +
+        "File: " + it.file + "\\n\\n" +
+        it.content,
+      subagent_type: "reviewer",
+      response_schema: {
+        type: "object",
+        properties: {
+          findings: { type: "array", items: { type: "object" } },
+        },
+        required: ["findings"],
+      },
+    });
+    return { ...it, ...finding };
+  }))));
+}
+```
+
+#### Compose multiple stages
+
+Filter the array in JS between passes. For example: first ask subagents for a
+cheap classification, filter to the risky items, then dispatch deeper reviews
+only for those items.
+
+```javascript
+const tagged = [];
+for (let i = 0; i < items.length; i += 10) {
+  const batch = items.slice(i, i + 10);
+  tagged.push(...(await Promise.all(batch.map(async (it) => {
+    const tag = await subagent({
+      description: "Classify " + it.file + " as handler, util, test, or config.",
+      subagent_type: "reviewer",
+      response_schema: {
+        type: "object",
+        properties: { kind: { type: "string" }, risky: { type: "boolean" } },
+        required: ["kind", "risky"],
+      },
+    });
+    return { ...it, ...tag };
+  }))));
+}
+
+const riskyHandlers = tagged.filter((it) => it.kind === "handler" && it.risky);
+const deepReviews = [];
+for (let i = 0; i < riskyHandlers.length; i += 10) {
+  const batch = riskyHandlers.slice(i, i + 10);
+  deepReviews.push(...(await Promise.all(batch.map(async (it) => {
+    const review = await subagent({
+      description: "Deep security review of " + it.file + ". Cite line numbers.",
+      subagent_type: "reviewer",
+    });
+    return { ...it, review };
+  }))));
+}
+```
+
+#### Get results out without flooding your context
+
+Keep large result sets in JS variables. Do not `console.log` the full result set.
+If `tools.writeFile` is exposed, persist structured output from inside the eval:
+
+```javascript
+await tools.writeFile({
+  file_path: "/results/subagent-output.json",
+  content: JSON.stringify(deepReviews),
+});
+```
+
+Otherwise return a compact summary or a small slice of the results, not the
+entire intermediate dataset.
+
+#### Across evals
+
+Variables persist according to the interpreter persistence mode above, but
+re-establish what you need in each eval. Doing the whole workflow in one
+`{tool_name}` call is usually simplest.
+"""
 
 
 def render_repl_system_prompt(
@@ -73,6 +277,11 @@ def render_repl_system_prompt(
         timeout=timeout,
         memory_limit_mb=memory_limit_mb,
     )
+
+
+def render_subagent_system_prompt(*, tool_name: str = "eval") -> str:
+    """Render guidance for the top-level QuickJS `subagent` global."""
+    return _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name)
 
 
 def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str:

@@ -40,6 +40,7 @@ def test_render_repl_system_prompt_mode_specific(
     )
     assert expected_fragment in prompt
     assert "Timeout: 5.0s per call. Memory: 64 MB total." in prompt
+    assert "### Dispatching Subagents with `subagent`" not in prompt
 
 
 @pytest.mark.parametrize(

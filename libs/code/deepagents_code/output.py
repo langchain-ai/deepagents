@@ -65,5 +65,9 @@ def write_json(command: str, data: list | dict) -> None:
             serialize without error.
     """
     envelope = {"schema_version": 1, "command": command, "data": data}
+    # CodeQL treats the config schema's boolean `secret` metadata field as secret
+    # material. Callers redact values before passing data here.
+
+    # codeql[py/clear-text-logging-sensitive-data]  # noqa: ERA001
     sys.stdout.write(json.dumps(envelope, default=str) + "\n")
     sys.stdout.flush()

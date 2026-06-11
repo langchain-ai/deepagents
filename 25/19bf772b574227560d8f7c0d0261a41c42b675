@@ -1,0 +1,19 @@
+.github/scripts/check_release_deps.py
+  s_d2b94a64456852::t_ab7970932ac629 366-369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "2519bf772b574227560d8f7c0d0261a41c42b675",
+  "prompts": {},
+  "sessions": {
+    "s_d2b94a64456852": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb5a8-e982-7393-8280-383187231f02",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

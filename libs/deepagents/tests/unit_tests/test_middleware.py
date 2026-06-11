@@ -426,14 +426,49 @@ class TestFilesystemMiddleware:
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
+            start = time.monotonic()
             result = glob_search_tool.invoke(
                 {
                     "pattern": "**/*",
                     "runtime": _runtime(),
                 }
             )
+            elapsed = time.monotonic() - start
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        # The tool must return as soon as the timeout fires, not block until
+        # the runaway glob (2s) finishes in its worker thread.
+        assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"
+
+    def test_glob_timeout_does_not_stall_subsequent_calls(self):
+        """A timed-out glob still running in a worker must not block the next glob."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        call_count = 0
+
+        def stuck_then_fast_glob(*args: object, **kwargs: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                time.sleep(2)
+            return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
+        ):
+            first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+            start = time.monotonic()
+            second = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+            elapsed = time.monotonic() - start
+
+        assert "timed out" in first.content
+        assert second.status == "success"
+        assert elapsed < 1.0, f"second glob waited {elapsed:.2f}s behind a stuck one"
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""

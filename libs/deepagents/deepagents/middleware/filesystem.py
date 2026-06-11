@@ -761,6 +761,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._max_execute_timeout = max_execute_timeout
         self._permissions = list(_permissions or [])
 
+        # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
+        # Sized above 1 so a timed-out glob still occupying a worker does not
+        # stall subsequent glob calls.
+        self._glob_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="deepagents-glob")
+
         self.tools = [
             self._create_ls_tool(),
             self._create_read_file_tool(),
@@ -1269,17 +1274,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             backend_path = permission_path if path is not None else None
             ctx = contextvars.copy_context()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=backend_path))
-                try:
-                    glob_result = future.result(timeout=GLOB_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    return ToolMessage(
-                        content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
-                        name="glob",
-                        tool_call_id=runtime.tool_call_id,
-                        status="error",
-                    )
+            # Submit to the shared executor rather than a per-call
+            # ThreadPoolExecutor: a `with` block here would call
+            # shutdown(wait=True) on timeout and block until the runaway glob
+            # finished anyway, defeating the timeout.
+            future = self._glob_executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=backend_path))
+            try:
+                glob_result = future.result(timeout=GLOB_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                return ToolMessage(
+                    content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             if glob_result.error:
                 return ToolMessage(
                     content=f"Error: {glob_result.error}",

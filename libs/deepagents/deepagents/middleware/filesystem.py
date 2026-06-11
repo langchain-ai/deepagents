@@ -54,6 +54,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _get_file_type,
+    _glob_anchor,
+    _paths_overlap,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -1268,55 +1270,29 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _scan_delete_for_denied_path(self, target: str, descendant_files: list[str]) -> str | None:
-        """All-or-nothing write-deny scan for a (possibly recursive) delete.
+    def _delete_denied_pattern(self, target: str) -> str | None:
+        """All-or-nothing write-deny check for a (possibly recursive) delete.
 
-        A recursive delete removes ``target`` plus every descendant, so each of
-        those paths must pass the ``write`` permission check. Returns the first
-        write-denied path found (so the whole delete can be refused), or ``None``
-        if the entire subtree is allowed.
+        A recursive delete of ``target`` removes ``target`` plus every descendant,
+        so the operation is refused if any ``deny`` write rule's pattern overlaps
+        that subtree. Overlap is checked against the rule pattern's literal anchor
+        (`_glob_anchor`) in either direction, so a rule scoped inside the target
+        (``/work/secrets/**``) and a rule that the target falls under
+        (``/work/**``) both block it. The check is purely rule-based — no backend
+        enumeration — and never under-refuses relative to the on-disk contents:
+        any real path a recursive delete would touch makes the target and the
+        rule anchor comparable, so the overlap fires.
 
-        ``descendant_files`` are the files ``glob('**/*')`` found under ``target``;
-        intermediate directories are derived from them so a rule that denies a
-        directory path (rather than its ``/**`` contents) is also honored. Empty
-        directories produce no glob hit and are therefore not enumerated.
+        Returns the first overlapping deny pattern (so the delete can be refused
+        with a useful message), or ``None`` if no deny rule overlaps.
         """
-        if not self._permissions:
-            return None
-        if _check_fs_permission(self._permissions, "write", target) == "deny":
-            return target
-
-        anchor = target.rstrip("/")
-        paths_to_check: set[str] = set()
-        for file_path in descendant_files:
-            paths_to_check.add(file_path)
-            parent = PurePosixPath(file_path).parent
-            while True:
-                parent_str = str(parent)
-                if parent_str == anchor or not parent_str.startswith(anchor + "/"):
-                    break
-                paths_to_check.add(parent_str)
-                parent = parent.parent
-
-        for path in sorted(paths_to_check):
-            if _check_fs_permission(self._permissions, "write", path) == "deny":
-                return path
+        for rule in self._permissions:
+            if rule.mode != "deny" or "write" not in rule.operations:
+                continue
+            for pattern in rule.paths:
+                if _paths_overlap(target, _glob_anchor(pattern)):
+                    return pattern
         return None
-
-    def _delete_denied_path(self, backend: BackendProtocol, target: str) -> str | None:
-        """Sync subtree deny scan: returns the first denied path, or None."""
-        if not self._permissions:
-            return None
-        descendants = [m["path"] for m in (backend.glob("**/*", path=target).matches or [])]
-        return self._scan_delete_for_denied_path(target, descendants)
-
-    async def _adelete_denied_path(self, backend: BackendProtocol, target: str) -> str | None:
-        """Async subtree deny scan: returns the first denied path, or None."""
-        if not self._permissions:
-            return None
-        result = await backend.aglob("**/*", path=target)
-        descendants = [m["path"] for m in (result.matches or [])]
-        return self._scan_delete_for_denied_path(target, descendants)
 
     def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
         """Create the delete tool."""
@@ -1338,10 +1314,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denied_path = self._delete_denied_path(resolved_backend, validated_path)
-            if denied_path is not None:
+            denied_pattern = self._delete_denied_pattern(validated_path)
+            if denied_pattern is not None:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {denied_path}",
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule {denied_pattern})",
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -1377,10 +1353,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denied_path = await self._adelete_denied_path(resolved_backend, validated_path)
-            if denied_path is not None:
+            denied_pattern = self._delete_denied_pattern(validated_path)
+            if denied_pattern is not None:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {denied_path}",
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule {denied_pattern})",
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",

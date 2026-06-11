@@ -569,9 +569,6 @@ class FilesystemBackend(BackendProtocol):
         try:
             if not resolved_path.exists() and not resolved_path.is_symlink():
                 return DeleteResult(error=f"Error: '{file_path}' not found")
-            # Check is_symlink() before is_dir(): is_dir() follows symlinks, so a
-            # symlink pointing at a directory would otherwise be recursed into and
-            # delete the target's contents. Removing the link itself is correct.
             if resolved_path.is_symlink():
                 resolved_path.unlink()
             elif resolved_path.is_dir():

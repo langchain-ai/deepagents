@@ -115,8 +115,10 @@ async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", back
 class TestRecursiveDeletePermissions:
     """All-or-nothing write-permission enforcement for recursive delete.
 
-    A recursive delete removes the target plus every descendant, so the whole
-    operation is refused if ANY path in the subtree is write-denied.
+    A recursive delete is refused if any ``deny`` write rule's pattern overlaps
+    the target subtree, in either direction: a rule scoped inside the target
+    (``/work/secrets/**``) and a rule the target falls under (``/work``) both
+    block it. The check is rule-based (no filesystem enumeration).
     """
 
     def _fs_backend(self, tmp_path):
@@ -162,6 +164,18 @@ class TestRecursiveDeletePermissions:
 
         assert "permission denied for write" in result
         assert (tmp_path / "work" / "secrets" / "key.txt").exists()
+
+    def test_delete_refused_when_ancestor_denied(self, tmp_path):
+        # Any overlap denies: a rule on an ancestor of the target also blocks,
+        # since the target subtree falls under it.
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/logs"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "logs" / "run.log").exists()
 
     def test_delete_unaffected_sibling_subtree(self, tmp_path):
         backend = self._fs_backend(tmp_path)

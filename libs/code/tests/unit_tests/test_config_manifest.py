@@ -691,3 +691,309 @@ def test_run_path_text_returns_zero() -> None:
     """The `config path` rendering path runs without error."""
     args = argparse.Namespace(config_command="path", output_format="text")
     assert run_config_command(args) == 0
+
+
+# --- BOOL env coercion ------------------------------------------------------
+
+
+def test_resolve_bool_unrecognized_env_falls_back_with_warning(
+    monkeypatch, caplog
+) -> None:
+    """An unrecognized boolean env token logs and falls through, not source=env.
+
+    `is_env_truthy` would silently return the default for `maybe`, but the
+    resolver must not then credit the env var with that value: doing so would
+    make `config show` report `source=env` for a variable the runtime ignored.
+    """
+    import logging
+
+    opt = get_option("display.hide_cwd")
+    assert opt is not None
+    monkeypatch.setenv(opt.env_var, "maybe")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (False, "default")
+    assert any("expected bool" in r.getMessage() for r in caplog.records)
+
+
+# --- FLOAT / shell-list env coercion ---------------------------------------
+
+
+def test_resolve_float_env_coerces_and_falls_back(monkeypatch, caplog) -> None:
+    """The FLOAT env branch coerces a number and logs+falls back on garbage.
+
+    Interpreter floats are TOML-only, so — like the INT branch — a synthetic
+    env-backed option exercises both arms of `_coerce_env`'s FLOAT path.
+    """
+    import logging
+
+    float_opt = ConfigOption(
+        key="t.float",
+        group="g",
+        summary="s",
+        kind=OptionKind.FLOAT,
+        default=1.5,
+        env_var="DEEPAGENTS_CODE_TEST_FLOAT",
+    )
+    monkeypatch.setenv("DEEPAGENTS_CODE_TEST_FLOAT", "2.5")
+    value, source = resolve_scalar(float_opt, toml_data={})
+    assert value == pytest.approx(2.5)
+    assert source == "env (DEEPAGENTS_CODE_TEST_FLOAT)"
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_TEST_FLOAT", "not-a-number")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(float_opt, toml_data={})
+    assert (value, source) == (1.5, "default")
+    assert any("TEST_FLOAT" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_shell_list_env_happy_and_invalid(monkeypatch, caplog) -> None:
+    """The shell-list env delegate parses a valid list and rejects bad input."""
+    import logging
+
+    opt = get_option("shell.allow_list")
+    assert opt is not None
+    monkeypatch.setenv(opt.env_var, "git status,ls")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert source == f"env ({opt.env_var})"
+    assert isinstance(value, list)
+    assert "ls" in value
+
+    # `'all'` cannot be combined with other commands; the parser raises and the
+    # resolver logs + falls back rather than crashing.
+    monkeypatch.setenv(opt.env_var, "all,ls")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={})
+    assert source == "default"
+    assert any("Ignoring invalid" in r.getMessage() for r in caplog.records)
+
+
+def test_coerce_env_delegate_returns_invalid_not_raw(caplog) -> None:
+    """A delegate kind reaching `_coerce_env` returns `_INVALID`, never raw.
+
+    PTC/STRUCTURED options declare no env var, so this branch is unreachable in
+    the live manifest. The guard exists so that if one ever gains an env var,
+    an uncoerced raw string cannot leak into a typed `Settings` field.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import _INVALID, _coerce_env
+
+    opt = get_option("interpreter.ptc")
+    assert opt is not None
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        result = _coerce_env(opt, "safe", "DEEPAGENTS_CODE_FAKE")
+    assert result is _INVALID
+    assert any("not env-backed" in r.getMessage() for r in caplog.records)
+
+
+# --- TOML coercion (success + mismatch) ------------------------------------
+
+
+def test_resolve_toml_str_success_and_type_mismatch(caplog) -> None:
+    """A STR option reads a string from TOML and rejects a wrong-typed value."""
+    import logging
+
+    opt = get_option("threads.sort_order")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"threads": {"sort_order": "created_at"}}) == (
+        "created_at",
+        "config.toml",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={"threads": {"sort_order": 123}})
+    assert (value, source) == ("updated_at", "default")
+    assert any("sort_order" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_toml_float_success_non_bool() -> None:
+    """A FLOAT option reads a real number from TOML and coerces an int to float."""
+    opt = get_option("interpreter.timeout_seconds")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"interpreter": {"timeout_seconds": 2.5}}) == (
+        2.5,
+        "config.toml",
+    )
+    # A bare TOML integer is accepted and coerced to float.
+    assert resolve_scalar(opt, toml_data={"interpreter": {"timeout_seconds": 3}}) == (
+        3.0,
+        "config.toml",
+    )
+
+
+# --- Theme resolution warnings ----------------------------------------------
+
+
+def test_resolve_theme_unknown_env_warns(monkeypatch, caplog) -> None:
+    """An unknown theme in the env var warns and falls back to the default."""
+    import logging
+
+    from deepagents_code import theme
+
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_THEME", "no-such-theme")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (theme.DEFAULT_THEME, "default")
+    assert any("Unknown theme" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_theme_non_table_ui_warns(monkeypatch, caplog) -> None:
+    """A non-table `[ui]` value warns and falls back to the default theme."""
+    import logging
+
+    from deepagents_code import theme
+
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={"ui": "oops"})
+    assert (value, source) == (theme.DEFAULT_THEME, "default")
+    assert any("should be a table" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_theme_unknown_saved_warns(monkeypatch, caplog) -> None:
+    """An unknown saved `[ui].theme` warns and falls back to the default."""
+    import logging
+
+    from deepagents_code import theme
+
+    opt = get_option("display.theme")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_THEME", raising=False)
+    monkeypatch.setenv("TERM_PROGRAM", "no-mapping-terminal")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(
+            opt, toml_data={"ui": {"theme": "no-such-theme"}}
+        )
+    assert (value, source) == (theme.DEFAULT_THEME, "default")
+    assert any("Unknown theme" in r.getMessage() for r in caplog.records)
+
+
+# --- config path: existence + OSError ---------------------------------------
+
+
+def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -> None:
+    """An `OSError` from `path.exists()` is logged and reported as missing."""
+    import logging
+    from pathlib import Path
+
+    from deepagents_code import model_config
+    from deepagents_code.config_commands import _config_paths
+
+    target = model_config.DEFAULT_CONFIG_PATH
+    real_exists = Path.exists
+
+    def fake_exists(self, *args: object, **kwargs: object) -> bool:
+        if self == target:
+            msg = "boom"
+            raise OSError(msg)
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    with caplog.at_level(logging.DEBUG, logger="deepagents_code.config_commands"):
+        rows = _config_paths()
+    config_row = next(row for row in rows if row[0] == "config.toml")
+    assert config_row[2] is False
+    assert any("Could not stat" in r.getMessage() for r in caplog.records)
+
+
+def test_run_path_json_reports_existence(monkeypatch, tmp_path, capsys) -> None:
+    """`config path --json` reports each location's existence and path."""
+    import json
+
+    from deepagents_code import model_config
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", cfg)
+    args = argparse.Namespace(config_command="path", output_format="json")
+    assert run_config_command(args) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    row = next(r for r in rows if r["label"] == "config.toml")
+    assert row["exists"] is True
+    assert row["path"] == str(cfg)
+
+
+def test_run_list_json_serializes_catalog(capsys) -> None:
+    """`config list --json` serializes the catalog without error."""
+    import json
+
+    args = argparse.Namespace(config_command="list", output_format="json")
+    assert run_config_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config list"
+    rows = payload["data"]
+    assert any(
+        r["key"] == "interpreter.memory_limit_mb" and r["default"] == 64 for r in rows
+    )
+    assert all(
+        {"key", "type", "default", "redacted", "env_var", "toml_path", "cli_flag"}
+        <= set(r)
+        for r in rows
+    )
+
+
+# --- Provider/credential drift ----------------------------------------------
+
+
+def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
+    """A provider added to the registry surfaces once the option cache is cleared.
+
+    Exercises the `cache_clear` caveat documented on `get_config_options`: the
+    credential surface is regenerated from `PROVIDER_API_KEY_ENV`, so a new
+    provider must produce a `credentials.<name>` option after the cache resets.
+    """
+    from deepagents_code import config_manifest, model_config
+
+    patched = {
+        **model_config.PROVIDER_API_KEY_ENV,
+        "synthetic_xyz": "SYNTHETIC_XYZ_API_KEY",
+    }
+    monkeypatch.setattr(model_config, "PROVIDER_API_KEY_ENV", patched)
+    config_manifest.get_config_options.cache_clear()
+    config_manifest._options_by_key.cache_clear()
+    try:
+        opt = config_manifest.get_option("credentials.synthetic_xyz")
+        assert opt is not None
+        assert opt.env_var == "SYNTHETIC_XYZ_API_KEY"
+        # A *_API_KEY env var is treated as secret material.
+        assert opt.redacted is True
+    finally:
+        # Restore the cache so later tests rebuild against the real registry.
+        config_manifest.get_config_options.cache_clear()
+        config_manifest._options_by_key.cache_clear()
+
+
+def test_provider_dependency_metadata_is_exhaustive() -> None:
+    """Every provider key has dependency metadata, and vice versa.
+
+    The module promises new providers cannot silently miss the config surface;
+    that guarantee only holds for the *availability hints* if the dependency
+    table tracks `PROVIDER_API_KEY_ENV` exactly.
+    """
+    from deepagents_code.config_manifest import _PROVIDER_DEPENDENCIES
+
+    assert set(_PROVIDER_DEPENDENCIES) == set(PROVIDER_API_KEY_ENV), (
+        "_PROVIDER_DEPENDENCIES must track PROVIDER_API_KEY_ENV so config show's "
+        "availability hints stay complete for every provider"
+    )
+
+
+def test_delegate_static_defaults_are_parseable() -> None:
+    """A delegate option's static default must satisfy its own parser.
+
+    Delegate defaults bypass the resolver's coercion (they are returned verbatim
+    on the default path), so `__post_init__` cannot type-check them. This guards
+    the one class of typo it would otherwise miss (e.g. `ptc` default `'saef'`).
+    """
+    from deepagents_code.config import _parse_interpreter_ptc
+
+    for opt in get_config_options():
+        if opt.default is None:
+            continue
+        if opt.kind is OptionKind.PTC_DELEGATE:
+            assert _parse_interpreter_ptc(opt.default) == opt.default

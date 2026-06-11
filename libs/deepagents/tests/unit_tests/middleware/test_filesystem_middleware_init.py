@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.middleware.filesystem import (
+    EXECUTION_SYSTEM_PROMPT,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
@@ -15,6 +16,24 @@ from deepagents.middleware.filesystem import (
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
+
+
+class TestDynamicSystemPromptCache:
+    """`_build_dynamic_system_prompt` caches per `include_execution` flag."""
+
+    def test_returns_identical_cached_object(self) -> None:
+        mw = FilesystemMiddleware(backend=StateBackend())
+        first = mw._build_dynamic_system_prompt(include_execution=False)
+        second = mw._build_dynamic_system_prompt(include_execution=False)
+        assert first is second
+
+    def test_execution_flag_changes_output(self) -> None:
+        mw = FilesystemMiddleware(backend=StateBackend())
+        without = mw._build_dynamic_system_prompt(include_execution=False)
+        with_exec = mw._build_dynamic_system_prompt(include_execution=True)
+        assert without != with_exec
+        assert EXECUTION_SYSTEM_PROMPT not in without
+        assert EXECUTION_SYSTEM_PROMPT in with_exec
 
 
 class TestFilesystemMiddlewareInit:

@@ -3,7 +3,7 @@
 # Coordinated release-please bumps can update multiple packages in one PR. The
 # bumped wheels are not on PyPI until merge, so the helper strips only the
 # dependency pins satisfied by packages bumped in this same PR, then resolves the
-# rest with `uv pip compile --no-sources --universal`.
+# rest with `uv pip compile --no-sources --universal --prerelease allow --all-extras`.
 
 name: "📦 Check Release Dependencies"
 

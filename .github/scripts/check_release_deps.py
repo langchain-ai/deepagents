@@ -4,6 +4,11 @@ Release-please PRs can bump several packages in one coordinated change. The
 newly bumped wheels do not exist on PyPI until merge, so dependency resolution
 must ignore only the intra-PR pins that the PR itself satisfies while still
 checking every other runtime dependency against the real index.
+
+This validates only direct pins on same-PR-bumped packages. A bumped package
+that introduces a brand-new transitive dependency is not exercised here, since
+its own pin is stripped and the currently-published version is resolved instead;
+that case is covered once the bumped package itself reaches PyPI.
 """
 
 from __future__ import annotations
@@ -42,7 +47,6 @@ class PackageBump:
     """A package whose own version was bumped by this PR."""
 
     name: str
-    canonical_name: str
     version: str
     path: str
 
@@ -174,7 +178,6 @@ def detect_package_bumps(paths: list[str], base_sha: str) -> dict[str, PackageBu
         canonical = canonicalize_name(current_name)
         bumped[canonical] = PackageBump(
             name=current_name,
-            canonical_name=canonical,
             version=current_version,
             path=path,
         )
@@ -233,7 +236,13 @@ def _toml_value(value: Any) -> str:
 
 
 def build_filtered_manifest(data: dict[str, Any], bumped: dict[str, PackageBump]) -> FilteredManifest:
-    """Build a resolver-equivalent pyproject with same-PR dependency pins removed."""
+    """Build a resolver-equivalent pyproject with same-PR dependency pins removed.
+
+    The result is a minimal manifest holding only resolver-relevant fields:
+    `name`, `version`, `requires-python`, (optional) dependencies, and the
+    `RESOLVER_UV_KEYS` subset of `[tool.uv]`. Notably it drops `[tool.uv.sources]`
+    so resolution runs against real PyPI (paired with `--no-sources`).
+    """
     filtered = copy.deepcopy(data)
     project = filtered.get("project", {})
     if not isinstance(project, dict):
@@ -285,7 +294,12 @@ def is_transient_resolver_error(log: str) -> bool:
 
 
 def run_resolver(manifest: Path, log: Path) -> bool:
-    """Resolve a filtered manifest against real PyPI and write combined output to log."""
+    """Resolve a filtered manifest against real PyPI and write combined output to log.
+
+    Resolution ignores local path sources (`--no-sources`), spans every extra
+    (`--all-extras`), allows prereleases (`--prerelease allow`), and is universal
+    across platforms/Python versions (`--universal`).
+    """
     proc = subprocess.run(
         [
             "uv",

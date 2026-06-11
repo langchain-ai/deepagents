@@ -1,4 +1,4 @@
-"""Run the lockfile check for pre-commit without unrelated Talon churn."""
+"""Run lockfile checks only for packages touched by changed paths."""
 
 from __future__ import annotations
 
@@ -9,17 +9,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIBS_ROOT = REPO_ROOT / "libs"
 EXAMPLES_ROOT = REPO_ROOT / "examples"
-TALON_DIR = LIBS_ROOT / "talon"
 
 
-def _package_dirs(*, include_talon: bool) -> list[Path]:
+def _package_dirs() -> list[Path]:
     libs = [path.parent for path in LIBS_ROOT.glob("*/Makefile")]
     partners = [path.parent for path in (LIBS_ROOT / "partners").glob("*/Makefile")]
     examples = [path.parent for path in EXAMPLES_ROOT.glob("*/pyproject.toml")]
-    packages = [*libs, *partners, *examples]
-    if not include_talon:
-        packages = [package for package in packages if package != TALON_DIR]
-    return sorted(packages, key=lambda path: path.relative_to(REPO_ROOT).as_posix())
+    return sorted([*libs, *partners, *examples], key=_repo_path)
+
+
+def _repo_path(path: Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix()
 
 
 def _python_version(package: Path) -> str:
@@ -35,17 +35,29 @@ def _label(package: Path) -> str:
         return f"../{package.relative_to(REPO_ROOT).as_posix()}"
 
 
-def _touches_talon(paths: list[str]) -> bool:
-    return any(Path(path).parts[:2] == ("libs", "talon") for path in paths)
+def _touches_package(path: str, package: Path) -> bool:
+    package_path = _repo_path(package)
+    return path == package_path or path.startswith(f"{package_path}/")
 
 
-def _include_talon(paths: list[str]) -> bool:
-    return not paths or _touches_talon(paths)
+def _packages_for_paths(paths: list[str]) -> list[Path]:
+    packages = _package_dirs()
+    if not paths:
+        return packages
+    return [
+        package
+        for package in packages
+        if any(_touches_package(path, package) for path in paths)
+    ]
 
 
 def main(paths: list[str]) -> int:
-    include_talon = _include_talon(paths)
-    for package in _package_dirs(include_talon=include_talon):
+    """Check lockfiles for packages touched by `paths`, or every package if empty."""
+    packages = _packages_for_paths(paths)
+    if not packages:
+        print("✅ No package lockfiles need checking.")
+        return 0
+    for package in packages:
         print(f"🔍 Checking {_label(package)}")
         result = subprocess.run(
             [

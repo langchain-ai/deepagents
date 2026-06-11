@@ -140,7 +140,7 @@ class TestSandboxSnapshotNameArg:
             pytest.raises(SystemExit),
         ):
             parse_args()
-        assert "requires --sandbox langsmith or runloop" in capsys.readouterr().err
+        assert "requires a --sandbox provider" in capsys.readouterr().err
 
     def test_snapshot_name_with_runloop(self) -> None:
         """`--sandbox-snapshot-name` is allowed with `--sandbox runloop`."""

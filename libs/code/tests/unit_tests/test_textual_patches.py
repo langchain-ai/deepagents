@@ -120,6 +120,31 @@ class TestPatchedSequenceToKeyEvents:
         """
         assert _keys_for("\x1bZ", alt=False) == []
 
+    def test_kitty_alternate_key_subfield_resolves_to_single_key(self) -> None:
+        r"""iTerm2 Caps Lock `CSI 57358:65;1;65u` must decode to `caps_lock`.
+
+        Upstream Textual's parser rejects the `:`-separated alternate-key
+        sub-field, so the whole sequence leaks as literal text (`[57358...`).
+        The patch strips the sub-field so it resolves to one key event.
+        """
+        assert _keys_for("\x1b[57358:65;1;65u", alt=False) == [("caps_lock", "A")]
+
+    def test_kitty_event_type_subfield_resolves_to_single_key(self) -> None:
+        r"""`CSI 57358;1:1u` (event-type sub-field) must decode to `caps_lock`.
+
+        The event-type sub-field on the modifier field also uses a colon and
+        would otherwise leak as literal text.
+        """
+        assert _keys_for("\x1b[57358;1:1;65u", alt=False) == [("caps_lock", "A")]
+
+    def test_kitty_subfield_strip_preserves_normal_keys(self) -> None:
+        r"""Alternate-key sub-fields on text keys still decode to the key.
+
+        `CSI 97:65;1;65u` is the `a` key with shifted alternate `A`; only the
+        primary code point and associated text matter to Textual.
+        """
+        assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
+
 
 def test_app_imports_textual_patches_for_side_effect() -> None:
     """`app.py` must import `_textual_patches` for the patch to install.

@@ -13,7 +13,17 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
-2. Double-click word selection. Stock Textual selects the entire widget on
+2. Kitty key sub-field tolerance. Textual 8.2.7's `_re_extended_key` only
+    accepts `;`-separated numeric fields, so any kitty sequence that carries
+    `:`-separated sub-fields — alternate keys (`unicode:shifted:base`) or an
+    event-type (`modifiers:event`) — fails to match and is re-emitted one
+    byte at a time as literal text. iTerm2 sends these forms (e.g. Caps Lock
+    reports `\x1b[57358:65;1;65u`), which leaks `[57358...` into the input.
+    The patch strips the `:` sub-fields before Textual parses the sequence so
+    it resolves to a single key event. Remove when the pinned Textual widens
+    its parser.
+
+3. Double-click word selection. Stock Textual selects the entire widget on
     a click chain; these patches narrow a double-click (and double-click
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
@@ -24,6 +34,7 @@ Imported for side effect from `app.py` before any `App()` is created.
 from __future__ import annotations
 
 import logging
+import re
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
@@ -60,6 +71,23 @@ try:
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning("Textual keyboard parser patch skipped: %s", exc)
 else:
+    # Kitty extended-key sequences carrying `:` sub-fields (alternate keys or
+    # an event-type sub-field). Textual 8.2.7's `_re_extended_key` rejects the
+    # colons, so these leak as literal text — strip the sub-fields first.
+    _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
+
+    def _strip_kitty_subfields(sequence: str) -> str:
+        """Drop `:` sub-fields from a kitty extended-key sequence.
+
+        Keeps the primary value of each `;`-separated field (the unicode key
+        code, modifier mask, and associated text), which is all Textual reads.
+
+        Returns:
+            The sequence with every `:` sub-field removed.
+        """
+        body, terminator = sequence[2:-1], sequence[-1]
+        primary = ";".join(field.split(":", 1)[0] for field in body.split(";"))
+        return f"\x1b[{primary}{terminator}"
 
     def _emit_alt(keys: tuple, character: str | None) -> Iterable[events.Key]:
         for key in keys:
@@ -68,6 +96,11 @@ else:
     def _sequence_to_key_events_with_alt(
         self: XTermParser, sequence: str, alt: bool = False
     ) -> Iterable[events.Key]:
+        # Normalize kitty sequences with `:` sub-fields before any other
+        # handling so they resolve to a single key event instead of leaking
+        # raw bytes (e.g. iTerm2 Caps Lock `\x1b[57358:65;1;65u`).
+        if _KITTY_SUBFIELD_KEY.fullmatch(sequence):
+            sequence = _strip_kitty_subfields(sequence)
         # Fast path: \x1b<byte> on first pass. Short-circuits the ~100 ms
         # escape-delay wait when both bytes arrive together. Semantic side
         # effect: \x1b\x1b dispatches as `alt+escape` with no delay, matching

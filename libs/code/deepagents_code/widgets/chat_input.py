@@ -742,8 +742,9 @@ class ChatTextArea(TextArea):
         # the kitty keyboard protocol with associated-text reporting (iTerm2,
         # VS Code's xterm.js, etc.), pressing Caps Lock arrives as
         # Key(key='caps_lock', character='A'), so TextArea would insert a stray
-        # letter. Swallow these events.
-        if event.key in _LOCK_KEYS:
+        # letter. The key may also carry modifier prefixes (e.g.
+        # 'ctrl+caps_lock'), so match on the final '+'-delimited token.
+        if event.key.rsplit("+", 1)[-1] in _LOCK_KEYS:
             event.prevent_default()
             event.stop()
             return

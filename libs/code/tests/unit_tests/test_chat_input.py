@@ -2672,7 +2672,18 @@ class TestLockKeysDoNotType:
     insert a stray letter.
     """
 
-    @pytest.mark.parametrize("lock_key", ["caps_lock", "num_lock", "scroll_lock"])
+    @pytest.mark.parametrize(
+        "lock_key",
+        [
+            "caps_lock",
+            "num_lock",
+            "scroll_lock",
+            # Modifier-prefixed variants: the lock bit can arrive alongside
+            # other modifier bits, so the key string is suffixed.
+            "ctrl+caps_lock",
+            "alt+ctrl+hyper+meta+super+caps_lock",
+        ],
+    )
     async def test_lock_key_with_associated_text_inserts_nothing(
         self, lock_key: str
     ) -> None:

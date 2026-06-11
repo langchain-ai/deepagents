@@ -27,7 +27,7 @@ def _make_transport(handler: Handler) -> httpx.MockTransport:
 
 
 def _ns(dir_: Path, **overrides: object) -> argparse.Namespace:
-    base = {
+    base: dict[str, object] = {
         "dir": str(dir_),
         "dry_run": False,
         "detach": True,
@@ -102,7 +102,10 @@ def test_deploy_dry_run_normalizes_legacy_sandbox_backend(
     execute_deploy_command(_ns(tmp_path, dry_run=True))
     out = capsys.readouterr().out
     payload = json.loads(_extract_json(out))
-    assert payload["agent_payload"]["backend"] == {"type": "thread_scoped_sandbox"}
+    assert payload["agent_payload"]["backend"] == {
+        "type": "sandbox",
+        "sandbox_config": {"scope": "thread"},
+    }
 
 
 def test_deploy_creates_agent_and_writes_state(

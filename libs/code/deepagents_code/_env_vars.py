@@ -46,7 +46,10 @@ as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
+"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+
+DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
+"""Default path for the debug log when `DEBUG_FILE` is unset."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -140,6 +143,16 @@ offline or the probe latency is undesirable. The probe is lazy and never
 runs on the startup hot path. When enabled, discovery may call `/api/tags`
 and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
+"""
+
+RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
+"""Internal sentinel recording the target version immediately before the
+startup auto-update re-execs the process.
+
+Not user-facing. The re-exec'd process consumes it and, if that same version
+still reports as available (a no-op upgrade that did not change the running
+version), skips auto-updating to break out of an otherwise endless
+upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"

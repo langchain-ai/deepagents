@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_code import config as config_module
+from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 from deepagents_code.config import build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
@@ -203,7 +204,7 @@ class TestInterruptCleanup:
             await _handle_interrupt_cleanup(
                 adapter=adapter,
                 agent=agent,
-                config=config,  # type: ignore[arg-type]
+                config=config,  # ty: ignore
                 pending_text_by_namespace={},
                 captured_input_tokens=0,
                 captured_output_tokens=0,
@@ -223,6 +224,42 @@ class TestInterruptCleanup:
         interrupted_msg = interrupted_payload["messages"][0]
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
+
+    async def test_interrupt_stops_active_assistant_streams(self) -> None:
+        """Interrupted streaming messages should not leave flush timers running."""
+        sync_message_content = MagicMock()
+        assistant_msg = SimpleNamespace(
+            id="asst-1",
+            _content="partial response",
+            stop_stream=AsyncMock(),
+        )
+        assistant_messages = {(): assistant_msg}
+
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+            sync_message_content=sync_message_content,
+        )
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial response"},
+            assistant_message_by_namespace=assistant_messages,
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assistant_msg.stop_stream.assert_awaited_once_with()
+        sync_message_content.assert_called_once_with("asst-1", "partial response")
+        assert assistant_messages == {}
 
     async def test_disables_tracing_during_state_save(self) -> None:
         """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
@@ -1719,7 +1756,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_interrupt_mounts_tool_call_row(self) -> None:
         """ask_user interrupts should mount the tool row before the prompt."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1727,8 +1764,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1779,12 +1816,12 @@ class TestExecuteTaskTextualAskUser:
             msg = "mount failed"
             raise RuntimeError(msg)
 
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1824,7 +1861,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_duplicate_interrupt_only_mounts_once(self) -> None:
         """Re-emitting the same `tool_call_id` should not double-mount."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1832,8 +1869,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1873,7 +1910,7 @@ class TestExecuteTaskTextualAskUser:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
         async def mount_message(widget: object) -> None:
@@ -1881,8 +1918,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -2064,11 +2101,11 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
+            _questions: list[Question],
         ) -> asyncio.Future[object] | None:
             await asyncio.sleep(0)
             return future
@@ -2091,7 +2128,8 @@ class TestExecuteTaskTextualAskUser:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
+            # This test intentionally returns a malformed widget payload.
+            request_ask_user=cast("Any", request_ask_user),
         )
 
         await execute_task_textual(
@@ -2127,7 +2165,7 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         agent = _SequencedAgent(
@@ -2167,8 +2205,8 @@ class TestExecuteTaskTextualAskUser:
         """A `None` callback result should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2214,8 +2252,8 @@ class TestExecuteTaskTextualAskUser:
         """UI mount failures should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             msg = "boom"
             raise RuntimeError(msg)
@@ -2309,8 +2347,8 @@ class TestExecuteTaskTextualAskUser:
             statuses.append(status)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2413,7 +2451,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # type: ignore[override]
+    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -2432,7 +2470,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # type: ignore[override]
+    def values(self) -> Generator[Any, None, None]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)

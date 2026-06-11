@@ -28,7 +28,7 @@ def test_init_scaffolds_new_layout(
     agent = json.loads((project / "agent.json").read_text())
     assert agent["name"] == "my-agent"
     assert agent["model"] == "openai:gpt-5.5"
-    assert agent["backend"] == {"type": "default"}
+    assert agent["backend"] == {"type": "state"}
     assert "runtime" not in agent
     assert (project / "AGENTS.md").is_file()
     assert (project / ".gitignore").is_file()
@@ -55,7 +55,7 @@ def test_init_scaffold_loads_as_valid_project(
     monkeypatch.chdir(tmp_path)
     execute_init_command(_ns("my-agent"))
     project = Project.load(tmp_path / "my-agent")
-    assert project.backend == {"type": "default"}
+    assert project.backend == {"type": "state"}
     assert project.tools is not None
     assert len(project.skills) == 1
     assert project.skills[0].name == "example-skill"

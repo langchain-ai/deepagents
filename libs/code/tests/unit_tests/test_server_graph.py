@@ -38,6 +38,7 @@ class TestServerGraph:
         graph_obj = object()
         model_obj = object()
         fetch_tool = object()
+        thread_tool = object()
         mcp_tool = object()
         mcp_server_info = [SimpleNamespace(name="docs")]
         create_cli_agent = MagicMock(return_value=(graph_obj, object()))
@@ -64,6 +65,7 @@ class TestServerGraph:
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
             fetch_url=fetch_tool,
+            get_current_thread_id=thread_tool,
             web_search=object(),
         )
 
@@ -123,7 +125,7 @@ class TestServerGraph:
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",
-            tools=[fetch_tool, mcp_tool],
+            tools=[fetch_tool, thread_tool, mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,

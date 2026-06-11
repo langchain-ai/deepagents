@@ -366,6 +366,40 @@ class TestOnClickOpensLink:
         event.stop.assert_not_called()
 
 
+class TestPointerShapeOnHover:
+    """Tests for the hand pointer shown when hovering link spans."""
+
+    def test_mouse_move_over_link_sets_pointer(self) -> None:
+        """Hovering a link span should show the hand pointer."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        widget.on_mouse_move(event)
+
+        assert widget.styles.pointer == "pointer"
+
+    def test_mouse_move_off_link_resets_pointer(self) -> None:
+        """Hovering non-link text should reset to the default pointer."""
+        widget = _make_banner(thread_id="abc")
+        widget.styles.pointer = "pointer"
+        event = MagicMock()
+        event.style = Style()
+
+        widget.on_mouse_move(event)
+
+        assert widget.styles.pointer == "default"
+
+    def test_leave_resets_pointer(self) -> None:
+        """Leaving the banner should reset to the default pointer."""
+        widget = _make_banner(thread_id="abc")
+        widget.styles.pointer = "pointer"
+
+        widget.on_leave()
+
+        assert widget.styles.pointer == "default"
+
+
 class TestBuildWelcomeFooter:
     """Tests for the `build_welcome_footer` standalone function."""
 

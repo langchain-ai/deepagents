@@ -12,7 +12,10 @@ import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
+    IMPLICIT_AUTH_PROVIDERS,
+    NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
+    RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
     ModelConfigError,
@@ -54,6 +57,26 @@ def _clear_model_caches() -> Iterator[None]:
     clear_caches()
     yield
     clear_caches()
+
+
+class TestRetryParamByProvider:
+    """Tests for retry-parameter registry drift."""
+
+    def test_all_retry_providers_are_known(self) -> None:
+        """Every retry-enabled provider is a known provider."""
+        known_providers = (
+            set(PROVIDER_API_KEY_ENV)
+            | set(IMPLICIT_AUTH_PROVIDERS)
+            | set(NO_AUTH_REQUIRED_PROVIDERS)
+            | {"bedrock"}
+        )
+        assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
+
+    def test_contains_expected_retry_params(self) -> None:
+        """Major retry-enabled providers use `max_retries`."""
+        assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
 class TestModelSpec:
@@ -108,7 +131,7 @@ class TestModelSpec:
         """ModelSpec is immutable (frozen dataclass)."""
         spec = ModelSpec(provider="openai", model="gpt-5.5")
         with pytest.raises(AttributeError):
-            spec.provider = "anthropic"  # type: ignore[misc]
+            spec.provider = "anthropic"  # ty: ignore
 
     def test_validates_empty_provider(self) -> None:
         """ModelSpec raises on empty provider."""
@@ -756,6 +779,65 @@ class TestThreadSortOrderPersistence:
         assert data["threads"]["sort_order"] == "created_at"
 
 
+class TestThreadScopePersistence:
+    """Tests for thread-selector directory-scope persistence."""
+
+    def test_save_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Saved scope should load back on the next session."""
+        from deepagents_code.model_config import (
+            load_thread_config,
+            save_thread_scope,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert save_thread_scope("all", config_path) is True
+        assert load_thread_config(config_path).scope == "all"
+
+        assert save_thread_scope("cwd", config_path) is True
+        assert load_thread_config(config_path).scope == "cwd"
+
+    def test_default_is_cwd(self, tmp_path: Path) -> None:
+        """When no config file exists, scope defaults to cwd."""
+        from deepagents_code.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        assert load_thread_config(config_path).scope == "cwd"
+
+    def test_invalid_value_falls_back_to_default(self, tmp_path: Path) -> None:
+        """An unrecognized scope value should fall back to cwd."""
+        from deepagents_code.model_config import load_thread_config
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[threads]\nscope = "bogus"\n')
+        assert load_thread_config(config_path).scope == "cwd"
+
+    def test_save_invalid_value_raises(self, tmp_path: Path) -> None:
+        """Saving an unrecognized scope value should raise ValueError."""
+        import pytest
+
+        from deepagents_code.model_config import save_thread_scope
+
+        config_path = tmp_path / "config.toml"
+        with pytest.raises(ValueError, match="Invalid scope"):
+            save_thread_scope("bogus", config_path)
+
+    def test_preserves_other_config_sections(self, tmp_path: Path) -> None:
+        """Saving scope should not clobber other config sections."""
+        from deepagents_code.model_config import save_thread_scope
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "anthropic:claude-sonnet-4-5"\n')
+
+        save_thread_scope("all", config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["threads"]["scope"] == "all"
+
+
 class TestThreadConfigCoalesced:
     """Tests for the coalesced `load_thread_config()` helper."""
 
@@ -768,9 +850,10 @@ class TestThreadConfigCoalesced:
         assert cfg.columns == THREAD_COLUMN_DEFAULTS
         assert cfg.relative_time is True
         assert cfg.sort_order == "updated_at"
+        assert cfg.scope == "cwd"
 
     def test_reads_all_sections_from_one_parse(self, tmp_path: Path) -> None:
-        """A single TOML read should populate columns, relative_time, and sort_order."""
+        """A single TOML read should populate columns, relative_time, sort, scope."""
         from deepagents_code.model_config import load_thread_config
 
         config_path = tmp_path / "config.toml"
@@ -779,6 +862,7 @@ class TestThreadConfigCoalesced:
 [threads]
 relative_time = false
 sort_order = "created_at"
+scope = "all"
 
 [threads.columns]
 thread_id = true
@@ -792,9 +876,10 @@ messages = false
         assert cfg.columns["updated_at"] is True
         assert cfg.relative_time is False
         assert cfg.sort_order == "created_at"
+        assert cfg.scope == "all"
 
     def test_matches_individual_loaders(self, tmp_path: Path) -> None:
-        """Coalesced result should match the three individual loaders."""
+        """Coalesced result should match the individual loaders."""
         from deepagents_code.model_config import (
             load_thread_columns,
             load_thread_config,
@@ -808,6 +893,7 @@ messages = false
 [threads]
 relative_time = false
 sort_order = "created_at"
+scope = "all"
 
 [threads.columns]
 git_branch = true
@@ -818,6 +904,9 @@ cwd = true
         assert cfg.columns == load_thread_columns(config_path)
         assert cfg.relative_time == load_thread_relative_time(config_path)
         assert cfg.sort_order == load_thread_sort_order(config_path)
+        # `scope` has no standalone loader; it is read only via the coalesced
+        # `load_thread_config`. Assert it parsed from the same combined file.
+        assert cfg.scope == "all"
 
     def test_corrupt_toml_returns_defaults(self, tmp_path: Path) -> None:
         """A corrupt config file should return defaults without crashing."""
@@ -829,6 +918,7 @@ cwd = true
         assert cfg.columns == THREAD_COLUMN_DEFAULTS
         assert cfg.relative_time is True
         assert cfg.sort_order == "updated_at"
+        assert cfg.scope == "cwd"
 
     def test_default_path_uses_cache(self) -> None:
         """Second call with default path should return cached result."""
@@ -899,6 +989,25 @@ cwd = true
         try:
             load_thread_config()
             save_thread_sort_order("created_at", tmp_path / "c.toml")
+            from deepagents_code.model_config import _thread_config_cache
+
+            assert _thread_config_cache is None
+        finally:
+            invalidate_thread_config_cache()
+
+    def test_save_scope_invalidates_cache(self, tmp_path: Path) -> None:
+        """Saving scope should invalidate the cached value."""
+        from deepagents_code.model_config import (
+            _thread_config_cache,
+            invalidate_thread_config_cache,
+            load_thread_config,
+            save_thread_scope,
+        )
+
+        invalidate_thread_config_cache()
+        try:
+            load_thread_config()
+            save_thread_scope("all", tmp_path / "c.toml")
             from deepagents_code.model_config import _thread_config_cache
 
             assert _thread_config_cache is None
@@ -3209,7 +3318,7 @@ class TestIsLocalEndpoint:
 
     def test_non_string_input_returns_false(self) -> None:
         """Non-string input must not raise (defensive against TOML drift)."""
-        assert _is_local_endpoint(123) is False  # type: ignore[arg-type]
+        assert _is_local_endpoint(123) is False
 
 
 class TestProviderAuthStatusBranches:

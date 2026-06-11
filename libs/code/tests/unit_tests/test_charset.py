@@ -113,7 +113,7 @@ class TestGlyphs:
     def test_glyphs_frozen(self) -> None:
         """Test that Glyphs instances are immutable."""
         with pytest.raises(AttributeError):
-            UNICODE_GLYPHS.tool_prefix = "changed"  # type: ignore[misc]
+            UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
         """Test that both glyph sets have all required fields."""

@@ -3472,7 +3472,7 @@ class DeepAgentsApp(App):
                 self.notify(
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Restart dcode to auto-update before startup.",
+                    "Restart dcode to install the update automatically.",
                     severity="information",
                     timeout=12,
                     markup=False,

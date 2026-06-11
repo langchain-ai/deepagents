@@ -629,7 +629,9 @@ def _detect_charset_mode() -> CharsetMode:
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
     """
-    env_mode = os.environ.get("UI_CHARSET_MODE", "auto").lower()
+    from deepagents_code.model_config import resolve_env_var
+
+    env_mode = (resolve_env_var("UI_CHARSET_MODE") or "auto").lower()
     if env_mode == "unicode":
         return CharsetMode.UNICODE
     if env_mode == "ascii":

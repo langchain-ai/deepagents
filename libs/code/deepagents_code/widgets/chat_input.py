@@ -118,6 +118,14 @@ comfortably covers the FocusIn-to-mouse-report latency while staying below a
 deliberate click-pause-click interaction.
 """
 
+_FILE_CACHE_REFRESH_INTERVAL_SECONDS = 30.0
+"""How often to refresh the `@` file-completion cache in the background.
+
+The cache is pre-warmed on mount and re-warmed on cwd switches, but files
+created or deleted mid-session would otherwise stay stale until the next switch.
+A periodic refresh keeps `@` suggestions current; the walk runs off the event
+loop and swaps in atomically, so it never blocks typing."""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
@@ -1423,7 +1431,21 @@ class ChatInput(Vertical):
             exclusive=False,
             exit_on_error=False,
         )
+        self.set_interval(
+            _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+            self._refresh_file_cache,
+        )
         self._text_area.focus()
+
+    def _refresh_file_cache(self) -> None:
+        """Re-warm the `@` file-completion cache off the event loop."""
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is not None:
+            self.run_worker(
+                file_controller.warm_cache(force=True),
+                exclusive=False,
+                exit_on_error=False,
+            )
 
     def set_cwd(self, cwd: str | Path) -> None:
         """Update file completion to use a new cwd.

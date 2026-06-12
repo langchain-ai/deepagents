@@ -615,7 +615,7 @@ class FuzzyFileController:
         self._file_cache = None
         self.reset()
 
-    async def warm_cache(self) -> None:
+    async def warm_cache(self, *, force: bool = False) -> None:
         """Pre-populate the file cache off the event loop.
 
         Also resolves a project root deferred by `set_cwd`, so the blocking
@@ -628,6 +628,12 @@ class FuzzyFileController:
         belonging to a newer generation. (Snapshotting again before the second
         await would defeat the guard: it would match the post-supersession
         generation and let a stale-root file walk win.)
+
+        Args:
+            force: Re-walk and swap in a fresh file list even when the cache is
+                already populated. Used by the periodic background refresh so
+                files created or deleted mid-session surface in `@` completion.
+                The existing cache stays visible until the new walk completes.
         """
         cwd = self._cwd
         generation = self._cache_generation
@@ -643,7 +649,7 @@ class FuzzyFileController:
                 self._file_cache = None
             self._project_root = resolved
             self._project_root_pending = False
-        if self._file_cache is not None:
+        if not force and self._file_cache is not None:
             return
         project_root = self._project_root
         # Best-effort; _get_files() falls back to sync on failure.

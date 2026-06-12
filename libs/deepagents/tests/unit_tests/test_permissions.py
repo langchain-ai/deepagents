@@ -231,91 +231,93 @@ class TestRecursiveDeletePermissions:
         assert "delete" in out
 
 
+def _deny(*paths: str) -> FilesystemPermission:
+    return FilesystemPermission(operations=["write"], paths=list(paths), mode="deny")
+
+
 class TestFindDeleteDenyPatterns:
     """Exhaustive unit tests for the pure `_find_delete_deny_patterns` helper.
 
-    Returns the `deny` write patterns whose glob overlaps the delete subtree
-    (target + descendants), capped at `limit`. Empty result == delete permitted.
+    Returns every `deny` write pattern whose glob overlaps the delete subtree
+    (target + descendants). An empty result means the delete is permitted.
     """
 
-    @staticmethod
-    def _deny(*paths: str) -> FilesystemPermission:
-        return FilesystemPermission(operations=["write"], paths=list(paths), mode="deny")
+    @pytest.mark.parametrize(
+        ("pattern", "target", "expected"),
+        [
+            # --- no overlap -> permitted (empty result) ----------------------
+            pytest.param("/other/**", "/work", [], id="unrelated-subtree"),
+            pytest.param("/workshop/**", "/work", [], id="sibling-prefix-glob"),
+            pytest.param("/work2", "/work", [], id="sibling-prefix-literal"),
+            pytest.param("/work/secrets", "/work/logs", [], id="sibling-leaf"),
+            # --- overlap in either direction -> blocked ----------------------
+            pytest.param("/work/a.txt", "/work/a.txt", ["/work/a.txt"], id="exact-file"),
+            pytest.param("/work", "/work", ["/work"], id="exact-dir-literal"),
+            pytest.param("/work/secrets/**", "/work", ["/work/secrets/**"], id="descendant-pattern-blocks-ancestor-target"),
+            pytest.param("/work/**", "/work/logs", ["/work/**"], id="ancestor-glob-blocks-descendant-target"),
+            pytest.param("/work", "/work/sub/deep", ["/work"], id="ancestor-literal-blocks-descendant-target"),
+            pytest.param("/work/secrets", "/work", ["/work/secrets"], id="bare-directory-pattern"),
+            # --- wildcard / root anchors -------------------------------------
+            pytest.param("/anything/**", "/", ["/anything/**"], id="root-target-blocked-by-any-rule"),
+            pytest.param("/**/secrets", "/work", ["/**/secrets"], id="leading-wildcard-anchor-is-root"),
+            # --- trailing-slash normalization (both sides) -------------------
+            pytest.param("/work/**", "/work/", ["/work/**"], id="target-trailing-slash"),
+            pytest.param("/work/", "/work/sub", ["/work/"], id="pattern-trailing-slash"),
+            pytest.param("/work/", "/work/", ["/work/"], id="both-trailing-slash"),
+        ],
+    )
+    def test_overlap_geometry(self, pattern: str, target: str, expected: list[str]):
+        assert _find_delete_deny_patterns([_deny(pattern)], target) == expected
 
-    def test_no_permissions_returns_empty(self):
-        assert _find_delete_deny_patterns([], "/work") == []
+    @pytest.mark.parametrize(
+        ("operations", "mode", "expected"),
+        [
+            pytest.param(["write"], "deny", ["/work/**"], id="write-deny-blocks"),
+            pytest.param(["read", "write"], "deny", ["/work/**"], id="readwrite-deny-blocks"),
+            pytest.param(["write"], "allow", [], id="allow-ignored"),
+            pytest.param(["write"], "interrupt", [], id="interrupt-ignored"),
+            pytest.param(["read"], "deny", [], id="read-only-deny-ignored"),
+        ],
+    )
+    def test_mode_and_operation_filtering(self, operations, mode, expected):
+        # Only deny + write rules count; the target always overlaps the pattern.
+        rule = FilesystemPermission(operations=operations, paths=["/work/**"], mode=mode)
+        assert _find_delete_deny_patterns([rule], "/work") == expected
 
-    def test_unrelated_rule_returns_empty(self):
-        assert _find_delete_deny_patterns([self._deny("/other/**")], "/work") == []
-
-    def test_sibling_prefix_does_not_match(self):
-        # "/work" must not be blocked by a rule on the sibling "/workshop".
-        assert _find_delete_deny_patterns([self._deny("/workshop/**")], "/work") == []
-
-    def test_exact_path_match(self):
-        assert _find_delete_deny_patterns([self._deny("/work/a.txt")], "/work/a.txt") == ["/work/a.txt"]
-
-    def test_descendant_pattern_blocks_ancestor_target(self):
-        # Deleting /work is blocked by a rule scoped inside it.
-        assert _find_delete_deny_patterns([self._deny("/work/secrets/**")], "/work") == ["/work/secrets/**"]
-
-    def test_ancestor_pattern_blocks_descendant_target(self):
-        # Deleting /work/logs is blocked by a rule the target falls under.
-        assert _find_delete_deny_patterns([self._deny("/work/**")], "/work/logs") == ["/work/**"]
-
-    def test_bare_directory_pattern_blocks(self):
-        assert _find_delete_deny_patterns([self._deny("/work/secrets")], "/work") == ["/work/secrets"]
-
-    def test_root_target_blocked_by_any_rule(self):
-        # "/" overlaps everything, so any deny rule blocks delete("/").
-        assert _find_delete_deny_patterns([self._deny("/anything/**")], "/") == ["/anything/**"]
-
-    def test_leading_wildcard_anchor_overlaps_everything(self):
-        # `_glob_anchor("/**/secrets")` collapses to "/", overlapping any target.
-        assert _find_delete_deny_patterns([self._deny("/**/secrets")], "/work") == ["/**/secrets"]
-
-    def test_allow_rules_ignored(self):
-        rule = FilesystemPermission(operations=["write"], paths=["/work/**"], mode="allow")
-        assert _find_delete_deny_patterns([rule], "/work") == []
-
-    def test_interrupt_rules_ignored(self):
-        rule = FilesystemPermission(operations=["write"], paths=["/work/**"], mode="interrupt")
-        assert _find_delete_deny_patterns([rule], "/work") == []
-
-    def test_read_only_deny_ignored(self):
-        # `delete` maps to `write`; a read-scoped deny must not block it.
-        rule = FilesystemPermission(operations=["read"], paths=["/work/**"], mode="deny")
-        assert _find_delete_deny_patterns([rule], "/work") == []
-
-    def test_mixed_operation_deny_matches(self):
-        rule = FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="deny")
-        assert _find_delete_deny_patterns([rule], "/work") == ["/work/**"]
-
-    def test_collects_multiple_overlapping_patterns(self):
-        rules = [self._deny("/work/a/**"), self._deny("/work/b/**")]
-        assert _find_delete_deny_patterns(rules, "/work") == ["/work/a/**", "/work/b/**"]
-
-    def test_multiple_paths_in_one_rule(self):
-        rules = [self._deny("/work/a/**", "/work/b/**", "/other/**")]
-        assert _find_delete_deny_patterns(rules, "/work") == ["/work/a/**", "/work/b/**"]
-
-    def test_returns_all_overlapping_patterns(self):
-        # No cap: every conflicting pattern is surfaced for full agent context.
-        rules = [self._deny(f"/work/d{i}/**") for i in range(8)]
-        assert _find_delete_deny_patterns(rules, "/work") == [f"/work/d{i}/**" for i in range(8)]
-
-    def test_deduplicates_repeated_pattern(self):
-        # The same pattern in two rules is reported once, in first-seen order.
-        rules = [self._deny("/work/x/**"), self._deny("/work/x/**", "/work/y/**")]
-        assert _find_delete_deny_patterns(rules, "/work") == ["/work/x/**", "/work/y/**"]
-
-    def test_only_overlapping_patterns_returned(self):
-        # Non-overlapping rules are skipped entirely.
-        rules = [self._deny("/other/**"), self._deny("/work/x/**"), self._deny("/elsewhere/**")]
-        assert _find_delete_deny_patterns(rules, "/work") == ["/work/x/**"]
-
-    def test_target_trailing_slash_normalized(self):
-        assert _find_delete_deny_patterns([self._deny("/work/**")], "/work/") == ["/work/**"]
+    @pytest.mark.parametrize(
+        ("rule_paths", "target", "expected"),
+        [
+            pytest.param([], "/work", [], id="no-permissions"),
+            pytest.param([["/work/a/**"], ["/work/b/**"]], "/work", ["/work/a/**", "/work/b/**"], id="multiple-rules"),
+            pytest.param(
+                [["/work/a/**", "/work/b/**", "/other/**"]],
+                "/work",
+                ["/work/a/**", "/work/b/**"],
+                id="multiple-paths-one-rule-filters-non-overlapping",
+            ),
+            pytest.param(
+                [[f"/work/d{i}/**"] for i in range(8)],
+                "/work",
+                [f"/work/d{i}/**" for i in range(8)],
+                id="all-overlapping-no-cap",
+            ),
+            pytest.param(
+                [["/work/x/**"], ["/work/x/**", "/work/y/**"]],
+                "/work",
+                ["/work/x/**", "/work/y/**"],
+                id="deduplicated-first-seen-order",
+            ),
+            pytest.param(
+                [["/other/**"], ["/work/x/**"], ["/elsewhere/**"]],
+                "/work",
+                ["/work/x/**"],
+                id="only-overlapping-returned",
+            ),
+        ],
+    )
+    def test_multiple_rule_aggregation(self, rule_paths, target, expected):
+        rules = [_deny(*paths) for paths in rule_paths]
+        assert _find_delete_deny_patterns(rules, target) == expected
 
 
 class TestFilesystemPermission:

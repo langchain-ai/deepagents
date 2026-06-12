@@ -32,7 +32,6 @@ from deepagents.backends.utils import (
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
-    expand_delete_keys,
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
@@ -732,7 +731,10 @@ class StoreBackend(BackendProtocol):
         namespace = self._get_namespace()
 
         items = self._search_store_paginated(store, namespace)
-        to_delete = expand_delete_keys((str(item.key) for item in items), file_path)
+        # A recursive delete removes the exact key plus everything nested under it.
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
         if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
@@ -745,7 +747,9 @@ class StoreBackend(BackendProtocol):
         namespace = self._get_namespace()
 
         items = await self._asearch_store_paginated(store, namespace)
-        to_delete = expand_delete_keys((str(item.key) for item in items), file_path)
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
         if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 

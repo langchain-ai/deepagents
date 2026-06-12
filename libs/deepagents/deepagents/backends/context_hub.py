@@ -30,7 +30,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     create_file_data,
-    expand_delete_keys,
     perform_string_replacement,
     slice_read_response,
 )
@@ -226,7 +225,9 @@ class ContextHubBackend(BackendProtocol):
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
-            to_delete = expand_delete_keys(cache, hub_path)
+            base = hub_path.rstrip("/")
+            prefix = base + "/"
+            to_delete = [key for key in cache if key == base or key.startswith(prefix)]
             if not to_delete:
                 return DeleteResult(error=f"Error: File '{file_path}' not found")
             self._commit(dict.fromkeys(to_delete, None))

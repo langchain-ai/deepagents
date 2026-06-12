@@ -28,7 +28,6 @@ from deepagents.backends.utils import (
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
-    expand_delete_keys,
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
@@ -309,7 +308,9 @@ class StateBackend(BackendProtocol):
         """
         files = self._read_files()
 
-        to_delete = expand_delete_keys(files, file_path)
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for key in files if key == base or key.startswith(prefix)]
         if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 

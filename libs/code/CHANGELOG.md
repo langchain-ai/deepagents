@@ -4,15 +4,9 @@
 
 ## [0.1.15](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.14...deepagents-code==0.1.15) (2026-06-12)
 
-
 ### Features
 
-* **code:** add Deep Agents client version metadata ([#3934](https://github.com/langchain-ai/deepagents/issues/3934)) ([058cec6](https://github.com/langchain-ai/deepagents/commit/058cec654645dd1a504408d712ab678edc48273d))
-
-
-### Bug Fixes
-
-* **sdk,code:** rename trace version metadata to `lc_versions` ([#3928](https://github.com/langchain-ai/deepagents/issues/3928)) ([27f38c5](https://github.com/langchain-ai/deepagents/commit/27f38c51f960941e102dfc2f9c0220bc16736749))
+* Add Deep Agents client version metadata ([#3934](https://github.com/langchain-ai/deepagents/issues/3934)) ([058cec6](https://github.com/langchain-ai/deepagents/commit/058cec654645dd1a504408d712ab678edc48273d))
 
 ## [0.1.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.13...deepagents-code==0.1.14) (2026-06-12)
 

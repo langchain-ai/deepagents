@@ -45,8 +45,12 @@ def build_version_text() -> str:
 
     Includes the CLI and SDK versions and any installed optional
     dependencies. For editable installs it also reports the source path and
-    the resolved versions of the core LangChain-ecosystem dependencies,
-    mirroring the `/version` slash command.
+    the resolved versions of the core LangChain-ecosystem dependencies.
+
+    Reports the same version facts as the `/version` slash command, in the
+    same section order (versions, editable path, core dependencies, optional
+    dependencies), but omits its network-dependent release-age suffixes and
+    update-available hint so `--version` stays offline.
 
     Returns:
         Multi-line version string suitable for stdout.
@@ -81,6 +85,19 @@ def build_version_text() -> str:
     except Exception:
         logger.warning("Unexpected error detecting editable install", exc_info=True)
 
+    # Core dependencies precede optional dependencies to match the section
+    # order of the `/version` slash command (see `_handle_version_command`).
+    if editable:
+        try:
+            from deepagents_code.extras_info import format_core_dependencies_plain
+
+            core_text = format_core_dependencies_plain()
+        except Exception:
+            logger.warning("Failed to collect core dependency versions", exc_info=True)
+            core_text = ""
+        if core_text:
+            text = f"{text}\n\n{core_text}"
+
     try:
         from deepagents_code.extras_info import (
             format_extras_status_plain,
@@ -93,17 +110,6 @@ def build_version_text() -> str:
         extras_text = ""
     if extras_text:
         text = f"{text}\n\n{extras_text}"
-
-    if editable:
-        try:
-            from deepagents_code.extras_info import format_core_dependencies_plain
-
-            core_text = format_core_dependencies_plain()
-        except Exception:
-            logger.warning("Failed to collect core dependency versions", exc_info=True)
-            core_text = ""
-        if core_text:
-            text = f"{text}\n\n{core_text}"
 
     return text
 
@@ -1304,6 +1310,9 @@ def parse_args() -> argparse.Namespace:
     if any(arg in {"-v", "--version"} for arg in sys.argv[1:]):
         version_text = build_version_text()
     else:
+        # Never surfaced: argparse only emits `version=` when the flag is
+        # actually passed, which takes the `build_version_text()` branch above.
+        # This placeholder only exists because `version=` requires a value.
         version_text = f"deepagents-code {__version__}"
     parser.add_argument(
         "-v",

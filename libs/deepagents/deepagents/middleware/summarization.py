@@ -201,8 +201,9 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
     Returns:
         `True` if the signature declares a `tools` parameter or accepts
         arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
-        not, or `None` when the signature cannot be introspected (e.g. a
-        C-level callable), signalling that callers should fall back to probing.
+        not, or `None` when the signature cannot be introspected (some C-level
+        callables expose no signature), signaling that callers should fall back
+        to probing.
     """
     try:
         parameters = inspect.signature(counter).parameters
@@ -767,20 +768,27 @@ A condensed summary follows:
 
         Returns:
             Total token count. Counts without `tools` when the configured
-                `token_counter` does not accept a `tools` keyword. A `TypeError`
-                raised inside the counter's own body is never masked — it
-                propagates so a broken counter is not hidden behind a silently
-                wrong count.
+                `token_counter` does not accept a `tools` keyword. When the
+                counter's signature is introspectable, a `TypeError` raised
+                inside the counter's own body is never masked — it propagates so
+                a broken counter is not hidden behind a silently wrong count.
+                Counters whose signature cannot be introspected are probed
+                instead, and only there does a `TypeError` fall back to counting
+                without `tools`.
         """
         counted_messages = [system_message, *messages] if system_message is not None else messages
         if self._counter_accepts_tools is True:
+            # `tools=` is absent from the `TokenCounter` protocol but accepted
+            # here: the signature check above confirmed the counter takes it.
             return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         if self._counter_accepts_tools is False:
             return self.token_counter(counted_messages)
         # Signature could not be introspected; probe defensively. This is the
         # only path that swallows a `TypeError`, and only for counters whose
-        # signature is opaque (e.g. C-level callables).
+        # signature is opaque (some C-level callables expose no signature).
         try:
+            # `tools=` is outside the `TokenCounter` protocol; the probe verifies
+            # acceptance at runtime, falling back below if it is rejected.
             return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         except TypeError:
             return self.token_counter(counted_messages)

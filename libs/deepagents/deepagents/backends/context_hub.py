@@ -29,6 +29,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    clamp_context_lines,
+    context_window_from_lines,
     create_file_data,
     perform_string_replacement,
     slice_read_response,
@@ -238,6 +240,7 @@ class ContextHubBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search contents for `pattern` (optional `path` / `glob` filters)."""
         try:
@@ -256,14 +259,21 @@ class ContextHubBackend(BackendProtocol):
 
         glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
 
+        context_lines = clamp_context_lines(context_lines)
         for file_path, content in cache.items():
             if prefix and not file_path.startswith(prefix):
                 continue
             if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
-            for i, line in enumerate(content.splitlines(), start=1):
+            lines = content.splitlines()
+            for i, line in enumerate(lines, start=1):
                 if regex.search(line):
-                    matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
+                    match = GrepMatch(path=f"/{file_path}", line=i, text=line)
+                    if context_lines:
+                        before, after = context_window_from_lines(lines, i, context_lines)
+                        match["context_before"] = before
+                        match["context_after"] = after
+                    matches.append(match)
 
         return GrepResult(matches=matches)
 

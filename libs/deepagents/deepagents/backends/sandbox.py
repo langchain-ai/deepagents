@@ -761,6 +761,7 @@ except PermissionError:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,  # noqa: ARG002
     ) -> GrepResult:
         """Search file contents for a literal string using `grep -F`.
 
@@ -771,6 +772,10 @@ except PermissionError:
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).
+            context_lines: Accepted for protocol compatibility but not yet
+                supported on sandbox backends — fetching surrounding lines
+                would require an extra remote round-trip per matched file.
+                Matches are returned without context.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.

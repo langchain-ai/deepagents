@@ -177,10 +177,17 @@
   },
   {
     "function": {
-      "description": "Search for a text pattern across files.\n\nSearches for literal text (not regex) and returns matching files or content based on output_mode.\nSpecial characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`",
+      "description": "Search for a text pattern across files.\n\nSearches for literal text (not regex) and returns matching files or content based on output_mode.\nSpecial characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Show matching lines with 3 lines of surrounding context: `grep(pattern=\"error\", output_mode=\"content\", context_lines=3)`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`",
       "name": "grep",
       "parameters": {
         "properties": {
+          "context_lines": {
+            "default": 0,
+            "description": "Number of lines of surrounding context to include with each match in 'content' mode (like grep -C). Defaults to 0 (no context).",
+            "maximum": 10,
+            "minimum": 0,
+            "type": "integer"
+          },
           "glob": {
             "anyOf": [
               {

@@ -690,6 +690,7 @@ class StoreBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search store files for a literal text pattern."""
         store = self._get_store()
@@ -701,7 +702,7 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path, glob, context_lines)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern in the store."""

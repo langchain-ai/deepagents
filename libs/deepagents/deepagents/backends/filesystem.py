@@ -38,6 +38,8 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     _get_file_type,
     check_empty_content,
+    clamp_context_lines,
+    context_window_from_lines,
     perform_string_replacement,
 )
 
@@ -571,6 +573,7 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -580,6 +583,8 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            context_lines: Lines of surrounding context to attach to each
+                match (clamped to `MAX_GREP_CONTEXT_LINES`). Defaults to 0.
 
         Returns:
             GrepResult with matches or error.
@@ -611,7 +616,32 @@ class FilesystemBackend(BackendProtocol):
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
+        if context_lines:
+            self._attach_context(matches, context_lines)
         return GrepResult(error=partial_error, matches=matches)
+
+    def _attach_context(self, matches: list[GrepMatch], context_lines: int) -> None:
+        """Attach surrounding lines to matches by re-reading each matched file.
+
+        Reading the file once per matched path (rather than parsing ripgrep's
+        interleaved `context` JSON events) keeps behavior identical between
+        the ripgrep and Python-fallback paths. Files that can no longer be
+        read (deleted/renamed/binary) simply yield matches without context.
+        """
+        context_lines = clamp_context_lines(context_lines)
+        by_path: dict[str, list[GrepMatch]] = {}
+        for m in matches:
+            by_path.setdefault(m["path"], []).append(m)
+        for fpath, file_matches in by_path.items():
+            try:
+                resolved = self._resolve_path(fpath)
+                lines = resolved.read_text(encoding="utf-8", errors="replace").split("\n")
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for m in file_matches:
+                before, after = context_window_from_lines(lines, m["line"], context_lines)
+                m["context_before"] = before
+                m["context_after"] = after
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
         """Search using ripgrep with fixed-string (literal) mode.

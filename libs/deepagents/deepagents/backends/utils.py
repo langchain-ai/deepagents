@@ -683,15 +683,42 @@ def _format_grep_results(
 # -------- Structured helpers for composition --------
 
 
+MAX_GREP_CONTEXT_LINES = 10
+"""Upper bound for grep `context_lines`, keeping tool results bounded."""
+
+
+def clamp_context_lines(context_lines: int) -> int:
+    """Clamp a user-supplied `context_lines` value to `[0, MAX_GREP_CONTEXT_LINES]`."""
+    return max(0, min(int(context_lines), MAX_GREP_CONTEXT_LINES))
+
+
+def context_window_from_lines(
+    lines: list[str],
+    match_line: int,
+    context_lines: int,
+) -> tuple[list[str], list[str]]:
+    """Slice the context window around a 1-indexed `match_line`.
+
+    Returns `(context_before, context_after)`, clamped at file boundaries.
+    """
+    idx = match_line - 1
+    start = max(0, idx - context_lines)
+    return lines[start:idx], lines[idx + 1 : idx + 1 + context_lines]
+
+
 def grep_matches_from_files(
     files: dict[str, Any],
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    context_lines: int = 0,
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
     Performs literal text search (not regex).
+
+    When `context_lines > 0`, each match carries `context_before` /
+    `context_after` with up to that many surrounding lines.
 
     Returns a GrepResult with matches on success.
     We deliberately do not raise here to keep backends non-throwing in tool
@@ -708,12 +735,19 @@ def grep_matches_from_files(
         matcher = _compile_glob(glob)
         filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
 
+    context_lines = clamp_context_lines(context_lines)
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
         content_str = _normalize_content(file_data)
-        for line_num, line in enumerate(content_str.split("\n"), 1):
+        lines = content_str.split("\n")
+        for line_num, line in enumerate(lines, 1):
             if pattern in line:  # Simple substring search for literal matching
-                matches.append({"path": file_path, "line": int(line_num), "text": line})
+                match: GrepMatch = {"path": file_path, "line": int(line_num), "text": line}
+                if context_lines:
+                    before, after = context_window_from_lines(lines, line_num, context_lines)
+                    match["context_before"] = before
+                    match["context_after"] = after
+                matches.append(match)
     return GrepResult(matches=matches)
 
 
@@ -732,4 +766,31 @@ def format_grep_matches(
     """Format structured grep matches using existing formatting logic."""
     if not matches:
         return "No matches found"
+    if output_mode == "content" and any("context_before" in m or "context_after" in m for m in matches):
+        return _format_grep_content_with_context(matches)
     return _format_grep_results(build_grep_results_dict(matches), output_mode)
+
+
+def _format_grep_content_with_context(matches: list[GrepMatch]) -> str:
+    """Render content mode with surrounding context lines.
+
+    Match lines keep the existing `  LINENO: text` shape; context lines use
+    `-` as the separator (mirroring `grep -C`), and match groups within the
+    same file are separated by `--`.
+    """
+    by_file: dict[str, list[GrepMatch]] = {}
+    for m in matches:
+        by_file.setdefault(m["path"], []).append(m)
+    lines: list[str] = []
+    for file_path in sorted(by_file):
+        lines.append(f"{file_path}:")
+        for i, m in enumerate(sorted(by_file[file_path], key=lambda m: m["line"])):
+            if i:
+                lines.append("  --")
+            before = m.get("context_before", [])
+            for offset, text in enumerate(before, start=m["line"] - len(before)):
+                lines.append(f"  {offset}- {text}")
+            lines.append(f"  {m['line']}: {m['text']}")
+            for offset, text in enumerate(m.get("context_after", []), start=m["line"] + 1):
+                lines.append(f"  {offset}- {text}")
+    return "\n".join(lines)

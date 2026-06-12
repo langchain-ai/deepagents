@@ -295,10 +295,11 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search state files for a literal text pattern."""
         files = self._read_files()
-        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
+        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob, context_lines)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Get FileInfo for files matching glob pattern."""

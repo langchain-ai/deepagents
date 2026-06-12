@@ -11,7 +11,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
@@ -162,6 +162,19 @@ class GrepMatch(TypedDict):
 
     text: str
     """Content of the matching line."""
+
+    context_before: NotRequired[list[str]]
+    """Lines immediately preceding the match, in file order.
+
+    Only present when the search was performed with `context_lines > 0`.
+    Line numbers are inferable: the first entry is line `line - len(context_before)`.
+    """
+
+    context_after: NotRequired[list[str]]
+    """Lines immediately following the match, in file order.
+
+    Only present when the search was performed with `context_lines > 0`.
+    """
 
 
 class FileData(TypedDict):
@@ -412,6 +425,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,  # noqa: ARG002 -- consumed by overrides; legacy grep_raw fallback has no context support
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -427,6 +441,16 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 If None, searches in current working directory.
 
                 Example: `'/workspace/src'`
+
+            context_lines: Number of lines of surrounding context to include
+                with each match (like `grep -C`).
+
+                When greater than 0, each `GrepMatch` includes
+                `context_before` / `context_after` with up to that many lines
+                on each side, clamped at file boundaries. Defaults to `0`
+                (no context, current behavior). Backends that cannot read
+                surrounding lines may ignore this and return matches without
+                context. Not supported on the deprecated `grep_raw` fallback.
 
             glob: Optional glob pattern to filter which FILES to search.
 
@@ -471,6 +495,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        context_lines: int = 0,
     ) -> "GrepResult":
         """Async version of `grep`.
 
@@ -478,9 +503,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         bounds how long the caller waits; it does not stop the worker thread
         created by `asyncio.to_thread`.
         """
+        # Only forward `context_lines` when set, so custom backends that
+        # override `grep` with the older 3-argument signature keep working
+        # as long as no context is requested.
+        sync_call = partial(self.grep, pattern, path, glob, context_lines) if context_lines else partial(self.grep, pattern, path, glob)
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self.grep, pattern, path, glob),
+                asyncio.to_thread(sync_call),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:

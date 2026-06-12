@@ -1,5 +1,6 @@
 """Unit tests for approval widget expandable command display."""
 
+from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +11,16 @@ from deepagents_code.widgets.approval import (
     _SHELL_COMMAND_TRUNCATE_LINES,
     ApprovalMenu,
 )
+
+if TYPE_CHECKING:
+    from textual.content import Content
+
+
+class _RenderableWidget(Protocol):
+    """Test helper protocol for widgets that expose `render`."""
+
+    def render(self) -> object:
+        """Render the widget content."""
 
 
 class TestCheckExpandableCommand:
@@ -644,6 +655,11 @@ class TestRejectWithReason:
 class TestComposeReasons:
     """Tests for `ApprovalMenu._compose_reasons`."""
 
+    @staticmethod
+    def _render_plain(widget: _RenderableWidget) -> str:
+        """Render a reason widget to plain text."""
+        return cast("Content", widget.render()).plain
+
     def test_single_reason_rendered(self) -> None:
         """A request with a reason yields one `Reason:` widget."""
         menu = ApprovalMenu(
@@ -655,7 +671,7 @@ class TestComposeReasons:
         )
         widgets = list(menu._compose_reasons())
         assert len(widgets) == 1
-        text = widgets[0].render().plain
+        text = self._render_plain(widgets[0])
         assert text == "Reason: Validate the change end-to-end."
 
     def test_no_reason_yields_nothing(self) -> None:
@@ -680,8 +696,8 @@ class TestComposeReasons:
         )
         widgets = list(menu._compose_reasons())
         assert len(widgets) == 2
-        assert widgets[0].render().plain == "Reason (1): first"
-        assert widgets[1].render().plain == "Reason (2): second"
+        assert self._render_plain(widgets[0]) == "Reason (1): first"
+        assert self._render_plain(widgets[1]) == "Reason (2): second"
 
     def test_reason_markup_is_escaped(self) -> None:
         """Reason text containing markup is rendered literally."""
@@ -693,4 +709,4 @@ class TestComposeReasons:
             }
         )
         widgets = list(menu._compose_reasons())
-        assert "check [/dim] handling" in widgets[0].render().plain
+        assert "check [/dim] handling" in self._render_plain(widgets[0])

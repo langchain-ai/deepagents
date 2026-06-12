@@ -21,10 +21,12 @@ import logging
 from typing import TYPE_CHECKING, Any, NotRequired
 
 from langchain.agents.middleware.human_in_the_loop import (
+    HITLRequest,
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
 )
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.types import interrupt
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import (
@@ -56,11 +58,11 @@ _MAX_REASON_CHARS = 280
 """Reasons longer than this are truncated for display."""
 
 _REASON_SYSTEM_PROMPT = (
-    "You are about to run a tool that requires the user's approval. In one "
-    "short sentence, written in the first person and addressed to the user, "
-    "explain why you want to run it and what you expect it to accomplish. "
-    "Do not greet, apologize, or restate the arguments verbatim. Reply with "
-    "the sentence only."
+    "You are about to run one or more tools that require the user's approval. "
+    "In one short sentence, written in the first person and addressed to the "
+    "user, explain why you want to run them and what you expect them to "
+    "accomplish. Do not greet, apologize, or restate the arguments verbatim. "
+    "Reply with the sentence only."
 )
 
 
@@ -107,28 +109,132 @@ class ReasonInterruptMiddleware(HumanInTheLoopMiddleware):
         state: AgentState[Any],
         runtime: Runtime[Any],
     ) -> tuple[ActionRequest, ReviewConfig]:
-        """Attach a synchronous model-generated `reason` when configured.
+        """Create an action request and review config.
 
         Returns:
-            The `(ActionRequest, ReviewConfig)` pair, with `reason` populated on
-            the request when the tool opts in and the model returns text.
+            The `(ActionRequest, ReviewConfig)` pair.
         """
-        action_request, review_config = super()._create_action_and_config(
-            tool_call, config, state, runtime
+        return super()._create_action_and_config(tool_call, config, state, runtime)
+
+    def after_model(
+        self, state: AgentState[Any], runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        """Trigger interrupt flows and attach one generated reason per batch.
+
+        Returns:
+            Updated messages with revised tool calls, or `None` when no
+            interrupt is needed.
+
+        Raises:
+            ValueError: If the number of human decisions does not match the
+                number of interrupted tool calls.
+        """
+        messages = state["messages"]
+        if not messages:
+            return None
+
+        last_ai_msg = next(
+            (msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None
         )
-        if tool_call["name"] in self._reason_tools:
-            reason = self._generate_reason(tool_call, state)
-            if reason:
-                action_request["reason"] = reason  # ty: ignore[invalid-key]  # reason is a CLI-only extension to ActionRequest
-        return action_request, review_config
+        if not last_ai_msg or not last_ai_msg.tool_calls:
+            return None
+
+        action_requests: list[ActionRequest] = []
+        review_configs: list[ReviewConfig] = []
+        interrupt_indices: list[int] = []
+        interrupt_tool_calls: list[ToolCall] = []
+
+        for idx, tool_call in enumerate(last_ai_msg.tool_calls):
+            if (config := self.interrupt_on.get(tool_call["name"])) is not None:
+                if not self._should_interrupt(tool_call, config, state, runtime):
+                    continue
+                action_request, review_config = self._create_action_and_config(
+                    tool_call, config, state, runtime
+                )
+                action_requests.append(action_request)
+                review_configs.append(review_config)
+                interrupt_indices.append(idx)
+                interrupt_tool_calls.append(tool_call)
+
+        if not action_requests:
+            return None
+
+        self._attach_batch_reason(action_requests, interrupt_tool_calls, state)
+
+        hitl_request = HITLRequest(
+            action_requests=action_requests,
+            review_configs=review_configs,
+        )
+
+        decisions = interrupt(hitl_request)["decisions"]
+
+        if (decisions_len := len(decisions)) != (
+            interrupt_count := len(interrupt_indices)
+        ):
+            msg = (
+                f"Number of human decisions ({decisions_len}) does not match "
+                f"number of hanging tool calls ({interrupt_count})."
+            )
+            raise ValueError(msg)
+
+        revised_tool_calls: list[ToolCall] = []
+        artificial_tool_messages = []
+        decision_idx = 0
+
+        for idx, tool_call in enumerate(last_ai_msg.tool_calls):
+            if idx in interrupt_indices:
+                config = self.interrupt_on[tool_call["name"]]
+                decision = decisions[decision_idx]
+                decision_idx += 1
+
+                revised_tool_call, tool_message = self._process_decision(
+                    decision, tool_call, config
+                )
+                if revised_tool_call is not None:
+                    revised_tool_calls.append(revised_tool_call)
+                if tool_message:
+                    artificial_tool_messages.append(tool_message)
+            else:
+                revised_tool_calls.append(tool_call)
+
+        last_ai_msg.tool_calls = revised_tool_calls
+
+        return {"messages": [last_ai_msg, *artificial_tool_messages]}
+
+    def _attach_batch_reason(
+        self,
+        action_requests: list[ActionRequest],
+        tool_calls: list[ToolCall],
+        state: AgentState[Any],
+    ) -> None:
+        """Attach one generated reason to all configured requests in a batch."""
+        reason_action_requests = [
+            action_request
+            for action_request, tool_call in zip(
+                action_requests, tool_calls, strict=True
+            )
+            if tool_call["name"] in self._reason_tools
+        ]
+        if not reason_action_requests:
+            return
+        reason_tool_calls = [
+            tool_call
+            for tool_call in tool_calls
+            if tool_call["name"] in self._reason_tools
+        ]
+        reason = self._generate_reason(reason_tool_calls, state)
+        if not reason:
+            return
+        for action_request in reason_action_requests:
+            action_request["reason"] = reason  # ty: ignore[invalid-key]  # reason is a CLI-only extension to ActionRequest
 
     @staticmethod
-    def _build_prompt(tool_call: ToolCall, state: AgentState[Any]) -> list[Any]:
+    def _build_prompt(tool_calls: list[ToolCall], state: AgentState[Any]) -> list[Any]:
         """Build the message list for the reason-generation model call.
 
         Returns:
             A system prompt, the most recent user request (when available), and
-            a final instruction naming the tool and its arguments.
+            a final instruction naming the tool calls and their arguments.
         """
         messages: list[Any] = [SystemMessage(content=_REASON_SYSTEM_PROMPT)]
         last_human = next(
@@ -141,19 +247,22 @@ class ReasonInterruptMiddleware(HumanInTheLoopMiddleware):
         )
         if last_human is not None and last_human.text:
             messages.append(HumanMessage(content=f"User's request:\n{last_human.text}"))
+        tool_lines = "\n".join(
+            f"{idx}. Tool: {tool_call['name']}\n   Arguments: {tool_call['args']}"
+            for idx, tool_call in enumerate(tool_calls, start=1)
+        )
         messages.append(
             HumanMessage(
                 content=(
-                    f"Tool: {tool_call['name']}\n"
-                    f"Arguments: {tool_call['args']}\n\n"
-                    "Why do you want to run this tool?"
+                    f"Tool calls requiring approval:\n{tool_lines}\n\n"
+                    "Why do you want to run these tool calls?"
                 )
             )
         )
         return messages
 
     def _generate_reason(
-        self, tool_call: ToolCall, state: AgentState[Any]
+        self, tool_calls: list[ToolCall], state: AgentState[Any]
     ) -> str | None:
         """Generate a reason synchronously, returning `None` on any failure.
 
@@ -162,7 +271,7 @@ class ReasonInterruptMiddleware(HumanInTheLoopMiddleware):
         """
         try:
             response = self._reason_model.invoke(
-                self._build_prompt(tool_call, state),
+                self._build_prompt(tool_calls, state),
                 config={"metadata": {"lc_source": REASON_LC_SOURCE}},
             )
         except Exception:  # reason is best-effort; never block approval

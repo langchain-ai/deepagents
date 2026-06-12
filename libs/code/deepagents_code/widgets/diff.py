@@ -15,6 +15,9 @@ from deepagents_code.config import get_glyphs, is_ascii_mode
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
+"""Matches a unified-diff hunk header, capturing the old and new start lines."""
+
 
 def compose_diff_lines(
     diff: str,
@@ -56,13 +59,19 @@ def _compose_diff_content(
     glyphs = get_glyphs()
     lines = diff.splitlines()
 
-    # Compute stats first
-    additions = sum(
-        1 for ln in lines if ln.startswith("+") and not ln.startswith("+++")
-    )
-    deletions = sum(
-        1 for ln in lines if ln.startswith("-") and not ln.startswith("---")
-    )
+    # Single pass for stats and max line number (width calculation).
+    additions = 0
+    deletions = 0
+    max_line = 0
+    for ln in lines:
+        if ln.startswith("+"):
+            if not ln.startswith("+++"):
+                additions += 1
+        elif ln.startswith("-"):
+            if not ln.startswith("---"):
+                deletions += 1
+        elif m := _HUNK_RE.match(ln):
+            max_line = max(max_line, int(m.group(1)), int(m.group(2)))
 
     # Stats header
     stats_parts: list[str | tuple[str, str] | Content] = []
@@ -75,11 +84,6 @@ def _compose_diff_content(
     if stats_parts:
         yield Static(Content.assemble(*stats_parts))
 
-    # Find max line number for width calculation
-    max_line = 0
-    for line in lines:
-        if m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
-            max_line = max(max_line, int(m.group(1)), int(m.group(2)))
     width = max(3, len(str(max_line + len(lines))))
 
     old_num = new_num = 0
@@ -97,7 +101,7 @@ def _compose_diff_content(
             continue
 
         # Handle hunk headers - just update line numbers, don't display
-        if m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
+        if m := _HUNK_RE.match(line):
             old_num, new_num = int(m.group(1)), int(m.group(2))
             continue
 

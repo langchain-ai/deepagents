@@ -882,7 +882,6 @@ async def execute_task_textual(
                                     )
                                     if not parts or chunk_args != parts[-1]:
                                         parts.append(chunk_args)
-                                    buffer["args"] = "".join(parts)
                             elif chunk_args is not None:
                                 buffer["args"] = chunk_args
 
@@ -891,19 +890,43 @@ async def execute_task_textual(
                             if buffer_name is None:
                                 continue
 
-                            parsed_args = buffer.get("args")
-                            if isinstance(parsed_args, str):
-                                if not parsed_args:
+                            # Resolve the tool arguments. String fragments are
+                            # accumulated in `args_parts` and joined + parsed
+                            # once the buffer holds a complete JSON value. Re-
+                            # joining and re-parsing the whole prefix on every
+                            # fragment is O(n^2) and ran on the UI event loop for
+                            # large `edit_file` blobs. Each `continue` below
+                            # leaves the buffer in `tool_call_buffers` so the next
+                            # fragment keeps accumulating; it is popped only after
+                            # a successful parse + mount.
+                            direct_args = buffer.get("args")
+                            if isinstance(direct_args, dict):
+                                parsed_args = direct_args
+                            elif direct_args is not None:
+                                parsed_args = {"value": direct_args}
+                            else:
+                                parts = buffer.get("args_parts") or []
+                                if not parts:
+                                    continue
+                                joined = "".join(parts)
+                                stripped = joined.strip()
+                                if not stripped:
+                                    continue
+                                # Objects/arrays can be large (e.g. `edit_file`
+                                # blobs), so defer parsing until the closing
+                                # bracket arrives. Scalars are always small and
+                                # never end in `}`/`]`, so parse them eagerly
+                                # rather than leaving them stuck unparsed.
+                                if stripped[0] in "{[" and not stripped.endswith(
+                                    ("}", "]")
+                                ):
                                     continue
                                 try:
-                                    parsed_args = json.loads(parsed_args)
+                                    parsed_args = json.loads(joined)
                                 except json.JSONDecodeError:
                                     continue
-                            elif parsed_args is None:
-                                continue
-
-                            if not isinstance(parsed_args, dict):
-                                parsed_args = {"value": parsed_args}
+                                if not isinstance(parsed_args, dict):
+                                    parsed_args = {"value": parsed_args}
 
                             # Flush pending text before tool call
                             pending_text = pending_text_by_namespace.get(ns_key, "")

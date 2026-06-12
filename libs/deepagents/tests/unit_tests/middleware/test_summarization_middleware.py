@@ -1,8 +1,9 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
 import asyncio
+import inspect
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
@@ -13,7 +14,10 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    _token_counter_accepts_tools,
+)
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -2682,3 +2686,164 @@ class TestTokenCountingEfficiency:
         first_ai = captured_request.messages[0]
         assert isinstance(first_ai, AIMessage)
         assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+class _OpaqueCounter:
+    """Wraps a counter so its signature cannot be introspected.
+
+    Accessing `__signature__` raises, which is what `inspect.signature` consults
+    first. This forces `_token_counter_accepts_tools` onto its `None` result and
+    `_count_tokens` onto the runtime-probe fallback -- the only path that still
+    swallows a `TypeError`. The wrapped callable is invoked verbatim, so it can
+    either accept or reject a `tools` kwarg at call time.
+    """
+
+    def __init__(self, fn: Callable[..., int]) -> None:
+        self._fn = fn
+
+    def __call__(self, *args: Any, **kwargs: Any) -> int:
+        return self._fn(*args, **kwargs)
+
+    @property
+    def __signature__(self) -> inspect.Signature:
+        msg = "no signature available"
+        raise ValueError(msg)
+
+
+class TestTokenCounterToolsProbe:
+    """`_count_tokens` must not mask a `TypeError` raised inside the counter body."""
+
+    def test_accepts_tools_with_explicit_param(self) -> None:
+        # The parameter must be named `tools` to exercise the signature probe.
+        def counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401, ARG001
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_accepts_tools_with_var_keyword(self) -> None:
+        def counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_rejects_tools_without_param(self) -> None:
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is False
+
+    def test_rejects_var_positional_only(self) -> None:
+        # `*args` captures positional arguments only, so `tools=` cannot reach it
+        # as a keyword. The counter is treated as not accepting tools, guarding
+        # the deliberate omission of `VAR_POSITIONAL` from the kind check.
+        def counter(_messages: list[BaseMessage], *_args: Any) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is False
+
+    def test_returns_none_for_uninspectable_signature(self) -> None:
+        # A callable whose signature cannot be read yields `None`, signaling that
+        # `_count_tokens` must fall back to runtime probing.
+        opaque = _OpaqueCounter(lambda *_args, **_kwargs: 0)
+        assert _token_counter_accepts_tools(opaque) is None
+
+    def _make_request_with_tools(self) -> ModelRequest:
+        """A request carrying tools so `tools=` reaches the token counter."""
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+        return ModelRequest(
+            model=make_mock_model(),
+            messages=state["messages"],
+            system_message=None,
+            tools=[{"type": "function", "function": {"name": "noop"}}],
+            runtime=make_mock_runtime(),
+            state=state,
+        )
+
+    def _make_middleware(self, counter: Any) -> SummarizationMiddleware:  # noqa: ANN401
+        """Middleware whose triggers never fire, so only `_count_tokens` runs."""
+        return SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("tokens", 1_000_000),
+            token_counter=counter,
+            truncate_args_settings={"trigger": ("tokens", 1_000_000), "keep": ("messages", 2)},
+        )
+
+    def test_in_body_typeerror_propagates_sync(self) -> None:
+        # Accepts `tools` but its body raises only when tools is supplied, mimicking
+        # a counter whose tool-schema handling is broken. The old probe swallowed
+        # this and silently recounted without tools; it must now surface loudly.
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+    async def test_in_body_typeerror_propagates_async(self) -> None:
+        # `awrap_model_call` delegates to the synchronous `_count_tokens`, so the
+        # counting logic is shared with the sync test above. This guards the
+        # async wrapper itself from swallowing the propagated `TypeError`.
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        async def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            await middleware.awrap_model_call(self._make_request_with_tools(), handler)
+
+    def test_counter_without_tools_param_is_called_without_tools(self) -> None:
+        # Tools are present on the request, but a counter that does not declare
+        # `tools` is invoked without them -- and does not raise.
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 10
+
+        middleware = self._make_middleware(counter)
+        captured: ModelRequest | None = None
+
+        def handler(req: ModelRequest) -> ModelResponse:
+            nonlocal captured
+            captured = req
+            return AIMessage(content="ok")
+
+        result = middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+        assert isinstance(result, AIMessage)
+        assert captured is not None  # Handler ran; counting without tools did not raise.
+
+    def test_uninspectable_counter_probes_with_tools(self) -> None:
+        # Signature can't be read, so `_counter_accepts_tools` is `None` and
+        # `_count_tokens` probes with `tools=`. The probe succeeds, so the
+        # tools-inclusive count is returned -- tools are not silently dropped.
+        counter = _OpaqueCounter(lambda _messages, *, tools=None: 99 if tools is not None else 7)
+        middleware = self._make_middleware(counter)
+        assert middleware._counter_accepts_tools is None
+
+        messages = make_conversation_messages()
+        tools = [{"type": "function", "function": {"name": "noop"}}]
+        assert middleware._count_tokens(messages, None, tools) == 99
+
+    def test_uninspectable_counter_falls_back_without_tools(self) -> None:
+        # The opaque counter rejects `tools=` at call time. This is the sole path
+        # that still catches a `TypeError` from the probe, recounting without
+        # tools rather than surfacing it.
+        counter = _OpaqueCounter(lambda _messages: 7)
+        middleware = self._make_middleware(counter)
+        assert middleware._counter_accepts_tools is None
+
+        messages = make_conversation_messages()
+        tools = [{"type": "function", "function": {"name": "noop"}}]
+        assert middleware._count_tokens(messages, None, tools) == 7

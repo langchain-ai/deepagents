@@ -836,7 +836,7 @@ def build_stream_config(
 
     Args:
         thread_id: The app session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
+        assistant_id: The dcode agent identifier, if any.
         sandbox_type: Sandbox provider name for trace metadata, or `None` if no
             sandbox is active.
 
@@ -865,7 +865,7 @@ def build_stream_config(
     if assistant_id:
         metadata.update(
             {
-                "assistant_id": assistant_id,
+                "dcode_agent_name": assistant_id,
                 "agent_name": assistant_id,
                 "updated_at": datetime.now(UTC).isoformat(),
             }

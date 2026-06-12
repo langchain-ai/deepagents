@@ -741,7 +741,9 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
@@ -761,6 +763,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_called_once()
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
+        assert mock_create_deep_agent.call_args.kwargs["name"] == "test"
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

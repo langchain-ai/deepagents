@@ -1,0 +1,21 @@
+libs/deepagents/deepagents/backends/filesystem.py
+  s_6650a0c75bdc21::t_59abc2c61860e5 792-801
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  s_6650a0c75bdc21::t_542f33a94b26cf 942-962
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "b498fa2aa6850b71109dacd8c23734707f330bee",
+  "prompts": {},
+  "sessions": {
+    "s_6650a0c75bdc21": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb92d-fa3d-7433-b6c5-f2b76ca6f09e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

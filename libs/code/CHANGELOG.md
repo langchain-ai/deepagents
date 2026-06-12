@@ -4,11 +4,9 @@
 
 ## [0.1.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.13...deepagents-code==0.1.14) (2026-06-12)
 
-
 ### Features
 
 * **code:** surface editable mode and core deps in `/version` ([#3898](https://github.com/langchain-ai/deepagents/issues/3898)) ([d4f5a12](https://github.com/langchain-ai/deepagents/commit/d4f5a12cc6d73dc19d24d5748242705d79fa65bf))
-
 
 ### Bug Fixes
 
@@ -18,7 +16,6 @@
 * **code:** set dcode agent names in trace metadata ([#3901](https://github.com/langchain-ai/deepagents/issues/3901)) ([ac94dd6](https://github.com/langchain-ai/deepagents/commit/ac94dd6b139211187cad8685c1152f02c51ba086))
 * **code:** surface untracked files in `@` completion ([#3872](https://github.com/langchain-ai/deepagents/issues/3872)) ([2bdf6ea](https://github.com/langchain-ai/deepagents/commit/2bdf6ea329c6b4c8be5f0075528e00c7ce2c1e6a))
 * **code:** warn on misconfigured subagent files ([#3873](https://github.com/langchain-ai/deepagents/issues/3873)) ([f1614d6](https://github.com/langchain-ai/deepagents/commit/f1614d67827c3d4d3bd01a784f57f83a50ec3410))
-
 
 ### Performance Improvements
 

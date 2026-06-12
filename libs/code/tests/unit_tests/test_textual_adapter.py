@@ -608,11 +608,11 @@ class TestBuildStreamConfig:
         assert "model_params" not in config["configurable"]
 
     def test_versions_contains_cli_version(self) -> None:
-        """CLI version should always be present in metadata.versions."""
+        """CLI version should always be present in metadata.lc_versions."""
         from deepagents_code._version import __version__
 
         config = build_stream_config("t-ver", assistant_id=None)
-        assert config["metadata"]["versions"]["deepagents-code"] == __version__
+        assert config["metadata"]["lc_versions"]["deepagents-code"] == __version__
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""

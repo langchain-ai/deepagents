@@ -826,7 +826,7 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects the dcode version into `metadata["versions"]` so LangSmith traces
+    Injects the dcode version into `metadata["lc_versions"]` so LangSmith traces
     can be correlated with specific releases. `create_deep_agent` supplies the
     SDK version through the compiled graph config, and LangChain merges nested
     metadata dictionaries so both versions survive at stream time.
@@ -854,7 +854,7 @@ def build_stream_config(
         cwd = ""
 
     metadata: dict[str, Any] = {
-        "versions": {"deepagents-code": __version__},
+        "lc_versions": {"deepagents-code": __version__},
         "ls_integration": "deepagents-code",
     }
     from deepagents_code._env_vars import USER_ID

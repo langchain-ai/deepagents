@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
+    from deepagents_code.reason_interrupt import ReasonInterruptOnConfig
 
 from langchain.agents.middleware.types import AgentMiddleware
 
@@ -1008,31 +1009,24 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
-REASON_TOOLS: frozenset[str] = frozenset({"execute", "task"})
-"""High-risk tools that get a model-generated `reason` on their approval prompt.
-
-Shell execution and subagent dispatch are the highest-risk gated tools, so they
-default to surfacing the model's intent. Other gated tools omit the reason to
-avoid the extra per-call model round-trip.
-"""
-
-
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
     Every tool that can have side effects or access external resources
     (shell execution, file writes/edits, web search, URL fetch, task
     delegation) is gated behind an approval prompt unless auto-approve
-    is enabled. Tools in `REASON_TOOLS` also carry `reason: True` so
-    `ReasonInterruptMiddleware` generates a justification for them.
+    is enabled. The highest-risk gated tools, shell execution (`execute`)
+    and subagent dispatch (`task`), additionally carry `reason: True` so
+    `ReasonInterruptMiddleware` surfaces the model's intent on their prompt.
+    Other gated tools omit it to avoid the extra per-batch model round-trip.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
-    execute_interrupt_config: InterruptOnConfig = {
+    execute_interrupt_config: ReasonInterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "reason": True,  # ty: ignore[invalid-key]  # CLI-only ReasonInterruptOnConfig extends InterruptOnConfig
+        "reason": True,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
@@ -1055,10 +1049,10 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
     }
 
-    task_interrupt_config: InterruptOnConfig = {
+    task_interrupt_config: ReasonInterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
-        "reason": True,  # ty: ignore[invalid-key]  # CLI-only ReasonInterruptOnConfig extends InterruptOnConfig
+        "reason": True,
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {

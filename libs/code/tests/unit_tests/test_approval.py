@@ -699,6 +699,20 @@ class TestComposeReasons:
         assert self._render_plain(widgets[0]) == "Reason (1): first"
         assert self._render_plain(widgets[1]) == "Reason (2): second"
 
+    def test_batch_numbering_uses_absolute_tool_index(self) -> None:
+        """A reason-less middle tool leaves a numbering gap aligned to its tool."""
+        menu = ApprovalMenu(
+            [
+                {"name": "execute", "args": {"command": "a"}, "reason": "first"},
+                {"name": "write_file", "args": {"file_path": "x"}},
+                {"name": "execute", "args": {"command": "c"}, "reason": "third"},
+            ]
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 2
+        assert self._render_plain(widgets[0]) == "Reason (1): first"
+        assert self._render_plain(widgets[1]) == "Reason (3): third"
+
     def test_reason_markup_is_escaped(self) -> None:
         """Reason text containing markup is rendered literally."""
         menu = ApprovalMenu(

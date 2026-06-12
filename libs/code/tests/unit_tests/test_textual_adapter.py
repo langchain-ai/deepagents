@@ -761,6 +761,22 @@ class TestRestoreActionReasons:
         _restore_action_reasons(validated, "not a dict")
         assert "reason" not in validated["action_requests"][0]
 
+    def test_length_mismatch_is_noop(self) -> None:
+        """Differing list lengths bail without copying any reason.
+
+        A positional copy across mismatched lists could attach a reason to the
+        wrong tool, so no reason is restored at all.
+        """
+        validated = {
+            "action_requests": [
+                {"name": "execute", "args": {}},
+                {"name": "write_file", "args": {}},
+            ]
+        }
+        raw = {"action_requests": [{"name": "execute", "args": {}, "reason": "why"}]}
+        _restore_action_reasons(validated, raw)
+        assert all("reason" not in a for a in validated["action_requests"])
+
 
 class _FakeAgent:
     """Minimal async stream agent used for adapter execution tests."""

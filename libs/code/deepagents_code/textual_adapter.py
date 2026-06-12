@@ -197,7 +197,8 @@ def _restore_action_reasons(
     The `HITLRequest` `TypeAdapter` strips the `reason` key from action
     requests because it is not part of the upstream TypedDict. This re-attaches
     it (positionally) so the approval widget can render it. Best-effort: silent
-    on any shape mismatch.
+    on any shape mismatch, including a length mismatch between the two lists
+    (which would make positional pairing untrustworthy).
 
     Args:
         validated_request: The pydantic-validated `HITLRequest` dict.
@@ -208,6 +209,10 @@ def _restore_action_reasons(
     raw_actions = cast("dict[str, Any]", raw_value).get("action_requests")
     validated_actions = validated_request.get("action_requests")
     if not isinstance(raw_actions, list) or not isinstance(validated_actions, list):
+        return
+    # Differing lengths mean the positional pairing can no longer be trusted to
+    # match a reason to its own tool, so bail rather than zip a partial prefix.
+    if len(raw_actions) != len(validated_actions):
         return
     for validated, raw in zip(validated_actions, raw_actions, strict=False):
         if not isinstance(raw, dict) or not isinstance(validated, dict):
@@ -1253,10 +1258,18 @@ async def execute_task_textual(
                         for req in action_requests:
                             reason = req.get("reason")
                             if isinstance(reason, str) and reason.strip():
-                                # reason display is best-effort
-                                with contextlib.suppress(Exception):
+                                try:
                                     await adapter._mount_message(
                                         AppMessage(f"Reason: {reason.strip()}")
+                                    )
+                                except Exception:  # reason display is best-effort
+                                    # `_mount_message` already absorbs the benign
+                                    # teardown cases (NoMatches, detached); anything
+                                    # reaching here is an unexpected UI bug worth a
+                                    # log, not a silent drop.
+                                    logger.warning(
+                                        "Failed to mount auto-approve reason",
+                                        exc_info=True,
                                     )
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()

@@ -3,13 +3,20 @@
 Subclasses the SDK's `HumanInTheLoopMiddleware` so the approval interrupt
 carries a short, model-generated justification (`reason`) for high-risk tool
 calls. The CLI's approval widget renders this as `Reason: <italic>` between the
-title and the tool-specific content, mirroring Codex's treatment.
+title and the tool-specific content.
 
 The reason is produced by a single extra model call per interrupting batch
-(approach "b" in langchain-ai/deepagents#1374): no upstream tool-schema or
-`ActionRequest` changes are required, and the justification stays isolated to
-the CLI. The call is tagged with `lc_source="reason"` so the Textual adapter
-filters it out of the streamed transcript.
+(approach "b" in langchain-ai/deepagents#1374): every reason-flagged tool call
+in a batch shares one call, no upstream tool-schema or `ActionRequest` changes
+are required, and the justification stays isolated to the CLI. The call is
+tagged with `lc_source="reason"` so the Textual adapter filters it out of the
+streamed transcript.
+
+The model call is synchronous and runs inside `after_model`, so it briefly
+blocks before the approval interrupt is raised. It is deliberately not offloaded
+to a thread: `interrupt()` and its surrounding control flow must run on the
+graph's own task, and the user is about to be blocked on the approval prompt
+regardless, so the short delay is acceptable.
 
 Which tools receive a reason is configured per tool via a `reason: True` flag
 on the `InterruptOnConfig`; tools without it behave exactly as before.
@@ -91,30 +98,16 @@ class ReasonInterruptMiddleware(HumanInTheLoopMiddleware):
             model: Chat model used to generate reasons.
             description_prefix: Forwarded to `HumanInTheLoopMiddleware`.
         """
-        self._reason_tools = {
+        self._reason_tools: frozenset[str] = frozenset(
             name
             for name, cfg in interrupt_on.items()
             if isinstance(cfg, dict) and cfg.get("reason")
-        }
+        )
         super().__init__(
             interrupt_on=interrupt_on,
             description_prefix=description_prefix,
         )
         self._reason_model = model
-
-    def _create_action_and_config(
-        self,
-        tool_call: ToolCall,
-        config: InterruptOnConfig,
-        state: AgentState[Any],
-        runtime: Runtime[Any],
-    ) -> tuple[ActionRequest, ReviewConfig]:
-        """Create an action request and review config.
-
-        Returns:
-            The `(ActionRequest, ReviewConfig)` pair.
-        """
-        return super()._create_action_and_config(tool_call, config, state, runtime)
 
     def after_model(
         self, state: AgentState[Any], runtime: Runtime[Any]
@@ -275,7 +268,10 @@ class ReasonInterruptMiddleware(HumanInTheLoopMiddleware):
                 config={"metadata": {"lc_source": REASON_LC_SOURCE}},
             )
         except Exception:  # reason is best-effort; never block approval
-            logger.debug("Reason generation failed", exc_info=True)
+            # Broad catch: provider exceptions (auth, network, rate-limit,
+            # timeout) share no common base. WARNING, not DEBUG, so a persistent
+            # failure (e.g. a rejected API key) is diagnosable rather than silent.
+            logger.warning("Reason generation failed", exc_info=True)
             return None
         return _clean_reason(response)
 

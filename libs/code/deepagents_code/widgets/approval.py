@@ -269,8 +269,8 @@ class ApprovalMenu(Container):
         yield Static(title, classes="approval-title")
 
         # Model-generated reason(s), shown between the title and the
-        # tool-specific content (matching Codex's treatment). Nothing is
-        # rendered when the model did not provide a reason.
+        # tool-specific content. Nothing is rendered when the model did not
+        # provide a reason.
         yield from self._compose_reasons()
 
         if self._security_warnings:

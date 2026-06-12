@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages.tool import ToolCall
 
 from deepagents_code.reason_interrupt import (
     _MAX_REASON_CHARS,
+    _REASON_SYSTEM_PROMPT,
     ReasonInterruptMiddleware,
     _clean_reason,
 )
@@ -207,6 +208,89 @@ class TestReasonAttachment:
         actions = captured["request"]["action_requests"]
         assert "reason" not in actions[0]
 
+    def test_only_flagged_tool_in_mixed_batch_gets_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In a mixed batch, only the reason-flagged tool receives a reason."""
+        interrupt_on = cast(
+            "dict[str, bool | InterruptOnConfig]",
+            {
+                "execute": {"allowed_decisions": ["approve", "reject"], "reason": True},
+                "write_file": {"allowed_decisions": ["approve", "reject"]},
+            },
+        )
+        mw = ReasonInterruptMiddleware(
+            interrupt_on, model=_model("Run the command to apply the change.")
+        )
+        state = _state(
+            [
+                HumanMessage(content="run it and save"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        _tool_call("execute", call_id="1", command="pytest"),
+                        _tool_call("write_file", call_id="2", file_path="x"),
+                    ],
+                ),
+            ]
+        )
+        captured: dict[str, Any] = {}
+
+        def interrupt(request: dict[str, Any]) -> dict[str, Any]:
+            captured["request"] = request
+            return {"decisions": [{"type": "approve"}, {"type": "approve"}]}
+
+        monkeypatch.setattr("deepagents_code.reason_interrupt.interrupt", interrupt)
+        mw.after_model(state, _runtime())
+
+        actions = captured["request"]["action_requests"]
+        # Action requests preserve tool-call order: execute first, write_file second.
+        assert actions[0]["name"] == "execute"
+        assert actions[0]["reason"] == "Run the command to apply the change."
+        assert "reason" not in actions[1]
+
+
+class TestBuildPrompt:
+    """Tests for `ReasonInterruptMiddleware._build_prompt`."""
+
+    def test_includes_system_prompt_and_most_recent_human(self) -> None:
+        """The prompt leads with the system message and uses the latest human."""
+        state = _state(
+            [
+                HumanMessage(content="first, stale request"),
+                AIMessage(content="working on it"),
+                HumanMessage(content="actually, run the tests"),
+            ]
+        )
+        messages = ReasonInterruptMiddleware._build_prompt([_tool_call()], state)
+
+        assert isinstance(messages[0], SystemMessage)
+        assert messages[0].content == _REASON_SYSTEM_PROMPT
+        joined = "\n".join(str(m.content) for m in messages)
+        assert "actually, run the tests" in joined
+        assert "first, stale request" not in joined
+
+    def test_handles_state_without_human_message(self) -> None:
+        """A state with no `HumanMessage` yields system + instruction, no raise."""
+        state = _state([AIMessage(content="no human turn yet")])
+        messages = ReasonInterruptMiddleware._build_prompt([_tool_call()], state)
+
+        assert len(messages) == 2  # system prompt + final instruction
+        assert isinstance(messages[0], SystemMessage)
+
+    def test_lists_every_tool_call(self) -> None:
+        """Each tool call in the batch appears in the final instruction."""
+        state = _state([HumanMessage(content="go")])
+        tool_calls = [
+            _tool_call("execute", call_id="1", command="pytest"),
+            _tool_call("task", call_id="2", description="inspect"),
+        ]
+        messages = ReasonInterruptMiddleware._build_prompt(tool_calls, state)
+
+        final = str(messages[-1].content)
+        assert "execute" in final
+        assert "task" in final
+
 
 class TestCleanReason:
     """Tests for `_clean_reason`."""
@@ -225,3 +309,27 @@ class TestCleanReason:
         assert cleaned is not None
         assert len(cleaned) == _MAX_REASON_CHARS
         assert cleaned.endswith("\u2026")
+
+    def test_exact_max_length_not_truncated(self) -> None:
+        """Text of exactly the cap length is kept verbatim, no ellipsis."""
+        cleaned = _clean_reason(AIMessage(content="x" * _MAX_REASON_CHARS))
+        assert cleaned == "x" * _MAX_REASON_CHARS
+        assert not cleaned.endswith("\u2026")
+
+    def test_one_over_max_is_truncated(self) -> None:
+        """A single char over the cap triggers truncation to the cap length."""
+        cleaned = _clean_reason(AIMessage(content="x" * (_MAX_REASON_CHARS + 1)))
+        assert cleaned is not None
+        assert len(cleaned) == _MAX_REASON_CHARS
+        assert cleaned.endswith("\u2026")
+
+    def test_truncation_rstrips_before_ellipsis(self) -> None:
+        """Trailing whitespace at the cut point is stripped before the ellipsis."""
+        # The space lands inside the kept prefix so the cut would otherwise leave
+        # "<...> \u2026"; rstrip must remove it first.
+        text = "a" * (_MAX_REASON_CHARS - 2) + " " + "b" * 10
+        cleaned = _clean_reason(AIMessage(content=text))
+        assert cleaned is not None
+        assert cleaned.endswith("\u2026")
+        assert not cleaned.endswith(" \u2026")
+        assert len(cleaned) < _MAX_REASON_CHARS

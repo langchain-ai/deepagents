@@ -239,9 +239,10 @@ class FilesystemBackend(BackendProtocol):
 
         In `virtual_mode`, surfacing the resolved on-disk path would defeat the
         virtual-path abstraction (and leak `root_dir`), so convert to the virtual
-        form; fall back to the bare name if that conversion fails (e.g., the path
-        escaped the root or could not be resolved). In non-virtual mode the real
-        path is already the caller's own, so return it unchanged.
+        form; fall back to the bare name (or `/` for a root path with no name
+        component) if that conversion fails (e.g., the path escaped the root or
+        could not be resolved). In non-virtual mode the real path is already the
+        caller's own, so return it unchanged.
 
         Args:
             path: Filesystem path to render.
@@ -254,7 +255,7 @@ class FilesystemBackend(BackendProtocol):
         try:
             return self._to_virtual_path(path)
         except (ValueError, OSError, RuntimeError):
-            return path.name
+            return path.name or "/"
 
     def ls(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).

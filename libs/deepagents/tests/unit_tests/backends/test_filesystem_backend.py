@@ -960,6 +960,33 @@ def test_grep_virtual_mode_sanitizes_runtime_error_details(tmp_path: Path, monke
     assert result.matches
 
 
+def test_grep_virtual_mode_sanitizes_oserror_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Virtual grep fallback strips the real path embedded in a mid-walk `OSError`.
+
+    A realistic `rglob` failure (an entry unlinked mid-walk) raises an `OSError`
+    whose `str()` embeds the absolute filename. The agent-visible error must
+    carry only the path-free `strerror` reason, never the real path.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    gone = str(root / "gone.txt")
+    _install_flaky_rglob(monkeypatch, FileNotFoundError(2, "No such file or directory", gone))
+
+    result = be.grep("hello", path="/")
+
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert "No such file or directory" in result.error  # path-free reason survives
+    assert str(root) not in result.error  # real root must not leak
+    assert "gone.txt" not in result.error  # embedded filename must not leak
+    assert result.matches
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 
@@ -983,6 +1010,38 @@ class TestToVirtualPath:
         be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
         with pytest.raises(ValueError, match="is not in the subpath of"):
             be._to_virtual_path(tmp_path / "outside.txt")
+
+
+class TestDisplayPath:
+    """Tests for FilesystemBackend._display_path."""
+
+    def test_non_virtual_returns_real_path(self, tmp_path: Path) -> None:
+        """Non-virtual mode returns the real path unchanged."""
+        target = tmp_path / "src" / "file.py"
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        assert be._display_path(target) == str(target)
+
+    def test_virtual_returns_virtual_path(self, tmp_path: Path) -> None:
+        """Virtual mode converts to the virtual path."""
+        (tmp_path / "src").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        assert be._display_path(tmp_path / "src" / "file.py") == "/src/file.py"
+
+    def test_virtual_out_of_root_falls_back_to_basename(self, tmp_path: Path) -> None:
+        """A path outside the root makes `_to_virtual_path` raise; only the basename is shown."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        result = be._display_path(tmp_path / "secret" / "leak.txt")
+        assert result == "leak.txt"  # bare name only
+        assert str(tmp_path) not in result  # parent chain / real root absent
+
+    def test_virtual_root_path_falls_back_to_slash(self, tmp_path: Path) -> None:
+        """A root path (empty `.name`) falls back to `/`, not an empty string."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        assert be._display_path(Path("/")) == "/"
 
 
 class TestWindowsPathHandling:
@@ -1082,8 +1141,9 @@ class TestGrepPythonFallbackTimeout:
         _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
         assert partial_error is not None
         assert "timed out" in partial_error
-        # The real `root_dir` must not leak into the agent-visible error.
+        # The real `root_dir` must not leak; the virtual root (`/.`) is shown.
         assert str(tmp_path) not in partial_error
+        assert "Grep of '/.'" in partial_error
 
     def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
         """The Python fallback does literal substring matching (no regex)."""
@@ -1130,6 +1190,7 @@ class TestGrepPythonFallbackTimeout:
         assert partial_error is not None
         assert "timed out" in partial_error
         assert str(tmp_path) not in partial_error  # virtual mode must not leak the real root
+        assert "Grep of '/.'" in partial_error  # the virtual root is shown instead
         collected = results.get("/big.txt", [])
         assert (1, "needle") in collected
         assert all(line_num != 2500 for line_num, _ in collected)

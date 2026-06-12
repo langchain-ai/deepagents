@@ -1,0 +1,23 @@
+libs/deepagents/tests/benchmarks/test_benchmark_summarization_middleware.py
+  s_4b1796c7a7a0c6::t_42ca8852eea126 28,43
+  s_4b1796c7a7a0c6::t_f2331b98ff622e 169
+  s_4b1796c7a7a0c6::t_671ea95a781e8d 117,122
+  s_4b1796c7a7a0c6::t_5b9a9476dae567 104
+  s_4b1796c7a7a0c6::t_37ce3767f0bcf5 1-27,29-42,44-103,105-116,118-121,123-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "3982d7ebc3504e158da86786a447e6ba9dc88117",
+  "prompts": {},
+  "sessions": {
+    "s_4b1796c7a7a0c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3238303d-b938-4585-b911-91a45499120f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

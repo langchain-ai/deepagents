@@ -45,7 +45,7 @@ curl -L -o chinook.db https://github.com/lerocha/chinook-database/raw/master/Chi
 # Using uv (recommended)
 uv venv --python 3.11
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv add --editable .
+uv sync
 ```
 
 1. Set up your environment variables:
@@ -259,8 +259,7 @@ View your traces at: <https://smith.langchain.com/>
 - [LangChain](https://www.langchain.com/)
 - [Claude Sonnet 4.5](https://www.anthropic.com/claude)
 - [Chinook Database](https://github.com/lerocha/chinook-database)
-
-- [LangChain Academy](https://academy.langchain.com/) – Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ## License

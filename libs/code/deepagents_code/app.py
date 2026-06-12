@@ -8628,6 +8628,7 @@ class DeepAgentsApp(App):
         """
         if self._chat_input is None:
             return
+        self._chat_input._notify_app_focus()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
         if isinstance(self.screen, ModalScreen):
             return
@@ -8644,6 +8645,7 @@ class DeepAgentsApp(App):
         """
         if self._chat_input is None:
             return
+        self._chat_input._notify_app_blur()
         self._chat_input.set_cursor_blink(blink=False)
 
     def on_click(self, event: Click) -> None:

@@ -2927,3 +2927,86 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestExecuteTaskTextualDuplicateTextBlocks:
+    """Regression tests for Responses API emitting [text, reasoning, text]."""
+
+    async def test_duplicate_text_blocks_separated_by_reasoning_are_deduped(
+        self,
+    ) -> None:
+        """Identical text blocks split by a reasoning block must not duplicate."""
+        phrase = "Plan above. Does this look good?"
+        message = SimpleNamespace(
+            content_blocks=[
+                {"type": "text", "text": phrase},
+                {"type": "reasoning", "reasoning": ""},
+                {"type": "text", "text": phrase},
+            ]
+        )
+        chunks = [((), "messages", (message, {}))]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        appended = "".join(
+            call.args[0] for call in fake_msg.append_content.call_args_list
+        )
+        assert appended.count(phrase) == 1, (
+            f"Expected phrase exactly once; got {appended!r}"
+        )
+
+    async def test_distinct_text_blocks_separated_by_reasoning_preserved(
+        self,
+    ) -> None:
+        """Two distinct text blocks with reasoning between them are both kept."""
+        message = SimpleNamespace(
+            content_blocks=[
+                {"type": "text", "text": "A"},
+                {"type": "reasoning", "reasoning": ""},
+                {"type": "text", "text": "B"},
+            ]
+        )
+        chunks = [((), "messages", (message, {}))]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        appended = "".join(
+            call.args[0] for call in fake_msg.append_content.call_args_list
+        )
+        assert appended == "AB", (
+            f"Expected both text blocks preserved; got {appended!r}"
+        )

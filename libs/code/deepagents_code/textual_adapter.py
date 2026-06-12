@@ -504,6 +504,7 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
+    last_text_by_namespace: dict[tuple, str] = {}
 
     # Clear media from tracker after creating the message
     if image_tracker:
@@ -805,10 +806,17 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                # Skip verbatim duplicate text block (e.g.
+                                # OpenAI Responses API emits [text, reasoning,
+                                # text] with the same text repeated).
+                                last_text = last_text_by_namespace.get(ns_key, "")
+                                if text.strip() and text.strip() == last_text.strip():
+                                    continue
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
                                 pending_text_by_namespace[ns_key] = pending_text
+                                last_text_by_namespace[ns_key] = text
 
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)

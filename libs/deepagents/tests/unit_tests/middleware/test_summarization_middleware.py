@@ -2604,3 +2604,81 @@ class TestTokenCountingEfficiency:
 
         assert captured_request is not None  # Handler ran; nothing was summarized.
         assert calls["count"] == 1
+
+    def _make_truncating_counting_middleware(
+        self,
+    ) -> tuple[SummarizationMiddleware, dict[str, int]]:
+        """Middleware whose truncation trigger fires but summarization never does.
+
+        Truncating tool-call args shrinks the message set, so the count must be
+        refreshed afterward before the summarization check; this middleware
+        exercises that recount branch.
+        """
+        calls = {"count": 0}
+
+        def counting_token_counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            calls["count"] += 1
+            return 10  # Far below the summarization trigger: nothing is summarized.
+
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("messages", 100),  # High: no summarization.
+            token_counter=counting_token_counter,
+            truncate_args_settings={
+                "trigger": ("messages", 5),  # Low: truncation fires.
+                "keep": ("messages", 2),
+                "max_length": 100,
+            },
+        )
+        return middleware, calls
+
+    def _truncatable_state(self) -> "AgentState[Any]":
+        """A conversation whose old `write_file` arg is large enough to truncate."""
+        messages = [
+            AIMessage(
+                content="",
+                id="a1",
+                tool_calls=[
+                    {
+                        "id": "tc1",
+                        "name": "write_file",
+                        "args": {"file_path": "/test.txt", "content": "x" * 200},
+                    }
+                ],
+            ),
+            ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+            HumanMessage(content="Request 1", id="h1"),
+            AIMessage(content="Response 1", id="a2"),
+            HumanMessage(content="Request 2", id="h2"),
+            AIMessage(content="Response 2", id="a3"),
+        ]
+        return cast("AgentState[Any]", {"messages": messages})
+
+    def test_token_counter_recounts_when_truncation_modifies_messages(self) -> None:
+        middleware, calls = self._make_truncating_counting_middleware()
+
+        _, captured_request = call_wrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        # Truncation changed the message set, so the count is refreshed:
+        # once before truncation, once after.
+        assert calls["count"] == 2
+        # Confirm the modify path was genuinely taken (not a vacuous recount).
+        first_ai = captured_request.messages[0]
+        assert isinstance(first_ai, AIMessage)
+        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+    async def test_token_counter_recounts_when_truncation_modifies_messages_async(self) -> None:
+        middleware, calls = self._make_truncating_counting_middleware()
+
+        _, captured_request = await call_awrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        # Truncation changed the message set, so the count is refreshed:
+        # once before truncation, once after.
+        assert calls["count"] == 2
+        # Confirm the modify path was genuinely taken (not a vacuous recount).
+        first_ai = captured_request.messages[0]
+        assert isinstance(first_ai, AIMessage)
+        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"

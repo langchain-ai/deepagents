@@ -717,7 +717,17 @@ A condensed summary follows:
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
     ) -> int:
-        """Count tokens for messages plus optional system message and tools."""
+        """Count tokens for messages plus optional system message and tools.
+
+        Args:
+            messages: Messages to count.
+            system_message: Optional system message prepended before counting.
+            tools: Optional tools whose schemas contribute to the count.
+
+        Returns:
+            Total token count. Falls back to counting without `tools` when the
+                configured `token_counter` does not accept a `tools` keyword.
+        """
         counted_messages = [system_message, *messages] if system_message is not None else messages
         try:
             return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]

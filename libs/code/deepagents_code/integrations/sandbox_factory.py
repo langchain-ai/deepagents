@@ -76,6 +76,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
     console.print(f"[green]{get_glyphs().checkmark} Setup complete[/green]")
 
+
 @contextmanager
 def create_sandbox(
     provider: str,
@@ -855,7 +856,7 @@ _VERCEL_TERMINAL_STATUSES = {"aborted", "failed", "stopped"}
 
 
 class _VercelSandboxHandle(Protocol):
-    """Minimal Vercel SDK sandbox surface used by the Phase 2 provider."""
+    """Minimal Vercel SDK sandbox surface used by the built-in provider."""
 
     sandbox_id: str
     status: object

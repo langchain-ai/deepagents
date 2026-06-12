@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 NON_ZERO_EXIT_CODE = 7
 TIMEOUT_EXIT_CODE = 124
+DEFAULT_TIMEOUT = 42
+EXPLICIT_TIMEOUT = 7
 
 
 class _Command:
@@ -71,6 +73,10 @@ class _Sandbox:
 
     def as_backend(self) -> VercelSandbox:
         return VercelSandbox(sandbox=cast("Sandbox", self))
+
+
+def _wait_immediately(cmd: _Command, _timeout: int, _started_at: float) -> _Command:
+    return cmd.wait()
 
 
 def test_id_returns_sandbox_id() -> None:
@@ -138,6 +144,38 @@ def test_execute_waits_until_complete() -> None:
     assert result.output == "done"
     assert result.exit_code == 0
     wait.assert_called_once_with()
+
+
+def test_execute_uses_default_timeout() -> None:
+    sandbox = _Sandbox()
+    backend = VercelSandbox(
+        sandbox=cast("Sandbox", sandbox),
+        timeout=DEFAULT_TIMEOUT,
+    )
+
+    with patch(
+        "langchain_vercel_sandbox.sandbox._wait_for_command",
+        wraps=_wait_immediately,
+    ) as wait:
+        backend.execute("echo done")
+
+    assert wait.call_args.args[1] == DEFAULT_TIMEOUT
+
+
+def test_execute_uses_explicit_timeout() -> None:
+    sandbox = _Sandbox()
+    backend = VercelSandbox(
+        sandbox=cast("Sandbox", sandbox),
+        timeout=DEFAULT_TIMEOUT,
+    )
+
+    with patch(
+        "langchain_vercel_sandbox.sandbox._wait_for_command",
+        wraps=_wait_immediately,
+    ) as wait:
+        backend.execute("echo done", timeout=EXPLICIT_TIMEOUT)
+
+    assert wait.call_args.args[1] == EXPLICIT_TIMEOUT
 
 
 def test_upload_files_rejects_relative_paths_and_preserves_order() -> None:

@@ -1014,6 +1014,11 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
+        # Sandbox SDK credential overrides are read directly by the provider.
+        # They are not persisted through `dcode config`.
+        _env_vars.VERCEL_PROJECT_ID,
+        _env_vars.VERCEL_TEAM_ID,
+        _env_vars.VERCEL_TOKEN,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

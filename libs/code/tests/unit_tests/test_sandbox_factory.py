@@ -11,6 +11,7 @@ import pytest
 from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
     _get_provider,
+    _VercelProvider,
     create_sandbox,
     get_default_working_dir,
     verify_sandbox_deps,
@@ -631,7 +632,7 @@ class TestVercelProvider:
 
         provider = _get_provider("vercel")
 
-        assert provider is not None
+        assert isinstance(provider, _VercelProvider)
 
     def test_get_or_create_raises_helpful_error_for_missing_backend(
         self,
@@ -859,6 +860,70 @@ class TestVercelProvider:
             provider.get_or_create()
 
         sandbox.stop.assert_called_once_with()
+
+    def test_readiness_timeout_is_actionable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Startup timeouts include the sandbox id, timeout, and current state."""
+        self._clear_vercel_env(monkeypatch)
+        provider = _get_provider("vercel")
+        sandbox = MagicMock(sandbox_id="sb_123", status="pending")
+        sandbox.wait_for_status.side_effect = TimeoutError
+        vercel_sdk = MagicMock()
+        vercel_sdk.Sandbox.create.return_value = sandbox
+        vercel_backend = MagicMock()
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "vercel.sandbox":
+                return vercel_sdk
+            return vercel_backend
+
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_factory._import_provider_module",
+                side_effect=fake_import,
+            ),
+            pytest.raises(
+                RuntimeError,
+                match=(
+                    "Vercel sandbox sb_123 failed to start within 12 seconds; "
+                    "current status is 'pending'"
+                ),
+            ),
+        ):
+            provider.get_or_create(timeout=12)
+
+        sandbox.wait_for_status.assert_called_once_with("running", timeout=12)
+        sandbox.stop.assert_called_once_with()
+
+    def test_attached_terminal_sandbox_is_not_stopped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed attached sandbox remains owned by the caller."""
+        self._clear_vercel_env(monkeypatch)
+        provider = _get_provider("vercel")
+        sandbox = MagicMock(sandbox_id="sb_existing", status="stopped")
+        vercel_sdk = MagicMock()
+        vercel_sdk.Sandbox.get.return_value = sandbox
+        vercel_backend = MagicMock()
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "vercel.sandbox":
+                return vercel_sdk
+            return vercel_backend
+
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_factory._import_provider_module",
+                side_effect=fake_import,
+            ),
+            pytest.raises(RuntimeError, match="terminal state 'stopped'"),
+        ):
+            provider.get_or_create(sandbox_id="sb_existing")
+
+        sandbox.stop.assert_not_called()
 
 
 class TestLangSmithSnapshotResolution:

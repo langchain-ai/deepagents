@@ -246,10 +246,9 @@ class ContextHubBackend(BackendProtocol):
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
 
-        try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return GrepResult(error=f"Invalid regex pattern: {e}")
+        # The grep contract is a literal text pattern (see BackendProtocol.grep);
+        # escape so metacharacters in the query match themselves.
+        regex = re.compile(re.escape(pattern))
 
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 

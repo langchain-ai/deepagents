@@ -303,11 +303,19 @@ def test_grep_with_path_prefix() -> None:
     assert paths == {"/memories/a.md"}
 
 
-def test_grep_invalid_regex() -> None:
-    backend, _ = _make_backend()
-    result = backend.grep("[unclosed")
-    assert result.error is not None
-    assert "Invalid regex" in result.error
+def test_grep_literal_special_chars() -> None:
+    backend, _ = _make_backend(
+        **{
+            "code.py": FileEntry(type="file", content="def __init__(self):\n    pat = '[unclosed'\n    api_key = 1"),
+        }
+    )
+    # Metacharacters match themselves (grep takes a literal pattern).
+    for pattern, line in [("def __init__(", 1), ("[unclosed", 2)]:
+        result = backend.grep(pattern)
+        assert result.error is None
+        assert [m["line"] for m in result.matches] == [line]
+    # Dot is not a regex wildcard: 'api.key' must not match 'api_key'.
+    assert backend.grep("api.key").matches == []
 
 
 def test_glob_matches_pattern() -> None:

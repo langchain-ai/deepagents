@@ -1,0 +1,60 @@
+libs/evals/tests/unit_tests/test_infra.py
+  s_cbbb2483868c30::t_06d478b5368503 413-420
+  s_cbbb2483868c30::t_e737ecdfd702ef 448-453
+  s_cbbb2483868c30::t_3dd8001fcc92c1 464-469
+  s_cbbb2483868c30::t_f3b2f096587570 432-437
+  s_cbbb2483868c30::t_9f2022648b9d90 385-391,395,400-406
+libs/evals/tests/evals/llm_judge.py
+  s_560c2a08b01021::t_e1ea6361460db9 16,26,176-180
+  s_cbbb2483868c30::t_d4c3b595345dbd 169-172
+libs/evals/scripts/analyze.py
+  s_cbbb2483868c30::t_13a7ce34fb5261 202-209
+  s_cbbb2483868c30::t_b4c611de99fe38 63-72,75-77,79-88,93-105,114
+  s_cbbb2483868c30::t_8cae4e27f5a6fc 172-173
+libs/evals/tests/unit_tests/test_analyze.py
+  s_cbbb2483868c30::t_d0d35b12d190be 21
+  s_cbbb2483868c30::t_0c5bac996a99c1 176
+  s_cbbb2483868c30::t_7ea716bf02c9e5 44
+  s_cbbb2483868c30::t_a6dd097cd11f46 1-20,22-43,45-175,177-253
+libs/evals/deepagents_harbor/metadata.py
+  s_cbbb2483868c30::t_f040fdc7fc358a 107-108
+libs/evals/tests/unit_tests/test_langsmith.py
+  s_cbbb2483868c30::t_77fb7f172b0cad 286-318,320-323,325-326,329-335,337-346,348-355,359-365,367-373,375-381,383-390,392-418,421-424,427-430,433-442,444-459
+  s_cbbb2483868c30::t_c9cd742ab46114 336,347,366,374,382,391
+  s_cbbb2483868c30::t_c455899d42c12f 356-358
+  s_cbbb2483868c30::t_5b9be4bb0de033 6,16-17
+  s_cbbb2483868c30::t_a2ac10c17e1bc5 419-420,425-426,431-432
+  s_cbbb2483868c30::t_3ce8082724ec2d 319,324,327-328
+  s_cbbb2483868c30::t_7437ff2d969dc3 443
+libs/evals/deepagents_harbor/langsmith.py
+  s_cbbb2483868c30::t_17cdf00476beab 663-667,669-671
+libs/evals/tests/unit_tests/test_llm_judge.py
+  s_560c2a08b01021::t_a0a066c22e2835 5,12-14
+  s_560c2a08b01021::t_9222a15d878148 29
+  s_cbbb2483868c30::t_1288a66cde127d 25
+  s_560c2a08b01021::t_e1ea6361460db9 1-4,6-11,15-24,26-28,30-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "e32c0a7a319fdce9e6f6ed7033ff198b31057a8a",
+  "prompts": {},
+  "sessions": {
+    "s_560c2a08b01021": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb94f-c461-7770-9e08-1f5a7b5c0a7f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_cbbb2483868c30": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0901f3a6-f415-44e8-860c-d3a3d5ab12b5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

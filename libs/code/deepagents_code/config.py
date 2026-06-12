@@ -552,6 +552,9 @@ ASCII_GLYPHS = Glyphs(
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
 
+_charset_mode_cache: CharsetMode | None = None
+"""Module-level cache for the detected charset mode."""
+
 _editable_cache: tuple[bool, str | None] | None = None
 """Module-level cache for editable install info: (is_editable, source_path)."""
 
@@ -624,7 +627,20 @@ def _get_editable_install_path() -> str | None:
 
 
 def _detect_charset_mode() -> CharsetMode:
-    """Auto-detect terminal charset capabilities.
+    """Auto-detect terminal charset capabilities (cached for the process).
+
+    Returns:
+        The detected CharsetMode based on environment and terminal encoding.
+    """
+    global _charset_mode_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    if _charset_mode_cache is not None:
+        return _charset_mode_cache
+    _charset_mode_cache = _compute_charset_mode()
+    return _charset_mode_cache
+
+
+def _compute_charset_mode() -> CharsetMode:
+    """Compute terminal charset capabilities from environment and encoding.
 
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
@@ -663,9 +679,10 @@ def get_glyphs() -> Glyphs:
 
 
 def reset_glyphs_cache() -> None:
-    """Reset the glyphs cache (for testing)."""
-    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """Reset the glyphs and charset-mode caches (for testing)."""
+    global _glyphs_cache, _charset_mode_cache  # noqa: PLW0603  # Module-level caches require global statement
     _glyphs_cache = None
+    _charset_mode_cache = None
 
 
 def is_ascii_mode() -> bool:

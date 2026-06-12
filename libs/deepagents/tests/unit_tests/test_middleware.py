@@ -1,3 +1,4 @@
+import base64
 import mimetypes
 import time
 from unittest.mock import patch
@@ -1424,7 +1425,7 @@ class TestFilesystemMiddleware:
             def read(self, path, *, offset=0, limit=100):
                 return ReadResult(
                     file_data={
-                        "content": "<base64_data>",
+                        "content": base64.b64encode(b"image bytes").decode(),
                         "encoding": "base64",
                     }
                 )
@@ -1451,7 +1452,46 @@ class TestFilesystemMiddleware:
         assert isinstance(result.content, list)
         assert result.content[0]["type"] == "image"
         assert result.content[0]["mime_type"] == "image/png"
-        assert result.content[0]["base64"] == "<base64_data>"
+        assert result.content[0]["base64"] == base64.b64encode(b"image bytes").decode()
+
+    @pytest.mark.parametrize(
+        ("content", "expected_error"),
+        [
+            pytest.param("not valid base64!", "valid base64", id="invalid-base64"),
+            pytest.param(base64.b64encode(b"").decode(), "empty", id="empty-decoded-bytes"),
+            pytest.param(base64.b64encode(b"x" * (5 * 1024 * 1024 + 1)).decode(), "exceeds", id="oversized-image"),
+        ],
+    )
+    def test_read_file_image_returns_error_for_invalid_payloads(self, content, expected_error):
+        """Image reads must reject payloads providers cannot accept (#3864)."""
+
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": content,
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="img-read-invalid",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert isinstance(result.content, str)
+        assert expected_error in result.content
 
     def test_read_file_base64_unknown_extension_returns_file_block(self):
         """Binary reads route on `encoding`, not the extension map (#3657).

@@ -2,6 +2,8 @@
 # ruff: noqa: E501
 
 import asyncio
+import base64
+import binascii
 import concurrent.futures
 import contextlib
 import contextvars
@@ -73,6 +75,7 @@ from deepagents.middleware._utils import append_to_system_message
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 _SYNC_GLOB_WORKERS = 4
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 FilesystemOperation = Literal["read", "write"]
 
@@ -152,6 +155,21 @@ def _filter_paths_by_permission(
     if not rules:
         return paths
     return [p for p in paths if _check_fs_permission(rules, operation, p) != "deny"]
+
+
+def _validate_image_payload(content: str, path: str) -> str | None:
+    try:
+        decoded = base64.b64decode(content, validate=True)
+    except (binascii.Error, ValueError):
+        return f"Error: image file '{path}' did not contain valid base64 data"
+
+    if not decoded:
+        return f"Error: image file '{path}' decoded to empty content"
+
+    if len(decoded) > _MAX_IMAGE_BYTES:
+        return f"Error: image file '{path}' exceeds the {_MAX_IMAGE_BYTES} byte limit"
+
+    return None
 
 
 def _all_paths_scoped_to_routes(
@@ -984,17 +1002,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            if read_result.error:
+            if read_result.error or read_result.file_data is None:
+                error = f"Error: {read_result.error}" if read_result.error else f"Error: no data returned for '{validated_path}'"
                 return ToolMessage(
-                    content=f"Error: {read_result.error}",
-                    name="read_file",
-                    tool_call_id=tool_call_id,
-                    status="error",
-                )
-
-            if read_result.file_data is None:
-                return ToolMessage(
-                    content=f"Error: no data returned for '{validated_path}'",
+                    content=error,
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="error",
@@ -1003,6 +1014,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_type = _get_file_type(validated_path)
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
+
+            if file_type == "image":
+                image_error = _validate_image_payload(content, validated_path)
+                if image_error:
+                    return ToolMessage(
+                        content=image_error,
+                        name="read_file",
+                        tool_call_id=tool_call_id,
+                        status="error",
+                    )
 
             # Empty files get a uniform warning regardless of encoding/type, so
             # check before routing to avoid a degenerate empty content block for

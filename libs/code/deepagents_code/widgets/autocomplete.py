@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from deepagents_code.project_utils import find_project_root
+
+logger = logging.getLogger(__name__)
 
 
 def _get_git_executable() -> str | None:
@@ -332,7 +335,7 @@ class SlashCommandController:
 
 
 # ============================================================================
-# Fuzzy File Completion (from project root)
+# Fuzzy File Completion (scoped to current working directory)
 # ============================================================================
 
 # Constants for fuzzy file completion
@@ -346,29 +349,69 @@ _MIN_FUZZY_RATIO = 0.4
 """SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
+def _run_git_ls_files(
+    git_path: str, root: Path, extra_args: list[str]
+) -> tuple[bool, list[str]]:
+    """Run `git ls-files` with the given arguments and return file paths.
+
+    Args:
+        git_path: Full path to the git executable.
+        root: Directory to run the command in.
+        extra_args: Flags appended after `ls-files`, e.g.
+            `["--others", "--exclude-standard"]`.
+
+    Returns:
+        Tuple of success status and relative file paths. Success is `False`
+            when git could not be run or exited non-zero, signalling the caller
+            to fall back to a glob walk.
+    """
+    try:
+        # S603: git_path validated via shutil.which(); ls-files args are
+        # caller-supplied literals.
+        result = subprocess.run(  # noqa: S603
+            [git_path, "ls-files", *extra_args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
+        return False, []
+    if result.returncode != 0:
+        logger.debug("git ls-files %s exited with %d", extra_args, result.returncode)
+        return False, []
+    return True, [f for f in result.stdout.strip().split("\n") if f]
+
+
 def _get_project_files(root: Path) -> list[str]:
     """Get project files using git ls-files or fallback to glob.
+
+    Includes both tracked files and untracked files that are not ignored
+    (via `--others --exclude-standard`), so freshly created files surface
+    in `@` completion without needing to be committed first.
 
     Returns:
         List of relative file paths from project root.
     """
     git_path = _get_git_executable()
     if git_path:
-        try:
-            # S603: git_path is validated via shutil.which(), args are hardcoded
-            result = subprocess.run(  # noqa: S603
-                [git_path, "ls-files"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
+        tracked_ok, tracked = _run_git_ls_files(git_path, root, [])
+        if tracked_ok:
+            # The untracked scan is optional; if it fails or times out, keep the
+            # already-successful tracked list rather than dropping to the glob
+            # fallback (which only walks a few levels deep).
+            _, untracked = _run_git_ls_files(
+                git_path, root, ["--others", "--exclude-standard"]
             )
-            if result.returncode == 0:
-                files = result.stdout.strip().split("\n")
-                return [f for f in files if f]  # Filter empty strings
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+            seen: set[str] = set()
+            files: list[str] = []
+            for f in (*tracked, *untracked):
+                if f not in seen:
+                    seen.add(f)
+                    files.append(f)
+            return files
 
     # Fallback: simple glob (limited depth to avoid slowness)
     files = []
@@ -382,7 +425,7 @@ def _get_project_files(root: Path) -> list[str]:
             if len(files) >= _MAX_FALLBACK_FILES:
                 break
     except OSError:
-        pass
+        logger.debug("glob fallback failed for %s", root, exc_info=True)
     return files
 
 
@@ -490,8 +533,35 @@ def _fuzzy_search(
     return [c for _, c in scored[:limit]]
 
 
+def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list[str]:
+    """Scope a project-root-relative file list to paths under `cwd`.
+
+    Args:
+        files: File paths relative to `project_root` (as produced by
+            `_get_project_files`).
+        project_root: Directory the `files` paths are relative to.
+        cwd: Directory to scope suggestions to.
+
+    Returns:
+        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. The input list
+        unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
+        not under `project_root`: the paths are project-root-relative and would
+        resolve to the wrong base from `cwd`, so fail closed rather than offer
+        misleading suggestions.
+    """
+    if cwd == project_root:
+        return files
+    try:
+        relative_cwd = cwd.relative_to(project_root).as_posix()
+    except ValueError:
+        return []
+    prefix = f"{relative_cwd}/"
+    return [path[len(prefix) :] for path in files if path.startswith(prefix)]
+
+
 class FuzzyFileController:
-    """Controller for @ file completion with fuzzy matching from project root."""
+    """Controller for @ file completion with fuzzy matching from current cwd."""
 
     def __init__(
         self,
@@ -502,10 +572,10 @@ class FuzzyFileController:
 
         Args:
             view: View to render suggestions to
-            cwd: Starting directory to find project root from
+            cwd: Current working directory for file completion scope
         """
         self._view = view
-        self._cwd = cwd or Path.cwd()
+        self._cwd = (cwd or Path.cwd()).resolve()
         self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
@@ -523,7 +593,8 @@ class FuzzyFileController:
             List of project file paths.
         """
         if self._file_cache is None:
-            self._file_cache = _get_project_files(self._project_root)
+            files = _get_project_files(self._project_root)
+            self._file_cache = _scope_files_to_cwd(files, self._project_root, self._cwd)
         return self._file_cache
 
     def refresh_cache(self) -> None:
@@ -541,8 +612,8 @@ class FuzzyFileController:
         root, which is a safe narrower scope.
         """
         self._cache_generation += 1
-        self._cwd = cwd
-        self._project_root = cwd
+        self._cwd = cwd.resolve()
+        self._project_root = self._cwd
         self._project_root_pending = True
         self._file_cache = None
         self.reset()
@@ -582,7 +653,7 @@ class FuzzyFileController:
         with contextlib.suppress(Exception):
             files = await asyncio.to_thread(_get_project_files, project_root)
             if generation == self._cache_generation:
-                self._file_cache = files
+                self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

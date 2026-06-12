@@ -409,6 +409,85 @@ def format_extras_status_plain(status: ExtrasStatus) -> str:
     return "\n".join(lines)
 
 
+CORE_DEPENDENCIES: tuple[str, ...] = (
+    "langchain",
+    "langchain-core",
+    "langgraph",
+    "langgraph-checkpoint",
+    "langgraph-prebuilt",
+    "langgraph-sdk",
+    "langsmith",
+)
+"""Core LangChain-ecosystem packages surfaced for editable installs.
+
+The deepagents SDK is reported separately by `/version`, so it is omitted
+here. These are the packages a local checkout is most likely to pin or
+override, so their resolved versions help diagnose editable environments.
+"""
+
+
+def get_core_dependency_versions() -> list[tuple[str, str | None]]:
+    """Return `(package, version)` pairs for the core ecosystem dependencies.
+
+    Returns:
+        One entry per package in `CORE_DEPENDENCIES`, in declaration order.
+            The version is `None` when the package is not installed.
+    """
+    versions: list[tuple[str, str | None]] = []
+    for name in CORE_DEPENDENCIES:
+        try:
+            versions.append((name, pkg_version(name)))
+        except PackageNotFoundError:
+            versions.append((name, None))
+    return versions
+
+
+def format_core_dependencies_plain() -> str:
+    """Render core ecosystem dependency versions as column-aligned plain text.
+
+    Suitable for stdout in non-interactive contexts (e.g. the `--version`
+    CLI flag) where a markdown renderer is unavailable.
+
+    Returns:
+        Multi-line string with a heading and one `package  version` row per
+            core dependency. Missing packages are reported as `not installed`.
+    """
+    rows = [
+        (name, version or "not installed")
+        for name, version in get_core_dependency_versions()
+    ]
+    package_width = max(len(name) for name, _ in rows)
+    lines = ["Core dependencies:"]
+    lines.extend(f"  {name.ljust(package_width)}  {version}" for name, version in rows)
+    return "\n".join(lines)
+
+
+def format_core_dependencies() -> str:
+    """Render core ecosystem dependency versions as a markdown fragment.
+
+    Returns:
+        Multi-line markdown string with a heading and a pipe table listing
+            each core package and its resolved version (or `not installed`).
+    """
+    rows = [
+        (name, version or "not installed")
+        for name, version in get_core_dependency_versions()
+    ]
+    headers = ("Package", "Version")
+
+    def _row(cells: tuple[str, str]) -> str:
+        return "| " + " | ".join(cells) + " |"
+
+    lines = [
+        "### Core dependencies",
+        "",
+        _row(headers),
+        "| " + " | ".join("---" for _ in headers) + " |",
+        *(_row(row) for row in rows),
+    ]
+    return "\n".join(lines)
+
+
 def format_extras_status(status: ExtrasStatus) -> str:
     """Render an `ExtrasStatus` mapping as a markdown fragment.
 

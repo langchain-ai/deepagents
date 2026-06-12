@@ -552,6 +552,9 @@ ASCII_GLYPHS = Glyphs(
 _glyphs_cache: Glyphs | None = None
 """Module-level cache for detected glyphs."""
 
+_charset_mode_cache: CharsetMode | None = None
+"""Module-level cache for the detected charset mode."""
+
 _editable_cache: tuple[bool, str | None] | None = None
 """Module-level cache for editable install info: (is_editable, source_path)."""
 
@@ -624,7 +627,20 @@ def _get_editable_install_path() -> str | None:
 
 
 def _detect_charset_mode() -> CharsetMode:
-    """Auto-detect terminal charset capabilities.
+    """Auto-detect terminal charset capabilities (cached for the process).
+
+    Returns:
+        The detected CharsetMode based on environment and terminal encoding.
+    """
+    global _charset_mode_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    if _charset_mode_cache is not None:
+        return _charset_mode_cache
+    _charset_mode_cache = _compute_charset_mode()
+    return _charset_mode_cache
+
+
+def _compute_charset_mode() -> CharsetMode:
+    """Compute terminal charset capabilities from environment and encoding.
 
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
@@ -663,9 +679,10 @@ def get_glyphs() -> Glyphs:
 
 
 def reset_glyphs_cache() -> None:
-    """Reset the glyphs cache (for testing)."""
-    global _glyphs_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """Reset the glyphs and charset-mode caches (for testing)."""
+    global _glyphs_cache, _charset_mode_cache  # noqa: PLW0603  # Module-level caches require global statement
     _glyphs_cache = None
+    _charset_mode_cache = None
 
 
 def is_ascii_mode() -> bool:
@@ -809,34 +826,25 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects dcode and SDK versions into `metadata["versions"]` so LangSmith traces
-    can be correlated with specific releases.
-
-    Why dcode sets *both* versions:
-
-    * `create_deep_agent` bakes `versions: {"deepagents": "X.Y.Z"}` into the
-        compiled graph via `with_config`. At stream time, LangGraph merges
-        the graph config with the runtime config passed here. Because the
-        metadata merge is shallow (effectively `{**graph_meta, **runtime_meta}`
-        for top-level keys), both configs containing a `versions` key means
-        the runtime dict **replaces** the graph dict entirely — the SDK
-        version would be lost.
-    * Including the SDK version here ensures it survives the merge.
+    Injects the dcode version into `metadata["versions"]` so LangSmith traces
+    can be correlated with specific releases. `create_deep_agent` supplies the
+    SDK version through the compiled graph config, and LangChain merges nested
+    metadata dictionaries so both versions survive at stream time.
 
     Includes `ls_integration` metadata so LangSmith traces originating from
     the app are distinguishable from bare SDK usage.
 
     Args:
         thread_id: The app session thread identifier.
-        assistant_id: The agent/assistant identifier, if any.
+        assistant_id: The dcode agent identifier, if any. When set, it is
+            surfaced in trace metadata under `dcode_agent_name` and
+            `agent_name`.
         sandbox_type: Sandbox provider name for trace metadata, or `None` if no
             sandbox is active.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    import contextlib
-    import importlib.metadata as importlib_metadata
     from datetime import UTC, datetime
 
     try:
@@ -845,13 +853,8 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    # Include SDK version alongside dcode version — see docstring for why.
-    versions: dict[str, str] = {"deepagents-code": __version__}
-    with contextlib.suppress(importlib_metadata.PackageNotFoundError):
-        versions["deepagents"] = importlib_metadata.version("deepagents")
-
     metadata: dict[str, Any] = {
-        "versions": versions,
+        "versions": {"deepagents-code": __version__},
         "ls_integration": "deepagents-code",
     }
     from deepagents_code._env_vars import USER_ID
@@ -864,7 +867,7 @@ def build_stream_config(
     if assistant_id:
         metadata.update(
             {
-                "assistant_id": assistant_id,
+                "dcode_agent_name": assistant_id,
                 "agent_name": assistant_id,
                 "updated_at": datetime.now(UTC).isoformat(),
             }

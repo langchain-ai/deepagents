@@ -590,11 +590,22 @@ class AssistantMessage(Vertical):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._pending_append = ""
         self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -648,7 +659,7 @@ class AssistantMessage(Vertical):
         """
         if not text:
             return
-        self._content += text
+        self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
             self._flush_timer = self.set_interval(

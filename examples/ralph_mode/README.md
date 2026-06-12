@@ -25,7 +25,7 @@ uv venv
 source .venv/bin/activate
 
 # Install the CLI
-uv add deepagents-cli
+uv pip install deepagents-cli
 
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
 curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
@@ -93,5 +93,5 @@ Supported providers: **AgentCore**, **Modal**, **Daytona**, **Runloop**.
 
 ## Resources
 
-- [LangChain Academy](https://academy.langchain.com/) – Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

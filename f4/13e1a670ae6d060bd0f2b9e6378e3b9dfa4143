@@ -1,0 +1,19 @@
+libs/deepagents/CHANGELOG.md
+  s_a8651e3d469689::t_23990dafb63f41 9,13-18,22-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "f413e1a670ae6d060bd0f2b9e6378e3b9dfa4143",
+  "prompts": {},
+  "sessions": {
+    "s_a8651e3d469689": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebdd8-0622-7a23-a4a5-301fc2f899a5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

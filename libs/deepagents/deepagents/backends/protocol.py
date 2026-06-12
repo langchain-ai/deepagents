@@ -617,7 +617,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a single file from the filesystem.
+        """Delete a path, recursively removing anything nested under it.
 
         This method is optional. Backends that do not implement it inherit this
         default, which raises `NotImplementedError`. Callers that need to support
@@ -625,16 +625,19 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         [`supports_delete`][deepagents.backends.protocol.supports_delete] before
         calling, or catch `NotImplementedError`.
 
-        Directories are not supported. Directory-based backends return an error for
-        directory paths; key-value backends treat `file_path` as an exact key.
+        Deletion is recursive: it removes `file_path` plus everything nested
+        under it. On hierarchical backends (e.g.
+        [`FilesystemBackend`][deepagents.backends.filesystem.FilesystemBackend])
+        that means a directory and its contents; on key-value backends it means
+        the exact key plus every key sharing the `file_path` + "/" prefix.
 
         Args:
-            file_path: Absolute path to the file to delete. Must start with '/'
-                and refer to a file, not a directory.
+            file_path: Absolute path to delete (a file, or a directory/prefix to
+                remove recursively). Must start with '/'.
 
         Returns:
-            `DeleteResult` with the deleted path on success, or an error if the
-                file does not exist or `file_path` refers to a directory.
+            `DeleteResult` with the deleted path on success, or an error if
+                nothing exists at or under the path or removal fails.
 
         Raises:
             NotImplementedError: If the backend does not implement `delete`.

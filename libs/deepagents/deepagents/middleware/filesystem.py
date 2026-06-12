@@ -54,6 +54,8 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _get_file_type,
+    _glob_anchor,
+    _paths_overlap,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -81,7 +83,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
-    "delete_file": "write",
+    "delete": "write",
 }
 
 
@@ -133,6 +135,32 @@ def _check_fs_permission(
         if any(wcglob.globmatch(path, pattern, flags=_FS_WCMATCH_FLAGS) for pattern in rule.paths):
             return rule.mode
     return "allow"
+
+
+def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Return deny-write patterns that block deleting `target`.
+
+    A recursive delete removes `target` and all descendants, so any overlapping
+    deny-write pattern prevents the operation. The check is based only on
+    permission rules and returns all matching patterns.
+
+    Args:
+        rules: Filesystem permission rules.
+        target: Absolute, validated path being deleted.
+
+    Returns:
+        Matching deny-write patterns, or an empty list if the delete is allowed.
+    """
+    denying: list[str] = []
+    seen: set[str] = set()
+    for rule in rules:
+        if rule.mode != "deny" or "write" not in rule.operations:
+            continue
+        for pattern in rule.paths:
+            if pattern not in seen and _paths_overlap(target, _glob_anchor(pattern)):
+                seen.add(pattern)
+                denying.append(pattern)
+    return denying
 
 
 def _filter_paths_by_permission(
@@ -361,8 +389,8 @@ class EditFileSchema(BaseModel):
     )
 
 
-class DeleteFileSchema(BaseModel):
-    """Input schema for the `delete_file` tool."""
+class DeleteSchema(BaseModel):
+    """Input schema for the `delete` tool."""
 
     file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
 
@@ -441,11 +469,13 @@ Usage:
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
-DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+DELETE_TOOL_DESCRIPTION = """Deletes a file or directory from the filesystem.
 
 Usage:
-- Permanently removes the file at the given absolute path.
-- This cannot be undone, so only delete files you are sure are no longer needed.
+- Permanently removes the file or directory at the given absolute path.
+- Deleting a directory removes it and everything inside it, recursively. Prefer
+  deleting a directory in one call over deleting each file individually.
+- This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -519,7 +549,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -528,7 +558,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
-- delete_file: delete a file from the filesystem
+- delete: delete a file or directory (recursively) from the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -598,7 +628,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
-    "delete_file",
+    "delete",
 )
 
 
@@ -791,7 +821,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_read_file_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
-            self._create_delete_file_tool(),
+            self._create_delete_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
             self._create_execute_tool(),
@@ -1266,30 +1296,31 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_delete_file_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
-        """Create the delete_file tool."""
-        tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
+    def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
+        """Create the delete tool."""
+        tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
 
-        def sync_delete_file(
+        def sync_delete(
             file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
-            """Synchronous wrapper for delete_file tool."""
+            """Synchronous wrapper for delete tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return ToolMessage(
                     content=f"Error: {e}",
-                    name="delete_file",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
 
-            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            if denying_patterns:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {validated_path}",
-                    name="delete_file",
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
@@ -1297,37 +1328,38 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if res.error:
                 return ToolMessage(
                     content=res.error,
-                    name="delete_file",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted file {res.path}",
-                name="delete_file",
+                content=f"Deleted {res.path}",
+                name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
             )
 
-        async def async_delete_file(
+        async def async_delete(
             file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
-            """Asynchronous wrapper for delete_file tool."""
+            """Asynchronous wrapper for delete tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return ToolMessage(
                     content=f"Error: {e}",
-                    name="delete_file",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
 
-            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            if denying_patterns:
                 return ToolMessage(
-                    content=f"Error: permission denied for write on {validated_path}",
-                    name="delete_file",
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
@@ -1335,24 +1367,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if res.error:
                 return ToolMessage(
                     content=res.error,
-                    name="delete_file",
+                    name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted file {res.path}",
-                name="delete_file",
+                content=f"Deleted {res.path}",
+                name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
             )
 
         return StructuredTool.from_function(
-            name="delete_file",
+            name="delete",
             description=tool_description,
-            func=sync_delete_file,
-            coroutine=async_delete_file,
+            func=sync_delete,
+            coroutine=async_delete,
             infer_schema=False,
-            args_schema=DeleteFileSchema,
+            args_schema=DeleteSchema,
         )
 
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping
@@ -1766,7 +1798,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Shared by the sync and async `wrap_model_call` paths (the only part that
         differs between them is sync vs. async message eviction). The `execute`
-        and `delete_file` tools are optional per backend, so when the resolved
+        and `delete` tools are optional per backend, so when the resolved
         backend doesn't support a capability the corresponding tool is filtered
         out of the request rather than advertised to the model and left to fail
         at call time. Resolving the backend and probing support is synchronous,
@@ -1777,9 +1809,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         tool_names = {(tool.name if hasattr(tool, "name") else tool.get("name")) for tool in request.tools}
         has_execute_tool = "execute" in tool_names
-        has_delete_tool = "delete_file" in tool_names
+        has_delete_tool = "delete" in tool_names
 
-        # `execute` and `delete_file` are optional per backend; resolve the
+        # `execute` and `delete` are optional per backend; resolve the
         # backend once and filter out any tool the backend can't serve.
         if has_execute_tool or has_delete_tool:
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
@@ -1788,7 +1820,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 unsupported.add("execute")
                 has_execute_tool = False
             if has_delete_tool and not _supports_delete(backend):
-                unsupported.add("delete_file")
+                unsupported.add("delete")
             if unsupported:
                 filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
                 request = request.override(tools=filtered_tools)

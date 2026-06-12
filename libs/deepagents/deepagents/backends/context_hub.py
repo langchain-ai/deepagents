@@ -210,13 +210,27 @@ class ContextHubBackend(BackendProtocol):
         return EditResult(path=file_path, occurrences=occurrences)
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a file by committing its removal from the hub repo."""
+        """Delete a file or directory by committing its removal from the hub repo.
+
+        Deleting a path removes the exact file plus every nested entry under it
+        (the prefix `file_path` + "/"), so a directory is removed recursively.
+
+        Args:
+            file_path: Path of the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if nothing is
+                stored at or under it (or the hub is unavailable).
+        """
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
-            if hub_path not in cache:
+            base = hub_path.rstrip("/")
+            prefix = base + "/"
+            to_delete = [key for key in cache if key == base or key.startswith(prefix)]
+            if not to_delete:
                 return DeleteResult(error=f"Error: File '{file_path}' not found")
-            self._commit({hub_path: None})
+            self._commit(dict.fromkeys(to_delete, None))
         except LangSmithError as exc:
             logger.exception("Hub delete failed for %r", self._identifier)
             self._cache = None

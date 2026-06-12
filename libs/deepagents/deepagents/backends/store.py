@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, cast
 
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
-from langgraph.store.base import BaseStore, Item
+from langgraph.store.base import BaseStore, Item, PutOp
 from langgraph.typing import ContextT, StateT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
@@ -419,6 +419,35 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
+    async def _asearch_store_paginated(
+        self,
+        store: BaseStore,
+        namespace: tuple[str, ...],
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,  # noqa: A002  # Matches LangGraph BaseStore.asearch() API
+        page_size: int = 100,
+    ) -> list[Item]:
+        """Async version of `_search_store_paginated`."""
+        all_items: list[Item] = []
+        offset = 0
+        while True:
+            page_items = await store.asearch(
+                namespace,
+                query=query,
+                filter=filter,
+                limit=page_size,
+                offset=offset,
+            )
+            if not page_items:
+                break
+            all_items.extend(page_items)
+            if len(page_items) < page_size:
+                break
+            offset += page_size
+
+        return all_items
+
     def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
@@ -685,36 +714,46 @@ class StoreBackend(BackendProtocol):
         return EditResult(path=file_path, occurrences=int(occurrences))
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a file from the store.
+        """Delete a file or directory from the store.
 
-        `file_path` is used as an exact store key. Wildcards (e.g. `*`) are treated
-        literally and do not expand to multiple entries.
+        Deleting a path removes the exact key `file_path` plus every key nested
+        under it (the prefix `file_path` + "/"), so a directory is removed
+        recursively. Wildcards (e.g. `*`) in `file_path` are treated literally.
 
+        Args:
+            file_path: Path of the file or directory to delete.
 
-        Returns `DeleteResult` with the deleted path on success, or an error if
-        the file does not exist.
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if no key is
+                stored at or under it.
         """
         store = self._get_store()
         namespace = self._get_namespace()
 
-        if store.get(namespace, file_path) is None:
+        items = self._search_store_paginated(store, namespace)
+        # A recursive delete removes the exact key plus everything nested under it.
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
+        if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
-        store.delete(namespace, file_path)
+        store.batch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
 
     async def adelete(self, file_path: str) -> DeleteResult:
-        """Async version of delete using native store async methods.
-
-        This avoids sync calls in async context by using store.aget/adelete directly.
-        """
+        """Async version of `delete` using native store async methods."""
         store = self._get_store()
         namespace = self._get_namespace()
 
-        if await store.aget(namespace, file_path) is None:
+        items = await self._asearch_store_paginated(store, namespace)
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
+        if not to_delete:
             return DeleteResult(error=f"Error: File '{file_path}' not found")
 
-        await store.adelete(namespace, file_path)
+        await store.abatch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
 
     # Removed legacy grep() convenience to keep lean surface

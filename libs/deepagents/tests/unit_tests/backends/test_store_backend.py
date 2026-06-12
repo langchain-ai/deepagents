@@ -8,6 +8,7 @@ import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
+from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
@@ -529,6 +530,103 @@ def test_store_backend_delete() -> None:
     assert result.path == "/docs/readme.md"
     # File is gone
     assert be.read("/docs/readme.md").error is not None
+
+
+def test_store_backend_delete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    result = be.delete("/work")
+    assert result.error is None
+    assert result.path == "/work"
+    # Every key at or under /work is gone.
+    assert be.read("/work/a.txt").error is not None
+    assert be.read("/work/sub/b.txt").error is not None
+    # A sibling outside the subtree is untouched.
+    assert be.read("/keep.txt").error is None
+
+
+async def test_store_backend_adelete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    result = await be.adelete("/work")
+    assert result.error is None
+    assert (await be.aread("/work/a.txt")).error is not None
+    assert (await be.aread("/work/sub/b.txt")).error is not None
+    assert (await be.aread("/keep.txt")).error is None
+
+
+class _RecordingStore(InMemoryStore):
+    """InMemoryStore that records the ops passed to each batch/abatch call.
+
+    `batch`/`abatch` are the single primitive every store op routes through, so
+    recording them lets a test assert how many round-trips a delete performs.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_calls: list[list] = []
+
+    def batch(self, ops):
+        ops = list(ops)
+        self.batch_calls.append(ops)
+        return super().batch(ops)
+
+    async def abatch(self, ops):
+        ops = list(ops)
+        self.batch_calls.append(ops)
+        return await super().abatch(ops)
+
+
+def _delete_op_batches(batch_calls: list[list]) -> list[list]:
+    """Batches that carried at least one delete (PutOp with value=None)."""
+    return [ops for ops in batch_calls if any(isinstance(op, PutOp) and op.value is None for op in ops)]
+
+
+def test_store_backend_delete_uses_single_batch_call() -> None:
+    """A recursive delete issues one batched store write, not one call per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+    store.batch_calls.clear()  # ignore the setup writes
+
+    result = be.delete("/work")
+    assert result.error is None
+
+    # All the deletes happened in exactly one batch (not one call per key).
+    delete_batches = _delete_op_batches(store.batch_calls)
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
+
+
+async def test_store_backend_adelete_uses_single_batch_call() -> None:
+    """Async recursive delete issues one batched store write, not one per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+    store.batch_calls.clear()
+
+    result = await be.adelete("/work")
+    assert result.error is None
+
+    delete_batches = _delete_op_batches(store.batch_calls)
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
 
 
 def test_store_backend_delete_missing_returns_error() -> None:

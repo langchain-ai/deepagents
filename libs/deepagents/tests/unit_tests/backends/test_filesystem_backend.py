@@ -1285,13 +1285,51 @@ class TestFilesystemDelete:
         assert result.error is not None
         assert "not found" in result.error
 
-    def test_delete_directory_returns_error(self, tmp_path: Path) -> None:
+    def test_delete_empty_directory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         result = be.delete("/sub")
-        assert result.path is None
-        assert result.error is not None
-        assert "directory" in result.error
+        assert result.error is None
+        assert result.path == "/sub"
+        assert not (tmp_path / "sub").exists()
+
+    def test_delete_directory_recursively(self, tmp_path: Path) -> None:
+        # A directory is removed along with all of its nested contents.
+        sub = tmp_path / "sub"
+        (sub / "deep").mkdir(parents=True)
+        write_file(sub / "b.txt", "b")
+        write_file(sub / "deep" / "d.txt", "d")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.delete("/sub")
+        assert result.error is None
+        assert result.path == "/sub"
+        assert not sub.exists()
+
+    def test_delete_directory_leaves_siblings(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        write_file(tmp_path / "sub" / "b.txt", "b")
+        write_file(tmp_path / "keep.txt", "keep")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        assert be.delete("/sub").error is None
+        assert not (tmp_path / "sub").exists()
+        assert (tmp_path / "keep.txt").exists()
+
+    def test_delete_symlink_to_dir_does_not_follow(self, tmp_path: Path) -> None:
+        # Deleting a symlink that points at a directory removes only the link;
+        target = tmp_path / "target"
+        target.mkdir()
+        write_file(target / "keep.txt", "keep")
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+        result = be.delete(str(link))
+        assert result.error is None
+        assert not link.exists()
+        assert target.exists()
+        assert (target / "keep.txt").exists()
 
     def test_delete_only_removes_target(self, tmp_path: Path) -> None:
         write_file(tmp_path / "keep.txt", "keep")
@@ -1323,7 +1361,7 @@ class TestFilesystemDelete:
         result = be.delete("/a.txt")
         assert result.path is None
         assert result.error is not None
-        assert "Error deleting file" in result.error
+        assert "Error deleting" in result.error
 
     def test_delete_unlink_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # An OSError from unlink (e.g. permission denied) is reported, file kept.
@@ -1338,5 +1376,5 @@ class TestFilesystemDelete:
         result = be.delete("/a.txt")
         assert result.path is None
         assert result.error is not None
-        assert "Error deleting file" in result.error
+        assert "Error deleting" in result.error
         assert f.exists()

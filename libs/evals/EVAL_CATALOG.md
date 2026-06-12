@@ -27,9 +27,9 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 - [`test_read_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L292) — `tests/evals/test_file_operations.py:292`
 - [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L562) — `tests/evals/test_file_operations.py:562`
 - [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L600) — `tests/evals/test_file_operations.py:600`
-- [`test_delete_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L617) — `tests/evals/test_file_operations.py:617`
+- [`test_delete_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L617) — `tests/evals/test_file_operations.py:617`
 - [`test_delete_one_of_several_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L646) — `tests/evals/test_file_operations.py:646`
-- [`test_delete_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L681) — `tests/evals/test_file_operations.py:681`
+- [`test_deletes_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L681) — `tests/evals/test_file_operations.py:681`
 - [`test_write_then_delete_same_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L714) — `tests/evals/test_file_operations.py:714`
 - [`test_delete_missing_file_reports_absence`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L744) — `tests/evals/test_file_operations.py:744`
 

@@ -540,6 +540,26 @@ def test_delete_commits_none_entry() -> None:
     assert call.kwargs["parent_commit"] == _COMMIT_HASH
 
 
+def test_delete_directory_commits_all_nested_entries() -> None:
+    backend, mock_client = _make_backend(
+        **{
+            "work/a.md": FileEntry(type="file", content="a"),
+            "work/sub/b.md": FileEntry(type="file", content="b"),
+            "keep.md": FileEntry(type="file", content="k"),
+        }
+    )
+    result = backend.delete("/work")
+
+    assert result.error is None
+    assert result.path == "/work"
+    files_arg = mock_client.push_agent.call_args.kwargs["files"]
+    # Every nested entry under /work is marked for deletion...
+    assert files_arg["work/a.md"] is None
+    assert files_arg["work/sub/b.md"] is None
+    # ...and the sibling outside the subtree is left alone.
+    assert "keep.md" not in files_arg
+
+
 def test_delete_missing_returns_not_found() -> None:
     backend, mock_client = _make_backend()
     result = backend.delete("/ghost.md")

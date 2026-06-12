@@ -146,8 +146,8 @@
   },
   {
     "function": {
-      "description": "Deletes a file from the filesystem.\n\nUsage:\n- Permanently removes the file at the given absolute path.\n- This cannot be undone, so only delete files you are sure are no longer needed.",
-      "name": "delete_file",
+      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
+      "name": "delete",
       "parameters": {
         "properties": {
           "file_path": {

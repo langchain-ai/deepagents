@@ -1877,6 +1877,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._active_user_message: UserMessage | None = None
+        """The `UserMessage` widget that started the in-flight turn, tracked so
+        it can be dimmed if the turn is interrupted."""
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -7124,8 +7128,10 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
-        # Mount the user message
-        await self._mount_message(UserMessage(message))
+        # Mount the user message, tracking it so it can be dimmed on interrupt.
+        user_message = UserMessage(message)
+        await self._mount_message(user_message)
+        self._active_user_message = user_message
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -7342,6 +7348,7 @@ class DeepAgentsApp(App):
         """Clean up after agent task completes or is cancelled."""
         self._agent_running = False
         self._agent_worker = None
+        self._active_user_message = None
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -8348,6 +8355,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
 

@@ -1,0 +1,21 @@
+libs/code/pyproject.toml
+  s_a8651e3d469689::t_5adc58f4d272a3 29
+libs/code/CHANGELOG.md
+  s_a8651e3d469689::t_5adc58f4d272a3 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "e8ea96b7ccd9d811f79b556490aecf8a60620b41",
+  "prompts": {},
+  "sessions": {
+    "s_a8651e3d469689": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebdd8-0622-7a23-a4a5-301fc2f899a5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

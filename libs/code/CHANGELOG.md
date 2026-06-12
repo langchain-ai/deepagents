@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.14](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.13...deepagents-code==0.1.14) (2026-06-12)
+
+### Features
+
+* Surface editable mode and core deps in `/version` ([#3898](https://github.com/langchain-ai/deepagents/issues/3898)) ([d4f5a12](https://github.com/langchain-ai/deepagents/commit/d4f5a12cc6d73dc19d24d5748242705d79fa65bf))
+
+### Bug Fixes
+
+* Don't move cursor on click that re-focuses terminal ([#3893](https://github.com/langchain-ai/deepagents/issues/3893)) ([b76788b](https://github.com/langchain-ai/deepagents/commit/b76788b7850e910fe2882cb1a62ffff6ff5085b0))
+* Label `-r` resume as `"Resuming..."` in the status bar ([#3892](https://github.com/langchain-ai/deepagents/issues/3892)) ([70cd286](https://github.com/langchain-ai/deepagents/commit/70cd28643bc2ca7da5a61a7b7203c6de2266ca4e))
+* Scope `@` file completion to current cwd ([#3874](https://github.com/langchain-ai/deepagents/issues/3874)) ([dd237ac](https://github.com/langchain-ai/deepagents/commit/dd237acd21a39e98e37bb9d98dfae09bc44d5457))
+* Set dcode agent names in trace metadata ([#3901](https://github.com/langchain-ai/deepagents/issues/3901)) ([ac94dd6](https://github.com/langchain-ai/deepagents/commit/ac94dd6b139211187cad8685c1152f02c51ba086))
+* Surface untracked files in `@` completion ([#3872](https://github.com/langchain-ai/deepagents/issues/3872)) ([2bdf6ea](https://github.com/langchain-ai/deepagents/commit/2bdf6ea329c6b4c8be5f0075528e00c7ce2c1e6a))
+* Warn on misconfigured subagent files ([#3873](https://github.com/langchain-ai/deepagents/issues/3873)) ([f1614d6](https://github.com/langchain-ai/deepagents/commit/f1614d67827c3d4d3bd01a784f57f83a50ec3410))
+
+### Performance Improvements
+
+* Cache theme colors/charset, fix `O(n^2)` tool-call streaming ([#3881](https://github.com/langchain-ai/deepagents/issues/3881)) ([9d463f5](https://github.com/langchain-ai/deepagents/commit/9d463f52fb3a4d458477982963f3d278d5362b48))
+
 ## [0.1.13](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.12...deepagents-code==0.1.13) (2026-06-11)
 
 ### Features

@@ -925,6 +925,45 @@ class TestGetProjectFiles:
 
         assert files.count("conflict.py") == 1
 
+    def test_untracked_failure_keeps_tracked_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed untracked scan must not discard the tracked list.
+
+        When the optional `--others --exclude-standard` call fails or times
+        out, the already-successful tracked listing stays authoritative instead
+        of falling back to the shallow glob walk.
+        """
+        self._init_repo(tmp_path)
+        nested = tmp_path / "a" / "b" / "c" / "d" / "e"
+        nested.mkdir(parents=True)
+        deep = nested / "deep.py"
+        deep.write_text("x = 1\n")
+        subprocess.run(
+            ["git", "add", "a"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        real_run = autocomplete_module._run_git_ls_files
+
+        def fake_run(
+            git_path: str, root: Path, extra_args: list[str]
+        ) -> tuple[bool, list[str]]:
+            if "--others" in extra_args:
+                return False, []
+            return real_run(git_path, root, extra_args)
+
+        monkeypatch.setattr(autocomplete_module, "_run_git_ls_files", fake_run)
+
+        files = _get_project_files(tmp_path)
+
+        assert "a/b/c/d/e/deep.py" in files
+
     def test_glob_fallback_when_git_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

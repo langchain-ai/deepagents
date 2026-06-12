@@ -13,7 +13,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
@@ -568,6 +568,23 @@ Kept short so tracing metadata can never stall app flows.
 """
 
 
+def _get_deepagents_version() -> str | None:
+    """Read the installed Deep Agents SDK version from package metadata.
+
+    Returns:
+        The installed Deep Agents SDK version, or `None` when package metadata
+        is unavailable.
+    """
+    try:
+        return version("deepagents")
+    except PackageNotFoundError:
+        logger.debug(
+            "Failed to read deepagents version from package metadata",
+            exc_info=True,
+        )
+        return None
+
+
 def _resolve_editable_info() -> tuple[bool, str | None]:
     """Parse PEP 610 `direct_url.json` once and cache both results.
 
@@ -831,6 +848,10 @@ def build_stream_config(
     SDK version through the compiled graph config, and LangChain merges nested
     metadata dictionaries so both versions survive at stream time.
 
+    Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
+    This describes the Deep Agents package installed alongside the TUI, which
+    can differ from a remote graph's Deep Agents runtime version.
+
     Includes `ls_integration` metadata so LangSmith traces originating from
     the app are distinguishable from bare SDK usage.
 
@@ -857,6 +878,10 @@ def build_stream_config(
         "lc_versions": {"deepagents-code": __version__},
         "ls_integration": "deepagents-code",
     }
+    deepagents_version = _get_deepagents_version()
+    if deepagents_version is not None:
+        metadata["dcode_client_deepagents_version"] = deepagents_version
+
     from deepagents_code._env_vars import USER_ID
 
     user_id = os.environ.get(USER_ID)

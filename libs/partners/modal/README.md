@@ -10,7 +10,7 @@ Looking for the JS/TS version? Check out [LangChain.js](https://github.com/langc
 ## Quick Install
 
 ```bash
-uv pip install langchain-modal
+uv add langchain-modal
 ```
 
 ```python

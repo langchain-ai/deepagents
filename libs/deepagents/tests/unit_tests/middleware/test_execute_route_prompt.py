@@ -2,14 +2,15 @@
 
 `execute` runs on the default backend's host shell, so routed virtual paths
 (e.g. `/common/`) don't exist there. Instead of rewriting commands — which can't
-be done correctly for arbitrary shell — the middleware tells the model each
-route's host path so it forms the correct command itself.
+be done correctly for arbitrary shell — the middleware tells the model how to
+translate each route's virtual prefix to its host path so it forms the correct
+command itself.
 
-A route gets a host path mapping only when its files live on the same filesystem
-the default's shell runs in: a `LocalShellBackend` default (local shell) paired
-with a virtual-mode `FilesystemBackend` route (local disk). A remote/sandbox
-default runs its shell elsewhere, so local filesystem routes are not reachable
-and must be classified as shell-inaccessible. These tests cover that matrix.
+A route gets a host mapping only when its files live on the same filesystem the
+default's shell runs in: a `LocalShellBackend` default (local shell) paired with
+a `FilesystemBackend` route (local disk). A remote/sandbox default runs its shell
+elsewhere, so local filesystem routes are not reachable and must be classified as
+shell-inaccessible. These tests cover that matrix.
 """
 
 from pathlib import Path
@@ -23,6 +24,8 @@ from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import _route_host_path_prompt
+
+_NO_HOST_HEADING = "Virtual mounts without a host path mapping"
 
 
 def _store() -> StoreBackend:
@@ -65,8 +68,10 @@ def test_maps_virtual_route_to_host_path(tmp_path: Path) -> None:
     prompt = _route_host_path_prompt(comp)
 
     assert "## Shell paths vs. virtual paths" in prompt
-    # The mount is listed under "Host path mappings" with its resolved host path.
-    assert f"- /common/ -> {route.cwd}" in prompt
+    # The mount is listed under "Host path mappings" with its resolved host path,
+    # plus a nested-path example so the substitution is unambiguous (G3/G4).
+    assert f"- `/common/` -> `{route.cwd}/`" in prompt
+    assert f"`/common/dir/x.py` -> `{route.cwd}/dir/x.py`" in prompt
 
 
 def test_routes_without_host_path_marked_inaccessible() -> None:
@@ -76,22 +81,33 @@ def test_routes_without_host_path_marked_inaccessible() -> None:
 
     # A store mount has no host path, so it appears under the no-mapping section
     # and is never presented as a host path mapping — even with a local default.
-    assert "Virtual mounts without a host path mapping" in prompt
-    assert "/memories/" in prompt
+    assert _NO_HOST_HEADING in prompt
+    assert "`/memories/`" in prompt
     assert " -> " not in prompt
 
 
-def test_non_virtual_filesystem_route_maps_by_dropping_prefix(tmp_path: Path) -> None:
+def test_non_virtual_filesystem_route_maps_to_root(tmp_path: Path) -> None:
     # Non-virtual routes strip the prefix and use the remaining absolute path
-    # as-is on the host (root_dir ignored), so the host path is the path with the
-    # prefix removed -> the model is told to drop the prefix for shell commands.
+    # as-is on the host (root_dir ignored), so the prefix maps to the filesystem
+    # root `/`.
     route = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     comp = CompositeBackend(default=_local_shell(), routes={"/common/": route})
 
     prompt = _route_host_path_prompt(comp)
 
-    assert 'remove the "/common" prefix' in prompt
-    assert "/common/file.txt is /file.txt" in prompt
+    assert "- `/common/` -> `/`" in prompt
+    assert "`/common/dir/x.py` -> `/dir/x.py`" in prompt
+
+
+def test_non_trailing_route_prefix_renders_with_slash(tmp_path: Path) -> None:
+    route = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    comp = CompositeBackend(default=_local_shell(), routes={"/data": route})
+
+    prompt = _route_host_path_prompt(comp)
+
+    assert f"- `/data/` -> `{route.cwd}/`" in prompt
+    assert "`/data/dir/x.py`" in prompt
+    assert "/datadir" not in prompt
 
 
 def test_non_virtual_route_not_mapped_under_remote_sandbox(tmp_path: Path) -> None:
@@ -106,8 +122,8 @@ def test_non_virtual_route_not_mapped_under_remote_sandbox(tmp_path: Path) -> No
     prompt = _route_host_path_prompt(comp)
 
     assert " -> " not in prompt
-    assert "Virtual mounts without a host path mapping" in prompt
-    assert "/common/" in prompt
+    assert _NO_HOST_HEADING in prompt
+    assert "`/common/`" in prompt
 
 
 def test_mix_of_host_and_non_host_routes(tmp_path: Path) -> None:
@@ -119,9 +135,9 @@ def test_mix_of_host_and_non_host_routes(tmp_path: Path) -> None:
 
     prompt = _route_host_path_prompt(comp)
 
-    assert f"- /common/ -> {fs.cwd}" in prompt
-    assert "Virtual mounts without a host path mapping" in prompt
-    assert "/memories/" in prompt
+    assert f"- `/common/` -> `{fs.cwd}/`" in prompt
+    assert _NO_HOST_HEADING in prompt
+    assert "`/memories/`" in prompt
 
 
 def test_remote_sandbox_default_suppresses_host_mappings(tmp_path: Path) -> None:
@@ -137,5 +153,5 @@ def test_remote_sandbox_default_suppresses_host_mappings(tmp_path: Path) -> None
     prompt = _route_host_path_prompt(comp)
 
     assert " -> " not in prompt  # no host mapping emitted
-    assert "Virtual mounts without a host path mapping" in prompt
-    assert "/common/" in prompt
+    assert _NO_HOST_HEADING in prompt
+    assert "`/common/`" in prompt

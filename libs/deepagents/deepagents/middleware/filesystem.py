@@ -528,7 +528,8 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
 
     `execute` runs on the default backend's shell, so virtual paths (e.g.
     `/common/`) may not exist there. Instead of rewriting shell commands, provide
-    the model with host path mappings so it can generate correct commands directly.
+    the model with prefix-substitution mappings so it can generate correct commands
+    directly.
 
     A route exposes a usable host path only when its files live on the same
     filesystem the default's shell runs in, which requires the default to be a
@@ -536,10 +537,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     `FilesystemBackend` route maps to a host path based on its mode:
 
     - virtual mode: the prefix maps to the backend's host root, `route.cwd`
-      (e.g. `/common/` -> `/data`, so `/common/x` is `/data/x` on the host).
-    - non-virtual mode: the route prefix is stripped and the remaining absolute
-      path is used as-is on the host (`root_dir` is ignored), so the host path is
-      simply the path with the route prefix removed (e.g. `/common/x` is `/x`).
+      (e.g. `/common/` -> `/data/`, so `/common/x` is `/data/x` on the host).
+    - non-virtual mode: the prefix is stripped and the remaining absolute path is
+      used as-is (`root_dir` is ignored), i.e. the prefix maps to the filesystem
+      root `/` (e.g. `/legacy/x` is `/x`).
 
     A remote/sandbox default runs its shell in a separate filesystem, so a local
     `FilesystemBackend` route is not reachable from it. Those routes, along with
@@ -556,22 +557,35 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     # default, no local filesystem route is reachable from the shell.
     default_uses_local_shell = isinstance(backend.default, LocalShellBackend)
 
+    # (virtual_prefix, host_prefix) pairs. A host_prefix of "/" means the virtual
+    # prefix is stripped down to the filesystem root.
     host_mappings: list[tuple[str, str]] = []
     no_host_routes: list[str] = []
     for route_prefix, route_backend in backend.sorted_routes:
-        if default_uses_local_shell and isinstance(route_backend, FilesystemBackend):
-            if route_backend.virtual_mode:
-                # Virtual mode: prefix maps to the backend's host root directory.
-                host_mappings.append((route_prefix, str(route_backend.cwd)))
-            else:
-                # Non-virtual mode: prefix is stripped, remaining path used as-is
-                # on the host -> the host path is the path without the prefix.
-                host_mappings.append((route_prefix, ""))
-        else:
+        if not (default_uses_local_shell and isinstance(route_backend, FilesystemBackend)):
             no_host_routes.append(route_prefix)
+        elif route_backend.virtual_mode:
+            # Virtual mode: prefix maps to the backend's host root directory.
+            host_mappings.append((route_prefix, str(route_backend.cwd)))
+        else:
+            # Non-virtual mode: prefix is stripped, remaining absolute path used
+            # as-is -> the prefix maps to the filesystem root.
+            host_mappings.append((route_prefix, "/"))
 
     if not host_mappings and not no_host_routes:
         return ""
+
+    def _norm(prefix: str) -> str:
+        """Ensure a trailing slash so prefix substitution composes for subpaths."""
+        return prefix if prefix.endswith("/") else f"{prefix}/"
+
+    def _mapping_line(virtual_prefix: str, host_prefix: str) -> str:
+        # Normalize both sides to end with "/" so replacing the virtual prefix with
+        # the host prefix yields a correct host path for nested paths.
+        virtual = _norm(virtual_prefix)
+        host = _norm(host_prefix)
+        example = f"`{virtual}dir/x.py` -> `{host}dir/x.py`"
+        return f"- `{virtual}` -> `{host}` (e.g. {example})"
 
     lines = [
         "## Shell paths vs. virtual paths",
@@ -580,27 +594,23 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
         "",
         "Some paths returned by the file tools are virtual mounts:",
         "",
-        "- If a virtual mount has a host path mapping, use the mapped host path when running shell commands.",
+        "- If a virtual mount has a host path mapping, replace its virtual prefix with the host prefix when running shell commands.",
         "- If a virtual mount does not have a host path mapping, it is not accessible "
         "from the shell. Use the file tools listed above to interact with those files.",
         "",
         "Do not assume that a path returned by a file tool can be used directly in a shell command.",
     ]
+
     if host_mappings:
         lines.append("")
         lines.append("Host path mappings:")
-        for prefix, host in host_mappings:
-            if host:
-                # Virtual route: replace the prefix with the backend's host root.
-                lines.append(f"- {prefix} -> {host}")
-            else:
-                # Non-virtual route: drop the prefix; the rest is the host path.
-                bare = prefix.rstrip("/")
-                lines.append(f'- {prefix} -> remove the "{bare}" prefix (e.g. {prefix}file.txt is /file.txt)')
+        lines.extend(_mapping_line(virtual_prefix, host_prefix) for virtual_prefix, host_prefix in host_mappings)
+
     if no_host_routes:
         lines.append("")
         lines.append("Virtual mounts without a host path mapping (not accessible from the shell):")
-        lines.extend(f"- {prefix}" for prefix in no_host_routes)
+        lines.extend(f"- `{prefix}`" for prefix in no_host_routes)
+
     return "\n".join(lines)
 
 

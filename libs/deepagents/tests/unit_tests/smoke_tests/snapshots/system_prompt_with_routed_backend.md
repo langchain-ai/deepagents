@@ -95,17 +95,17 @@ The `execute` tool runs commands in the host shell and can only access files tha
 
 Some paths returned by the file tools are virtual mounts:
 
-- If a virtual mount has a host path mapping, use the mapped host path when running shell commands.
+- If a virtual mount has a host path mapping, replace its virtual prefix with the host prefix when running shell commands.
 - If a virtual mount does not have a host path mapping, it is not accessible from the shell. Use the file tools listed above to interact with those files.
 
 Do not assume that a path returned by a file tool can be used directly in a shell command.
 
 Host path mappings:
-- /common/ -> /work/app
-- /legacy/ -> remove the "/legacy" prefix (e.g. /legacy/file.txt is /file.txt)
+- `/common/` -> `/work/app/` (e.g. `/common/dir/x.py` -> `/work/app/dir/x.py`)
+- `/legacy/` -> `/` (e.g. `/legacy/dir/x.py` -> `/dir/x.py`)
 
 Virtual mounts without a host path mapping (not accessible from the shell):
-- /notes/
+- `/notes/`
 
 ## `task` (subagent spawner)
 

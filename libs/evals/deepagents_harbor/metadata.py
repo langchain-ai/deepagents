@@ -104,8 +104,8 @@ async def collect_sandbox_metadata(backend: SandboxLike) -> InfraMetadata:
     meta.host_python_version = host["host_python_version"]
 
     # Collect sandbox info via shell commands (best-effort — must never abort a trial).
-    # The four probes are independent, so run them concurrently to avoid serializing
-    # four sandbox round-trips per trial.
+    # The probes are independent, so run them concurrently to avoid serializing one
+    # sandbox round-trip each.
     async def _probe(command: str) -> str | None:
         try:
             result = await backend.aexecute(command, timeout=10)

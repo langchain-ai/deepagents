@@ -660,10 +660,15 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     results = {"success": 0, "fallback": 0, "skipped": 0, "error": 0}
     client = Client()
 
-    # Each trial issues up to three independent, blocking LangSmith calls. Process
-    # trials concurrently with a bounded thread pool instead of serializing them.
+    # Each trial issues up to three blocking, data-dependent LangSmith calls
+    # (list runs -> list feedback -> create feedback). The trials themselves are
+    # independent, so process them concurrently with a bounded thread pool instead
+    # of serializing them. Pre-fill with a valid-shaped sentinel so the consumer
+    # below never sees a slot missing the "status"/"message" keys.
     max_workers = min(_FEEDBACK_MAX_WORKERS, len(trial_dirs)) or 1
-    processed: list[dict[str, str]] = [{}] * len(trial_dirs)
+    processed: list[dict[str, str]] = [
+        {"status": "error", "message": "Trial was not processed"} for _ in trial_dirs
+    ]
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,7 @@ from openevals.llm import create_llm_as_judge
 from tests.evals.utils import AgentTrajectory, SuccessAssertion
 
 _DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
+_MAX_JUDGE_WORKERS = 8
 
 _RESPONSES_PROMPT = """You are a strict grading assistant. You will receive a
 series of agent responses and a single criterion. Decide whether the agent's
@@ -164,16 +166,18 @@ class LLMJudge(SuccessAssertion):
             return evaluator(outputs=conversation, criterion=criterion)
 
         # The per-criterion judge calls are independent network calls, so run them
-        # concurrently rather than serializing one round-trip per criterion. Results
-        # are collected in criterion order so error messages stay deterministic.
+        # concurrently rather than serializing one round-trip per criterion. Every
+        # criterion is evaluated (there is no early short-circuit on the first
+        # failure); results are stored by criterion index and consumed in order, so
+        # the surfaced error stays deterministic regardless of completion order.
         total = len(self.criteria)
         raw_results: list[Any] = [None] * total
         if total > 1:
-            with ThreadPoolExecutor(max_workers=total) as executor:
-                futures = {
-                    executor.submit(_evaluate, criterion): idx
-                    for idx, criterion in enumerate(self.criteria)
-                }
+            with ThreadPoolExecutor(max_workers=min(total, _MAX_JUDGE_WORKERS)) as executor:
+                futures = {}
+                for idx, criterion in enumerate(self.criteria):
+                    ctx = copy_context()
+                    futures[executor.submit(ctx.run, _evaluate, criterion)] = idx
                 for future in as_completed(futures):
                     idx = futures[future]
                     try:

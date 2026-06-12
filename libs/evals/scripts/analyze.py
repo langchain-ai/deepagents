@@ -60,17 +60,49 @@ def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:
 
 
 def _read_json(path: Path) -> Optional[dict]:
-    """Read and parse a JSON file, returning None on any error."""
+    """Read and parse a JSON object from a file.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        The parsed object, or None if the file is missing, unreadable, not valid
+        JSON, or does not contain a top-level object. A present-but-malformed file
+        emits a warning so a corrupt input is distinguishable from an absent one.
+    """
     try:
         with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
+            data = json.load(f)
+    except FileNotFoundError:
+        # Missing files are expected (e.g. optional config.json/result.json).
         return None
+    except OSError as exc:
+        print(f"  Warning: could not read {path}: {exc}")
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"  Warning: malformed JSON in {path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"  Warning: expected a JSON object in {path}, got {type(data).__name__}")
+        return None
+    return data
 
 
 @lru_cache(maxsize=None)
 def _task_dir_index(task_source_dir: Path) -> dict[str, Path]:
-    """Map task_name -> task directory for a task source, scanning the tree once."""
+    """Map task_name -> task directory for a task source, scanning the tree once.
+
+    Results are cached for the lifetime of the process (the analysis tool is a
+    short-lived, single-pass script), so the task tree is assumed immutable during
+    a run. If a task name appears under multiple hash directories, the first one
+    encountered wins, matching the prior first-match search behavior.
+
+    Args:
+        task_source_dir: Path to the `{task_source}` directory.
+
+    Returns:
+        Mapping from task name to its directory; empty if the source is absent.
+    """
     index: dict[str, Path] = {}
     if not task_source_dir.exists():
         return index
@@ -79,7 +111,7 @@ def _task_dir_index(task_source_dir: Path) -> dict[str, Path]:
             continue
         for task_dir in hash_dir.iterdir():
             if task_dir.is_dir():
-                index[task_dir.name] = task_dir
+                index.setdefault(task_dir.name, task_dir)
     return index
 
 
@@ -137,7 +169,8 @@ def extract_task_metadata(trial_dir: Path, config: Optional[dict] = None) -> dic
 
     Args:
         trial_dir: Path to the trial directory
-        config: Pre-parsed config.json contents, if already loaded
+        config: Pre-parsed config.json contents to reuse instead of re-reading.
+            Only config.json is reusable here; result.json is always read fresh.
 
     Returns:
         Dictionary containing task metadata
@@ -166,7 +199,14 @@ def extract_task_metadata(trial_dir: Path, config: Optional[dict] = None) -> dic
 def extract_task_instructions(trajectory_data: dict) -> Optional[str]:
     """Extract the task instructions from parsed trajectory data.
 
-    Looks for the user message in the trajectory steps.
+    Looks for the first user message in the trajectory steps.
+
+    Args:
+        trajectory_data: Parsed trajectory contents (ATIF format).
+
+    Returns:
+        The first user step's message (possibly an empty string), or None if no
+        user step is present.
     """
     for step in trajectory_data.get("steps", []):
         if step.get("source") == "user":

@@ -30,7 +30,7 @@
 #   acp, ci, cli, code, daytona, dcode-gha, deepagents, deepagents-acp, deepagents-cli,
 #   deepagents-code, deepagents-talon, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
 #   langchain-quickjs, langchain-runloop, langsmith-sandbox, modal,
-#   quickjs, runloop, sdk, talon
+#   quickjs, repo, runloop, sdk, talon
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -131,6 +131,7 @@ jobs:
             langsmith-sandbox
             modal
             quickjs
+            repo
             runloop
             sdk
             talon

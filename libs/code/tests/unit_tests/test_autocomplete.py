@@ -1,6 +1,7 @@
 """Tests for autocomplete fuzzy search functionality."""
 
 import asyncio
+import subprocess
 import threading
 from pathlib import Path
 from typing import cast
@@ -19,9 +20,11 @@ from deepagents_code.widgets.autocomplete import (
     SlashCommandController,
     _fuzzy_score,
     _fuzzy_search,
+    _get_git_executable,
     _get_project_files,
     _is_dotpath,
     _path_depth,
+    _run_git_ls_files,
     _scope_files_to_cwd,
 )
 
@@ -793,8 +796,7 @@ class TestGetProjectFiles:
 
     @staticmethod
     def _init_repo(root: Path) -> None:
-        import subprocess
-
+        """Initialize a throwaway git repo with a test identity."""
         for args in (
             ["init"],
             ["config", "user.email", "test@example.com"],
@@ -803,9 +805,11 @@ class TestGetProjectFiles:
             subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
 
     def test_includes_tracked_and_untracked_files(self, tmp_path: Path) -> None:
-        """Both committed and untracked-but-not-ignored files are returned."""
-        import subprocess
+        """Both committed and untracked-but-not-ignored files are returned.
 
+        Tracked files are listed before untracked ones so they rank ahead in
+        completion results.
+        """
         self._init_repo(tmp_path)
         (tmp_path / "tracked.py").write_text("x = 1\n")
         subprocess.run(
@@ -824,6 +828,7 @@ class TestGetProjectFiles:
 
         assert "tracked.py" in files
         assert "untracked.py" in files
+        assert files.index("tracked.py") < files.index("untracked.py")
 
     def test_excludes_ignored_files(self, tmp_path: Path) -> None:
         """Files matched by .gitignore are not returned."""
@@ -847,14 +852,95 @@ class TestGetProjectFiles:
 
         assert files == []
 
-    def test_no_duplicate_entries(self, tmp_path: Path) -> None:
-        """A file does not appear twice across tracked/untracked sources."""
+    def test_deduplicates_repeated_paths(self, tmp_path: Path) -> None:
+        """A path emitted more than once by git ls-files appears only once.
+
+        An unmerged (conflicted) file is reported once per merge stage by
+        `git ls-files`, which is the real source of the duplicate entries the
+        de-duplication guards against.
+        """
         self._init_repo(tmp_path)
-        (tmp_path / "only.py").write_text("b = 5\n")
+        conflict = tmp_path / "conflict.py"
+        conflict.write_text("base\n")
+        subprocess.run(
+            ["git", "add", "conflict.py"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "base"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        base_branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "checkout", "-b", "other"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        conflict.write_text("theirs\n")
+        subprocess.run(
+            ["git", "commit", "-am", "theirs"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "checkout", base_branch],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        conflict.write_text("ours\n")
+        subprocess.run(
+            ["git", "commit", "-am", "ours"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        # The merge fails with a conflict; the conflicted state is the point.
+        subprocess.run(
+            ["git", "merge", "other"],
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+        )
+
+        git_path = _get_git_executable()
+        assert git_path is not None
+        _, raw = _run_git_ls_files(git_path, tmp_path, [])
+        # Premise: the conflicted path is reported more than once.
+        assert raw.count("conflict.py") > 1
 
         files = _get_project_files(tmp_path)
 
-        assert files.count("only.py") == 1
+        assert files.count("conflict.py") == 1
+
+    def test_glob_fallback_when_git_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without git, files are discovered via glob, excluding dotpaths."""
+        monkeypatch.setattr(autocomplete_module, "_get_git_executable", lambda: None)
+        (tmp_path / "visible.py").write_text("a = 1\n")
+        (tmp_path / ".hidden.py").write_text("secret = 1\n")
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "mod.py").write_text("b = 2\n")
+
+        files = _get_project_files(tmp_path)
+
+        assert "visible.py" in files
+        assert "pkg/mod.py" in files
+        assert ".hidden.py" not in files
 
 
 class TestFuzzyFileControllerScope:

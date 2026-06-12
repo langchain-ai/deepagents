@@ -16,11 +16,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from rich.markup import escape as escape_markup
 
-from deepagents_code._env_vars import (
-    VERCEL_PROJECT_ID,
-    VERCEL_TEAM_ID,
-    VERCEL_TOKEN,
-)
 from deepagents_code.config import console, get_glyphs
 from deepagents_code.integrations.sandbox_provider import (
     SandboxNotFoundError,
@@ -871,8 +866,50 @@ class _VercelSandboxHandle(Protocol):
 class _VercelProvider(SandboxProvider):
     """Vercel Sandbox provider implementation."""
 
+    _CREDENTIAL_ENV_NAMES = (
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+    )
+
     def __init__(self) -> None:
-        self._sdk_kwargs = _vercel_sdk_kwargs()
+        self._sdk_kwargs = self._resolve_sdk_kwargs()
+
+    @classmethod
+    def _resolve_sdk_kwargs(cls) -> dict[str, str]:
+        """Resolve a complete prefixed Vercel credential override.
+
+        Canonical Vercel variables and OIDC remain SDK-managed unless at least
+        one `DEEPAGENTS_CODE_VERCEL_*` override is present.
+
+        Returns:
+            Explicit SDK credential arguments, or an empty mapping to delegate
+            credential resolution to the Vercel SDK.
+        """
+        prefix = "DEEPAGENTS_CODE_"
+        has_override = any(
+            f"{prefix}{name}" in os.environ for name in cls._CREDENTIAL_ENV_NAMES
+        )
+        if not has_override:
+            return {}
+
+        from deepagents_code.model_config import resolve_env_var
+
+        values = {
+            "token": resolve_env_var("VERCEL_TOKEN"),
+            "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
+            "team_id": resolve_env_var("VERCEL_TEAM_ID"),
+        }
+        missing = sorted(key for key, value in values.items() if not value)
+        if missing:
+            logger.warning(
+                "Incomplete explicit Vercel credentials; VERCEL_TOKEN, "
+                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are all required. "
+                "Falling back to default Vercel authentication. Missing: %s",
+                ", ".join(missing),
+            )
+            return {}
+        return {key: value for key, value in values.items() if value}
 
     def get_or_create(
         self,
@@ -921,10 +958,10 @@ class _VercelProvider(SandboxProvider):
                     runtime="python3.13",
                     **self._sdk_kwargs,
                 )
-        except Exception as exc:
+        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
             action = "connect to existing" if sandbox_id else "create"
-            msg = f"Failed to {action} Vercel sandbox: {exc}"
-            raise RuntimeError(msg) from exc
+            msg = f"Failed to {action} Vercel sandbox."
+            raise RuntimeError(msg) from None
 
         try:
             self._wait_until_running(sandbox, timeout=timeout)
@@ -937,17 +974,25 @@ class _VercelProvider(SandboxProvider):
         return vercel_backend.VercelSandbox(sandbox=sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
-        """Stop a Vercel sandbox by id."""
+        """Stop a Vercel sandbox by id.
+
+        Raises:
+            RuntimeError: If the Vercel SDK cannot find or stop the sandbox.
+        """
         vercel_sandbox = _import_provider_module(
             "vercel.sandbox",
             provider="vercel",
             package="vercel",
         )
-        sandbox = vercel_sandbox.Sandbox.get(
-            sandbox_id=sandbox_id,
-            **self._sdk_kwargs,
-        )
-        sandbox.stop()
+        try:
+            sandbox = vercel_sandbox.Sandbox.get(
+                sandbox_id=sandbox_id,
+                **self._sdk_kwargs,
+            )
+            sandbox.stop()
+        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
+            msg = "Failed to stop Vercel sandbox."
+            raise RuntimeError(msg) from None
 
     @staticmethod
     def _wait_until_running(
@@ -977,16 +1022,9 @@ class _VercelProvider(SandboxProvider):
                 f"{timeout} seconds; current status is {status!r}"
             )
             raise RuntimeError(msg) from exc
-
-
-def _vercel_sdk_kwargs() -> dict[str, str]:
-    """Return explicit Vercel SDK auth kwargs from non-empty prefixed env vars."""
-    values = {
-        "token": os.environ.get(VERCEL_TOKEN),
-        "project_id": os.environ.get(VERCEL_PROJECT_ID),
-        "team_id": os.environ.get(VERCEL_TEAM_ID),
-    }
-    return {key: value for key, value in values.items() if value}
+        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
+            msg = "Failed while waiting for Vercel sandbox startup."
+            raise RuntimeError(msg) from None
 
 
 def _get_provider(

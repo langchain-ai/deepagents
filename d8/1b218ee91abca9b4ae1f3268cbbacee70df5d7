@@ -1,0 +1,69 @@
+libs/acp/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 155
+libs/partners/runloop/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 13,57
+libs/deepagents/README.md
+  s_79251417bd3f3c::t_a964bb1f04d9c5 83
+examples/async-subagent-server/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 85
+libs/evals/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 22
+examples/content-builder-agent/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 150
+examples/repl_swarm/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 77
+examples/downloading_agents/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 51
+examples/talon-whatsapp/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 61
+libs/code/README.md
+  s_79251417bd3f3c::t_c9c25f99dea21e 51
+examples/deploy-gtm-agent/README.md
+  s_79251417bd3f3c::t_34c6bedb8282df 73
+examples/nvidia_deep_agent/README.md
+  s_79251417bd3f3c::t_3d2105281aeb25 200
+examples/deploy-mcp-docs-agent/README.md
+  s_79251417bd3f3c::t_cd2297cc5ce9ea 65
+libs/cli/README.md
+  s_79251417bd3f3c::t_ba009b052b47b1 116
+examples/rlm_agent/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 111
+examples/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 119
+libs/talon/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 167
+examples/deploy-coding-agent/README.md
+  s_79251417bd3f3c::t_233514948c47c6 68
+libs/partners/modal/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 13,42
+examples/deploy-content-writer/README.md
+  s_79251417bd3f3c::t_fb8d52240bb3b9 83
+examples/llm-wiki/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 158
+examples/ralph_mode/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 28,96
+examples/better-harness/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 208
+libs/partners/daytona/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 47
+libs/partners/quickjs/README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 243
+README.md
+  s_79251417bd3f3c::t_98e57f24fe3825 100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d81b218ee91abca9b4ae1f3268cbbacee70df5d7",
+  "prompts": {},
+  "sessions": {
+    "s_79251417bd3f3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b149a8a5-9683-4e8e-94f3-6ae838434161",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -417,6 +417,67 @@ class TestGetThemeColors:
         assert second.primary == "#DDEEFF"
         assert second.background == "#0A0B0C"
 
+    def test_builtin_theme_colors_are_cached(self) -> None:
+        """Repeated lookups for a registered built-in reuse derived colors."""
+
+        class CurrentTheme:
+            dark = True
+            primary = "#BD93F9"
+            secondary = "#6272A4"
+            accent = "#FF79C6"
+            panel = "#313442"
+            success = "#50FA7B"
+            warning = "#FFB86C"
+            error = "#FF5555"
+            foreground = "#F8F8F2"
+            background = "#282A36"
+            surface = "#2B2E3B"
+
+        class FakeApp:
+            theme = "dracula"  # a registered, non-custom built-in
+            current_theme = CurrentTheme()
+
+        theme.reload_registry()  # start from a clean cache
+        app = FakeApp()
+        first = get_theme_colors(app)
+        second = get_theme_colors(app)
+        # Same object returned — derivation ran once and was cached.
+        assert first is second
+        assert ("dracula", True) in theme._textual_colors_cache
+
+    def test_reload_registry_evicts_cached_colors(self) -> None:
+        """`reload_registry` clears cached built-in colors so they re-derive."""
+
+        class CurrentTheme:
+            dark = True
+            primary = "#BD93F9"
+            secondary = "#6272A4"
+            accent = "#FF79C6"
+            panel = "#313442"
+            success = "#50FA7B"
+            warning = "#FFB86C"
+            error = "#FF5555"
+            foreground = "#F8F8F2"
+            background = "#282A36"
+            surface = "#2B2E3B"
+
+        class FakeApp:
+            theme = "dracula"
+            current_theme = CurrentTheme()
+
+        theme.reload_registry()
+        app = FakeApp()
+        first = get_theme_colors(app)
+        assert ("dracula", True) in theme._textual_colors_cache
+
+        theme.reload_registry()
+        assert ("dracula", True) not in theme._textual_colors_cache
+
+        # Re-derived after eviction: equal values, but a fresh instance.
+        second = get_theme_colors(app)
+        assert second.primary == first.primary
+        assert second is not first
+
     def test_widget_with_app_property(self) -> None:
         """Simulates a mounted widget whose .app resolves to an App."""
 

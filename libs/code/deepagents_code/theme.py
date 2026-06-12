@@ -239,9 +239,12 @@ SPINNER = "blue"
 _textual_colors_cache: dict[tuple[str, bool], ThemeColors] = {}
 """Cache of derived built-in `ThemeColors` keyed on `(theme name, dark)`.
 
-Built-in Textual themes are immutable per name, so their derived colors only
-change when the active theme changes. Caching avoids re-running ~16 hex
-validations on every widget render.
+A built-in Textual theme does not change its color values once registered under
+a name, so its derived colors only change when the active theme changes. Caching
+avoids re-running over a dozen hex validations on every widget render. The `dark`
+flag is part of the key defensively; for built-in themes it is already fixed by
+the name. Only registered built-ins are cached (see `get_theme_colors`) — the
+cache is cleared by `reload_registry`.
 """
 
 

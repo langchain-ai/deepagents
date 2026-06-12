@@ -13,7 +13,10 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    _token_counter_accepts_tools,
+)
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -2682,3 +2685,100 @@ class TestTokenCountingEfficiency:
         first_ai = captured_request.messages[0]
         assert isinstance(first_ai, AIMessage)
         assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+class TestTokenCounterToolsProbe:
+    """`_count_tokens` must not mask a `TypeError` raised inside the counter body."""
+
+    def test_accepts_tools_with_explicit_param(self) -> None:
+        # The parameter must be named `tools` to exercise the signature probe.
+        def counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401, ARG001
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_accepts_tools_with_var_keyword(self) -> None:
+        def counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_rejects_tools_without_param(self) -> None:
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is False
+
+    def _make_request_with_tools(self) -> ModelRequest:
+        """A request carrying tools so `tools=` reaches the token counter."""
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+        return ModelRequest(
+            model=make_mock_model(),
+            messages=state["messages"],
+            system_message=None,
+            tools=[{"type": "function", "function": {"name": "noop"}}],
+            runtime=make_mock_runtime(),
+            state=state,
+        )
+
+    def _make_middleware(self, counter: Any) -> SummarizationMiddleware:  # noqa: ANN401
+        """Middleware whose triggers never fire, so only `_count_tokens` runs."""
+        return SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("tokens", 1_000_000),
+            token_counter=counter,
+            truncate_args_settings={"trigger": ("tokens", 1_000_000), "keep": ("messages", 2)},
+        )
+
+    def test_in_body_typeerror_propagates_sync(self) -> None:
+        # Accepts `tools` but its body raises only when tools is supplied, mimicking
+        # a counter whose tool-schema handling is broken. The old probe swallowed
+        # this and silently recounted without tools; it must now surface loudly.
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+    async def test_in_body_typeerror_propagates_async(self) -> None:
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        async def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            await middleware.awrap_model_call(self._make_request_with_tools(), handler)
+
+    def test_counter_without_tools_param_is_called_without_tools(self) -> None:
+        # Tools are present on the request, but a counter that does not declare
+        # `tools` is invoked without them -- and does not raise.
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 10
+
+        middleware = self._make_middleware(counter)
+        captured: ModelRequest | None = None
+
+        def handler(req: ModelRequest) -> ModelResponse:
+            nonlocal captured
+            captured = req
+            return AIMessage(content="ok")
+
+        result = middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+        assert isinstance(result, AIMessage)
+        assert captured is not None  # Handler ran; counting without tools did not raise.

@@ -50,6 +50,7 @@ log of all evicted messages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 import warnings
@@ -182,6 +183,40 @@ class SummarizationDefaults(TypedDict):
     trigger: ContextSize
     keep: ContextSize
     truncate_args_settings: TruncateArgsSettings
+
+
+def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
+    """Determine whether `counter` accepts a `tools` keyword argument.
+
+    The `TokenCounter` contract only requires accepting messages, but the
+    default counter (and most modern ones) also accept `tools=` so tool schemas
+    contribute to the count. Rather than probe by calling and catching
+    `TypeError` — which cannot distinguish a signature that rejects `tools`
+    from a genuine `TypeError` raised inside the counter's body — the signature
+    is inspected directly.
+
+    Args:
+        counter: The token-counting callable to inspect.
+
+    Returns:
+        `True` if the signature declares a `tools` parameter or accepts
+        arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
+        not, or `None` when the signature cannot be introspected (e.g. a
+        C-level callable), signalling that callers should fall back to probing.
+    """
+    try:
+        parameters = inspect.signature(counter).parameters
+    except (TypeError, ValueError):
+        return None
+    for param in parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == "tools" and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
 
 
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
@@ -326,6 +361,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
+
+        # Whether the configured token counter accepts a `tools` kwarg. Resolved
+        # once here (the counter is fixed after construction) so the per-call
+        # token count never pays signature-introspection cost. `None` means the
+        # signature could not be introspected, so `_count_tokens` probes instead.
+        self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -725,10 +766,20 @@ A condensed summary follows:
             tools: Optional tools whose schemas contribute to the count.
 
         Returns:
-            Total token count. Falls back to counting without `tools` when the
-                configured `token_counter` does not accept a `tools` keyword.
+            Total token count. Counts without `tools` when the configured
+                `token_counter` does not accept a `tools` keyword. A `TypeError`
+                raised inside the counter's own body is never masked — it
+                propagates so a broken counter is not hidden behind a silently
+                wrong count.
         """
         counted_messages = [system_message, *messages] if system_message is not None else messages
+        if self._counter_accepts_tools is True:
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        if self._counter_accepts_tools is False:
+            return self.token_counter(counted_messages)
+        # Signature could not be introspected; probe defensively. This is the
+        # only path that swallows a `TypeError`, and only for counters whose
+        # signature is opaque (e.g. C-level callables).
         try:
             return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         except TypeError:

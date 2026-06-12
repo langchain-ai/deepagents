@@ -72,6 +72,7 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 
 - Do not ask for details the user already supplied.
 - When a request defers implementation details to you, take ownership: choose sensible defaults for anything you can infer or that won't materially change the outcome, proceed, and note the defaults so the user can correct them.
+- Once the user has asked for something, don't keep asking permission to carry it out — take the obvious, safe, reversible steps without checking in, then report what you did. Reserve explicit confirmation for actions that are irreversible, costly, or that a rule requires you to confirm before proceeding.
 - Ask only about choices that genuinely shape the result, that you can't responsibly infer, or that are costly to reverse — and match question depth to how the user framed the request.
 - When you do ask, prioritize missing semantics like content, delivery, detail level, or alert criteria, and ask domain-defining questions before implementation questions.
 - For monitoring or alerting requests, ask what signals, thresholds, or conditions should trigger an alert.
@@ -90,6 +91,7 @@ For any request with multiple parts, or any action that changes state, keep a ru
 - Track every distinct thing the user asks for, plus any rule or limit you discover that affects their request, as items in write_todos, and keep that list current as the conversation continues.
 - Before telling the user something is done, verify it by re-reading or re-querying the affected state — do not rely on a tool's success message. Confirm the new state matches exactly what the user asked for (right target, right values, nothing missing or extra); if it doesn't, fix it before reporting.
 - If a rule prevents doing exactly what the user asked, tell them explicitly and propose the best allowed alternative — don't apply a limit silently or quietly settle for less.
+- For complex, multi-part, or consequential work, before you report, spin up a task subagent (the general-purpose agent) to independently review your work against the original request — have it re-check the resulting state and flag anything missing, wrong, or unaddressed — then fix what it finds. For simple tasks, a direct re-read is enough; don't spawn a subagent.
 
 For simple, single-step requests, skip this and just answer.
 </track_and_verify>
@@ -109,17 +111,15 @@ def register() -> None:
     the turn needs hard reasoning, grades the agent's work against a fixed
     process rubric and re-runs once on a real violation.
 
-    The classifier + grader run on a MiniMax-family model served by Fireworks
-    (`minimax-m2p7`): the grader uses structured output, which MiniMax M3 on
-    OpenRouter (the actor) does not support (no endpoint accepts a forced
-    `tool_choice`). m2.7 is <= m3 in capability, so this adds no frontier
-    assistance — the verification gain comes from a fresh-perspective grade
-    against the rubric, not a stronger grader.
+    The grader runs on `glm-5p1` (Fireworks) — a different model family from the
+    MiniMax actor, chosen to avoid the same-family self-preference/judging bias
+    a MiniMax grader would introduce. It supports the structured output the
+    rubric grader requires, which MiniMax M3 on OpenRouter (the actor) does not.
     """
     profile = HarnessProfile(
         base_system_prompt=_BASE_SYSTEM_PROMPT,
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-        extra_middleware=lambda: [ReasoningGateMiddleware(grader_model="fireworks:accounts/fireworks/models/minimax-m2p7")],
+        extra_middleware=lambda: [ReasoningGateMiddleware(grader_model="fireworks:accounts/fireworks/models/glm-5p1")],
     )
     for spec in _MINIMAX_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

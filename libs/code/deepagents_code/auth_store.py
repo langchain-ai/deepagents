@@ -113,6 +113,16 @@ def _auth_path() -> Path:
     return DEFAULT_STATE_DIR / "auth.json"
 
 
+def auth_path() -> Path:
+    """Return the resolved path to the credential store (`auth.json`).
+
+    Public wrapper over `_auth_path` so callers outside this module (e.g. the
+    `dcode auth path` command) can report where credentials live without
+    reaching into a private helper.
+    """
+    return _auth_path()
+
+
 def _read_raw() -> dict | None:
     """Read and validate the on-disk auth file.
 

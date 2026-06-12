@@ -2135,6 +2135,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
+            wrapped = isinstance(command_messages, Overwrite)
+            if wrapped:
+                command_messages = command_messages.value
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2147,10 +2150,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
+            new_messages = Overwrite(processed_messages) if wrapped else processed_messages
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,
-                update={**update, "messages": processed_messages},
+                update={**update, "messages": new_messages},
             )
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
@@ -2174,6 +2178,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if update is None:
                 return tool_result
             command_messages = update.get("messages", [])
+            wrapped = isinstance(command_messages, Overwrite)
+            if wrapped:
+                command_messages = command_messages.value
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2186,10 +2193,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
+            new_messages = Overwrite(processed_messages) if wrapped else processed_messages
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,
-                update={**update, "messages": processed_messages},
+                update={**update, "messages": new_messages},
             )
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)

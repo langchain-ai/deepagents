@@ -1136,6 +1136,38 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
+    def test_intercept_command_with_overwrite_messages(self):
+        """Test that Commands wrapping messages in Overwrite are handled."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in result.update["messages"].value[0].content
+
+    async def test_aintercept_command_with_overwrite_messages(self):
+        """Test that the async path handles Overwrite-wrapped messages."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in result.update["messages"].value[0].content
+
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
         assert sanitize_tool_call_id("call_123") == "call_123"

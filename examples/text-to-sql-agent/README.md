@@ -221,20 +221,6 @@ text-to-sql-agent/
 └── README.md                     # This file
 ```
 
-## Requirements
-
-All dependencies are specified in `pyproject.toml`:
-
-- deepagents >= 0.3.5
-- langchain >= 1.2.3
-- langchain-anthropic >= 1.3.1
-- langchain-community >= 0.3.0
-- langgraph >= 1.0.6
-- sqlalchemy >= 2.0.0
-- python-dotenv >= 1.0.0
-- tavily-python >= 0.5.0
-- rich >= 13.0.0
-
 ## LangSmith Integration
 
 ### Setup

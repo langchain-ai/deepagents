@@ -2106,6 +2106,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
+    @staticmethod
+    def _unwrap_command_messages(update: Mapping[str, Any]) -> tuple[Any, bool]:
+        """Return a Command messages update and whether it used Overwrite."""
+        command_messages = update.get("messages", [])
+        if isinstance(command_messages, Overwrite):
+            return command_messages.value, True
+        return command_messages, False
+
+    @staticmethod
+    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage] | Overwrite:
+        """Restore Overwrite semantics when the original messages update used them."""
+        if wrapped:
+            return Overwrite(messages)
+        return messages
+
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
@@ -2134,10 +2149,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update = tool_result.update
             if update is None:
                 return tool_result
-            command_messages = update.get("messages", [])
-            wrapped = isinstance(command_messages, Overwrite)
-            if wrapped:
-                command_messages = command_messages.value
+            command_messages, wrapped = self._unwrap_command_messages(update)
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2150,7 +2162,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-            new_messages = Overwrite(processed_messages) if wrapped else processed_messages
+            new_messages = self._rewrap_command_messages(processed_messages, wrapped=wrapped)
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,
@@ -2177,10 +2189,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update = tool_result.update
             if update is None:
                 return tool_result
-            command_messages = update.get("messages", [])
-            wrapped = isinstance(command_messages, Overwrite)
-            if wrapped:
-                command_messages = command_messages.value
+            command_messages, wrapped = self._unwrap_command_messages(update)
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2193,7 +2202,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
-            new_messages = Overwrite(processed_messages) if wrapped else processed_messages
+            new_messages = self._rewrap_command_messages(processed_messages, wrapped=wrapped)
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,

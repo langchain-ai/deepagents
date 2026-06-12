@@ -398,10 +398,13 @@ def _get_project_files(root: Path) -> list[str]:
     git_path = _get_git_executable()
     if git_path:
         tracked_ok, tracked = _run_git_ls_files(git_path, root, [])
-        untracked_ok, untracked = _run_git_ls_files(
-            git_path, root, ["--others", "--exclude-standard"]
-        )
-        if tracked_ok and untracked_ok:
+        if tracked_ok:
+            # The untracked scan is optional; if it fails or times out, keep the
+            # already-successful tracked list rather than dropping to the glob
+            # fallback (which only walks a few levels deep).
+            _, untracked = _run_git_ls_files(
+                git_path, root, ["--others", "--exclude-standard"]
+            )
             seen: set[str] = set()
             files: list[str] = []
             for f in (*tracked, *untracked):

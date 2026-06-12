@@ -573,6 +573,11 @@ jobs:
 
           DISPATCHED=()
           FAILED=()
+          # Maps package -> the URL of the release.yml run this job kicked off.
+          # Populated best-effort by the second-pass poll below; a package left
+          # unset just means we couldn't correlate its run in time (it still
+          # dispatched).
+          declare -A RUN_URLS=()
 
           # release.yml's `version` input is required and the API silently accepts
           # an empty string, so guard here. release-please.yml's extraction step
@@ -596,6 +601,32 @@ jobs:
             esac
           }
 
+          # Recover the URL of a dispatched run. The workflow_dispatch API does
+          # not return the created run's id, so we correlate on release.yml's
+          # `run-name`, which renders as "release(<package>): <version>". This
+          # string MUST stay in lock-step with release.yml's `run-name`: if that
+          # template changes, the jq $title below stops matching and correlation
+          # silently always-misses (the best-effort warning fires, nothing else
+          # breaks). The title is unique per package per *version* — re-dispatches
+          # of the same version share a title, so `--created ">=$started"`
+          # (backdated for clock skew) bounds the window and `sort_by | last`
+          # takes the most recent match. package/VERSION go to jq via --arg —
+          # never interpolated into the filter program — so they stay data, not
+          # code. Echoes the URL on stdout, or nothing on no match.
+          find_run_url() {
+            local package="$1" started="$2"
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release.yml \
+              --event workflow_dispatch \
+              --created ">=$started" \
+              --limit 50 \
+              --json displayTitle,url,createdAt 2>/dev/null \
+            | jq -r --arg title "release(${package}): ${VERSION}" \
+                'map(select(.displayTitle == $title)) | sort_by(.createdAt) | last | .url // empty' \
+              2>/dev/null || true
+          }
+
           dispatch() {
             local package="$1"
             echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
@@ -613,6 +644,28 @@ jobs:
               echo "::error::Failed to dispatch release.yml for $package"
               FAILED+=("$package")
             fi
+          }
+
+          # Second pass, run AFTER every dispatch (see call site below): poll for
+          # a dispatched run's URL and record it in RUN_URLS. Kept separate from
+          # dispatch() on purpose — polling here can never delay, or (if the job
+          # hits its timeout mid-poll) starve, the dispatch of later packages.
+          # Best-effort and bounded: run creation is usually 1-5s; we wait up to
+          # max_poll before giving up. A miss leaves the package out of RUN_URLS
+          # (summary falls back to the workflow-page link) and never fails the job.
+          locate_run() {
+            local package="$1" poll_interval=5 max_poll=90 waited=0 url=""
+            while [ "$waited" -lt "$max_poll" ]; do
+              url=$(find_run_url "$package" "$DISPATCH_STARTED")
+              if [ -n "$url" ]; then
+                echo "Located run for $package: $url"
+                RUN_URLS["$package"]="$url"
+                return
+              fi
+              sleep "$poll_interval"
+              waited=$((waited + poll_interval))
+            done
+            echo "::warning::Dispatched $package but could not locate its release.yml run within ${max_poll}s; summary will link the workflow page instead."
           }
 
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
@@ -646,6 +699,15 @@ jobs:
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # Backdate the correlation window by 60s to absorb runner/GitHub clock
+          # skew, so `--created` doesn't filter out runs we're about to create.
+          # Captured once before any dispatch, then shared by every locate_run
+          # call below — all dispatches happen within seconds of this point.
+          # `date -d` is GNU coreutils (ubuntu-latest); on a BSD/macOS runner it
+          # would fail and leave DISPATCH_STARTED empty, degrading every poll to
+          # a graceful miss (still best-effort — no job failure).
+          DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
+
           if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
@@ -655,12 +717,29 @@ jobs:
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
+
+          # Now that every package has been dispatched, correlate each one to its
+          # run URL for the summary. Done as a second pass so a slow/missed
+          # correlation can't hold up any dispatch.
+          if [ "${#DISPATCHED[@]}" -gt 0 ]; then
+            for p in "${DISPATCHED[@]}"; do
+              locate_run "$p"
+            done
+          fi
+
           # Append per-package status to the step summary so operators see at a
           # glance which packages were queued vs. which need a manual retry.
           {
             echo "### Dispatched (${#DISPATCHED[@]})"
             if [ "${#DISPATCHED[@]}" -gt 0 ]; then
-              for p in "${DISPATCHED[@]}"; do echo "- \`$p\` @ \`$VERSION\`"; done
+              for p in "${DISPATCHED[@]}"; do
+                url="${RUN_URLS[$p]:-}"
+                if [ -n "$url" ]; then
+                  echo "- [\`$p\` @ \`$VERSION\`]($url)"
+                else
+                  echo "- \`$p\` @ \`$VERSION\` _(run link unavailable — see workflow page above)_"
+                fi
+              done
             else
               echo "_none_"
             fi

@@ -372,6 +372,51 @@ class TestGetThemeColors:
         colors = get_theme_colors(FakeApp())
         assert colors.primary == "#112233"
 
+    def test_unknown_theme_does_not_reuse_cached_palette(self) -> None:
+        """Runtime themes with the same name may have different colors."""
+
+        class FirstTheme:
+            dark = True
+            primary = "#112233"
+            secondary = "#445566"
+            accent = "#778899"
+            panel = "#AABBCC"
+            success = "#AABBCC"
+            warning = "#AABBCC"
+            error = "#AABBCC"
+            foreground = "#AABBCC"
+            background = "#010203"
+            surface = "#AABBCC"
+
+        class SecondTheme:
+            dark = True
+            primary = "#DDEEFF"
+            secondary = "#445566"
+            accent = "#778899"
+            panel = "#AABBCC"
+            success = "#AABBCC"
+            warning = "#AABBCC"
+            error = "#AABBCC"
+            foreground = "#AABBCC"
+            background = "#0A0B0C"
+            surface = "#AABBCC"
+
+        class FirstApp:
+            theme = "runtime-custom"
+            current_theme = FirstTheme()
+
+        class SecondApp:
+            theme = "runtime-custom"
+            current_theme = SecondTheme()
+
+        first = get_theme_colors(FirstApp())
+        second = get_theme_colors(SecondApp())
+
+        assert first.primary == "#112233"
+        assert first.background == "#010203"
+        assert second.primary == "#DDEEFF"
+        assert second.background == "#0A0B0C"
+
     def test_widget_with_app_property(self) -> None:
         """Simulates a mounted widget whose .app resolves to an App."""
 

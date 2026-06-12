@@ -727,17 +727,12 @@ A condensed summary follows:
     def _truncate_args(
         self,
         messages: list[AnyMessage],
-        system_message: SystemMessage | None,
-        tools: list[BaseTool | dict[str, Any]] | None,
-        *,
         total_tokens: int,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
         Args:
             messages: Messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
             total_tokens: Precomputed token count for `messages` (plus system
                 message and tools). Counting tools is expensive (schema
                 conversion per tool), so the caller counts once and shares the
@@ -981,9 +976,7 @@ A condensed summary follows:
         # Step 1: Truncate args if configured
         truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
-            total_tokens=total_tokens,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
@@ -1104,9 +1097,7 @@ A condensed summary follows:
         # Step 1: Truncate args if configured
         truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
-            total_tokens=total_tokens,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen

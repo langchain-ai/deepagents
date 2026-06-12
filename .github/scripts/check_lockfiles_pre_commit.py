@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +52,30 @@ def _packages_for_paths(paths: list[str]) -> list[Path]:
     ]
 
 
+def _lock_command(package: Path, *, check: bool) -> list[str]:
+    command = ["uv", "lock"]
+    if check:
+        command.append("--check")
+    return [
+        *command,
+        "--directory",
+        package.relative_to(REPO_ROOT).as_posix(),
+        "--python",
+        _python_version(package),
+    ]
+
+
+def _lockfile_error(package: Path) -> str:
+    package_path = package.relative_to(REPO_ROOT).as_posix()
+    lockfile = f"{package_path}/uv.lock"
+    command = shlex.join(_lock_command(package, check=False))
+    return (
+        f"::error file={lockfile},title=Out-of-date uv.lock::"
+        f"{lockfile} is out of sync with {package_path}/pyproject.toml. "
+        f"From the repository root, run `{command}` and commit the updated lockfile."
+    )
+
+
 def main(paths: list[str]) -> int:
     """Check lockfiles for packages touched by `paths`, or every package if empty."""
     packages = _packages_for_paths(paths)
@@ -60,18 +85,12 @@ def main(paths: list[str]) -> int:
     for package in packages:
         print(f"🔍 Checking {_label(package)}")
         result = subprocess.run(
-            [
-                "uv",
-                "lock",
-                "--check",
-                "--directory",
-                str(package),
-                "--python",
-                _python_version(package),
-            ],
+            _lock_command(package, check=True),
             check=False,
+            cwd=REPO_ROOT,
         )
         if result.returncode != 0:
+            print(_lockfile_error(package), file=sys.stderr)
             return result.returncode
     print("✅ All applicable lockfiles are up-to-date!")
     return 0

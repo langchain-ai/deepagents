@@ -49,6 +49,9 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **[Source code](https://github.com/langchain-ai/deepagents/tree/main/libs/code)**
 - **[Deep Agents SDK](https://github.com/langchain-ai/deepagents)** — underlying agent harness
 
+- [LangChain Academy](https://academy.langchain.com/) – Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
+
 ## 📕 Releases & Versioning
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.

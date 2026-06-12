@@ -55,3 +55,8 @@ WhatsApp exposure:
 - `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open` allows every inbound WhatsApp message.
 
 Cron jobs are stored in the assistant state directory at `cron/jobs.json`. Scheduler ticks, dispatch, success/failure, and delivery outcomes are logged as `talon_event` JSON records.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) – Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

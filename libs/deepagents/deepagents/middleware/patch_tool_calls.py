@@ -17,7 +17,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         if not messages:
             return None
 
-        answered_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}  # ty: ignore[unresolved-attribute]
+        answered_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}
 
         if not any(
             tool_call["id"] is not None and tool_call["id"] not in answered_ids

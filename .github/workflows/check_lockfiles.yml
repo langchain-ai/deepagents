@@ -25,12 +25,15 @@ jobs:
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
       - name: "🐍 Set up Python and uv"
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
 
-      - name: "🔍 Check all lockfiles"
-        run: make lock-check
-        working-directory: libs
+      - name: "🔍 Check changed lockfiles"
+        run: |
+          mapfile -t changed < <(git diff --name-only HEAD^ HEAD)
+          python3 .github/scripts/check_lockfiles_pre_commit.py "${changed[@]}"

@@ -96,6 +96,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["skills"], "dcode skills <command>"),
         (["threads"], "dcode threads <command>"),
         (["mcp"], "dcode mcp <command>"),
+        (["config"], "dcode config <command>"),
     ],
 )
 def test_help_only_commands_skip_runtime_imports(
@@ -126,6 +127,7 @@ def test_help_only_commands_skip_runtime_imports(
         ["skills", "list"],
         ["threads", "list"],
         ["mcp", "login", "example.com"],
+        ["config", "show"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:

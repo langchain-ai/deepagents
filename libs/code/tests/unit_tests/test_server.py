@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 from typing import TYPE_CHECKING, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -290,6 +291,45 @@ class TestServerProcess:
         # Overrides cleared after successful restart
         assert server._env_overrides == {}
 
+    async def test_restart_runs_blocking_stop_off_event_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """restart() must run the blocking subprocess stop off the event loop.
+
+        `_stop_process` blocks up to `_SHUTDOWN_TIMEOUT` (plus a SIGKILL grace
+        wait) on `process.wait`; running it directly on the loop freezes the
+        Textual reactor so `/restart` wedges the TUI input. `restart()` must
+        offload it to a worker thread, so the stop executes on a thread other
+        than the one running the event loop.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._process = MagicMock()
+
+        loop_thread_id = threading.get_ident()
+        stop_thread_id: int | None = None
+
+        def recording_stop() -> None:
+            nonlocal stop_thread_id
+            stop_thread_id = threading.get_ident()
+            server._process = None
+
+        # Patch only `start` (avoid spawning a real server) and `_stop_process`
+        # (record its executing thread). The real `restart()` and real
+        # `asyncio.to_thread` run, so a regression to a direct call would run
+        # `_stop_process` on the loop thread and fail the off-loop assertion.
+        with (
+            patch.object(server, "start", new=AsyncMock()),
+            patch.object(server, "_stop_process", new=recording_stop),
+        ):
+            await server.restart()
+
+        assert stop_thread_id is not None
+        assert stop_thread_id != loop_thread_id
+
     async def test_restart_rollback_on_failure(self, tmp_path: Path) -> None:
         """Env overrides are rolled back when restart fails."""
         config_dir = tmp_path / "runtime"
@@ -309,7 +349,7 @@ class TestServerProcess:
             msg = "restart failed"
             raise RuntimeError(msg)
 
-        server.start = failing_start  # type: ignore[assignment]
+        server.start = failing_start  # ty: ignore
         server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="should-be-rolled-back")
 
         with pytest.raises(RuntimeError, match="restart failed"):

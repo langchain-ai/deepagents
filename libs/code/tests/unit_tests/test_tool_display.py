@@ -8,7 +8,7 @@ assertions are deterministic regardless of terminal configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 if TYPE_CHECKING:
@@ -107,8 +107,8 @@ class TestCoerceTimeoutSeconds:
         assert _coerce_timeout_seconds(None) is None
 
     def test_float_type_returns_none(self) -> None:
-        # `type(x) is int` rejects floats (and bool subclass isn't int either).
-        assert _coerce_timeout_seconds(1.5) is None  # type: ignore[arg-type]
+        # Intentionally pass a wrong runtime type to verify defensive coercion.
+        assert _coerce_timeout_seconds(cast("Any", 1.5)) is None
 
 
 # ---------------------------------------------------------------------------

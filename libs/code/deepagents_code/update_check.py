@@ -22,7 +22,7 @@ import shutil
 import sys
 import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TextIO
@@ -136,7 +136,7 @@ def is_installed_version_at_least(version: str) -> bool:
 
 
 def _latest_from_releases(
-    releases: dict[str, list[object]],
+    releases: Mapping[str, Sequence[object]],
     *,
     include_prereleases: bool,
 ) -> str | None:
@@ -349,7 +349,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # type: ignore[call-overload]
+    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
     return value if isinstance(value, str) else None
 
 
@@ -868,13 +868,13 @@ async def _run_install_subprocess(
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
-                    proc.stdout,  # type: ignore[arg-type]
+                    proc.stdout,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,
                 ),
                 _read_stream(
-                    proc.stderr,  # type: ignore[arg-type]
+                    proc.stderr,  # ty: ignore[invalid-argument-type]
                     lines=output_lines,
                     log_file=log_file,
                     progress=progress,

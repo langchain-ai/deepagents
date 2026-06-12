@@ -31,6 +31,7 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-code
+          - deepagents-talon
           - deepagents-evals
           - langchain-daytona
           - langchain-modal
@@ -85,6 +86,7 @@ permissions:
 jobs:
   # Determine working directory from package input and resolve the release SHA
   setup:
+    name: 🧭 Resolve release target
     runs-on: ubuntu-latest
     outputs:
       package: ${{ steps.parse.outputs.package }}
@@ -119,6 +121,9 @@ jobs:
             deepagents-code)
               echo "working-dir=libs/code" >> $GITHUB_OUTPUT
               ;;
+            deepagents-talon)
+              echo "working-dir=libs/talon" >> $GITHUB_OUTPUT
+              ;;
             deepagents-evals)
               echo "working-dir=libs/evals" >> $GITHUB_OUTPUT
               ;;
@@ -136,7 +141,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
               exit 1
               ;;
           esac
@@ -230,6 +235,7 @@ jobs:
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
+    name: 📦 Build distribution
     needs: setup
     if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
@@ -286,13 +292,49 @@ jobs:
         run: |
           import os
           import re
+          import sys
           import tomllib
+          import urllib.error
+          import urllib.request
           with open("pyproject.toml", "rb") as f:
               data = tomllib.load(f)
           pkg_name = data["project"]["name"]
           version = data["project"]["version"]
           # PEP 440 pre-release: contains a/b/rc/dev suffix or dash separator
           is_pre = bool(re.search(r"(a|b|rc|\.dev)\d", version) or "-" in version)
+
+          # Query the per-version endpoint so PyPI applies PEP 440 normalization
+          # (e.g. `0.1.0-rc1` and `0.1.0rc1` resolve to the same release): HTTP 200
+          # means the version is already published, 404 means it's available
+          # (including the first-ever release of a new package). Only the status
+          # code is used, so a malicious or malformed response body can't mislead us.
+          url = f"https://pypi.org/pypi/{pkg_name}/{version}/json"
+          try:
+              with urllib.request.urlopen(url, timeout=10):
+                  already_published = True
+          except urllib.error.HTTPError as err:
+              if err.code == 404:
+                  already_published = False
+              else:
+                  # Fail closed: an unexpected status means we can't verify.
+                  print(
+                      f"::error::PyPI returned HTTP {err.code} checking whether "
+                      f"{pkg_name}=={version} exists; cannot verify, aborting."
+                  )
+                  sys.exit(1)
+          except urllib.error.URLError as err:
+              # Fail closed: if PyPI is unreachable we must not assume the version
+              # is free, or we risk re-publishing an existing release.
+              print(
+                  f"::error::Could not reach PyPI to verify {pkg_name}=={version} "
+                  f"({err.reason}); cannot verify, aborting."
+              )
+              sys.exit(1)
+
+          if already_published:
+              print(f"::error::{pkg_name}=={version} already exists on PyPI.")
+              sys.exit(1)
+
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
@@ -311,6 +353,7 @@ jobs:
   # Generate release notes from CHANGELOG.md (with git log fallback)
   # and collect contributor shoutouts from merged PRs
   release-notes:
+    name: 📝 Generate release notes
     needs:
       - setup
       - build
@@ -624,6 +667,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   test-pypi-publish:
+    name: 🧪 Publish to TestPyPI
     needs:
       - setup
       - build
@@ -664,6 +708,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
+    name: ✅ Pre-release checks
     needs:
       - setup
       - build
@@ -815,6 +860,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
   publish:
+    name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
     needs:
       - setup
@@ -863,6 +909,7 @@ jobs:
 
   # Create GitHub release after checks pass
   mark-release:
+    name: 🏷️ Tag GitHub release
     needs:
       - setup
       - build

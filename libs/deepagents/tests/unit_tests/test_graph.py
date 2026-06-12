@@ -16,7 +16,6 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
-from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
@@ -28,7 +27,7 @@ from deepagents.graph import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.subagents import SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness.harness_profiles import (
@@ -62,11 +61,11 @@ class TestCreateDeepAgentMetadata:
     """Tests for metadata on the compiled graph."""
 
     def test_versions_metadata_contains_sdk_version(self) -> None:
-        """`create_deep_agent` should attach SDK version in metadata.versions."""
+        """`create_deep_agent` should attach SDK version in metadata.lc_versions."""
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         agent = create_deep_agent(model=model)
         assert agent.config is not None
-        versions = agent.config["metadata"]["versions"]
+        versions = agent.config["metadata"]["lc_versions"]
         assert versions["deepagents"] == __version__
 
     def test_ls_integration_metadata_preserved(self) -> None:
@@ -768,21 +767,17 @@ class TestStateSchema:
         class MyState(DeepAgentState):
             page_url: str
 
-        middleware = SubAgentMiddleware(
-            backend=StateBackend(),
-            subagents=[
-                {
-                    "name": "researcher",
-                    "description": "Research agent",
-                    "system_prompt": "You are a researcher.",
-                    "model": GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
-                    "tools": [],
-                }
-            ],
+        runnable = create_sub_agent(
+            {
+                "name": "researcher",
+                "description": "Research agent",
+                "system_prompt": "You are a researcher.",
+                "model": GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
+                "tools": [],
+            },
             state_schema=MyState,
         )
 
-        runnable = middleware._get_subagents()[0]["runnable"]
         properties = runnable.get_input_jsonschema()["properties"]
         assert "page_url" in properties
 

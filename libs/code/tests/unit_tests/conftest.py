@@ -112,6 +112,21 @@ def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _disable_terminal_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop tests from leaking terminal control sequences to the real terminal.
+
+    Production code constructs `DeepAgentsApp` and exercises the spinner / theme
+    paths, which emit `OSC 11` (background color) and `OSC 9;4` (taskbar
+    progress) via `terminal_escape.write_terminal_escape`. That writer targets
+    `/dev/tty`, which pytest does not capture, so running the suite from inside
+    a real terminal (e.g. an editable install) visibly recolors the developer's
+    session. Opting out keeps the run inert. `test_terminal_escape.py` clears
+    this var in its own fixture so its assertions still exercise the real path.
+    """
+    monkeypatch.setenv("DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE", "1")
+
+
+@pytest.fixture(autouse=True)
 def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make app-specific CSS variables available to all test `App` instances.
 

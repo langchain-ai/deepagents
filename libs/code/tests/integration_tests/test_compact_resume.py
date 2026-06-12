@@ -52,7 +52,7 @@ async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) ->
 def _event_field(event: object, key: str) -> object | None:
     """Read a summarization-event field from either dict or object form."""
     if isinstance(event, dict):
-        return event.get(key)  # ty: ignore[invalid-argument-type]
+        return event.get(key)  # ty: ignore
     return getattr(event, key, None)
 
 
@@ -138,7 +138,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
             config = {"configurable": {"thread_id": thread_id}}
 
             app = DeepAgentsApp(
-                agent=agent,  # ty: ignore[invalid-argument-type]
+                agent=agent,  # ty: ignore
                 assistant_id=assistant_id,
                 backend=compact_backend,
                 cwd=project_dir,

@@ -46,7 +46,10 @@ as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
+"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+
+DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
+"""Default path for the debug log when `DEBUG_FILE` is unset."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -124,6 +127,14 @@ NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"
 NO_UPDATE_CHECK = "DEEPAGENTS_CODE_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+OFFLINE = "DEEPAGENTS_CODE_OFFLINE"
+"""Disable network downloads of managed binaries (e.g. ripgrep).
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled. When
+truthy, `managed_tools.ensure_ripgrep` will not attempt to download a binary
+and falls back to the existing missing-tool notification + slow Python regex
+path."""
+
 OLLAMA_DISCOVERY = "DEEPAGENTS_CODE_OLLAMA_DISCOVERY"
 """Toggle Ollama model and profile discovery probes.
 
@@ -164,6 +175,29 @@ _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
+def classify_env_bool(raw: str) -> bool | None:
+    """Classify a raw env-var string as a truthy, falsy, or unrecognized token.
+
+    The single source of truth for which strings count as boolean on/off
+    values; `is_env_truthy` and the config resolver both build on it so they
+    agree on what "recognizably boolean" means.
+
+    Args:
+        raw: The raw (unstripped) environment-variable value.
+
+    Returns:
+        `True` for `1`/`true`/`yes`/`on`, `False` for `0`/`false`/`no`/`off`/
+            empty string (case-insensitive), or `None` when the value
+            is neither.
+    """
+    lowered = raw.strip().lower()
+    if lowered in _TRUTHY_VALUES:
+        return True
+    if lowered in _FALSY_VALUES:
+        return False
+    return None
+
+
 def is_env_truthy(name: str, *, default: bool = False) -> bool:
     """Return whether env var *name* is set to a recognizably truthy value.
 
@@ -184,9 +218,5 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return default
-    lowered = raw.strip().lower()
-    if lowered in _TRUTHY_VALUES:
-        return True
-    if lowered in _FALSY_VALUES:
-        return False
-    return default
+    classified = classify_env_bool(raw)
+    return default if classified is None else classified

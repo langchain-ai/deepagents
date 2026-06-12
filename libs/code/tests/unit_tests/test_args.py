@@ -70,6 +70,38 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestMaxRetriesArg:
+    """Tests for `--max-retries` argument."""
+
+    def test_valid_int_passes_through(self) -> None:
+        """`--max-retries` stores a non-negative integer."""
+        with patch.object(sys, "argv", ["deepagents", "--max-retries", "3"]):
+            args = parse_args()
+        assert args.max_retries == 3
+
+    def test_zero_passes_through(self) -> None:
+        """`--max-retries 0` is valid."""
+        with patch.object(sys, "argv", ["deepagents", "--max-retries", "0"]):
+            args = parse_args()
+        assert args.max_retries == 0
+
+    def test_negative_rejected(self) -> None:
+        """Negative retry counts are rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-retries", "-1"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_non_int_rejected(self) -> None:
+        """Non-integer retry counts are rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--max-retries=foo"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+
 class TestSandboxSnapshotNameArg:
     """Tests for `--sandbox-snapshot-name` argument."""
 
@@ -108,7 +140,7 @@ class TestSandboxSnapshotNameArg:
             pytest.raises(SystemExit),
         ):
             parse_args()
-        assert "requires --sandbox langsmith or runloop" in capsys.readouterr().err
+        assert "requires a --sandbox provider" in capsys.readouterr().err
 
     def test_snapshot_name_with_runloop(self) -> None:
         """`--sandbox-snapshot-name` is allowed with `--sandbox runloop`."""
@@ -426,6 +458,46 @@ class TestNoMcpArg:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main()
         assert exc_info.value.code == 2
+
+
+class TestConfigCommandDispatch:
+    """Tests for `cli_main()` dispatch of `dcode config` subcommands."""
+
+    def test_config_command_exits_before_stdin_pipe(self) -> None:
+        """`dcode config` is headless and must not read stdin."""
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "config",
+                    "get",
+                    "interpreter.memory_limit_mb",
+                    "--json",
+                ],
+            ),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch(
+                "deepagents_code.main.apply_stdin_pipe",
+                side_effect=AssertionError("config command read stdin"),
+            ) as stdin_mock,
+            patch(
+                "deepagents_code.config_commands.run_config_command",
+                return_value=0,
+            ) as config_mock,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        stdin_mock.assert_not_called()
+        config_mock.assert_called_once()
+        args = config_mock.call_args.args[0]
+        assert args.command == "config"
+        assert args.config_command == "get"
 
 
 class TestMcpCommandDispatch:

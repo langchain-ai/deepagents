@@ -1891,9 +1891,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            system_prompt = self._build_dynamic_system_prompt(
-                include_execution=has_execute_tool and backend_supports_execution,
-            )
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1947,9 +1959,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            system_prompt = self._build_dynamic_system_prompt(
-                include_execution=has_execute_tool and backend_supports_execution,
-            )
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

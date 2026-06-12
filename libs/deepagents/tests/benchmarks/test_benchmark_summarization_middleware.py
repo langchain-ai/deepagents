@@ -1,7 +1,7 @@
 """Wall-time benchmarks for `SummarizationMiddleware` per-model-call overhead.
 
-Run locally:  `make benchmark`
-Run with CodSpeed:  `uv run --group test pytest ./tests -m benchmark --codspeed`
+Run locally:  `make -C libs/deepagents benchmark`
+Run with CodSpeed:  `make -C libs/deepagents bench`
 
 These tests measure the wall time of `wrap_model_call` / `awrap_model_call`
 on the *common* path -- the one taken on every model invocation where nothing
@@ -125,8 +125,13 @@ async def _ahandler(_request: ModelRequest) -> "ModelResponse":
 
 
 @pytest.fixture
-def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    """A dedicated event loop, closed on teardown to avoid leaking loops."""
+def bench_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    """A dedicated event loop, closed on teardown to avoid leaking loops.
+
+    Named distinctly from pytest-asyncio's reserved `event_loop` fixture, which
+    is deprecated to override; these benchmarks are sync and drive the loop
+    manually via `run_until_complete`.
+    """
     loop = asyncio.new_event_loop()
     try:
         yield loop
@@ -158,7 +163,7 @@ class TestSummarizationWrapModelCall:
         self,
         benchmark: BenchmarkFixture,
         tool_count: int,
-        event_loop: asyncio.AbstractEventLoop,
+        bench_event_loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Async path: same single-count guarantee as the sync path."""
         middleware = _make_middleware()
@@ -166,4 +171,4 @@ class TestSummarizationWrapModelCall:
 
         @benchmark  # type: ignore[misc]
         def _() -> None:
-            event_loop.run_until_complete(middleware.awrap_model_call(_make_request(tools), _ahandler))
+            bench_event_loop.run_until_complete(middleware.awrap_model_call(_make_request(tools), _ahandler))

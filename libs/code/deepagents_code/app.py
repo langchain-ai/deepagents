@@ -1946,7 +1946,12 @@ class DeepAgentsApp(App):
 
         Lets the status bar label the spinner "Resuming" instead of the generic
         "Connecting" during `-r` startup. Only meaningful while `_connecting` is
-        `True`; cleared whenever `_connecting` is cleared.
+        `True`; `_sync_status_connection` resets it to `False` whenever it
+        observes `_connecting` cleared.
+
+        Set once at init and never re-armed, since `_resume_thread_intent` is
+        consumed on the first connect — so unlike `_reconnecting` it needs no
+        caller-side reset discipline.
         """
 
         self._server_startup_error: str | None = None

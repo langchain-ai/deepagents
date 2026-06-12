@@ -3745,6 +3745,36 @@ class TestBuildAgentErrorBody:
         assert _GATEWAY_DOCS_URL in body
         assert "LANGCHAIN_DISABLE_GATEWAY" not in body
 
+    def test_bad_request_data_retention_appends_docs_link(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import (
+            _ANTHROPIC_DATA_RETENTION_DOCS_URL,
+            _build_agent_error_body,
+        )
+
+        exc = RemoteException(
+            {
+                "error": "BadRequestError",
+                "message": (
+                    "Error code: 400 - this model requires data retention "
+                    "enabled (error_code: model_not_available)"
+                ),
+            }
+        )
+        body = str(_build_agent_error_body("Agent error: bad", exc))
+        assert "data retention" in body
+        assert _ANTHROPIC_DATA_RETENTION_DOCS_URL in body
+
+    def test_bad_request_unrelated_unchanged(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException({"error": "BadRequestError", "message": "some other 400"})
+        body = _build_agent_error_body("Agent error: bad", exc)
+        assert body == "Agent error: bad"
+
 
 class TestLangsmithGatewayKeyMismatch:
     """Cover gateway/key mismatch detection without inspecting the secret."""

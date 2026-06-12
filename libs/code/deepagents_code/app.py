@@ -1114,6 +1114,12 @@ exported in the shell while a gateway overrides the provider base URL, so the
 key is sent to the gateway, which rejects it.
 """
 
+_ANTHROPIC_DATA_RETENTION_DOCS_URL = (
+    "https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking"
+)
+"""Anthropic docs page referenced when a model is gated by a workspace
+data-retention policy and returns `model_not_available`."""
+
 _LANGSMITH_KEY_PREFIX = "lsv2_"
 """Prefix LangSmith API keys carry. Used as a heuristic to recognize when a
 provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
@@ -1182,8 +1188,10 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    Otherwise a generic "key does not match endpoint" message is shown. For
+    Anthropic `BadRequestError` reporting `model_not_available` due to a
+    workspace data-retention policy, appends actionable guidance plus a docs
+    link. Returns `text` unchanged for any other error.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
@@ -1192,12 +1200,32 @@ def _build_agent_error_body(
             was detected, else `None`.
 
     Returns:
-        A `Content` with a clickable docs link for `PermissionDeniedError`;
-            otherwise the plain `text`.
+        A `Content` with a clickable docs link for `PermissionDeniedError` or a
+            data-retention-gated Anthropic `BadRequestError`; otherwise the
+            plain `text`.
     """
     from deepagents_code.remote_client import agent_error_type
 
-    if agent_error_type(exc) != "PermissionDeniedError":
+    err_type = agent_error_type(exc)
+    if err_type == "BadRequestError":
+        msg = str(exc)
+        if "data retention enabled" in msg or "model_not_available" in msg:
+            detail = (
+                "\n\nThe configured Anthropic model requires your workspace to "
+                "have data retention enabled. Either enable data retention in "
+                "your Anthropic workspace settings, or switch to a model that "
+                "does not require it. See "
+            )
+            return Content.assemble(
+                text,
+                detail,
+                (
+                    _ANTHROPIC_DATA_RETENTION_DOCS_URL,
+                    TStyle(underline=True, link=_ANTHROPIC_DATA_RETENTION_DOCS_URL),
+                ),
+            )
+        return text
+    if err_type != "PermissionDeniedError":
         return text
     if key_env:
         detail = (

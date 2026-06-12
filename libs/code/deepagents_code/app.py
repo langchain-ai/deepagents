@@ -4171,6 +4171,10 @@ class DeepAgentsApp(App):
         then persists the result so subsequent calls stay local. The
         update-available hint reads `self._update_available`, which
         reflects the last completed background check.
+
+        Editable installs additionally surface the source path and the
+        resolved versions of the core LangChain-ecosystem dependencies, which
+        helps diagnose local checkouts.
         """
         from importlib.metadata import (
             PackageNotFoundError,
@@ -4204,6 +4208,22 @@ class DeepAgentsApp(App):
             logger.warning("Unexpected error looking up SDK version", exc_info=True)
             lines.append("deepagents (SDK) version: unknown")
 
+        editable = False
+        try:
+            from deepagents_code.config import (
+                _get_editable_install_path,
+                _is_editable_install,
+            )
+
+            editable = await asyncio.to_thread(_is_editable_install)
+            if editable:
+                path = _get_editable_install_path()
+                lines.append(
+                    f"Editable install: {path}" if path else "Editable install"
+                )
+        except Exception:
+            logger.warning("Unexpected error detecting editable install", exc_info=True)
+
         available, latest = self._update_available
         if available and latest:
             try:
@@ -4222,6 +4242,19 @@ class DeepAgentsApp(App):
             lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
 
         await self._mount_message(AppMessage("\n".join(lines)))
+
+        if editable:
+            try:
+                from deepagents_code.extras_info import format_core_dependencies
+
+                core_markdown = format_core_dependencies()
+            except Exception:
+                logger.warning(
+                    "Failed to collect core dependency versions", exc_info=True
+                )
+                core_markdown = ""
+            if core_markdown:
+                await self._mount_message(AppMessage(core_markdown, markdown=True))
 
         try:
             from deepagents_code.extras_info import (

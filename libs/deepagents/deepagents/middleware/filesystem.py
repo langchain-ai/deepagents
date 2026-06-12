@@ -6,6 +6,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
+import string
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -379,6 +380,34 @@ class GlobSchema(BaseModel):
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
 
+_CUSTOM_TOOL_MESSAGE_FIELDS: dict[str, set[str]] = {
+    "write_file": {"path"},
+    "edit_file": {"path", "occurrences"},
+}
+
+
+def _validate_custom_tool_messages(custom_tool_messages: Mapping[str, str] | None) -> dict[str, str]:
+    """Validate success-message templates at construction time.
+
+    Raises:
+        ValueError: If a key is not a supported tool or a template references
+            a placeholder that tool does not provide.
+    """
+    validated: dict[str, str] = {}
+    for tool, template in (custom_tool_messages or {}).items():
+        allowed = _CUSTOM_TOOL_MESSAGE_FIELDS.get(tool)
+        if allowed is None:
+            supported = ", ".join(sorted(_CUSTOM_TOOL_MESSAGE_FIELDS))
+            msg = f"custom_tool_messages: unsupported tool {tool!r} (supported: {supported})"
+            raise ValueError(msg)
+        fields = {name for _, name, _, _ in string.Formatter().parse(template) if name}
+        if unknown := fields - allowed:
+            msg = f"custom_tool_messages[{tool!r}]: unknown placeholder(s) {sorted(unknown)}; available: {sorted(allowed)}"
+            raise ValueError(msg)
+        validated[tool] = template
+    return validated
+
+
 class GrepSchema(BaseModel):
     """Input schema for the `grep` tool."""
 
@@ -723,6 +752,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend: BACKEND_TYPES | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: Mapping[str, str] | None = None,
+        custom_tool_messages: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
@@ -735,6 +765,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
+            custom_tool_messages: Optional overrides for the success messages
+                returned by mutation tools, keyed by tool name.
+
+                Supported keys: `"write_file"` (placeholder `{path}`) and
+                `"edit_file"` (placeholders `{path}`, `{occurrences}`).
+                Templates are validated at construction time.
+
+                Example: `{"write_file": "Created {path}. Use this exact absolute path in later tool calls."}`
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
             human_message_token_limit_before_evict: Optional token limit before
                 evicting a HumanMessage to the filesystem.
@@ -782,6 +820,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
+        self._custom_tool_messages = _validate_custom_tool_messages(custom_tool_messages)
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
@@ -848,6 +887,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
             return _resolve_backend(self.backend, runtime)
         return self.backend
+
+    def _success_message(self, tool: str, default: str, **fields: object) -> str:
+        """Return the configured success message for `tool`, or `default`."""
+        template = self._custom_tool_messages.get(tool)
+        if template is None:
+            return default
+        return template.format(**fields)
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
@@ -1143,7 +1189,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=self._success_message("write_file", f"Updated file {res.path}", path=res.path),
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1182,7 +1228,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=self._success_message("write_file", f"Updated file {res.path}", path=res.path),
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1237,7 +1283,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=self._success_message(
+                    "edit_file",
+                    f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                    path=res.path,
+                    occurrences=res.occurrences,
+                ),
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1279,7 +1330,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=self._success_message(
+                    "edit_file",
+                    f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                    path=res.path,
+                    occurrences=res.occurrences,
+                ),
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

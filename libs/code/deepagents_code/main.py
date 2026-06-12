@@ -179,22 +179,21 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         release_age = format_release_age_parenthetical(latest)
         console.print(
-            f"Auto-updating deepagents-code from v{cli_version} to "
-            f"v{latest}{release_age} before startup..."
+            f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
         )
         if os.environ.get(DEBUG_UPDATE):
             console.print("Skipped update install (debug mode).", style="dim")
             return
         log_path = create_update_log_path()
         console.print(
-            f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+            f"Progress: tail -f {log_path}",
             style="dim",
             highlight=False,
             markup=False,
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
-            console.print(f"[green]Updated to v{latest}. Restarting...[/green]")
+            console.print(f"[green]Updated to v{latest}. Launching...[/green]")
             # Record the target version so the re-exec'd process can detect a
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest

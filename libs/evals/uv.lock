@@ -1566,7 +1566,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.1.4"
+version = "0.2.0"
 source = { editable = "../partners/quickjs" }
 dependencies = [
     { name = "deepagents", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

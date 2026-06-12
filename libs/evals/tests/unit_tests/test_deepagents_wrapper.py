@@ -54,7 +54,43 @@ class TestHappyPathConstruction:
 
         assert wrapper._model_name == "claude-sonnet-4-6"
         assert wrapper._model is not None
-        assert wrapper._temperature == 0.0
+        assert wrapper._temperature is None
+
+
+class TestTemperatureKwarg:
+    """`temperature` is omitted from `init_chat_model` unless explicitly set."""
+
+    @staticmethod
+    def _capture_init(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+        captured: list[dict[str, object]] = []
+
+        def fake_init(model: str, **kwargs: object) -> object:  # noqa: ARG001
+            captured.append(kwargs)
+            return object()
+
+        monkeypatch.setattr(
+            "deepagents_harbor.deepagents_wrapper.init_chat_model",
+            fake_init,
+        )
+        return captured
+
+    def test_temperature_omitted_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture_init(monkeypatch)
+        DeepAgentsWrapper(logs_dir=tmp_path, model_name="claude-opus-4-8")
+        assert "temperature" not in captured[0]
+
+    def test_temperature_forwarded_when_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture_init(monkeypatch)
+        DeepAgentsWrapper(
+            logs_dir=tmp_path,
+            model_name="claude-sonnet-4-6",
+            temperature=0.0,
+        )
+        assert captured[0]["temperature"] == 0.0
 
 
 class TestParseOpenrouterProviders:

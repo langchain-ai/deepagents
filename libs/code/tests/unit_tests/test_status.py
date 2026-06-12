@@ -456,6 +456,15 @@ class TestConnectionIndicator:
             indicator = pilot.app.query_one("#connection-indicator", Static)
             assert "Reconnecting" in str(indicator.render())
 
+    async def test_set_resuming_shows_message(self) -> None:
+        """`set_connection('resuming')` should surface a Resuming message."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("resuming")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#connection-indicator", Static)
+            assert "Resuming" in str(indicator.render())
+
     async def test_clearing_connection_clears_indicator(self) -> None:
         """Returning to the empty state should clear the indicator text."""
         async with StatusBarApp().run_test() as pilot:

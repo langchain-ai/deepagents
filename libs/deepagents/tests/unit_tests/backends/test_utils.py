@@ -343,6 +343,12 @@ class TestSliceReadResponse:
         result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
         assert result == "b\nc\n"
 
+    def test_partial_window_normalizes_crlf(self) -> None:
+        """An internal CRLF slice is LF-normalized even though only the window is rewritten."""
+        result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=1, limit=2)
+        assert result == "b\nc\n"
+        assert "\r" not in result
+
     def test_partial_window_ending_on_unterminated_last_line(self) -> None:
         """A window covering the last line keeps that line's missing-terminator state."""
         result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)

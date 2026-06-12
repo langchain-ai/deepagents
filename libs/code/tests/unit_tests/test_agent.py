@@ -23,6 +23,7 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _sanitize_agent_message_name,
     build_model_identity_section,
     create_cli_agent,
     get_available_agent_names,
@@ -47,6 +48,14 @@ def test_add_interrupt_on_gates_async_task_tools() -> None:
 
     for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
         assert tool_name in interrupt_on
+
+
+def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
+    """Agent display names with spaces must become valid message names."""
+    assert _sanitize_agent_message_name("my agent") == "my_agent"
+    assert _sanitize_agent_message_name("  my\tagent  ") == "my_agent"
+    assert _sanitize_agent_message_name("my-agent_2") == "my-agent_2"
+    assert _sanitize_agent_message_name("  ") == DEFAULT_AGENT_NAME
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -753,7 +762,7 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_get_prompt.return_value = "mocked prompt"
             create_cli_agent(
                 model="fake-model",
-                assistant_id="test",
+                assistant_id="my agent",
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=False,
@@ -763,7 +772,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_called_once()
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
-        assert mock_create_deep_agent.call_args.kwargs["name"] == "test"
+        assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

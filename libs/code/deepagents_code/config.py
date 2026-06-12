@@ -836,7 +836,9 @@ def build_stream_config(
 
     Args:
         thread_id: The app session thread identifier.
-        assistant_id: The dcode agent identifier, if any.
+        assistant_id: The dcode agent identifier, if any. When set, it is
+            surfaced in trace metadata under `dcode_agent_name` and
+            `agent_name`.
         sandbox_type: Sandbox provider name for trace metadata, or `None` if no
             sandbox is active.
 

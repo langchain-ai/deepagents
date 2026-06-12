@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from deepagents_code.project_utils import find_project_root
+
+logger = logging.getLogger(__name__)
 
 
 def _get_git_executable() -> str | None:
@@ -346,29 +349,66 @@ _MIN_FUZZY_RATIO = 0.4
 """SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
+def _run_git_ls_files(
+    git_path: str, root: Path, extra_args: list[str]
+) -> tuple[bool, list[str]]:
+    """Run `git ls-files` with the given arguments and return file paths.
+
+    Args:
+        git_path: Full path to the git executable.
+        root: Directory to run the command in.
+        extra_args: Flags appended after `ls-files`, e.g.
+            `["--others", "--exclude-standard"]`.
+
+    Returns:
+        Tuple of success status and relative file paths. Success is `False`
+            when git could not be run or exited non-zero, signalling the caller
+            to fall back to a glob walk.
+    """
+    try:
+        # S603: git_path validated via shutil.which(); ls-files args are
+        # caller-supplied literals.
+        result = subprocess.run(  # noqa: S603
+            [git_path, "ls-files", *extra_args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
+        return False, []
+    if result.returncode != 0:
+        logger.debug("git ls-files %s exited with %d", extra_args, result.returncode)
+        return False, []
+    return True, [f for f in result.stdout.strip().split("\n") if f]
+
+
 def _get_project_files(root: Path) -> list[str]:
     """Get project files using git ls-files or fallback to glob.
+
+    Includes both tracked files and untracked files that are not ignored
+    (via `--others --exclude-standard`), so freshly created files surface
+    in `@` completion without needing to be committed first.
 
     Returns:
         List of relative file paths from project root.
     """
     git_path = _get_git_executable()
     if git_path:
-        try:
-            # S603: git_path is validated via shutil.which(), args are hardcoded
-            result = subprocess.run(  # noqa: S603
-                [git_path, "ls-files"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.returncode == 0:
-                files = result.stdout.strip().split("\n")
-                return [f for f in files if f]  # Filter empty strings
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+        tracked_ok, tracked = _run_git_ls_files(git_path, root, [])
+        untracked_ok, untracked = _run_git_ls_files(
+            git_path, root, ["--others", "--exclude-standard"]
+        )
+        if tracked_ok and untracked_ok:
+            seen: set[str] = set()
+            files: list[str] = []
+            for f in (*tracked, *untracked):
+                if f not in seen:
+                    seen.add(f)
+                    files.append(f)
+            return files
 
     # Fallback: simple glob (limited depth to avoid slowness)
     files = []
@@ -382,7 +422,7 @@ def _get_project_files(root: Path) -> list[str]:
             if len(files) >= _MAX_FALLBACK_FILES:
                 break
     except OSError:
-        pass
+        logger.debug("glob fallback failed for %s", root, exc_info=True)
     return files
 
 

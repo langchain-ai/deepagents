@@ -1572,6 +1572,7 @@ dependencies = [
     { name = "deepagents", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "langgraph", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "quickjs-rs", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
@@ -1580,6 +1581,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.3.9,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
+    { name = "langgraph", specifier = ">=1.2.5,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.1.2,<0.2.0" },
 ]
 

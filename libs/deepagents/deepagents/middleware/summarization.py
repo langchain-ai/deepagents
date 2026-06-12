@@ -730,7 +730,7 @@ A condensed summary follows:
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
         *,
-        total_tokens: int | None = None,
+        total_tokens: int,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
@@ -740,15 +740,13 @@ A condensed summary follows:
             tools: Optional tools for token counting.
             total_tokens: Precomputed token count for `messages` (plus system
                 message and tools). Counting tools is expensive (schema
-                conversion per tool), so callers that already have the count
-                pass it in rather than paying for a second pass.
+                conversion per tool), so the caller counts once and shares the
+                result across the truncation and summarization checks.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        if total_tokens is None:
-            total_tokens = self._count_tokens(messages, system_message, tools)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 

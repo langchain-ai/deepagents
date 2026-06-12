@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_4ac52c3d166ea9::t_f310011f44e313 530
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "b1acabf373b19601471acb063ed04d145fbcf516",
+  "prompts": {},
+  "sessions": {
+    "s_4ac52c3d166ea9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb9f2-649e-76b1-b68b-c684e586ae68",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

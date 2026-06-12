@@ -3991,6 +3991,29 @@ class TestAppFocusRestoresChatInput:
 
             assert app._chat_input._text_area.cursor_blink is True
 
+    async def test_app_blur_then_focus_arms_refocus_suppression(self) -> None:
+        """`on_app_blur`/`on_app_focus` forward terminal focus state to the input.
+
+        Guards the wiring between the app's focus handlers and the text area:
+        without these forwarded calls the refocus-click suppression never arms,
+        so the cursor-jump fix would silently break while its own unit tests
+        (which poke the text area directly) keep passing.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            text_area = app._chat_input._text_area
+            assert text_area is not None
+
+            app.on_app_blur()
+            assert text_area._app_blurred is True
+
+            app.on_app_focus()
+            await pilot.pause()
+            assert text_area._app_blurred is False
+            assert text_area._refocus_time is not None
+
 
 class TestChatScrollKeepsInputFocus:
     """Clicking a chat message must not steal focus from the chat input."""

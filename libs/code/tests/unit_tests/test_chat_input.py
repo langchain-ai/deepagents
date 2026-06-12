@@ -571,8 +571,15 @@ class TestSetValueAtEnd:
 class TestRefocusClickSuppression:
     """Clicks that re-focus the terminal window should not move the cursor."""
 
-    async def test_refocus_click_does_not_move_cursor(self) -> None:
+    async def test_refocus_click_does_not_move_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A click within the refocus window only restores focus."""
+        # Widen the window so the test never depends on how fast the event loop
+        # delivers the click after the refocus stamp (avoids wall-clock flake).
+        monkeypatch.setattr(
+            chat_input_module, "_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -584,8 +591,8 @@ class TestRefocusClickSuppression:
             await pilot.pause()
             assert text_area.cursor_location == (0, 0)
 
-            chat.notify_app_blur()
-            chat.notify_app_focus()
+            chat._notify_app_blur()
+            chat._notify_app_focus()
             await pilot.click(ChatTextArea, offset=(6, 0))
             await pilot.pause()
 
@@ -612,16 +619,40 @@ class TestRefocusClickSuppression:
     def test_consume_refocus_click_requires_blur(self) -> None:
         """Without a preceding blur, focus does not arm click suppression."""
         text_area = ChatTextArea()
-        text_area.notify_app_focus()
+        text_area._notify_app_focus()
         assert text_area._consume_refocus_click() is False
 
     def test_consume_refocus_click_fires_once(self) -> None:
         """Only the first click after a refocus is suppressed."""
         text_area = ChatTextArea()
-        text_area.notify_app_blur()
-        text_area.notify_app_focus()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
         assert text_area._consume_refocus_click() is True
         assert text_area._consume_refocus_click() is False
+
+    def test_consume_refocus_click_expires_after_window(self) -> None:
+        """A click landing after the window elapses moves the cursor normally."""
+        text_area = ChatTextArea()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        # Backdate the refocus stamp past the window so the gap check fails.
+        text_area._refocus_time = (
+            chat_input_module.time.monotonic()
+            - chat_input_module._REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS
+            - 0.01
+        )
+        assert text_area._consume_refocus_click() is False
+
+    def test_consume_refocus_click_rearms_each_cycle(self) -> None:
+        """Suppression re-arms on every blur/focus cycle, not just the first."""
+        text_area = ChatTextArea()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is True
+        # A second cycle must arm suppression again.
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is True
 
 
 class TestHistoryBoundaryNavigation:

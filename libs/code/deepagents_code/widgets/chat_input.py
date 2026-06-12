@@ -104,10 +104,18 @@ have a much larger gap."""
 _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
 """Window after a terminal focus regain during which a click only refocuses.
 
-When the terminal window is unfocused and the user clicks back in, the OS
-delivers a `FocusIn` (Textual `AppFocus`) just before the mouse report. A
+When the terminal window is unfocused and the user clicks back in, we rely on
+the OS delivering a `FocusIn` (Textual `AppFocus`) before the mouse report —
+the same FocusIn support `on_app_focus` documents. Terminals without it never
+arm suppression, so clicks just behave normally (the cursor moves). A
 mouse-down landing within this window after the focus regain is treated as
 focus-only so the cursor stays put instead of jumping to the click location.
+
+The window trades off two failure modes: too small and a genuine refocus click
+leaks through and moves the cursor (the bug this guards against); too large and
+an intentional click made shortly after refocusing is wrongly suppressed. 0.3s
+comfortably covers the FocusIn-to-mouse-report latency while staying below a
+deliberate click-pause-click interaction.
 """
 
 if TYPE_CHECKING:
@@ -628,11 +636,11 @@ class ChatTextArea(TextArea):
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
 
-    def notify_app_blur(self) -> None:
+    def _notify_app_blur(self) -> None:
         """Record that the terminal window lost OS focus."""
         self._app_blurred = True
 
-    def notify_app_focus(self) -> None:
+    def _notify_app_focus(self) -> None:
         """Record that the terminal window regained OS focus via a focus event.
 
         Stamps the regain time so the click that re-focused the window (which
@@ -643,7 +651,13 @@ class ChatTextArea(TextArea):
             self._app_blurred = False
 
     def _consume_refocus_click(self) -> bool:
-        """Return whether the current mouse-down only re-focuses the window."""
+        """Return whether the current mouse-down only re-focuses the window.
+
+        `_refocus_time` is only cleared here, so a focus regain that is never
+        followed by a text-area click leaves the stamp set. The gap check
+        bounds that staleness: an old stamp exceeds the window and returns
+        `False` (clearing it), so a much later click is never suppressed.
+        """
         refocus_time = self._refocus_time
         if refocus_time is None:
             return False
@@ -656,6 +670,11 @@ class ChatTextArea(TextArea):
 
         A mouse-down landing within a short window after a terminal focus
         regain only restores focus and leaves the cursor where it was.
+
+        Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
+        cursor positioning; verified against Textual 8.2.7. If the base handler
+        changes, re-verify that early-returning before `super()` still leaves no
+        selection/capture state set.
         """
         if self._consume_refocus_click():
             event.stop()
@@ -2320,15 +2339,15 @@ class ChatInput(Vertical):
         if self._text_area is not None:
             self._text_area.cursor_blink = blink
 
-    def notify_app_blur(self) -> None:
+    def _notify_app_blur(self) -> None:
         """Tell the text area the terminal window lost OS focus."""
         if self._text_area is not None:
-            self._text_area.notify_app_blur()
+            self._text_area._notify_app_blur()
 
-    def notify_app_focus(self) -> None:
+    def _notify_app_focus(self) -> None:
         """Tell the text area the terminal window regained OS focus."""
         if self._text_area is not None:
-            self._text_area.notify_app_focus()
+            self._text_area._notify_app_focus()
 
     def exit_mode(self) -> bool:
         """Exit the current input mode (command/shell) back to normal.

@@ -382,28 +382,42 @@ class _FakeEnvironment:
 
 
 class _FakeBackend(SandboxLike):
-    """Minimal fake for HarborSandbox used by collect_sandbox_metadata."""
+    """Minimal fake for HarborSandbox used by collect_sandbox_metadata.
+
+    Responses are keyed by a distinctive substring of each probe command so they
+    map to the correct probe regardless of execution order — the probes run
+    concurrently via `asyncio.gather`, so a call-index-based fake would be a
+    scheduling-order assumption rather than a behavioral one.
+    """
 
     environment: Any
 
-    def __init__(self, responses: list[str | Exception]) -> None:
+    def __init__(self, responses: dict[str, str | Exception]) -> None:
         self._responses = responses
-        self._idx = 0
         self.environment = _FakeEnvironment()
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> _FakeExecResult:  # noqa: ASYNC109
-        resp = self._responses[self._idx]
-        self._idx += 1
-        if isinstance(resp, Exception):
-            raise resp
-        return _FakeExecResult(output=resp)
+        for key, resp in self._responses.items():
+            if key in command:
+                if isinstance(resp, Exception):
+                    raise resp
+                return _FakeExecResult(output=resp)
+        msg = f"No fake response configured for command: {command!r}"
+        raise AssertionError(msg)
 
 
 class TestCollectSandboxMetadata:
     """Tests for sandbox metadata collection."""
 
     async def test_happy_path(self):
-        backend = _FakeBackend(["4\n", "8192\n", "4096\n", "Linux 6.1.0\n"])
+        backend = _FakeBackend(
+            {
+                "nproc": "4\n",
+                "MemTotal": "8192\n",
+                "MemAvailable": "4096\n",
+                "uname": "Linux 6.1.0\n",
+            }
+        )
         meta = await collect_sandbox_metadata(backend)
 
         assert meta.sandbox_cpu_count == 4
@@ -415,12 +429,12 @@ class TestCollectSandboxMetadata:
 
     async def test_non_numeric_output_sets_none(self):
         backend = _FakeBackend(
-            [
-                "nproc: command not found\n",
-                "unknown\n",
-                "unknown\n",
-                "Linux 6.1.0\n",
-            ]
+            {
+                "nproc": "nproc: command not found\n",
+                "MemTotal": "unknown\n",
+                "MemAvailable": "unknown\n",
+                "uname": "Linux 6.1.0\n",
+            }
         )
         meta = await collect_sandbox_metadata(backend)
 
@@ -431,12 +445,12 @@ class TestCollectSandboxMetadata:
 
     async def test_partial_failure_still_collects(self):
         backend = _FakeBackend(
-            [
-                RuntimeError("sandbox down"),  # CPU fails
-                "8192\n",  # memory succeeds
-                "4096\n",  # avail succeeds
-                ConnectionError("reset"),  # OS fails
-            ]
+            {
+                "nproc": RuntimeError("sandbox down"),  # CPU fails
+                "MemTotal": "8192\n",  # memory succeeds
+                "MemAvailable": "4096\n",  # avail succeeds
+                "uname": ConnectionError("reset"),  # OS fails
+            }
         )
         meta = await collect_sandbox_metadata(backend)
 
@@ -447,12 +461,12 @@ class TestCollectSandboxMetadata:
 
     async def test_all_commands_fail(self):
         backend = _FakeBackend(
-            [
-                TimeoutError(),
-                RuntimeError(),
-                ConnectionError(),
-                OSError(),
-            ]
+            {
+                "nproc": TimeoutError(),
+                "MemTotal": RuntimeError(),
+                "MemAvailable": ConnectionError(),
+                "uname": OSError(),
+            }
         )
         meta = await collect_sandbox_metadata(backend)
 

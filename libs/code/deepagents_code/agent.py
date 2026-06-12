@@ -88,6 +88,19 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
+def _sanitize_agent_message_name(agent_name: str) -> str:
+    """Return a provider-safe message name for a user-facing agent name.
+
+    Args:
+        agent_name: Display/storage name for the selected agent.
+
+    Returns:
+        Name containing only alphanumerics, underscores, and hyphens.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]+", "_", agent_name).strip("_")
+    return sanitized or DEFAULT_AGENT_NAME
+
+
 class ShellAllowListMiddleware(AgentMiddleware):
     """Validate shell commands against an allow-list without HITL interrupts.
 
@@ -1567,5 +1580,6 @@ def create_cli_agent(
         interrupt_on=interrupt_on,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
+        name=_sanitize_agent_message_name(assistant_id),
     ).with_config(config)
     return agent, composite_backend

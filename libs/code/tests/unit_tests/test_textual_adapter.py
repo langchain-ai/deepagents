@@ -526,10 +526,11 @@ class TestBuildStreamConfig:
         """Clear the git-branch cache between tests."""
         config_module._git_branch_cache.clear()
 
-    def test_assistant_fields_present(self) -> None:
-        """Assistant-specific metadata should be present when `assistant_id` is set."""
+    def test_dcode_agent_fields_present(self) -> None:
+        """Selected dcode agent metadata should be present."""
         config = build_stream_config("t-456", assistant_id="my-agent")
-        assert config["metadata"]["assistant_id"] == "my-agent"
+        assert "assistant_id" not in config["metadata"]
+        assert config["metadata"]["dcode_agent_name"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
         assert "cwd" in config["metadata"]
@@ -542,20 +543,22 @@ class TestBuildStreamConfig:
         parsed = datetime.fromisoformat(raw)
         assert parsed.tzinfo is not None
 
-    def test_no_assistant_fields_when_none(self) -> None:
-        """Assistant-specific fields should be absent when `assistant_id` is `None`."""
+    def test_no_dcode_agent_fields_when_none(self) -> None:
+        """Selected dcode agent fields should be absent when unset."""
         config = build_stream_config("t-789", assistant_id=None)
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
+        assert "dcode_agent_name" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
         assert "cwd" in metadata
 
-    def test_no_assistant_fields_when_empty_string(self) -> None:
+    def test_no_dcode_agent_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
         config = build_stream_config("t-000", assistant_id="")
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
+        assert "dcode_agent_name" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
         assert "cwd" in metadata

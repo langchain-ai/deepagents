@@ -15,6 +15,7 @@ from deepagents_code.command_registry import (
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
     SLASH_COMMANDS,
+    STARTUP_RECOVERY_COMMANDS,
     CommandEntry,
 )
 
@@ -86,6 +87,17 @@ class TestBypassTiers:
                     f"Alias {alias!r} of {cmd.name} not in any tier"
                 )
 
+    def test_startup_recovery_commands_are_queue_bound(self) -> None:
+        # The recovery exemption is orthogonal to the normal tier: every
+        # recovery command keeps its QUEUED tier and only gains an extra
+        # failed-startup bypass. If one drifts to another tier, the comment
+        # in STARTUP_RECOVERY_COMMANDS (and the bypass rationale) goes stale.
+        assert STARTUP_RECOVERY_COMMANDS <= QUEUE_BOUND
+
+    def test_startup_recovery_commands_are_known(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert names >= STARTUP_RECOVERY_COMMANDS
+
 
 class TestSlashCommands:
     """Validate the SLASH_COMMANDS autocomplete list."""
@@ -119,9 +131,6 @@ class TestSlashCommands:
 class TestHiddenCommands:
     """`HIDDEN_COMMANDS` membership and autocomplete absence."""
 
-    def test_restart_is_hidden(self) -> None:
-        assert "/restart" in HIDDEN_COMMANDS
-
     def test_debug_error_is_hidden(self) -> None:
         assert "/debug-error" in HIDDEN_COMMANDS
 
@@ -131,6 +140,21 @@ class TestHiddenCommands:
             assert hidden not in names, (
                 f"Hidden command {hidden!r} leaked into SLASH_COMMANDS"
             )
+
+
+class TestRestartCommand:
+    """Validate the `/restart` entry specifically."""
+
+    def test_restart_registered_for_autocomplete(self) -> None:
+        restart_entry = next(
+            entry for entry in SLASH_COMMANDS if entry.name == "/restart"
+        )
+
+        assert restart_entry.description == "Restart the app-owned LangGraph server"
+
+    def test_restart_classified_as_always_immediate(self) -> None:
+        assert "/restart" in ALWAYS_IMMEDIATE
+        assert "/restart" not in HIDDEN_COMMANDS
 
 
 class TestAgentsCommand:

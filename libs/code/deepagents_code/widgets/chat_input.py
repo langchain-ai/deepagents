@@ -52,6 +52,20 @@ def _default_history_path() -> Path:
     return DEFAULT_STATE_DIR / "history.jsonl"
 
 
+_LOCK_KEYS = frozenset({"caps_lock", "num_lock", "scroll_lock"})
+"""Lock keys that must never insert text.
+
+Under the kitty keyboard protocol with associated-text reporting (VS Code's
+xterm.js and others), pressing a lock key arrives as a `Key` event whose
+`character` is the text that *would* have been produced by the next key —
+e.g. pressing Caps Lock reports `key='caps_lock'`, `character='A'`. Textual's
+parser does not strip this, so `TextArea` inserts a stray letter. We drop
+these events entirely. Terminals encode lock keys in several shapes (iTerm2
+notably differs from kitty/Ghostty); `_textual_patches.py` is the canonical
+reference and neutralizes every shape at the parser. See the kitty keyboard
+protocol spec (functional key definitions) for background.
+"""
+
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03
 """Maximum time between chars to treat input as a paste-like burst."""
 
@@ -60,6 +74,22 @@ _PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
 
 _PASTE_BURST_START_CHARS = {"'", '"'}
 """Characters that can start dropped-path payloads."""
+
+_PASTE_BURST_MIN_CHARS = 3
+"""Consecutive fast keystrokes before a stream is treated as a paste burst.
+
+Terminals that lack bracketed paste replay a paste as individual key events.
+Counting a short run of rapid chars distinguishes that from human typing,
+which has much larger inter-key gaps.
+"""
+
+_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS = 0.12
+"""Window after recent burst activity during which `enter` inserts a newline.
+
+Keeps multi-line pastes grouped as one input even when newlines arrive as
+`enter` key events slightly after the surrounding characters (e.g. across
+terminal read boundaries), instead of submitting mid-paste.
+"""
 
 _BACKSLASH_ENTER_GAP_SECONDS = 0.15
 """Maximum gap between a `\\` key and a following `enter` key to treat the
@@ -70,6 +100,23 @@ followed by enter when the user presses shift+enter.  The gap is
 generous (150 ms) because the terminal emits both characters nearly
 simultaneously; a human deliberately typing `\\` then pressing Enter would
 have a much larger gap."""
+
+_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
+"""Window after a terminal focus regain during which a click only refocuses.
+
+When the terminal window is unfocused and the user clicks back in, we rely on
+the OS delivering a `FocusIn` (Textual `AppFocus`) before the mouse report —
+the same FocusIn support `on_app_focus` documents. Terminals without it never
+arm suppression, so clicks just behave normally (the cursor moves). A
+mouse-down landing within this window after the focus regain is treated as
+focus-only so the cursor stays put instead of jumping to the click location.
+
+The window trades off two failure modes: too small and a genuine refocus click
+leaks through and moves the cursor (the bug this guards against); too large and
+an intentional click made shortly after refocusing is wrongly suppressed. 0.3s
+comfortably covers the FocusIn-to-mouse-report latency while staying below a
+deliberate click-pause-click interaction.
+"""
 
 if TYPE_CHECKING:
     from textual import events
@@ -316,7 +363,7 @@ class CompletionPopup(VerticalScroll):
         """Hide the popup."""
         self._pending_suggestions = []
         self._rebuild_generation += 1  # Cancel any in-flight rebuild
-        self.styles.display = "none"  # type: ignore[assignment]  # Textual accepts string display values at runtime
+        self.styles.display = "none"  # ty: ignore[invalid-assignment]  # Textual accepts string display values at runtime
 
     def show(self) -> None:
         """Show the popup."""
@@ -408,14 +455,26 @@ class ChatTextArea(TextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
-        # Buffer quote-prefixed high-frequency key bursts from terminals that
-        # emulate paste via rapid key events instead of dispatching a paste
-        # event.
+        # Buffer high-frequency key bursts from terminals that emulate paste via
+        # rapid key events instead of dispatching a paste event.
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time: float | None = None
         self._paste_burst_timer: Timer | None = None
+        # Counts consecutive rapid keystrokes so a paste-like stream can be
+        # detected even when it doesn't begin with a quote.
+        self._paste_burst_run = 0
+        self._paste_burst_last_key_time: float | None = None
+        self._paste_burst_last_suppressed_enter_time: float | None = None
+        # Deadline until which `enter` inserts a newline rather than submitting,
+        # keeping multi-line pastes grouped across read boundaries.
+        self._paste_burst_window_until: float | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+        # Tracks terminal focus so a click that re-focuses the window only
+        # restores focus instead of also moving the cursor. See
+        # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
+        self._app_blurred = False
+        self._refocus_time: float | None = None
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -577,6 +636,52 @@ class ChatTextArea(TextArea):
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
 
+    def _notify_app_blur(self) -> None:
+        """Record that the terminal window lost OS focus."""
+        self._app_blurred = True
+
+    def _notify_app_focus(self) -> None:
+        """Record that the terminal window regained OS focus via a focus event.
+
+        Stamps the regain time so the click that re-focused the window (which
+        arrives just after the focus event) can be treated as focus-only.
+        """
+        if self._app_blurred:
+            self._refocus_time = time.monotonic()
+            self._app_blurred = False
+
+    def _consume_refocus_click(self) -> bool:
+        """Return whether the current mouse-down only re-focuses the window.
+
+        `_refocus_time` is only cleared here, so a focus regain that is never
+        followed by a text-area click leaves the stamp set. The gap check
+        bounds that staleness: an old stamp exceeds the window and returns
+        `False` (clearing it), so a much later click is never suppressed.
+        """
+        refocus_time = self._refocus_time
+        if refocus_time is None:
+            return False
+        self._refocus_time = None
+        gap = time.monotonic() - refocus_time
+        return gap <= _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        """Position the cursor on click, except when the click re-focuses the app.
+
+        A mouse-down landing within a short window after a terminal focus
+        regain only restores focus and leaves the cursor where it was.
+
+        Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
+        cursor positioning; verified against Textual 8.2.7. If the base handler
+        changes, re-verify that early-returning before `super()` still leaves no
+        selection/capture state set.
+        """
+        if self._consume_refocus_click():
+            event.stop()
+            event.prevent_default()
+            return
+        await super()._on_mouse_down(event)
+
     def set_completion_active(self, *, active: bool) -> None:
         """Set whether completion suggestions are visible."""
         self._completion_active = active
@@ -651,6 +756,7 @@ class ChatTextArea(TextArea):
         """Start buffering a paste-like keystroke burst."""
         self._paste_burst_buffer = char
         self._paste_burst_last_char_time = now
+        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
 
     def _append_paste_burst(self, text: str, now: float) -> None:
@@ -660,13 +766,66 @@ class ChatTextArea(TextArea):
             return
         self._paste_burst_buffer += text
         self._paste_burst_last_char_time = now
+        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
         self._schedule_paste_burst_flush()
+
+    def _note_paste_burst_keystroke(self, now: float) -> None:
+        """Track inter-key timing to count consecutive rapid keystrokes."""
+        last = self._paste_burst_last_key_time
+        if last is not None and (now - last) <= _PASTE_BURST_CHAR_GAP_SECONDS:
+            self._paste_burst_run += 1
+        else:
+            self._paste_burst_run = 1
+        self._paste_burst_last_key_time = now
+
+    def _reset_paste_burst_run(self) -> None:
+        """Clear consecutive-keystroke tracking after non-burst input."""
+        self._paste_burst_run = 0
+        self._paste_burst_last_key_time = None
+        self._paste_burst_last_suppressed_enter_time = None
+
+    def _enter_inserts_newline_during_burst(self, now: float) -> bool:
+        """Return whether `enter` should insert a newline rather than submit.
+
+        True when the preceding keystroke was part of a rapid run or the
+        previous `enter` was already suppressed, and the suppression window is
+        still open. The char-gap check keeps a deliberate `enter` pressed after
+        a burst settles from being swallowed; the window bounds how long a
+        replayed paste's newlines stay grouped. Slash-command context always
+        keeps `enter`'s submit/dispatch semantics.
+        """
+        if self._in_slash_command_context():
+            return False
+        # Defensive: the plain-Enter caller appends-and-returns or flushes any
+        # active buffer before this helper runs, so this branch is unreachable
+        # today. It keeps the helper's contract self-contained.
+        if self._paste_burst_buffer:
+            return True
+        until = self._paste_burst_window_until
+        if until is None or now > until:
+            return False
+        last_enter = self._paste_burst_last_suppressed_enter_time
+        if last_enter is not None:
+            return True
+        last_key = self._paste_burst_last_key_time
+        return (
+            last_key is not None and (now - last_key) <= _PASTE_BURST_CHAR_GAP_SECONDS
+        )
+
+    def _in_slash_command_context(self) -> bool:
+        """Return whether the current input is composing a slash command."""
+        owner = self._chat_input_owner
+        if owner is not None and owner.mode == "command":
+            return True
+        return self.text.startswith("/")
 
     def _should_start_paste_burst(self, char: str) -> bool:
         """Return whether a keypress should start paste-burst buffering.
 
         Restricting to quote-prefixed input at an empty cursor reduces false
-        positives for normal typing and slash-command entry.
+        positives for normal typing and slash-command entry. General multi-line
+        pastes are handled by the Enter-suppression window instead, which keeps
+        their newlines from submitting without rerouting text insertion.
         """
         if char not in _PASTE_BURST_START_CHARS:
             return False
@@ -726,6 +885,19 @@ class ChatTextArea(TextArea):
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
+        # Lock keys (Caps Lock, Num Lock, Scroll Lock) must never type. The
+        # kitty parser patch in `_textual_patches.py` already neutralizes these
+        # at the source; this is defense-in-depth in case a lock key still
+        # arrives with associated text (e.g. if that patch failed to install or
+        # a future terminal bypasses it). Note this only shields the chat input
+        # — if the parser patch silently no-ops, other widgets stay broken. The
+        # key may carry modifier prefixes (e.g. 'ctrl+caps_lock'), so match on
+        # the final '+'-delimited token.
+        if event.key.rsplit("+", 1)[-1] in _LOCK_KEYS:
+            event.prevent_default()
+            event.stop()
+            return
+
         # VS Code 1.110 incorrectly sends space as a CSI u escape code
         # (`\x1b[32u`) instead of a plain ` ` character.  Textual parses
         # this as Key(key='space', character=None, is_printable=False), so
@@ -782,6 +954,23 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
+        # Track rapid keystroke runs so a terminal replaying a paste as key
+        # events (no bracketed paste) arms the Enter-suppression window, keeping
+        # the paste's newlines from submitting mid-stream. `enter` is exempt so
+        # newlines within a paste don't break the run.
+        if event.is_printable and event.character is not None:
+            self._paste_burst_last_suppressed_enter_time = None
+            self._note_paste_burst_keystroke(now)
+            if (
+                self._paste_burst_run >= _PASTE_BURST_MIN_CHARS
+                and not self._in_slash_command_context()
+            ):
+                self._paste_burst_window_until = (
+                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+                )
+        elif event.key != "enter":
+            self._reset_paste_burst_run()
+
         # Some terminals (e.g. VSCode built-in) send a literal backslash
         # followed by enter for shift+enter.  When enter arrives shortly
         # after a backslash, delete the backslash and insert a newline.
@@ -837,10 +1026,21 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             return
 
-        # Plain Enter submits
+        # Plain Enter submits, unless a recent keystroke burst suggests this
+        # newline is part of a paste replayed as key events; then insert a
+        # newline and keep the window alive so the rest of the paste stays
+        # grouped instead of submitting mid-stream.
         if event.key == "enter":
             event.prevent_default()
             event.stop()
+            if self._enter_inserts_newline_during_burst(now):
+                self._paste_burst_window_until = (
+                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+                )
+                self._paste_burst_last_suppressed_enter_time = now
+                self.action_insert_newline()
+                return
+            self._paste_burst_last_suppressed_enter_time = None
             if (
                 self._chat_input_owner is not None
                 and self._chat_input_owner._handle_stale_slash_enter()
@@ -866,14 +1066,14 @@ class ChatTextArea(TextArea):
         if not self.text or not self.selection.is_empty:
             return False
 
-        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
+        cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
         span = self._find_image_placeholder_span(cursor_offset, backwards=backwards)
         if span is None:
             return False
 
         start, end = span
-        start_location = self.document.get_location_from_index(start)  # type: ignore[attr-defined]  # Document has this method; DocumentBase stub is narrower
-        end_location = self.document.get_location_from_index(end)  # type: ignore[attr-defined]
+        start_location = self.document.get_location_from_index(start)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+        end_location = self.document.get_location_from_index(end)  # ty: ignore[unresolved-attribute]
         self.delete(start_location, end_location)
         self.move_cursor(start_location)
         return True
@@ -946,16 +1146,22 @@ class ChatTextArea(TextArea):
         """
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
         self._skip_history_change_events += 1
         self.text = text
         if cursor_at_end:
-            lines = text.split("\n")
-            last_row = len(lines) - 1
-            self.move_cursor((last_row, len(lines[last_row])))
+            self.move_cursor_to_end()
         else:
             self.move_cursor((0, 0))
+
+    def move_cursor_to_end(self) -> None:
+        """Move the cursor to the end of the current text."""
+        lines = self.text.split("\n")
+        last_row = len(lines) - 1
+        self.move_cursor((last_row, len(lines[last_row])))
 
     def clear_text(self) -> None:
         """Clear the text area."""
@@ -965,6 +1171,8 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self._paste_burst_buffer = ""
         self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
         self._cancel_paste_burst_timer()
         self._backslash_pending_time = None
         self.text = ""
@@ -1205,7 +1413,7 @@ class ChatInput(Vertical):
             [
                 self._slash_controller,
                 self._file_controller,
-            ]  # type: ignore[list-item]  # Controller types are compatible at runtime
+            ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
 
         self._rebuild_argument_hints(SLASH_COMMANDS)
@@ -1216,6 +1424,22 @@ class ChatInput(Vertical):
             exit_on_error=False,
         )
         self._text_area.focus()
+
+    def set_cwd(self, cwd: str | Path) -> None:
+        """Update file completion to use a new cwd.
+
+        Re-roots the file controller and schedules a background cache warm so
+        the project-root walk runs off the event loop.
+        """
+        self._cwd = Path(cwd)
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is not None:
+            file_controller.set_cwd(self._cwd)
+            self.run_worker(
+                file_controller.warm_cache(),
+                exclusive=False,
+                exit_on_error=False,
+            )
 
     def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.
@@ -1766,8 +1990,7 @@ class ChatInput(Vertical):
 
         self._applying_inline_path_replacement = True
         self._text_area.text = replacement
-        lines = replacement.split("\n")
-        self._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
+        self._text_area.move_cursor_to_end()
         return True
 
     def _insert_pasted_paths(self, raw_text: str, paths: list[Path]) -> None:
@@ -2073,6 +2296,13 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.text = val
 
+    def set_value_at_end(self, val: str) -> None:
+        """Set the input value and place the cursor at the end of the text."""
+        if not self._text_area:
+            return
+        self._text_area.text = val
+        self._text_area.move_cursor_to_end()
+
     @property
     def input_widget(self) -> ChatTextArea | None:
         """Get the underlying TextArea widget.
@@ -2108,6 +2338,16 @@ class ChatInput(Vertical):
         """
         if self._text_area is not None:
             self._text_area.cursor_blink = blink
+
+    def _notify_app_blur(self) -> None:
+        """Tell the text area the terminal window lost OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_blur()
+
+    def _notify_app_focus(self) -> None:
+        """Tell the text area the terminal window regained OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_focus()
 
     def exit_mode(self) -> bool:
         """Exit the current input mode (command/shell) back to normal.

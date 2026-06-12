@@ -18,7 +18,6 @@ from deepagents_code._version import __version__
 from deepagents_code.widgets.welcome import (
     _TIPS,
     WelcomeBanner,
-    build_connecting_footer,
     build_welcome_footer,
 )
 
@@ -366,6 +365,40 @@ class TestOnClickOpensLink:
         event.stop.assert_not_called()
 
 
+class TestPointerShapeOnHover:
+    """Tests for the hand pointer shown when hovering link spans."""
+
+    def test_mouse_move_over_link_sets_pointer(self) -> None:
+        """Hovering a link span should show the hand pointer."""
+        widget = _make_banner(thread_id="abc")
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+
+        widget.on_mouse_move(event)
+
+        assert widget.styles.pointer == "pointer"
+
+    def test_mouse_move_off_link_resets_pointer(self) -> None:
+        """Hovering non-link text should reset to the default pointer."""
+        widget = _make_banner(thread_id="abc")
+        widget.styles.pointer = "pointer"
+        event = MagicMock()
+        event.style = Style()
+
+        widget.on_mouse_move(event)
+
+        assert widget.styles.pointer == "default"
+
+    def test_leave_resets_pointer(self) -> None:
+        """Leaving the banner should reset to the default pointer."""
+        widget = _make_banner(thread_id="abc")
+        widget.styles.pointer = "pointer"
+
+        widget.on_leave()
+
+        assert widget.styles.pointer == "default"
+
+
 class TestBuildWelcomeFooter:
     """Tests for the `build_welcome_footer` standalone function."""
 
@@ -531,156 +564,27 @@ class TestBannerFooterPosition:
         assert plain[idx - 2] == "\n"
 
 
-class TestBuildConnectingFooter:
-    """Tests for the `build_connecting_footer` standalone function."""
+class TestBannerConnectionState:
+    """WelcomeBanner keeps identity content while the status bar shows progress."""
 
-    def test_returns_content(self) -> None:
-        """Footer should return a `Content` object."""
-        assert isinstance(build_connecting_footer(), Content)
-
-    def test_contains_connecting_message(self) -> None:
-        """Footer should include the connecting status text."""
-        assert "Connecting to server..." in build_connecting_footer().plain
-
-    def test_resuming_message(self) -> None:
-        """Footer should say 'Resuming...' when resuming."""
-        footer = build_connecting_footer(resuming=True)
-        assert "Resuming..." in footer.plain
-        assert "Connecting" not in footer.plain
-
-    def test_local_server_message(self) -> None:
-        """Footer should say 'Connecting to local server' on first connect."""
-        footer = build_connecting_footer(local_server=True)
-        assert "Connecting to local server..." in footer.plain
-        assert "Reconnecting" not in footer.plain
-
-    def test_local_server_reconnecting_message(self) -> None:
-        """Footer should say 'Reconnecting to local server' on mid-session restart."""
-        footer = build_connecting_footer(local_server=True, reconnecting=True)
-        assert "Reconnecting to local server..." in footer.plain
-
-    def test_resuming_takes_precedence_over_local(self) -> None:
-        """Resuming text should win when both resuming and local_server are set."""
-        footer = build_connecting_footer(resuming=True, local_server=True)
-        assert "Resuming..." in footer.plain
-        assert "local server" not in footer.plain
-
-    def test_dots_parameter_animates_ellipsis(self) -> None:
-        """Custom dots string should appear in footer text."""
-        assert "Connecting to server." in build_connecting_footer(dots=".").plain
-        assert "Connecting to server.." in build_connecting_footer(dots="..").plain
-        assert (
-            "Reconnecting to local server."
-            in build_connecting_footer(
-                local_server=True, reconnecting=True, dots="."
-            ).plain
-        )
-
-
-class TestBannerConnectingFooterVariants:
-    """Verify WelcomeBanner forwards resuming/local_server to _build_banner."""
-
-    def test_connecting_default(self) -> None:
-        """Baseline connecting banner shows generic server text."""
+    def test_connecting_keeps_ready_footer(self) -> None:
+        """The banner should not render app connection progress."""
         with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True)
+            widget = WelcomeBanner()
         plain = widget._build_banner().plain
-        assert "Connecting to server..." in plain
-        assert "Ready to code" not in plain
-
-    def test_connecting_resuming(self) -> None:
-        """Banner forwards resuming flag to footer."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, resuming=True)
-        plain = widget._build_banner().plain
-        assert "Resuming..." in plain
-        assert "Connecting" not in plain
-
-    def test_connecting_local_server(self) -> None:
-        """Banner shows 'Connecting' (not 'Reconnecting') on first connect."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, local_server=True)
-        plain = widget._build_banner().plain
-        assert "Connecting to local server..." in plain
-        assert "Reconnecting" not in plain
-
-    def test_connecting_resuming_precedence(self) -> None:
-        """Resuming wins over local_server at the banner level."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, resuming=True, local_server=True)
-        plain = widget._build_banner().plain
-        assert "Resuming..." in plain
-        assert "local server" not in plain
-
-
-class TestDeferredConnectingDisplay:
-    """Tests for deferred display of the connecting footer at startup."""
-
-    def test_deferred_shows_ready_footer(self) -> None:
-        """When deferring, the welcome footer renders despite `connecting=True`."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
-        plain = widget._build_banner().plain
-        assert "Connecting to server..." not in plain
+        assert "Connecting to server" not in plain
+        assert "Resuming" not in plain
         assert "Ready to code" in plain
 
-    def test_defer_flag_ignored_when_not_connecting(self) -> None:
-        """`defer_connecting_display` is a no-op when `connecting` is `False`."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=False, defer_connecting_display=True)
-        assert widget._defer_connecting_display is False
-        assert "Ready to code" in widget._build_banner().plain
-
-    def test_reveal_shows_connecting_footer(self) -> None:
-        """`reveal_connecting_footer` flips the banner to the connecting state."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
-        with patch.object(widget, "update"):
-            widget.reveal_connecting_footer()
-        plain = widget._build_banner().plain
-        assert "Connecting to server..." in plain
-        assert "Ready to code" not in plain
-
-    def test_reveal_is_noop_when_not_deferring(self) -> None:
-        """Calling `reveal_connecting_footer` without deferral does nothing."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True)
-        with patch.object(widget, "update") as mock_update:
-            widget.reveal_connecting_footer()
-        mock_update.assert_not_called()
-
-    def test_set_connected_clears_deferred_state(self) -> None:
-        """`set_connected` resets the deferral flag and stops the timer."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
-        timer = MagicMock()
-        widget._defer_timer = timer
-        with patch.object(widget, "update"):
-            widget.set_connected()
-        assert widget._defer_connecting_display is False
-        assert widget._defer_timer is None
-        timer.stop.assert_called_once()
-
-    def test_set_idle_clears_deferred_state(self) -> None:
-        """`set_idle` resets the deferral flag and stops the timer."""
-        with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
-        timer = MagicMock()
-        widget._defer_timer = timer
-        with patch.object(widget, "update"):
-            widget.set_idle()
-        assert widget._defer_connecting_display is False
-        assert widget._defer_timer is None
-        timer.stop.assert_called_once()
-
-    def test_set_connecting_does_not_defer(self) -> None:
-        """Mid-session `set_connecting` shows the connecting footer immediately."""
+    def test_set_connecting_updates_state_without_progress_footer(self) -> None:
+        """Mid-session restarts update lifecycle state without a second spinner."""
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner()
         with patch.object(widget, "update"):
             widget.set_connecting()
-        assert widget._defer_connecting_display is False
-        assert "Connecting to server..." in widget._build_banner().plain
+        plain = widget._build_banner().plain
+        assert "Connecting to server" not in plain
+        assert "Ready to code" in plain
 
 
 class TestMcpServerCounters:
@@ -695,7 +599,7 @@ class TestMcpServerCounters:
         ):
             widget = WelcomeBanner(mcp_unauthenticated=1)
         plain = widget._build_banner().plain
-        assert "1 MCP server need login — open /mcp" in plain
+        assert "1 MCP server needs login — open /mcp" in plain
         assert "/mcp login" not in plain
 
     def test_errored_line_plural(self) -> None:
@@ -739,14 +643,14 @@ class TestMcpServerCounters:
                 mcp_awaiting_reconnect=1,
             )
         plain = widget._build_banner().plain
-        assert "need login" in plain
+        assert "needs login" in plain
         assert "failed to load" in plain
         assert "ready to load" in plain
 
     def test_set_connected_updates_awaiting_reconnect(self) -> None:
         """`set_connected` plumbs the new counter onto the banner."""
         with patch.dict("os.environ", {}, clear=True):
-            widget = WelcomeBanner(connecting=True)
+            widget = WelcomeBanner()
         with patch.object(widget, "update"):
             widget.set_connected(0, mcp_awaiting_reconnect=2)
         assert widget._mcp_awaiting_reconnect == 2

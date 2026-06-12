@@ -172,6 +172,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="refresh",
     ),
     SlashCommand(
+        name="/restart",
+        description="Restart the app-owned LangGraph server",
+        bypass_tier=BypassTier.ALWAYS,
+        hidden_keywords="respawn server",
+    ),
+    SlashCommand(
         name="/theme",
         description="Switch color theme",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -275,11 +281,24 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error", "/restart"})
-"""Power-user commands kept out of autocomplete and help.
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error"})
+"""Power-user commands kept out of autocomplete and help."""
 
-Includes both debug helpers (`/debug-error`) and recovery escape hatches
-(`/restart` — hot-respawn the app-owned LangGraph server).
+STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(
+    {"/install", "/reload", "/update"}
+)
+"""`QUEUED`-tier commands that must still run when startup has failed.
+
+When the configured model can't be built (e.g. its provider package is
+missing) the server never starts and the app holds a `_server_startup_error`
+state that parks queued messages. These are the recovery escape hatches for
+that state — install the missing package, reload config/env, or upgrade the
+tool — so they must bypass the queue rather than sit behind the very failure
+they repair. `/model` and `/auth` already escape via `IMMEDIATE_UI` (which
+opens a modal and defers the real work); the commands here instead perform
+their repair work directly, so they stay `QUEUED` and rely on this exemption.
+The bypass itself is gated in `_can_bypass_queue`. Every entry is also
+`QUEUE_BOUND` — the recovery exemption is orthogonal to the normal queue.
 """
 
 ALL_CLASSIFIED: frozenset[str] = (

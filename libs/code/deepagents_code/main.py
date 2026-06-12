@@ -20,9 +20,11 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from deepagents_code.app import AppResult
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
@@ -33,6 +35,204 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 from deepagents_code._version import __version__
 
 logger = logging.getLogger(__name__)
+
+_SANDBOX_DEFAULT_SENTINEL = "\x00default"
+"""Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def build_version_text() -> str:
+    """Build the plain-text output for the `--version` CLI flag.
+
+    Includes the CLI and SDK versions and any installed optional
+    dependencies. For editable installs it also reports the source path and
+    the resolved versions of the core LangChain-ecosystem dependencies.
+
+    Reports the same version facts as the `/version` slash command, in the
+    same section order (versions, editable path, core dependencies, optional
+    dependencies), but omits its network-dependent release-age suffixes and
+    update-available hint so `--version` stays offline.
+
+    Returns:
+        Multi-line version string suitable for stdout.
+    """
+    from importlib.metadata import (
+        PackageNotFoundError,
+        version as _pkg_version,
+    )
+
+    try:
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:  # Best-effort SDK version lookup
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
+
+    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+
+    editable = False
+    try:
+        from deepagents_code.config import (
+            _get_editable_install_path,
+            _is_editable_install,
+        )
+
+        editable = _is_editable_install()
+        if editable:
+            path = _get_editable_install_path()
+            text += f"\nEditable install: {path}" if path else "\nEditable install"
+    except Exception:
+        logger.warning("Unexpected error detecting editable install", exc_info=True)
+
+    # Core dependencies precede optional dependencies to match the section
+    # order of the `/version` slash command (see `_handle_version_command`).
+    if editable:
+        try:
+            from deepagents_code.extras_info import format_core_dependencies_plain
+
+            core_text = format_core_dependencies_plain()
+        except Exception:
+            logger.warning("Failed to collect core dependency versions", exc_info=True)
+            core_text = ""
+        if core_text:
+            text = f"{text}\n\n{core_text}"
+
+    try:
+        from deepagents_code.extras_info import (
+            format_extras_status_plain,
+            get_extras_status,
+        )
+
+        extras_text = format_extras_status_plain(get_extras_status())
+    except Exception:
+        logger.warning("Unexpected error collecting optional deps", exc_info=True)
+        extras_text = ""
+    if extras_text:
+        text = f"{text}\n\n{extras_text}"
+
+    return text
+
+
+def _restart_current_process() -> NoReturn:
+    """Replace the current process with a fresh `deepagents_code` invocation.
+
+    Raises:
+        RuntimeError: If process replacement unexpectedly returns.
+    """
+    argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    # Re-exec the trusted interpreter with the user's own argv verbatim; the
+    # only "input" is the command the user already ran, so S606's concern
+    # (untrusted/unsanitized args to a spawned executable) does not apply.
+    os.execv(sys.executable, argv)  # noqa: S606
+    msg = "os.execv returned unexpectedly"
+    raise RuntimeError(msg)
+
+
+def _run_startup_auto_update(console: "Console") -> None:
+    """Apply enabled auto-updates before the TUI and server start.
+
+    On a successful upgrade the process is re-exec'd so the new version is
+    loaded. Any failure is fail-soft: the installed version is launched and
+    the error is surfaced, never blocking startup.
+
+    Raises:
+        SystemExit: Re-raised rather than suppressed by the fail-soft handler,
+            so a process-exit request is never swallowed (the `os.execv`
+            re-exec is simulated this way under test).
+    """
+    from rich.markup import escape
+
+    from deepagents_code._env_vars import DEBUG_UPDATE, RESTARTED_AFTER_UPDATE
+    from deepagents_code._version import __version__ as cli_version
+    from deepagents_code.config import _is_editable_install
+    from deepagents_code.update_check import (
+        create_update_log_path,
+        format_release_age_parenthetical,
+        get_cached_update_available,
+        is_auto_update_enabled,
+        perform_upgrade,
+        upgrade_command,
+    )
+
+    try:
+        if _is_editable_install() or not is_auto_update_enabled():
+            return
+        # Consume the re-exec sentinel recorded before the previous restart.
+        restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        available, latest = get_cached_update_available()
+        if not available or latest is None:
+            return
+        if restarted_for == latest:
+            # Already restarted after upgrading to this version, yet it still
+            # reports as available: the install did not change the running
+            # version. Bail out instead of upgrading and restarting forever
+            # (this runs before the TUI, so there is no in-app way to stop it).
+            cmd = upgrade_command()
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] v{latest} still reports as "
+                "available after an automatic update; skipping auto-update to "
+                f"avoid a restart loop. Update manually: [cyan]{cmd}[/cyan]\n"
+                f"Continuing with v{cli_version}.",
+                highlight=False,
+            )
+            return
+        release_age = format_release_age_parenthetical(latest)
+        console.print(
+            f"Auto-updating deepagents-code from v{cli_version} to "
+            f"v{latest}{release_age} before startup..."
+        )
+        if os.environ.get(DEBUG_UPDATE):
+            console.print("Skipped update install (debug mode).", style="dim")
+            return
+        log_path = create_update_log_path()
+        console.print(
+            f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+            style="dim",
+            highlight=False,
+            markup=False,
+        )
+        success, output = asyncio.run(perform_upgrade(log_path=log_path))
+        if success:
+            console.print(f"[green]Updated to v{latest}. Restarting...[/green]")
+            # Record the target version so the re-exec'd process can detect a
+            # no-op upgrade and break the loop (see the `restarted_for` guard).
+            os.environ[RESTARTED_AFTER_UPDATE] = latest
+            try:
+                _restart_current_process()
+            except (OSError, RuntimeError):
+                # Upgrade succeeded but the re-exec did not happen (`os.execv`
+                # raised, or returned unexpectedly). Drop the sentinel and
+                # continue on the old in-memory code; the user must restart
+                # manually to load the new version.
+                os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+                logger.warning("Restart after update failed", exc_info=True)
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] Updated to v{latest} but "
+                    "the automatic restart failed. Restart dcode manually to use "
+                    "the new version.",
+                    highlight=False,
+                )
+            return
+        cmd = upgrade_command()
+        detail = f": {escape(output[:200])}" if output else ""
+        console.print(
+            f"[bold red]Auto-update failed{detail}[/bold red]\n"
+            f"Run manually: [cyan]{cmd}[/cyan]\n"
+            f"Continuing with v{cli_version}.",
+            markup=True,
+            highlight=False,
+        )
+    except SystemExit:
+        # Process replacement (and test doubles that simulate it) must not be
+        # swallowed by the fail-soft handler below.
+        raise
+    except Exception:
+        logger.warning("Startup auto-update failed", exc_info=True)
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
+            "continuing with the installed version."
+        )
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
@@ -124,10 +324,12 @@ def _parse_interpreter_tools_flag(
 
     Returns:
         `None` when the flag is absent, the literal string `"safe"`/`"all"`,
-        or a list of trimmed tool names.
+        or a list of trimmed tool names. The list may contain `"safe"` as an
+        expandable preset (e.g. `"safe,task"` → `["safe", "task"]`).
 
-        Calls `sys.exit(2)` when the value is empty or contains only blank
-        tokens — the CLI treats that as a usage error.
+        Calls `sys.exit(2)` when the value is empty, contains only blank
+        tokens, or includes `"all"` inside a list — the CLI treats those as
+        usage errors.
     """
     if raw is None:
         return None
@@ -146,6 +348,13 @@ def _parse_interpreter_tools_flag(
         sys.stderr.write(
             "Error: --interpreter-tools list must contain at least one "
             "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if any(name.lower() == "all" for name in names):
+        sys.stderr.write(
+            "Error: --interpreter-tools 'all' cannot be combined with other "
+            "tools; use 'all' on its own or list explicit tool names "
+            "(optionally with the 'safe' preset).\n"
         )
         sys.exit(2)
     return names
@@ -260,6 +469,25 @@ def _ripgrep_install_hint() -> str:
     return _RIPGREP_URL
 
 
+def _is_managed_ripgrep_path(path: str | None) -> bool:
+    """Return whether `path` points at the managed `rg` binary."""
+    if path is None:
+        return False
+
+    from deepagents_code.managed_tools import managed_rg_path
+
+    managed = managed_rg_path()
+    return os.path.normcase(str(Path(path).resolve())) == os.path.normcase(
+        str(managed.resolve())
+    )
+
+
+def _should_ensure_managed_ripgrep() -> bool:
+    """Return whether startup should validate or install managed ripgrep."""
+    rg_path = shutil.which("rg")
+    return rg_path is None or _is_managed_ripgrep_path(rg_path)
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -277,7 +505,9 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     from deepagents_code.model_config import is_warning_suppressed
 
     missing: list[str] = []
-    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+    if _should_ensure_managed_ripgrep() and not is_warning_suppressed(
+        "ripgrep", config_path
+    ):
         missing.append("ripgrep")
 
     from deepagents_code.config import settings
@@ -286,6 +516,59 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
         missing.append("tavily")
 
     return missing
+
+
+def _auto_install_ripgrep_cli(
+    warn_console: "Console", missing_tools: list[str]
+) -> list[str]:
+    """Attempt the one-shot managed `rg` install for the headless CLI path.
+
+    Mirrors the interactive `DeepAgentsApp._ensure_managed_ripgrep` flow for
+    the non-interactive launch, where there is no Textual app to surface
+    notices through. A checksum mismatch is reported loudly and a generic
+    failure as a warning; both leave `"ripgrep"` in the returned list so the
+    caller still prints the standard missing-tool notice and the slow Python
+    fallback is used.
+
+    Args:
+        warn_console: `rich` console bound to stderr for user-facing notices.
+        missing_tools: Tool names reported missing by `check_optional_tools`.
+
+    Returns:
+        `missing_tools` with `"ripgrep"` removed once a usable managed binary
+        is on `PATH`, otherwise the list unchanged.
+    """
+    from deepagents_code.managed_tools import (
+        ChecksumMismatchError,
+        ensure_ripgrep,
+        prepend_managed_bin_to_path,
+    )
+
+    warn_console.print("Installing ripgrep...")
+    try:
+        installed = asyncio.run(ensure_ripgrep())
+    except ChecksumMismatchError:
+        logger.exception(
+            "ripgrep auto-install aborted: SHA-256 mismatch on downloaded archive"
+        )
+        warn_console.print(
+            "[bold red]Error:[/bold red] ripgrep auto-install aborted: downloaded "
+            "archive failed SHA-256 verification. Refusing to install."
+        )
+        return missing_tools
+    except Exception:
+        logger.warning("ripgrep auto-install failed unexpectedly", exc_info=True)
+        warn_console.print(
+            "[yellow]Warning:[/yellow] ripgrep auto-install failed unexpectedly "
+            "— see logs."
+        )
+        return missing_tools
+
+    if installed is None:
+        return missing_tools
+
+    prepend_managed_bin_to_path()
+    return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
 def build_missing_tool_notification(tool: str) -> "PendingNotification":
@@ -463,6 +746,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "skills": ("skills_command", "show_skills_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
+    "config": ("config_command", "show_config_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -486,7 +770,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, and `mcp` commands when no
+    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
     subcommand was given.
 
     Args:
@@ -524,6 +808,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
@@ -654,6 +939,12 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
+    setup_config_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
+
     threads_parser = subparsers.add_parser(
         "threads",
         help="Manage conversation threads",
@@ -780,6 +1071,16 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
+    from deepagents_code.ui import non_negative_int, positive_int
+
+    parser.add_argument(
+        "--max-retries",
+        type=non_negative_int,
+        default=None,
+        metavar="N",
+        help="Override max retries for transient model errors.",
+    )
+
     parser.add_argument(
         "--profile-override",
         metavar="JSON",
@@ -855,8 +1156,6 @@ def parse_args() -> argparse.Namespace:
         "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
-    from deepagents_code.ui import positive_int
-
     parser.add_argument(
         "--max-turns",
         dest="max_turns",
@@ -900,13 +1199,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--sandbox",
-        choices=["none", "agentcore", "modal", "daytona", "runloop", "langsmith"],
+        nargs="?",
+        const=_SANDBOX_DEFAULT_SENTINEL,
         default="none",
         metavar="TYPE",
         help=(
-            "Remote sandbox for code execution "
-            "(default: none - local only; langsmith is included, "
-            "agentcore/modal/daytona/runloop require downloading extras)"
+            "Remote sandbox for code execution (default: none - local only). "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Third-party and config-declared providers are also accepted. "
+            "Pass --sandbox with no value to use [sandboxes].default from "
+            "config (keep the bare form last on the command line so a "
+            "following subcommand isn't read as its value). langsmith is "
+            "bundled; others require installing an extra or package."
         ),
     )
 
@@ -919,7 +1223,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Sandbox snapshot name to use or create (langsmith only)",
+        help="Snapshot (langsmith) or blueprint (runloop) name to use or create",
     )
 
     parser.add_argument(
@@ -963,22 +1267,10 @@ def parse_args() -> argparse.Namespace:
         dest="interpreter_tools",
         metavar="VALUE",
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
-        "list of tool names. Default is no PTC (pure REPL).",
+        "list of tool names (which may include the 'safe' preset, e.g. "
+        "'safe,task'). Default is no PTC (pure REPL).",
     )
 
-    try:
-        from importlib.metadata import (
-            PackageNotFoundError,
-            version as _pkg_version,
-        )
-
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
     parser.add_argument(
         "--update",
         action="store_true",
@@ -991,8 +1283,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--install",
-        metavar="EXTRA",
+        metavar="NAME",
         help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+    )
+    parser.add_argument(
+        "--package",
+        action="store_true",
+        help=(
+            "With --install, treat NAME as a package added via `uv --with` "
+            "(for a custom provider package), not a deepagents-code extra"
+        ),
     )
     parser.add_argument(
         "--yes",
@@ -1005,22 +1305,15 @@ def parse_args() -> argparse.Namespace:
         help="Run as an ACP server over stdio instead of launching the Textual UI",
     )
 
-    version_text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
     # `parse_args` runs on every invocation; keep the import-heavy metadata
     # scan off the hot path unless the user explicitly asked for --version.
     if any(arg in {"-v", "--version"} for arg in sys.argv[1:]):
-        try:
-            from deepagents_code.extras_info import (
-                format_extras_status_plain,
-                get_extras_status,
-            )
-
-            extras_text = format_extras_status_plain(get_extras_status())
-        except Exception:
-            logger.warning("Unexpected error collecting optional deps", exc_info=True)
-            extras_text = ""
-        if extras_text:
-            version_text = f"{version_text}\n\n{extras_text}"
+        version_text = build_version_text()
+    else:
+        # Never surfaced: argparse only emits `version=` when the flag is
+        # actually passed, which takes the `build_version_text()` branch above.
+        # This placeholder only exists because `version=` requires a value.
+        version_text = f"deepagents-code {__version__}"
     parser.add_argument(
         "-v",
         "--version",
@@ -1034,9 +1327,92 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.sandbox_snapshot_name is not None and args.sandbox != "langsmith":
-        parser.error("--sandbox-snapshot-name requires --sandbox langsmith")
+    _resolve_and_validate_sandbox(args, parser)
     return args
+
+
+def _resolve_and_validate_sandbox(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Resolve `--sandbox` against the registry and validate related flags.
+
+    Handles the bare `--sandbox` form (resolve `[sandboxes].default`), unknown
+    providers (with install/config guidance), and the `--sandbox-snapshot-name`
+    / `--sandbox-id` flags whose support is driven by provider metadata. Calls
+    `parser.error` (which exits) on invalid input.
+
+    Because `--sandbox` takes an optional value (`nargs="?"`), placing it
+    immediately before a subcommand (e.g. `dcode --sandbox agents`) makes
+    argparse consume the subcommand as the flag's value. Pass an explicit
+    provider (`--sandbox daytona`) or keep the bare form last on the command
+    line.
+
+    Args:
+        args: Parsed namespace; `args.sandbox` is normalized in place.
+        parser: The parser, used to emit errors.
+    """
+    if args.sandbox in {"none", None}:
+        if args.sandbox_snapshot_name is not None:
+            parser.error("--sandbox-snapshot-name requires a --sandbox provider")
+        if args.sandbox_id is not None:
+            parser.error("--sandbox-id requires a --sandbox provider")
+        return
+
+    from deepagents_code.integrations.sandbox_registry import SandboxRegistry
+
+    registry = SandboxRegistry.load()
+
+    def _config_note() -> str:
+        """Build a breadcrumb when the config file failed to parse.
+
+        Returns:
+            A note to append to an error message, or an empty string when the
+            config parsed cleanly.
+        """
+        if registry.config_error:
+            return (
+                f"\n\nNote: ~/.deepagents/config.toml could not be used "
+                f"({registry.config_error}); any providers or default it "
+                "declares were ignored."
+            )
+        return ""
+
+    if args.sandbox == _SANDBOX_DEFAULT_SENTINEL:
+        default = registry.default
+        if not default:
+            parser.error(
+                "--sandbox was given with no value but no [sandboxes].default "
+                "is configured in ~/.deepagents/config.toml. Pass a provider "
+                "name explicitly or set [sandboxes].default." + _config_note()
+            )
+        args.sandbox = default
+
+    if not registry.is_available(args.sandbox):
+        available = ", ".join(registry.available_providers())
+        parser.error(
+            f"Unknown sandbox provider '{args.sandbox}'.\n"
+            f"Available providers: {available}.\n\n"
+            "If this is a third-party provider, install the package that "
+            "publishes it and re-run:\n"
+            "  /install <package-name> --package\n"
+            f"or declare [sandboxes.providers.{args.sandbox}] in "
+            "~/.deepagents/config.toml." + _config_note()
+        )
+
+    metadata = registry.get_metadata(args.sandbox)
+    if args.sandbox_snapshot_name is not None and (
+        metadata is None or not metadata.supports_snapshot_name
+    ):
+        parser.error(
+            f"--sandbox-snapshot-name is not supported by provider '{args.sandbox}'"
+        )
+    if (
+        args.sandbox_id is not None
+        and metadata is not None
+        and not metadata.supports_sandbox_id
+    ):
+        parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
 async def run_textual_cli_async(
@@ -1073,8 +1449,7 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Optional sandbox snapshot name to use or create
-            (langsmith only).
+        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -1269,7 +1644,7 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
         model_result = create_model(
@@ -1288,7 +1663,7 @@ async def _run_acp_cli_async(
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
 
-    tools: list[Any] = [fetch_url]
+    tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
         tools.append(web_search)
 
@@ -1649,8 +2024,12 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer == "y":
-        if not debug_prompt:
-            trust_project_mcp(project_root, fingerprint)
+        if not debug_prompt and not trust_project_mcp(project_root, fingerprint):
+            prompt_console.print(
+                "[yellow]Approved for this session, but the decision could not be "
+                "saved — you'll be asked again next time.[/yellow]",
+                highlight=False,
+            )
         return True
     return False
 
@@ -1689,32 +2068,7 @@ def cli_main() -> None:
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
-        try:
-            from importlib.metadata import (
-                PackageNotFoundError,
-                version as _pkg_version,
-            )
-
-            sdk_version = _pkg_version("deepagents")
-        except PackageNotFoundError:
-            sdk_version = "unknown"
-        except Exception:  # Best-effort SDK version lookup
-            logger.debug("Unexpected error looking up SDK version", exc_info=True)
-            sdk_version = "unknown"
-        output = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
-        try:
-            from deepagents_code.extras_info import (
-                format_extras_status_plain,
-                get_extras_status,
-            )
-
-            extras_text = format_extras_status_plain(get_extras_status())
-        except Exception:
-            logger.warning("Unexpected error collecting optional deps", exc_info=True)
-            extras_text = ""
-        if extras_text:
-            output = f"{output}\n\n{extras_text}"
-        print(output)  # noqa: T201  # Version output
+        print(build_version_text())  # noqa: T201  # Version output
         sys.exit(0)
 
     # ACP mode does not require Textual, so skip UI dependency checks when
@@ -1764,6 +2118,17 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        max_retries = getattr(args, "max_retries", None)
+        if max_retries is not None:
+            from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+            if model_params is None:
+                model_params = {}
+            # Carry the flag value under an internal key; `create_model` folds it
+            # under the resolved provider's retry-param name (which may not be
+            # `max_retries` for custom providers) with top precedence.
+            model_params[CLI_MAX_RETRIES_KEY] = max_retries
 
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
@@ -1823,6 +2188,11 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
+
+        if args.command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
@@ -1981,6 +2351,115 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        if args.package and not args.install:
+            console.print(
+                "[bold red]Error:[/bold red] --package requires --install <package>.",
+            )
+            sys.exit(2)
+
+        # Handle --install <package> --package flag (headless, no session).
+        # Installs an arbitrary package via `uv --with` for a custom provider,
+        # rather than a deepagents-code extra. Always exits.
+        if args.install and args.package:
+            from rich.markup import escape
+
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_package_hint,
+                is_valid_package_name,
+                perform_install_package,
+            )
+
+            package: str = args.install
+            pkg_log_path: Path | None = None
+            try:
+                if not is_valid_package_name(package):
+                    # Defense in depth — the package is interpolated into a
+                    # shell command. Reject malformed names before any prompt
+                    # or uv call, even with --yes.
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"Invalid package name '{escape(package)}'. "
+                        "Package names must be alphanumeric with `-`, `_`, "
+                        "or `.` (PEP 508).",
+                        highlight=False,
+                    )
+                    sys.exit(2)
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "--install --package is not supported on editable "
+                        "installs.\n" + escape(editable_package_hint(package)),
+                        highlight=False,
+                    )
+                    sys.exit(1)
+
+                # Arbitrary packages have no curated allowlist to vet against,
+                # so confirm before pulling third-party code into the tool env.
+                console.print(
+                    f"This will install the package '{escape(package)}' into "
+                    "the Deep Agents Code environment (this runs third-party "
+                    "code).",
+                    highlight=False,
+                )
+                if not args.yes:
+                    if not sys.stdin.isatty():
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            "Refusing package install in non-interactive mode. "
+                            "Pass --yes to proceed."
+                        )
+                        sys.exit(2)
+                    try:
+                        reply = input(f"Install package '{package}'? [y/N] ")
+                    except EOFError:
+                        console.print("\nAborted.", style="dim")
+                        sys.exit(130)
+                    if reply.strip().lower() not in {"y", "yes"}:
+                        console.print("Aborted.", style="dim")
+                        sys.exit(1)
+
+                console.print(f"Installing package '{package}'...")
+                pkg_log_path = create_update_log_path()
+                console.print(
+                    f"Install log: {pkg_log_path}\n"
+                    f"Tail progress: tail -f {pkg_log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(
+                    perform_install_package(package, log_path=pkg_log_path)
+                )
+                if success:
+                    console.print(f"[green]Installed package '{package}'.[/green]")
+                    sys.exit(0)
+                # Tail the last 200 chars — uv prints the resolved error at the
+                # end. The full output is in the log.
+                detail = f": {output[-200:]}" if output else ""
+                console.print(
+                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
+                    f"Log: {pkg_log_path}",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\nAborted.", style="dim")
+                sys.exit(130)
+            except Exception as exc:
+                logger.warning("--install --package failed", exc_info=True)
+                log_line = f"\nLog: {pkg_log_path}" if pkg_log_path else ""
+                console.print(
+                    f"[bold red]Error:[/bold red] "
+                    f"{type(exc).__name__}: {escape(str(exc))}"
+                    f"{escape(log_line)}",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+
         # Handle --install <extra> flag (headless, no session)
         if args.install:
             from rich.markup import escape
@@ -1997,6 +2476,7 @@ def cli_main() -> None:
 
             extra: str = args.install
             log_path: Path | None = None
+            manual_cmd: str | None = None
             try:
                 if not is_valid_extra_name(extra):
                     # Defense in depth — the extra is interpolated into a
@@ -2019,6 +2499,11 @@ def cli_main() -> None:
                     )
                     sys.exit(1)
 
+                manual_cmd = install_extra_command(extra)
+                # KNOWN_EXTRAS is a curated "did you mean" list, not the
+                # authoritative set (that's pyproject, resolved by uv): warn and
+                # confirm rather than refuse, since valid-but-unlisted names
+                # exist (e.g. all-providers). Malformed names blocked above.
                 if extra not in KNOWN_EXTRAS:
                     known = ", ".join(sorted(KNOWN_EXTRAS))
                     console.print(
@@ -2026,9 +2511,6 @@ def cli_main() -> None:
                         f"'{extra}' is not a known extra.\n"
                         f"Known extras: {known}",
                         highlight=False,
-                    )
-                    console.print(
-                        f"This will run: [cyan]{install_extra_command(extra)}[/cyan]"
                     )
                     if not args.yes:
                         if not sys.stdin.isatty():
@@ -2063,7 +2545,7 @@ def cli_main() -> None:
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{install_extra_command(extra)}[/cyan]",
+                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2074,13 +2556,14 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
+                fallback_cmd = (
+                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
+                )
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"
                     f"{escape(log_line)}\n"
-                    "Run manually: [cyan]"
-                    f"uv tool install -U 'deepagents-code[{escape(extra)}]'"
-                    "[/cyan]",
+                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2284,16 +2767,31 @@ def cli_main() -> None:
                     exc_info=True,
                 )
             else:
+                warn_console = None
                 try:
                     warn_console = _Console(stderr=True)
-                    for tool in check_optional_tools():
+                    missing_tools = check_optional_tools()
+                    if _should_ensure_managed_ripgrep():
+                        missing_tools = _auto_install_ripgrep_cli(
+                            warn_console, missing_tools
+                        )
+                    for tool in missing_tools:
                         warn_console.print(
                             f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
                         )
                 except Exception:
-                    logger.debug("Failed to check for optional tools", exc_info=True)
+                    logger.warning(
+                        "Optional-tools check failed unexpectedly", exc_info=True
+                    )
+                    # A swallowed failure here must not be fully silent: surface
+                    # one stderr line so a degraded grep is at least signposted.
+                    if warn_console is not None:
+                        with contextlib.suppress(Exception):
+                            warn_console.print(
+                                "[dim]Tool availability check skipped — see logs.[/dim]"
+                            )
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )
@@ -2364,6 +2862,7 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
+            _run_startup_auto_update(console)
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
@@ -2385,7 +2884,7 @@ def cli_main() -> None:
             thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess
-            if args.sandbox and args.sandbox not in {"none", "langsmith"}:
+            if args.sandbox and args.sandbox != "none":
                 from deepagents_code.integrations.sandbox_factory import (
                     verify_sandbox_deps,
                 )
@@ -2485,21 +2984,27 @@ def cli_main() -> None:
                         format_installed_age_suffix,
                         format_release_age_parenthetical,
                         is_auto_update_enabled,
+                        is_installed_version_at_least,
                         mark_update_notified,
                         should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    if latest and should_notify_update(latest):
+                    if (
+                        latest
+                        and not is_installed_version_at_least(latest)
+                        and should_notify_update(latest)
+                    ):
                         console.print()
                         release_age = format_release_age_parenthetical(latest)
                         installed_age = format_installed_age_suffix(cli_version)
-                        update_msg = Text("Update available: ", style="yellow bold")
-                        update_msg.append(f"v{latest}", style="yellow")
-                        update_msg.append(release_age, style="dim")
+                        update_msg = Text(
+                            f"Update available: v{latest}", style="yellow bold"
+                        )
                         update_msg.append(
-                            f". Currently installed: {cli_version}{installed_age}.",
+                            f"{release_age}. "
+                            f"Currently installed: {cli_version}{installed_age}.",
                             style="dim",
                         )
                         console.print(update_msg)

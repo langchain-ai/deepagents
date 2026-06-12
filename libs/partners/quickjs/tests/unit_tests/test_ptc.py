@@ -648,6 +648,38 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     assert "<result>value=5</result>" in result.content
 
 
+async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:
+    from types import SimpleNamespace
+
+    from langchain.tools import ToolRuntime
+
+    greet_tool = _greet_tool()
+    mw = CodeInterpreterMiddleware(ptc=[greet_tool], mode="call")
+    tool = mw.tools[0]
+    mw._prepare_for_call(SimpleNamespace(tools=[greet_tool, tool]))
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={},
+        stream_writer=lambda _chunk: None,
+        tools=[tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+    assert tool.coroutine is not None
+
+    first = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.greet({name: 'Ada'})",
+    )
+    second = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.greet({name: 'Bob'})",
+    )
+    assert "<result>hi Ada x1</result>" in first.content
+    assert "<result>hi Bob x1</result>" in second.content
+
+
 def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
     from types import SimpleNamespace
 

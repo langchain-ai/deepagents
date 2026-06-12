@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from inspect import Parameter, signature
 from typing import Any
-from unittest.mock import MagicMock, NonCallableMagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
+from deepagents.backends.protocol import _resolve_backend
+from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
     SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
@@ -475,7 +478,7 @@ class TestResolveBackend:
 
     def test_static_backend(self) -> None:
         """Should return the backend directly when it's not callable."""
-        backend = NonCallableMagicMock()
+        backend = StateBackend()
         summ = SummarizationMiddleware(
             model=_make_mock_model(),
             backend=backend,
@@ -496,6 +499,28 @@ class TestResolveBackend:
         runtime = _make_runtime(_make_messages(1))
         result = mw._resolve_backend(runtime)
         assert result is resolved
+        factory.assert_called_once_with(runtime)
+
+
+class TestResolveBackendHelper:
+    """Direct tests for the module-level `_resolve_backend` helper.
+
+    The middleware wrappers guard with `callable()` before delegating, so these
+    cover both branches of the helper in isolation.
+    """
+
+    def test_returns_instance_unchanged(self) -> None:
+        """A `BackendProtocol` instance is returned as-is, not invoked."""
+        backend = StateBackend()
+        runtime = _make_runtime(_make_messages(1))
+        assert _resolve_backend(backend, runtime) is backend
+
+    def test_invokes_factory_with_runtime(self) -> None:
+        """A factory callable is invoked with the runtime."""
+        resolved = StateBackend()
+        factory = MagicMock(return_value=resolved)
+        runtime = _make_runtime(_make_messages(1))
+        assert _resolve_backend(factory, runtime) is resolved
         factory.assert_called_once_with(runtime)
 
 
@@ -611,6 +636,89 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
 
+    def test_dict_clause_requires_all_thresholds(self) -> None:
+        """Dict trigger clauses use AND semantics for compact eligibility."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        mw._summarization._lc_helper._trigger_clauses = [{"tokens": 100_000, "messages": 6}]
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
+        runtime = _make_runtime(messages)
+        result = mw._run_compact(runtime)
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+        messages.append(HumanMessage(content="more context"))
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+        assert "_summarization_event" in result.update
+
+    def test_trigger_clauses_are_preferred_over_legacy_conditions(self) -> None:
+        """LangChain's canonical `_trigger_clauses` attr wins when available."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        mw._summarization._lc_helper._trigger_clauses = [{"tokens": 100_000, "messages": 6}]
+        mw._summarization._lc_helper._trigger_conditions = [("tokens", 100_000)]
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(60_000)]
+        runtime = _make_runtime(messages)
+        result = mw._run_compact(runtime)
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+        messages.append(HumanMessage(content="more context"))
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+        assert "_summarization_event" in result.update
+
+    def test_dict_trigger_constructs_langchain_trigger_clauses(self) -> None:
+        """Dict trigger input should populate LangChain's canonical trigger clauses."""
+        mw = _make_middleware_with_trigger({"tokens": 100_000, "messages": 6})
+        assert mw._summarization._lc_helper._trigger_clauses == [{"tokens": 100_000, "messages": 6}]
+
+    def test_dict_clause_list_uses_or_semantics(self) -> None:
+        """Multiple dict trigger clauses use OR semantics for compact eligibility."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        mw._summarization._lc_helper._trigger_clauses = [
+            {"tokens": 100_000, "messages": 10},
+            {"tokens": 200_000, "messages": 2},
+        ]
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(110_000)]
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+        assert "_summarization_event" in result.update
+
+    def test_messages_trigger_uses_message_count(self) -> None:
+        """Message trigger eligibility uses half the configured message count."""
+        mw = _make_middleware_with_trigger(("messages", 4))
+        messages = [HumanMessage(content="one")]
+        runtime = _make_runtime(messages)
+        result = mw._run_compact(runtime)
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+        messages.append(HumanMessage(content="two"))
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+        assert "_summarization_event" in result.update
+
     def test_no_usage_metadata_falls_through(self) -> None:
         """No usage metadata → not eligible → falls through to cutoff check."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))
@@ -638,6 +746,22 @@ def test_create_summarization_tool_middleware_returns_instance() -> None:
 
     assert isinstance(mw, SummarizationToolMiddleware)
     assert mw.tools[0].name == "compact_conversation"
+
+
+def test_create_summarization_tool_middleware_accepts_system_prompt() -> None:
+    """Factory passes explicit `system_prompt` through to the tool middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 120_000}
+    mw = create_summarization_tool_middleware(model, MagicMock(), system_prompt="custom nudge")
+
+    assert mw.system_prompt == "custom nudge"
+
+
+def test_create_summarization_tool_middleware_system_prompt_is_keyword_only() -> None:
+    """Requires the optional tool nudge to be passed by name."""
+    params = signature(create_summarization_tool_middleware).parameters
+
+    assert params["system_prompt"].kind is Parameter.KEYWORD_ONLY
 
 
 # --- system_prompt override / suppression --------------------------------

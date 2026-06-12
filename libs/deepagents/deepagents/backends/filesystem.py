@@ -6,9 +6,9 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +16,7 @@ import wcmatch.glob as wcglob
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
@@ -233,6 +234,29 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
+    def _display_path(self, path: Path) -> str:
+        """Render a path for agent-visible messages without leaking the real root.
+
+        In `virtual_mode`, surfacing the resolved on-disk path would defeat the
+        virtual-path abstraction (and leak `root_dir`), so convert to the virtual
+        form; fall back to the bare name (or `/` for a root path with no name
+        component) if that conversion fails (e.g., the path escaped the root or
+        could not be resolved). In non-virtual mode the real path is already the
+        caller's own, so return it unchanged.
+
+        Args:
+            path: Filesystem path to render.
+
+        Returns:
+            A virtual path string in `virtual_mode`, otherwise the real path.
+        """
+        if not self.virtual_mode:
+            return str(path)
+        try:
+            return self._to_virtual_path(path)
+        except (ValueError, OSError, RuntimeError):
+            return path.name or "/"
+
     def ls(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
@@ -240,18 +264,29 @@ class FilesystemBackend(BackendProtocol):
             path: Absolute directory path to list files from.
 
         Returns:
-            List of `FileInfo`-like dicts for files and directories directly in the
-                directory. Directories have a trailing `/` in their path and
-                `is_dir=True`.
+            `LsResult` with `entries` listing files and directories directly in the
+                directory on success.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
+
+                Missing paths set `error` to `Path '<path>': path_not_found`
+                with `entries=None`.
+
+                File paths set `error` to `Path '<path>': not_a_directory`
+                with `entries=None`.
+
+                Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)
-            if not dir_path.exists() or not dir_path.is_dir():
-                return LsResult(entries=[])
+            if not dir_path.exists():
+                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+            if not dir_path.is_dir():
+                return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=[])
+            return LsResult(error=msg, entries=None)
 
         results: list[FileInfo] = []
         errors: list[str] = []
@@ -569,8 +604,8 @@ class FilesystemBackend(BackendProtocol):
         results = self._ripgrep_search(pattern, base_full, glob)
         partial_error: str | None = None
         if results is None:
-            # Python fallback needs escaped pattern for literal search
-            results, partial_error = self._python_search(re.escape(pattern), base_full, glob)
+            # Python fallback does literal substring matching on the raw pattern.
+            results, partial_error = self._python_search(pattern, base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -618,12 +653,12 @@ class FilesystemBackend(BackendProtocol):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=DEFAULT_GREP_TIMEOUT,
                 check=False,
                 cwd=rg_cwd,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("ripgrep timed out after 30s; using Python grep fallback")
+            logger.warning("ripgrep timed out after %ds; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
             return None
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             # `rg` resolved at cache time but failed at exec — treat as a
@@ -702,64 +737,131 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]], str | None]:  # noqa: C901, PLR0912
+    def _python_search(  # noqa: C901, PLR0912, PLR0915
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        *,
+        timeout: int = DEFAULT_GREP_TIMEOUT,
+    ) -> tuple[dict[str, list[tuple[int, str]]], str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 
-        Recursively searches files, respecting `max_file_size_bytes` limit.
+        Recursively searches files, respecting `max_file_size_bytes` limit
+        and a wall-clock timeout.
 
         Args:
-            pattern: Escaped regex pattern (from re.escape) for literal search.
+            pattern: Literal string to search for (substring match, not regex).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            timeout: Maximum wall-clock seconds before the search is aborted.
 
         Returns:
             `results` contains every match found before iteration completed.
 
                 `partial_error` is `None` on a clean walk, otherwise a
-                human-readable message indicating the walk aborted early
-                (e.g., a directory entry was removed mid-walk); callers
+                human-readable message indicating the walk was incomplete:
+                either the wall-clock `timeout` elapsed, at least one file
+                could not be opened or fully read, or the walk aborted early
+                (e.g., a directory entry was removed mid-walk). Callers
                 should treat such results as incomplete.
         """
-        # Compile escaped pattern once for efficiency (used in loop)
-        regex = re.compile(pattern)
+        deadline = time.monotonic() + timeout
+        glob_matcher = wcglob.compile(include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR) if include_glob else None
 
         results: dict[str, list[tuple[int, str]]] = {}
+        file_errors: list[str] = []
         root = base_full if base_full.is_dir() else base_full.parent
+
+        def _timed_out_msg() -> str:
+            msg = (
+                f"Grep of '{self._display_path(base_full)}' timed out after {timeout}s "
+                f"with {len(results)} matching file(s); try a more "
+                f"specific pattern or a narrower path."
+            )
+            logger.warning("%s", msg)
+            return msg
+
+        def _file_errors_msg() -> str | None:
+            if not file_errors:
+                return None
+            return "One or more files could not be fully searched:\n" + "\n".join(file_errors)
+
+        def _safe_detail(exc: Exception) -> str:
+            # Build an agent-safe detail string. `OSError.__str__` embeds the
+            # real filename/path, so for those surface only `strerror` (the
+            # path-free reason). `UnicodeDecodeError` exposes `.reason`. In
+            # virtual mode, generic exception text can still contain the real
+            # root path (for example from `Path.rglob`), so keep it out of
+            # agent-visible errors.
+            if isinstance(exc, OSError):
+                detail = exc.strerror
+            else:
+                detail = getattr(exc, "reason", None)
+                if detail is None and not self.virtual_mode:
+                    detail = str(exc)
+            return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:
             for fp in root.rglob("*"):
+                if time.monotonic() > deadline:
+                    return results, _timed_out_msg()
                 try:
                     if not fp.is_file():
                         continue
                 except (PermissionError, OSError, RuntimeError):
                     continue
-                if include_glob:
+                if glob_matcher is not None:
                     rel_path = str(fp.relative_to(root))
-                    if not wcglob.globmatch(rel_path, include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+                    if not glob_matcher.match(rel_path):
                         continue
                 try:
                     if fp.stat().st_size > self.max_file_size_bytes:
                         continue
                 except (OSError, RuntimeError):
                     continue
+                # Stream the file line-by-line so a single huge file neither
+                # blows peak memory nor monopolizes the wall-clock budget.
+                scanned_lines = 0
                 try:
-                    content = fp.read_text()
-                except (UnicodeDecodeError, PermissionError, OSError, RuntimeError):
+                    if self.virtual_mode:
+                        try:
+                            virt_path = self._to_virtual_path(fp)
+                        except ValueError:
+                            logger.debug("Skipping grep result outside root: %s", fp)
+                            continue
+                        except (OSError, RuntimeError):
+                            logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
+                            continue
+                    else:
+                        virt_path = str(fp)
+                    with fp.open(encoding="utf-8", errors="strict") as handle:
+                        for line_num, raw_line in enumerate(handle, 1):
+                            scanned_lines = line_num
+                            if line_num % 2048 == 0 and time.monotonic() > deadline:
+                                return results, _timed_out_msg()
+                            if pattern not in raw_line:
+                                continue
+                            line = raw_line.rstrip("\n")
+                            results.setdefault(virt_path, []).append((line_num, line))
+                except UnicodeDecodeError as e:
+                    # A file that fails to decode before any line is scanned is
+                    # treated as binary and skipped silently, mirroring ripgrep's
+                    # binary-file skip (and its DEBUG-level per-file error frames).
+                    # If decoding only failed partway through, surface the
+                    # truncation so the partial result is flagged.
+                    if scanned_lines > 0 or virt_path in results:
+                        file_errors.append(f"- {virt_path}: {_safe_detail(e)}")
+                    else:
+                        logger.debug("Skipping undecodable file in grep fallback: %s", fp)
                     continue
-                for line_num, line in enumerate(content.splitlines(), 1):
-                    if regex.search(line):
-                        if self.virtual_mode:
-                            try:
-                                virt_path = self._to_virtual_path(fp)
-                            except ValueError:
-                                logger.debug("Skipping grep result outside root: %s", fp)
-                                continue
-                            except (OSError, RuntimeError):
-                                logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
-                                continue
-                        else:
-                            virt_path = str(fp)
-                        results.setdefault(virt_path, []).append((line_num, line))
+                except (OSError, RuntimeError) as e:
+                    # Could not open or fully read the file. Unlike an undecodable
+                    # binary, this is a file the caller likely expected to search,
+                    # so always surface it even when no lines were scanned.
+                    file_errors.append(f"- {virt_path}: {_safe_detail(e)}")
+                    logger.debug("Could not fully read %s in grep fallback", fp, exc_info=True)
+                    continue
         except (OSError, RuntimeError) as e:
             # `rglob` raised mid-iteration. `OSError` covers the common case
             # where a directory entry is unlinked or renamed during the walk
@@ -767,18 +869,20 @@ class FilesystemBackend(BackendProtocol):
             # symlink-loop detection on older Python versions. Return the
             # matches already accumulated and surface the abort so callers
             # don't treat the result as complete.
-            msg = f"Grep of '{base_full}' aborted after {len(results)} matching file(s): {e}"
+            # `_display_path`/`_safe_detail` keep the real `root_dir` out of the
+            # agent-visible error (the raw `rglob` exception can embed it too).
+            msg = f"Grep of '{self._display_path(base_full)}' aborted after {len(results)} matching file(s): {_safe_detail(e)}"
             logger.warning("%s", msg, exc_info=True)
             return results, msg
 
-        return results, None
+        return results, _file_errors_msg()
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: C901, PLR0912  # Complex virtual_mode logic
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
-            path: Base directory to search from. Defaults to root (`/`).
+            path: Base directory to search from. Defaults to `root_dir` / `cwd`.
 
         Returns:
             GlobResult with matching files or error.
@@ -791,11 +895,12 @@ class FilesystemBackend(BackendProtocol):
             raise ValueError(msg)
 
         try:
-            search_path = self.cwd if path == "/" else self._resolve_path(path)
+            search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
             if not search_path.exists() or not search_path.is_dir():
                 return GlobResult(matches=[])
         except (OSError, RuntimeError) as e:
-            return GlobResult(error=f"Error globbing path '{path}': {e}", matches=[])
+            display_path = path if path is not None else "<default>"
+            return GlobResult(error=f"Error globbing path '{display_path}': {e}", matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -851,7 +956,8 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError, ValueError) as e:
             # rglob() raised mid-iteration. Return whatever was accumulated
             # but flag the partial result so callers don't trust it as complete.
-            msg = f"Glob of '{path}' aborted partway: {e}"
+            display_path = path if path is not None else "<default>"
+            msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(error=msg, matches=results)

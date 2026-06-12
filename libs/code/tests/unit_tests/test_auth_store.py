@@ -63,6 +63,63 @@ class TestRoundTrip:
         auth_store.set_stored_key("anthropic", "new")
         assert auth_store.get_stored_key("anthropic") == "new"
 
+    def test_base_url_round_trips(self) -> None:
+        """A stored base_url is persisted alongside the key."""
+        auth_store.set_stored_key("openai", "k", base_url="  https://mine.example/v1  ")
+        assert auth_store.get_stored_key("openai") == "k"
+        assert auth_store.get_stored_base_url("openai") == "https://mine.example/v1"
+
+    def test_blank_base_url_not_stored(self) -> None:
+        """A blank/omitted base_url stores nothing (use provider default)."""
+        auth_store.set_stored_key("openai", "k", base_url="   ")
+        assert auth_store.get_stored_base_url("openai") is None
+        auth_store.set_stored_key("anthropic", "k")
+        assert auth_store.get_stored_base_url("anthropic") is None
+
+    def test_resave_without_base_url_drops_it(self) -> None:
+        """Replacing a credential without a base_url clears the prior one."""
+        auth_store.set_stored_key("openai", "k", base_url="https://mine.example/v1")
+        auth_store.set_stored_key("openai", "k2")
+        assert auth_store.get_stored_base_url("openai") is None
+
+    def test_reads_legacy_entry_without_base_url(self) -> None:
+        """Entries written before base_url existed read back cleanly."""
+        auth_store.set_stored_key("openai", "k")
+        # get_stored_base_url returns None and the key still resolves.
+        assert auth_store.get_stored_base_url("openai") is None
+        assert auth_store.get_stored_key("openai") == "k"
+
+    def test_malformed_base_url_is_dropped_and_logged(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string base_url is dropped, the key survives, and it's logged.
+
+        A hand-edit (or truncated write) leaving a non-string base_url must not
+        silently degrade the key to the provider default with no trace — the
+        drop is greppable so a wrong endpoint is diagnosable.
+        """
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credentials": {
+                        "openai": {
+                            "type": "api_key",
+                            "key": "k",
+                            "added_at": "",
+                            "base_url": 1234,
+                        }
+                    },
+                }
+            )
+        )
+        with caplog.at_level("WARNING", logger="deepagents_code.auth_store"):
+            assert auth_store.get_stored_base_url("openai") is None
+            assert auth_store.get_stored_key("openai") == "k"
+        assert any("malformed base_url" in r.getMessage() for r in caplog.records)
+
     def test_delete_returns_true_when_removed(self) -> None:
         """Deleting an existing entry returns `True` and clears the value."""
         auth_store.set_stored_key("openai", "k")

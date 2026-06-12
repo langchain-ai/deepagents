@@ -29,7 +29,7 @@ import os
 import stat
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,6 +55,17 @@ class ApiKeyCredential(TypedDict):
 
     added_at: str
     """ISO-8601 UTC timestamp recording when the credential was stored."""
+
+    base_url: NotRequired[str]
+    """Optional provider endpoint paired with this key.
+
+    Stored only when the user supplied one in `/auth`. A key and its endpoint
+    form a coherent pair — applying the key also applies (or, when this is
+    absent, resets to the provider default) the base URL, so a personal key is
+    never sent to a gateway it doesn't belong to. Not treated as a secret (it is
+    logged when malformed and surfaced in hints); avoid embedding credentials in
+    the URL.
+    """
 
 
 class OAuthCredential(TypedDict):
@@ -262,7 +273,19 @@ def _coerce_credential(raw: Any) -> StoredCredential | None:  # noqa: ANN401
         added_at = raw.get("added_at")
         if not isinstance(added_at, str):
             added_at = ""
-        return ApiKeyCredential(type="api_key", key=key, added_at=added_at)
+        credential = ApiKeyCredential(type="api_key", key=key, added_at=added_at)
+        base_url = raw.get("base_url")
+        if isinstance(base_url, str) and base_url:
+            credential["base_url"] = base_url
+        elif base_url is not None:
+            # Present but not a usable string (e.g. a hand-edit left an int or
+            # an empty value). Dropping it silently would pair the key with the
+            # provider default — possibly the wrong endpoint — with no trace, so
+            # log it. `base_url` is non-secret, so logging the value is safe.
+            logger.warning(
+                "Ignoring malformed base_url for a stored credential: %r", base_url
+            )
+        return credential
     # OAuth is reserved for a future PR — silently skip until the producer
     # path lands. `cred_type in {"oauth"}` falls through to None here.
     return None
@@ -285,7 +308,26 @@ def get_stored_key(provider: str) -> str | None:
     return entry["key"] or None
 
 
-def set_stored_key(provider: str, key: str) -> WriteOutcome:
+def get_stored_base_url(provider: str) -> str | None:
+    """Return the base URL paired with `provider`'s stored key, or `None`.
+
+    Returns `None` both when no key is stored and when a key is stored without
+    an accompanying base URL (the user left the field blank, meaning "use the
+    provider default"). Callers distinguish the two via `get_stored_key`.
+
+    Raises:
+        RuntimeError: If the credential file is corrupt.
+    """  # noqa: DOC502 - re-raised from `_read_raw` via `load_credentials`
+    creds = load_credentials()
+    entry = creds.get(provider)
+    if entry is None or entry["type"] != "api_key":
+        return None
+    return entry.get("base_url") or None
+
+
+def set_stored_key(
+    provider: str, key: str, *, base_url: str | None = None
+) -> WriteOutcome:
     """Persist an API key for `provider`.
 
     Empty / whitespace-only keys are rejected so callers don't accidentally
@@ -296,6 +338,9 @@ def set_stored_key(provider: str, key: str) -> WriteOutcome:
     Args:
         provider: Provider identifier (e.g., `"anthropic"`).
         key: The API key value. Whitespace is stripped before storage.
+        base_url: Optional provider endpoint to pair with the key. Whitespace
+            is stripped; blank/`None` stores no endpoint, meaning the key uses
+            the provider default rather than any inherited (e.g. gateway) URL.
 
     Returns:
         A `WriteOutcome` whose `warnings` tuple lists chmod failures the
@@ -316,11 +361,15 @@ def set_stored_key(provider: str, key: str) -> WriteOutcome:
     creds = data.get("credentials")
     if not isinstance(creds, dict):
         creds = {}
-    creds[provider] = {
+    entry: dict[str, str] = {
         "type": "api_key",
         "key": cleaned,
         "added_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
     }
+    cleaned_base_url = base_url.strip() if base_url else ""
+    if cleaned_base_url:
+        entry["base_url"] = cleaned_base_url
+    creds[provider] = entry
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds
     warnings = _write_raw(data)

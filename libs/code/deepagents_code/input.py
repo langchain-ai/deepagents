@@ -131,12 +131,12 @@ class MediaTracker:
         if kind == "image":
             placeholder = f"[image {self.next_image_id}]"
             data.placeholder = placeholder
-            self.images.append(data)  # type: ignore[arg-type]
+            self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
         else:
             placeholder = f"[video {self.next_video_id}]"
             data.placeholder = placeholder
-            self.videos.append(data)  # type: ignore[arg-type]
+            self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
         return placeholder
 
@@ -685,6 +685,67 @@ def _normalize_posix_pasted_path(text: str) -> Path | None:
     return None
 
 
+def _safe_exists(path: Path) -> bool:
+    """Return whether `path` exists, treating OS rejections as non-existent.
+
+    Filesystem probes (`exists`/`is_file`/`is_dir`) issue an `os.stat` that can
+    raise `OSError` for inputs the OS refuses outright — notably `ENAMETOOLONG`
+    when a path component exceeds the filesystem limit. Whether `pathlib`
+    swallows such an error is version-dependent (Python <=3.13 ignores only a
+    small set of errnos and lets `ENAMETOOLONG` propagate; 3.14 routes these
+    through `os.path.*`, which swallows more), so we guard unconditionally for
+    uniform behavior. Callers here only care whether the path is usable, so a
+    failed probe is equivalent to "not there".
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path exists, `False` if it does not or cannot be probed.
+    """
+    try:
+        return path.exists()
+    except OSError as e:
+        logger.debug("exists() check failed for %r: %s", path, e)
+        return False
+
+
+def _safe_is_file(path: Path) -> bool:
+    """Return whether `path` is an existing file, ignoring stat failures.
+
+    See `_safe_exists` for why probes are guarded.
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path is a regular file, `False` otherwise or on failure.
+    """
+    try:
+        return path.is_file()
+    except OSError as e:
+        logger.debug("is_file() check failed for %r: %s", path, e)
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Return whether `path` is an existing directory, ignoring stat failures.
+
+    See `_safe_exists` for why probes are guarded.
+
+    Args:
+        path: Path candidate to probe.
+
+    Returns:
+        `True` if the path is a directory, `False` otherwise or on failure.
+    """
+    try:
+        return path.is_dir()
+    except OSError as e:
+        logger.debug("is_dir() check failed for %r: %s", path, e)
+        return False
+
+
 def _resolve_existing_pasted_path(path: Path) -> Path | None:
     """Resolve a pasted path candidate to an existing file.
 
@@ -701,7 +762,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
-    if resolved.exists() and resolved.is_file():
+    if _safe_is_file(resolved):
         return resolved
 
     fuzzy = _resolve_with_unicode_space_variants(path)
@@ -712,7 +773,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
-    if resolved_fuzzy.exists() and resolved_fuzzy.is_file():
+    if _safe_is_file(resolved_fuzzy):
         return resolved_fuzzy
     return None
 
@@ -748,11 +809,11 @@ def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
 
     for index, part in enumerate(parts):
         candidate = current / part
-        if candidate.exists():
+        if _safe_exists(candidate):
             current = candidate
             continue
 
-        if not current.exists() or not current.is_dir():
+        if not _safe_is_dir(current):
             return None
         if " " not in part and "\u00a0" not in part and "\u202f" not in part:
             return None
@@ -773,11 +834,11 @@ def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
 
         is_last = index == len(parts) - 1
         if is_last:
-            file_matches = [entry for entry in matches if entry.is_file()]
+            file_matches = [entry for entry in matches if _safe_is_file(entry)]
             if file_matches:
                 matches = file_matches
         else:
-            dir_matches = [entry for entry in matches if entry.is_dir()]
+            dir_matches = [entry for entry in matches if _safe_is_dir(entry)]
             if dir_matches:
                 matches = dir_matches
 

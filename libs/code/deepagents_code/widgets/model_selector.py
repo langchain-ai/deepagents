@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
+from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     ModelConfig,
@@ -375,6 +376,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             Styled `Content` for the info line.
         """
+        if self._filter_text.strip():
+            return Content.styled("Searching all models from installed providers")
         if self._recommended_only:
             return Content.styled(
                 "Showing recommended models — Ctrl+R for all",
@@ -382,6 +385,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         return Content.styled(
             "Showing all models from installed providers — Ctrl+R for recommended",
         )
+
+    def _update_info_line(self) -> None:
+        """Refresh the standard selector info line."""
+        if self._curated:
+            return
+        info = self.query_one("#model-selector-info", Static)
+        info.update(self._info_line_content())
 
     def _help_text(self) -> str:
         """Build the footer help text.
@@ -621,6 +631,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The input changed event.
         """
         self._filter_text = event.value
+        self._update_info_line()
         if not self._loaded:
             return  # on_mount will re-apply filter after data loads
         self._update_filtered_list()
@@ -647,7 +658,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
 
-        Results are sorted by match score (best first).
+        Results are sorted by match score (best first). In standard `/model`
+        mode, non-empty searches span the full installed model list even when
+        the default view is currently constrained to recommended models.
         """
         query = self._filter_text.strip()
         if not query:
@@ -656,11 +669,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return
 
         tokens = query.split()
+        search_models = self._all_models if self._curated else self._unfiltered_models
 
         try:
             matchers = [Matcher(token, case_sensitive=False) for token in tokens]
             scored: list[tuple[float, str, str]] = []
-            for spec, provider in self._all_models:
+            for spec, provider in search_models:
                 scores = [m.match(spec) for m in matchers]
                 if all(s > 0 for s in scores):
                     scored.append((min(scores), spec, provider))
@@ -671,7 +685,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 query,
                 exc_info=True,
             )
-            self._filtered_models = list(self._all_models)
+            self._filtered_models = list(search_models)
             self._selected_index = self._find_current_model_index()
             return
 
@@ -902,25 +916,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             Text shown next to the provider name, or an empty string when no
                 indicator should be rendered (e.g., `CONFIGURED`).
         """
-        state = auth_status.state
-        match state:
-            case ProviderAuthState.CONFIGURED:
-                return ""
-            case ProviderAuthState.MISSING:
-                if auth_status.env_var:
-                    return f"{glyphs.warning} missing {auth_status.env_var}"
-                return f"{glyphs.warning} missing credentials"
-            case ProviderAuthState.NOT_REQUIRED:
-                return auth_status.detail or "no API key required"
-            case ProviderAuthState.IMPLICIT:
-                return auth_status.detail or "implicit auth"
-            case ProviderAuthState.MANAGED:
-                return auth_status.detail or "custom auth"
-            case ProviderAuthState.UNKNOWN:
-                detail = auth_status.detail or "credentials unknown"
-                return f"{glyphs.question} {detail}"
-            case _:
-                assert_never(state)
+        return format_auth_indicator(auth_status, glyphs)
 
     @staticmethod
     def _format_option_label(

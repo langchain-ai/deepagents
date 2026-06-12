@@ -18,10 +18,10 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -30,6 +30,11 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+# Maintainer note: `deepagents-talon` imports `MCPConfigError`,
+# `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
+# `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
+# shapes stable unless `deepagents-talon` is migrated in the same change.
 
 
 @dataclass(frozen=True, slots=True)
@@ -1045,6 +1050,7 @@ def _build_cached_mcp_tool(
     from langchain_core.tools import StructuredTool, ToolException
     from langchain_mcp_adapters.tools import (
         _convert_call_tool_result,  # noqa: PLC2701
+        _handle_mcp_tool_error,  # noqa: PLC2701
     )
 
     original_tool_name = mcp_tool.name
@@ -1061,6 +1067,18 @@ def _build_cached_mcp_tool(
     wrapped_meta = {"_meta": meta} if meta is not None else {}
     metadata = {**base_meta, **wrapped_meta} or None
 
+    def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
+        try:
+            return _handle_mcp_tool_error(error)
+        except ToolException:
+            logger.warning(
+                "MCP tool %r failed with recoverable ToolException: %s",
+                lc_tool_name,
+                error,
+                exc_info=True,
+            )
+            return str(error) or f"{lc_tool_name} failed with no error detail"
+
     async def coroutine(
         # `runtime` is injected by LangChain's tool-calling plumbing.
         # MCP tools don't use it but the kwarg must still be accepted.
@@ -1074,6 +1092,12 @@ def _build_cached_mcp_tool(
         session = await session_manager.get_session(server_name)
         try:
             result = await session.call_tool(original_tool_name, arguments)
+        # Re-raise control-flow/shutdown signals (CancelledError,
+        # KeyboardInterrupt, SystemExit) and ToolException unchanged. Wrapping a
+        # ToolException here would bury its actionable message (e.g. an MCP
+        # `isError` instruction like "use the X tool instead") under a generic
+        # retry wrapper; re-raising preserves it for the tool-local error
+        # handler and the model.
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, ToolException):
             raise
         except Exception as exc:
@@ -1139,6 +1163,11 @@ def _build_cached_mcp_tool(
                             exc_info=True,
                         )
 
+        # On an MCP `isError=True` result the adapter's `_convert_call_tool_result`
+        # raises, and the `handle_tool_error` callback registered below converts
+        # the MCP content blocks into a `ToolMessage(status="error")`. Other
+        # expected `ToolException`s raised by this wrapper are formatted by that
+        # same tool-local handler.
         return _convert_call_tool_result(result)
 
     return StructuredTool(
@@ -1148,6 +1177,7 @@ def _build_cached_mcp_tool(
         coroutine=coroutine,
         response_format="content_and_artifact",
         metadata=metadata,
+        handle_tool_error=cast("Any", _handle_cached_mcp_tool_error),
     )
 
 
@@ -1182,11 +1212,27 @@ def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
     return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
 
 
+@overload
 def _apply_tool_filter(
     tools: list[BaseTool],
     server_name: str,
     server_config: dict[str, Any],
-) -> list[BaseTool]:
+) -> list[BaseTool]: ...
+
+
+@overload
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]: ...
+
+
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]:
     """Filter a server's loaded tools by its `allowedTools` / `disabledTools`.
 
     Entries may be literal tool names or `fnmatch`-style glob patterns

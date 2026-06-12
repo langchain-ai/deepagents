@@ -2,7 +2,8 @@
 
 import asyncio
 from collections.abc import Coroutine
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -96,6 +97,7 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
                     columns=dict(cols),
                     relative_time=True,
                     sort_order="updated_at",
+                    scope="cwd",
                 ),
             ),
         ):
@@ -780,6 +782,48 @@ class _ThreadSelectorScopedTestApp(App):
         self.push_screen(screen, handle_result)
 
 
+class TestThreadSelectorScopePersistedDefault:
+    """Tests that the picker honors the persisted scope preference on open."""
+
+    def test_persisted_all_scope_starts_unfiltered(self) -> None:
+        """A persisted scope of "all" should start the picker with no cwd filter."""
+        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
+
+        with patch(
+            "deepagents_code.model_config.load_thread_config",
+            return_value=ThreadConfig(
+                columns=dict(THREAD_COLUMN_DEFAULTS),
+                relative_time=True,
+                sort_order="updated_at",
+                scope="all",
+            ),
+        ):
+            screen = ThreadSelectorScreen(current_thread=None)
+        assert screen._filter_cwd is None
+
+    def test_persisted_cwd_scope_starts_filtered(self) -> None:
+        """A persisted scope of "cwd" should scope the picker to the cwd."""
+        from deepagents_code.model_config import THREAD_COLUMN_DEFAULTS, ThreadConfig
+
+        with (
+            patch(
+                "deepagents_code.model_config.load_thread_config",
+                return_value=ThreadConfig(
+                    columns=dict(THREAD_COLUMN_DEFAULTS),
+                    relative_time=True,
+                    sort_order="updated_at",
+                    scope="cwd",
+                ),
+            ),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value="/home/user/project-a",
+            ),
+        ):
+            screen = ThreadSelectorScreen(current_thread=None)
+        assert screen._filter_cwd == "/home/user/project-a"
+
+
 class TestThreadSelectorScopeSelect:
     """Tests for the cwd scope `Select` in the Options panel."""
 
@@ -999,6 +1043,125 @@ class TestThreadSelectorScopeSelect:
                 scope_select.value = "all"
                 await pilot.pause()
                 mock_list.assert_not_awaited()
+
+    async def test_scope_change_persists_preference(self) -> None:
+        """Switching the scope dropdown should persist the new preference."""
+        starting_cwd = "/home/user/project-a"
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        mock_save = MagicMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value=starting_cwd,
+            ),
+            patch(
+                "deepagents_code.model_config.save_thread_scope",
+                mock_save,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                scope_select.value = "all"
+                await pilot.pause()
+                await pilot.pause()
+                mock_save.assert_any_call("all")
+
+                scope_select.value = "cwd"
+                await pilot.pause()
+                await pilot.pause()
+                mock_save.assert_any_call("cwd")
+
+    async def test_scope_persists_even_when_cwd_unresolvable(self) -> None:
+        """Selecting "Current directory" persists "cwd" even if the cwd is gone.
+
+        When `_safe_cwd_string()` returns `None`, the resolved filter stays
+        `None` and the reload short-circuits, but the user's explicit "cwd"
+        choice must still be persisted. This pins the intentional ordering of
+        the persist call ahead of the `new_cwd == self._filter_cwd` early return.
+        """
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        mock_save = MagicMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.model_config.save_thread_scope",
+                mock_save,
+            ),
+        ):
+            # Start unfiltered ("all"); the cwd is unresolvable below.
+            app = _ThreadSelectorScopedTestApp(filter_cwd=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._filter_cwd is None
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                scope_select.value = "cwd"
+                await pilot.pause()
+                await pilot.pause()
+
+                mock_save.assert_any_call("cwd")
+                # Filter stays unfiltered (cwd unresolvable), yet the preference
+                # was still persisted before the early return fired.
+                assert screen._filter_cwd is None
+
+    async def test_scope_save_failure_notifies(self) -> None:
+        """A failed scope save should surface a warning notification."""
+        starting_cwd = "/home/user/project-a"
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        mock_save = MagicMock(return_value=False)
+
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_code.widgets.thread_selector._safe_cwd_string",
+                return_value=starting_cwd,
+            ),
+            patch(
+                "deepagents_code.model_config.save_thread_scope",
+                mock_save,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                with patch.object(app, "notify") as mock_notify:
+                    scope_select.value = "all"
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+
+                mock_notify.assert_any_call(
+                    "Could not save scope preference", severity="warning"
+                )
 
 
 class TestThreadSelectorClickHandling:
@@ -1486,6 +1649,36 @@ class TestThreadSelectorErrorHandling:
                 assert len(screen._threads) == 0
 
                 assert len(screen._option_widgets) == 0
+                # A failed load is still a completed load: the flag must flip so
+                # the picker never strands on the "Loading threads..." placeholder.
+                assert screen._disk_load_complete is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert app.dismissed is True
+                assert app.result is None
+
+    async def test_unexpected_load_error_surfaces_and_completes(self) -> None:
+        """A non-OSError/sqlite3 error must surface and not strand the UI."""
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=ValueError("malformed row"),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # The catch-all handler marks the load complete and replaces the
+                # loading placeholder with the error message instead of leaving a
+                # perpetual "Loading threads..." spinner.
+                assert screen._disk_load_complete is True
+                with pytest.raises(NoMatches):
+                    screen.query_one("#thread-loading", Static)
 
                 await pilot.press("escape")
                 await pilot.pause()
@@ -1822,6 +2015,125 @@ class TestThreadSelectorPrefetchedRows:
                 assert len(screen._threads) == 1
                 assert screen._threads[0]["thread_id"] == "new12345"
 
+    async def test_empty_snapshot_shows_loading_until_disk_load_completes(
+        self,
+    ) -> None:
+        """An empty snapshot must not claim "No threads found" while loading."""
+        refreshed: list[ThreadInfo] = [
+            {
+                "thread_id": "new12345",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-16T12:00:00",
+                "message_count": 6,
+            }
+        ]
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return refreshed
+
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=_list_threads,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                        filter_cwd=None,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # While the disk load is in flight, show the loading placeholder
+                # rather than "No threads found".
+                assert not screen._disk_load_complete
+                screen.query_one("#thread-loading", Static)
+                assert not screen._option_widgets
+
+                gate.set()
+
+                for _ in range(10):
+                    if len(screen._threads) == 1:
+                        break
+                    await pilot.pause(0.05)
+
+                assert screen._disk_load_complete
+                assert len(screen._option_widgets) == 1
+
+    async def test_empty_snapshot_resolves_to_no_threads_found(self) -> None:
+        """An empty disk load must flip the placeholder to "No threads found"."""
+        app = ThreadSelectorTestApp(current_thread="abc12345")
+
+        gate = asyncio.Event()
+
+        async def _list_threads(*_args: object, **_kwargs: object) -> list[ThreadInfo]:
+            await gate.wait()
+            return []
+
+        with patch(
+            "deepagents_code.sessions.list_threads",
+            new_callable=AsyncMock,
+            side_effect=_list_threads,
+        ):
+            async with app.run_test() as pilot:
+                app.push_screen(
+                    ThreadSelectorScreen(
+                        current_thread="abc12345",
+                        thread_limit=20,
+                        initial_threads=[],
+                        filter_cwd=None,
+                    )
+                )
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert not screen._disk_load_complete
+                screen.query_one("#thread-loading", Static)
+
+                gate.set()
+
+                for _ in range(10):
+                    if screen._disk_load_complete:
+                        break
+                    await pilot.pause(0.05)
+
+                # Once the load completes with zero rows, the loading placeholder
+                # must resolve to the real empty state, not a perpetual spinner.
+                assert screen._disk_load_complete
+                assert not screen._option_widgets
+                with pytest.raises(NoMatches):
+                    screen.query_one("#thread-loading", Static)
+                empty = screen.query_one(".thread-empty", Static)
+                assert "No threads found" in str(empty.content)
+
+    def test_build_empty_state_reflects_disk_load_flag(self) -> None:
+        """`_build_empty_state` chooses its message from `_disk_load_complete`."""
+        screen = ThreadSelectorScreen(
+            current_thread="abc12345",
+            thread_limit=20,
+            initial_threads=[],
+            filter_cwd=None,
+        )
+
+        loading = screen._build_empty_state()
+        assert loading.id == "thread-loading"
+        assert "Loading threads..." in str(loading.content)
+
+        screen._disk_load_complete = True
+        resolved = screen._build_empty_state()
+        assert resolved.id is None
+        assert "No threads found" in str(resolved.content)
+
 
 class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
@@ -1865,6 +2177,7 @@ class TestThreadSelectorInitialSortOrder:
                         columns=dict(THREAD_COLUMN_DEFAULTS),
                         relative_time=True,
                         sort_order="created_at",
+                        scope="cwd",
                     ),
                 ),
             ):
@@ -2380,6 +2693,16 @@ class TestThreadSelectorControlsOverflow:
                 assert hint.display is False
 
 
+def _app_test_double(app: DeepAgentsApp) -> Any:  # noqa: ANN401
+    """Return `app` as dynamic for test-only Textual method patching.
+
+    Textual apps expose real methods at type-check time, but these tests replace
+    them with `MagicMock`/`AsyncMock` instances to isolate thread-switching logic.
+    Keeping the dynamic escape hatch here avoids broad casts at each call site.
+    """
+    return app
+
+
 def _get_widget_text(widget: Static) -> str:
     """Extract text content from a message widget.
 
@@ -2399,7 +2722,9 @@ class TestResumeThread:
         """_resume_thread with no agent should show an error message."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
         app._agent = None
 
         await app._resume_thread("thread-123")
@@ -2411,7 +2736,9 @@ class TestResumeThread:
         """_resume_thread with no session state should show an error message."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
         app._agent = MagicMock()
         app._session_state = None
 
@@ -2424,7 +2751,9 @@ class TestResumeThread:
         """_resume_thread should reject concurrent thread switches."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -2439,7 +2768,50 @@ class TestResumeThread:
         """_resume_thread when already on the thread should show info message."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
+        offer_cwd_switch = AsyncMock(return_value="continue")
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        await app._resume_thread("thread-123")
+
+        offer_cwd_switch.assert_awaited_once_with(
+            "thread-123",
+            restart_server=True,
+        )
+        assert len(mounted) == 1
+        assert "Already on thread" in _get_widget_text(mounted[0])
+
+    async def test_already_on_thread_reports_cwd_switch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Same-thread resumes should not say unchanged after cwd switches."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(cwd=current)
+        mounted: list[Static] = []
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda w: mounted.append(w)
+        )
+
+        async def offer_cwd_switch(  # noqa: RUF029  # must be async: awaited as _offer_thread_cwd_switch
+            thread_id: str,
+            *,
+            restart_server: bool,
+        ) -> str:
+            assert thread_id == "thread-123"
+            assert restart_server is True
+            app._cwd = str(target)
+            return "continue"
+
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -2447,7 +2819,8 @@ class TestResumeThread:
         await app._resume_thread("thread-123")
 
         assert len(mounted) == 1
-        assert "Already on thread" in _get_widget_text(mounted[0])
+        assert "Switched to thread directory" in _get_widget_text(mounted[0])
+        assert "Already on thread" not in _get_widget_text(mounted[0])
 
     async def test_successful_switch_updates_ids(self) -> None:
         """Successful _resume_thread should update thread IDs and load history."""
@@ -2459,15 +2832,17 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._update_status = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._clear_messages = AsyncMock()
+        _app_test_double(app)._update_status = MagicMock()
         mock_payload = MagicMock()
         mock_payload.messages = []
         mock_payload.context_tokens = 0
-        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
-        app._load_thread_history = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
+            return_value=mock_payload
+        )
+        _app_test_double(app)._load_thread_history = AsyncMock()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         await app._resume_thread("new-thread")
 
@@ -2475,7 +2850,7 @@ class TestResumeThread:
         assert app._session_state.thread_id == "new-thread"
         app._pending_messages.clear.assert_called_once()
         app._queued_widgets.clear.assert_called_once()
-        app._clear_messages.assert_awaited_once()
+        _app_test_double(app)._clear_messages.assert_awaited_once()
         assert app._context_tokens == 0
         app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
         app._load_thread_history.assert_awaited_once_with(
@@ -2493,15 +2868,17 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._update_status = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._clear_messages = AsyncMock()
+        _app_test_double(app)._update_status = MagicMock()
         mock_payload = MagicMock()
         mock_payload.messages = []
         mock_payload.context_tokens = 0
-        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
-        app._load_thread_history = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
+            return_value=mock_payload
+        )
+        _app_test_double(app)._load_thread_history = AsyncMock()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
         return app
 
     async def test_switch_arms_model_adoption(self) -> None:
@@ -2540,11 +2917,15 @@ class TestResumeThread:
         mock_payload = _ThreadHistoryPayload(
             messages=[], context_tokens=0, model_spec=""
         )
-        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
-        app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
-        app._update_status = MagicMock()  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
+            return_value=mock_payload
+        )
+        _app_test_double(app)._clear_messages = AsyncMock(
+            side_effect=RuntimeError("UI gone")
+        )
+        _app_test_double(app)._update_status = MagicMock()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         await app._resume_thread("new-thread")
 
@@ -2552,9 +2933,9 @@ class TestResumeThread:
         assert app._session_state.thread_id == "old-thread"
         assert any(
             "Failed to switch" in _get_widget_text(call.args[0])
-            for call in app._mount_message.call_args_list  # type: ignore[union-attr]
+            for call in _app_test_double(app)._mount_message.call_args_list
         )
-        app._update_status.assert_any_call("")  # type: ignore[union-attr]
+        _app_test_double(app)._update_status.assert_any_call("")
 
     async def test_failure_during_load_history_restores_ids(self) -> None:
         """If _load_thread_history raises, thread IDs should be rolled back."""
@@ -2569,14 +2950,16 @@ class TestResumeThread:
         mock_payload = MagicMock()
         mock_payload.messages = []
         mock_payload.context_tokens = 0
-        app._fetch_thread_history_data = AsyncMock(return_value=mock_payload)  # type: ignore[assignment]
-        app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._update_status = MagicMock()  # type: ignore[assignment]
-        app._load_thread_history = AsyncMock(  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
+            return_value=mock_payload
+        )
+        _app_test_double(app)._clear_messages = AsyncMock()
+        _app_test_double(app)._update_status = MagicMock()
+        _app_test_double(app)._load_thread_history = AsyncMock(
             side_effect=[RuntimeError("checkpoint corrupt"), None]
         )
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         await app._resume_thread("new-thread")
 
@@ -2584,7 +2967,7 @@ class TestResumeThread:
         assert app._session_state.thread_id == "old-thread"
         assert any(
             "Failed to switch" in _get_widget_text(call.args[0])
-            for call in app._mount_message.call_args_list  # type: ignore[union-attr]
+            for call in _app_test_double(app)._mount_message.call_args_list
         )
 
     async def test_prefetch_failure_keeps_current_thread_visible(self) -> None:
@@ -2598,9 +2981,9 @@ class TestResumeThread:
         )
         clear_messages_mock = AsyncMock()
         mount_message_mock = AsyncMock()
-        app._fetch_thread_history_data = fetch_history_mock  # type: ignore[assignment]
-        app._clear_messages = clear_messages_mock  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
+        _app_test_double(app)._clear_messages = clear_messages_mock
+        _app_test_double(app)._mount_message = mount_message_mock
 
         await app._resume_thread("new-thread")
 
@@ -2619,7 +3002,7 @@ class TestResumeThread:
         app._session_state = MagicMock()
         app._session_state.thread_id = "old-thread"
         app._chat_input = MagicMock()
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock()
 
         with patch.object(
             app,
@@ -2643,14 +3026,14 @@ class TestResumeThread:
         app._session_state.thread_id = "old-thread"
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        app._fetch_thread_history_data = AsyncMock(return_value=[])  # type: ignore[assignment]
-        app._clear_messages = AsyncMock()  # type: ignore[assignment]
-        app._load_thread_history = AsyncMock(  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])
+        _app_test_double(app)._clear_messages = AsyncMock()
+        _app_test_double(app)._load_thread_history = AsyncMock(
             side_effect=RuntimeError("checkpoint corrupt")
         )
         mount_message_mock = AsyncMock()
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         with patch.object(app, "_update_status") as update_status_mock:
             await app._resume_thread("new-thread")
@@ -2828,15 +3211,15 @@ class TestLoadThreadHistory:
         fetch_history_mock = AsyncMock()
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
-        app._fetch_thread_history_data = fetch_history_mock  # type: ignore[assignment]
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        _app_test_double(app).set_timer = MagicMock()
 
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
 
         from deepagents_code.app import _ThreadHistoryPayload
 
@@ -2860,14 +3243,14 @@ class TestLoadThreadHistory:
 
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        _app_test_double(app).set_timer = MagicMock()
 
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
 
         from deepagents_code.app import _ThreadHistoryPayload
 
@@ -2889,14 +3272,14 @@ class TestLoadThreadHistory:
 
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        _app_test_double(app).set_timer = MagicMock()
 
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
 
         from deepagents_code.app import _ThreadHistoryPayload
 
@@ -2925,15 +3308,15 @@ class TestLoadThreadHistory:
         fetch_history_mock = AsyncMock(return_value=fetched)
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
-        app._fetch_thread_history_data = fetch_history_mock  # type: ignore[assignment]
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        _app_test_double(app).set_timer = MagicMock()
 
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
 
         await app._load_thread_history(thread_id="tid-1")
 
@@ -2951,14 +3334,14 @@ class TestLoadThreadHistory:
         app._agent = MagicMock()
         mount_message_mock = AsyncMock()
         schedule_link_mock = MagicMock()
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
-        app._schedule_thread_message_link = schedule_link_mock  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        _app_test_double(app).set_timer = MagicMock()
 
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
 
         from deepagents_code.app import _ThreadHistoryPayload
 
@@ -3023,13 +3406,13 @@ class TestResumeModelAdoption:
     @staticmethod
     def _make_app() -> DeepAgentsApp:
         app = DeepAgentsApp(thread_id="tid-1")
-        app._remove_spacer = AsyncMock()  # type: ignore[assignment]
-        app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app._schedule_thread_message_link = MagicMock()  # type: ignore[assignment]
-        app.set_timer = MagicMock()  # type: ignore[assignment]
+        _app_test_double(app)._remove_spacer = AsyncMock()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._schedule_thread_message_link = MagicMock()
+        _app_test_double(app).set_timer = MagicMock()
         messages_container = MagicMock()
         messages_container.mount = AsyncMock()
-        app.query_one = MagicMock(return_value=messages_container)  # type: ignore[assignment]
+        _app_test_double(app).query_one = MagicMock(return_value=messages_container)
         return app
 
     @staticmethod
@@ -3053,7 +3436,7 @@ class TestResumeModelAdoption:
         """Armed flag + persisted spec switches the model without persisting it."""
         app = self._make_app()
         switch_mock = AsyncMock()
-        app._switch_model = switch_mock  # type: ignore[assignment]
+        _app_test_double(app)._switch_model = switch_mock
         app._should_adopt_resumed_model = True
 
         await app._load_thread_history(
@@ -3075,7 +3458,7 @@ class TestResumeModelAdoption:
         """Without the armed flag (e.g. in-session switch), model is untouched."""
         app = self._make_app()
         switch_mock = AsyncMock()
-        app._switch_model = switch_mock  # type: ignore[assignment]
+        _app_test_double(app)._switch_model = switch_mock
         app._should_adopt_resumed_model = False
 
         await app._load_thread_history(
@@ -3089,7 +3472,7 @@ class TestResumeModelAdoption:
         """Armed flag but no persisted spec (legacy thread) leaves the model alone."""
         app = self._make_app()
         switch_mock = AsyncMock()
-        app._switch_model = switch_mock  # type: ignore[assignment]
+        _app_test_double(app)._switch_model = switch_mock
         app._should_adopt_resumed_model = True
 
         await app._load_thread_history(
@@ -3110,7 +3493,7 @@ class TestResumeModelAdoption:
         """
         app = self._make_app()
         switch_mock = AsyncMock()
-        app._switch_model = switch_mock  # type: ignore[assignment]
+        _app_test_double(app)._switch_model = switch_mock
         app._should_adopt_resumed_model = True
 
         await app._load_thread_history(
@@ -3132,7 +3515,7 @@ class TestResumeAdoptionFailureMessage:
         app = DeepAgentsApp()
         app._model_override = "openai:gpt-5.1"  # the model we fall back to
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
             side_effect=lambda w: mounted.append(w)
         )
 
@@ -3156,7 +3539,7 @@ class TestResumeAdoptionFailureMessage:
         app = DeepAgentsApp()
         app._model_override = None
         mounted: list[Static] = []
-        app._mount_message = AsyncMock(  # type: ignore[assignment]
+        _app_test_double(app)._mount_message = AsyncMock(
             side_effect=lambda w: mounted.append(w)
         )
 
@@ -3219,7 +3602,9 @@ class TestUpgradeThreadMessageLink:
     async def test_noop_when_link_does_not_resolve(self) -> None:
         """Plain-string result should leave widget content unchanged."""
         app = DeepAgentsApp()
-        app._build_thread_message = AsyncMock(return_value="Resumed thread: tid-1")  # type: ignore[assignment]
+        _app_test_double(app)._build_thread_message = AsyncMock(
+            return_value="Resumed thread: tid-1"
+        )
         widget = MagicMock()
         widget.parent = object()
         widget._content = "Resumed thread: tid-1"
@@ -3238,7 +3623,7 @@ class TestUpgradeThreadMessageLink:
         from textual.content import Content
 
         app = DeepAgentsApp()
-        app._build_thread_message = AsyncMock(  # type: ignore[assignment]
+        _app_test_double(app)._build_thread_message = AsyncMock(
             return_value=Content("Resumed thread: tid-1")
         )
         widget = MagicMock()
@@ -3259,7 +3644,7 @@ class TestUpgradeThreadMessageLink:
 
         app = DeepAgentsApp()
         linked = Content("Resumed thread: tid-1")
-        app._build_thread_message = AsyncMock(return_value=linked)  # type: ignore[assignment]
+        _app_test_double(app)._build_thread_message = AsyncMock(return_value=linked)
         widget = MagicMock()
         widget.parent = object()
         widget._content = "Resumed thread: tid-1"
@@ -3355,7 +3740,11 @@ class TestConvertMessagesToData:
         """Create an AIMessage."""
         from langchain_core.messages import AIMessage
 
-        return AIMessage(content=content, tool_calls=tool_calls or [])  # type: ignore[no-matching-overload]
+        # LangChain accepts `tool_calls` dynamically, but its overloads don't
+        # model this simplified test helper shape.
+        return AIMessage(
+            content=cast("Any", content), tool_calls=cast("Any", tool_calls or [])
+        )
 
     def _make_tool(
         self,

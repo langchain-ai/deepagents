@@ -16,12 +16,14 @@ if TYPE_CHECKING:
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
+    _apply_inherited_pythonpath,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _sanitize_agent_message_name,
     build_model_identity_section,
     create_cli_agent,
     get_available_agent_names,
@@ -46,6 +48,14 @@ def test_add_interrupt_on_gates_async_task_tools() -> None:
 
     for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
         assert tool_name in interrupt_on
+
+
+def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
+    """Agent display names with spaces must become valid message names."""
+    assert _sanitize_agent_message_name("my agent") == "my_agent"
+    assert _sanitize_agent_message_name("  my\tagent  ") == "my_agent"
+    assert _sanitize_agent_message_name("my-agent_2") == "my-agent_2"
+    assert _sanitize_agent_message_name("  ") == DEFAULT_AGENT_NAME
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -740,7 +750,9 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
@@ -750,7 +762,7 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_get_prompt.return_value = "mocked prompt"
             create_cli_agent(
                 model="fake-model",
-                assistant_id="test",
+                assistant_id="my agent",
                 enable_memory=False,
                 enable_skills=False,
                 enable_shell=False,
@@ -760,6 +772,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_get_prompt.assert_called_once()
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
+        assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""
@@ -1148,7 +1161,7 @@ class TestCreateCliAgentSkillsSources:
         )
 
         real_middleware = RealSkillsMiddleware(
-            backend=None,  # type: ignore[arg-type]
+            backend=None,  # ty: ignore
             sources=sources,
         )
         rendered = real_middleware._format_skills_locations()
@@ -2326,6 +2339,369 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
 
+    def test_adds_configurable_model_middleware_to_implicit_model_subagents(
+        self, tmp_path: Path
+    ) -> None:
+        """Runtime model switches should reach subagents without explicit models."""
+        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        assert "researcher" in subagents_by_name
+        assert "general-purpose" in subagents_by_name
+
+        for name in ("researcher", "general-purpose"):
+            middleware = subagents_by_name[name]["middleware"]
+            assert any(
+                isinstance(mw, ConfigurableModelMiddleware) for mw in middleware
+            ), f"Expected configurable model middleware on subagent {name!r}"
+            # Without a restrictive allow-list, no shell middleware should be added
+            # (the implicit `general-purpose` fallback must not be over-restricted).
+            assert not any(
+                isinstance(mw, ShellAllowListMiddleware) for mw in middleware
+            ), f"Unexpected shell middleware on subagent {name!r}"
+
+    def test_subagent_middleware_combines_shell_and_configurable_model(
+        self, tmp_path: Path
+    ) -> None:
+        """Restrictive shell + implicit model should yield both middlewares.
+
+        Explicitly pinned subagents keep shell restriction but must not gain
+        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
+        clobber the pinned model.
+        """
+        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_metas = [
+            {
+                "name": "researcher",
+                "description": "Researches things",
+                "system_prompt": "Investigate the task thoroughly.",
+                "model": None,
+            },
+            {
+                "name": "pinned",
+                "description": "Runs on a fixed model",
+                "system_prompt": "Stay on your assigned model.",
+                "model": "anthropic:claude-haiku-4-5",
+            },
+        ]
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=subagent_metas,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                interrupt_shell_only=True,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents_by_name = {
+            subagent["name"]: subagent for subagent in kwargs["subagents"]
+        }
+
+        # Implicit-model subagents (and the general-purpose fallback) get
+        # configurable-model and shell middlewares, with the configurable-model
+        # swap ordered before the shell gate so a runtime `/model` switch applies
+        # before tools are filtered.
+        for name in ("researcher", "general-purpose"):
+            middleware_types = [
+                type(mw) for mw in subagents_by_name[name]["middleware"]
+            ]
+            assert middleware_types == [
+                ConfigurableModelMiddleware,
+                ShellAllowListMiddleware,
+            ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+
+        # The pinned subagent keeps shell restriction but is NOT given the
+        # configurable-model middleware, so its model stays fixed.
+        pinned = subagents_by_name["pinned"]
+        assert pinned["model"] == "anthropic:claude-haiku-4-5"
+        pinned_middleware = pinned["middleware"]
+        assert any(
+            isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent should retain shell middleware"
+        assert not any(
+            isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent must not gain configurable model middleware"
+
+    def test_subagents_get_managed_memory_guard_when_memory_enabled(
+        self, tmp_path: Path
+    ) -> None:
+        """Subagents share the disk backend, so they get the managed-block guard."""
+        from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents_by_name = {
+            subagent["name"]: subagent for subagent in kwargs["subagents"]
+        }
+        for name in ("researcher", "general-purpose"):
+            middleware = subagents_by_name[name]["middleware"]
+            assert any(
+                isinstance(mw, ManagedMemoryGuardMiddleware) for mw in middleware
+            ), f"Expected managed memory guard on subagent {name!r}"
+
+    def test_subagents_skip_managed_memory_guard_when_memory_disabled(
+        self, tmp_path: Path
+    ) -> None:
+        """With memory off there is no managed block, so no guard is added."""
+        from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_create.call_args
+        for subagent in kwargs["subagents"]:
+            assert not any(
+                isinstance(mw, ManagedMemoryGuardMiddleware)
+                for mw in subagent["middleware"]
+            ), f"Subagent {subagent['name']!r} should not have the memory guard"
+
+    def test_empty_string_subagent_model_treated_as_implicit(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty `model:` spec should inherit the runtime model, not pin `""`."""
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "",
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents_by_name = {
+            subagent["name"]: subagent for subagent in kwargs["subagents"]
+        }
+        researcher = subagents_by_name["researcher"]
+        assert "model" not in researcher, "Empty model spec must not be forwarded"
+        assert any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in researcher["middleware"]
+        ), "Implicit-model subagent should receive configurable model middleware"
+
+    def test_preserves_explicit_subagent_model_without_configurable_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit subagent models should not be replaced by runtime switches."""
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "anthropic:claude-haiku-4-5",
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        researcher = subagents_by_name["researcher"]
+        assert researcher["model"] == "anthropic:claude-haiku-4-5"
+        assert not any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in researcher.get("middleware", [])
+        )
+        assert any(
+            isinstance(mw, ConfigurableModelMiddleware)
+            for mw in subagents_by_name["general-purpose"]["middleware"]
+        )
+
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:
     mock_settings = Mock()
@@ -2532,8 +2908,16 @@ class TestCreateCliAgentInterpreterWiring:
                 sandbox=fake_sandbox,
             )
 
-    def test_raises_on_unknown_ptc_tool_name(self, tmp_path: Path) -> None:
+    def test_unknown_ptc_names_pass_through_to_middleware(self, tmp_path: Path) -> None:
+        """Names absent from `tools` are forwarded, not rejected.
+
+        The middleware matches `ptc` names against the live runtime registry and
+        silently drops unmatched ones, so an unrecognized name (a typo, or a
+        runtime-injected built-in) is passed through rather than raising at
+        build time.
+        """
         from langchain_core.tools import tool
+        from langchain_quickjs import CodeInterpreterMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_settings.interpreter_ptc = ["nope", "grep"]
@@ -2544,15 +2928,20 @@ class TestCreateCliAgentInterpreterWiring:
             """Search for a pattern."""
             return ""
 
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
-            pytest.raises(ValueError, match="nope") as exc_info,
         ):
             create_cli_agent(
                 model="fake-model",
@@ -2564,7 +2953,12 @@ class TestCreateCliAgentInterpreterWiring:
                 tools=[grep],
             )
 
-        assert "Unknown tool names" in str(exc_info.value)
+        _, kwargs = mock_create.call_args
+        middlewares = [
+            m for m in kwargs["middleware"] if isinstance(m, CodeInterpreterMiddleware)
+        ]
+        assert len(middlewares) == 1
+        assert middlewares[0]._ptc == ["nope", "grep"]
 
     def test_raises_on_ptc_all_without_acknowledge(self, tmp_path: Path) -> None:
         from langchain_core.tools import tool
@@ -2600,8 +2994,15 @@ class TestCreateCliAgentInterpreterWiring:
                 tools=[grep],
             )
 
-    def test_safe_preset_drops_unknown_members(self, tmp_path: Path) -> None:
-        """`'safe'` ∩ live toolset; missing preset members are silently dropped."""
+    def test_safe_preset_includes_runtime_builtins(self, tmp_path: Path) -> None:
+        """`'safe'` resolves to the full preset including SDK-injected built-ins.
+
+        `glob` is not in the passed `tools`, but `create_deep_agent` injects it
+        at runtime, so the `ptc` list handed to `CodeInterpreterMiddleware` must
+        include all three preset members — not just the ones in `tools`. This is
+        the regression guard for the server/non-interactive path, where the
+        filesystem tools are never members of the `tools` sequence.
+        """
         from langchain_core.tools import tool
         from langchain_quickjs import CodeInterpreterMiddleware
 
@@ -2649,8 +3050,9 @@ class TestCreateCliAgentInterpreterWiring:
             m for m in kwargs["middleware"] if isinstance(m, CodeInterpreterMiddleware)
         ]
         assert len(middlewares) == 1
-        # Names beyond the live set should be dropped, leaving exactly grep+read_file
-        assert sorted(middlewares[0]._ptc) == ["grep", "read_file"]
+        # `glob` is absent from `tools` but is a runtime built-in, so the safe
+        # preset resolves to all three members rather than dropping it.
+        assert sorted(middlewares[0]._ptc) == ["glob", "grep", "read_file"]
 
 
 class TestResolvePtcOption:
@@ -2703,7 +3105,13 @@ class TestResolvePtcOption:
             is None
         )
 
-    def test_safe_intersects_with_live_toolset(self) -> None:
+    def test_safe_includes_builtin_preset_members(self) -> None:
+        """`"safe"` resolves to the full preset even when members are SDK built-ins.
+
+        `glob` is not in the passed `tools` here, but it is a Deep Agents
+        built-in injected at runtime, so the resolved allowlist must still
+        include it — the middleware bridges it against the live registry.
+        """
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
@@ -2712,7 +3120,7 @@ class TestResolvePtcOption:
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["grep", "read_file"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_all_with_auto_approve_skips_ack_check(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -2724,7 +3132,175 @@ class TestResolvePtcOption:
             auto_approve=True,
         )
         assert result is not None
+        # `all` enumerates only the tools passed to `create_cli_agent`; SDK
+        # runtime built-ins are injected later and are not enumerable here.
         assert sorted(result) == ["grep", "read_file", "write_file"]
+
+    @staticmethod
+    def _tools_with_task() -> list:
+        from langchain_core.tools import tool
+
+        @tool
+        def read_file(path: str) -> str:  # noqa: ARG001
+            """Read."""
+            return ""
+
+        @tool
+        def glob(pattern: str) -> str:  # noqa: ARG001
+            """Glob."""
+            return ""
+
+        @tool
+        def grep(pattern: str) -> str:  # noqa: ARG001
+            """Search."""
+            return ""
+
+        @tool
+        def task(prompt: str) -> str:  # noqa: ARG001
+            """Dispatch a subagent."""
+            return ""
+
+        return [read_file, glob, grep, task]
+
+    def test_safe_in_list_expands_with_explicit_tool(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_in_list_dedupes_preserving_order(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["grep", "safe", "task", "grep"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["grep", "glob", "read_file", "task"]
+
+    def test_all_in_list_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="cannot include 'all'"):
+            _resolve_ptc_option(
+                ["all", "task"],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
+    def test_unknown_name_in_list_passes_through(self) -> None:
+        """Unrecognized names are forwarded, not rejected.
+
+        A name absent from `tools` may still match an SDK built-in injected at
+        runtime (or be a genuine typo the middleware drops), so the resolver
+        passes it through after expanding `"safe"`.
+        """
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "nope"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "nope"]
+
+    def test_safe_alone_in_list_equals_standalone(self) -> None:
+        """`["safe"]` must resolve identically to the standalone `"safe"`."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        tools = self._tools_with_task()
+        kwargs = {"acknowledge_unsafe": False, "auto_approve": False}
+        as_list = _resolve_ptc_option(["safe"], tools=tools, **kwargs)
+        standalone = _resolve_ptc_option("safe", tools=tools, **kwargs)
+        assert as_list == standalone == ["glob", "grep", "read_file"]
+
+    def test_safe_in_list_is_case_insensitive(self) -> None:
+        """The `"safe"` sentinel is matched case-insensitively inside a list."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["SAFE", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_safe_sentinel_is_whitespace_tolerant(self) -> None:
+        """Whitespace around the `"safe"` sentinel is tolerated and expanded."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            [" safe ", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_explicit_names_are_not_normalized(self) -> None:
+        """Only the `"safe"`/`"all"` sentinels are normalized; names pass verbatim.
+
+        The CLI and config layers strip whitespace before this layer, so a
+        padded explicit name should never reach here in practice. If one does,
+        it is forwarded verbatim (not trimmed) and the middleware resolves it
+        against the runtime registry.
+        """
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", " task "],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", " task "]
+
+    def test_resolves_builtins_absent_from_passed_tools(self) -> None:
+        """Reproduce the server path: built-in names resolve without being in `tools`.
+
+        In server/non-interactive mode `create_cli_agent` only receives custom
+        tools (e.g. `fetch_url` + MCP); the filesystem and `task` tools are
+        injected by `create_deep_agent` middleware. The PTC allowlist must
+        still resolve `safe`/`task` against those runtime built-ins rather than
+        raising "Unknown tool names".
+        """
+        from langchain_core.tools import tool
+
+        from deepagents_code.agent import _resolve_ptc_option
+
+        @tool
+        def fetch_url(url: str) -> str:  # noqa: ARG001
+            """Fetch a URL (a custom, non-built-in tool)."""
+            return ""
+
+        result = _resolve_ptc_option(
+            ["safe", "task"],
+            tools=[fetch_url],
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
+
+    def test_duplicate_safe_tokens_dedupe(self) -> None:
+        """Repeated `"safe"` tokens expand once; members are not duplicated."""
+        from deepagents_code.agent import _resolve_ptc_option
+
+        result = _resolve_ptc_option(
+            ["safe", "safe", "task"],
+            tools=self._tools_with_task(),
+            acknowledge_unsafe=False,
+            auto_approve=False,
+        )
+        assert result == ["glob", "grep", "read_file", "task"]
 
     def test_safe_excludes_hitl_gated_tools(self) -> None:
         """`"safe"` must never expose tools that are HITL-gated outside the REPL.
@@ -2755,3 +3331,16 @@ class TestResolvePtcOption:
         from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
 
         assert frozenset({"read_file", "glob", "grep"}) == INTERPRETER_PTC_SAFE_PRESET
+
+
+class TestApplyInheritedPythonpath:
+    def test_relays_carrier_to_pythonpath(self) -> None:
+        env = {"DEEPAGENTS_INHERITED_PYTHONPATH": "src", "PATH": "/usr/bin"}
+        _apply_inherited_pythonpath(env)
+        assert env["PYTHONPATH"] == "src"
+        assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in env
+
+    def test_noop_without_carrier(self) -> None:
+        env = {"PATH": "/usr/bin"}
+        _apply_inherited_pythonpath(env)
+        assert "PYTHONPATH" not in env

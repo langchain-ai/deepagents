@@ -20,6 +20,7 @@ import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GrepResult,
     ReadResult,
     SandboxBackendProtocol,
 )
@@ -425,14 +426,103 @@ class TestFilesystemMiddleware:
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
+            start = time.monotonic()
             result = glob_search_tool.invoke(
                 {
                     "pattern": "**/*",
                     "runtime": _runtime(),
                 }
             )
+            elapsed = time.monotonic() - start
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        # The tool must return as soon as the timeout fires, not block until
+        # the runaway glob (2s) finishes in its worker thread.
+        assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"
+
+    def test_glob_timeout_does_not_stall_subsequent_calls(self):
+        """A timed-out glob still running in a worker must not block the next glob."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        call_count = 0
+
+        def stuck_then_fast_glob(*args: object, **kwargs: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                time.sleep(2)
+            return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
+        ):
+            first_start = time.monotonic()
+            first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+            first_elapsed = time.monotonic() - first_start
+            start = time.monotonic()
+            second = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+            elapsed = time.monotonic() - start
+
+        assert "timed out" in first.content
+        # The first (timing-out) call must itself return at the 0.5s timeout
+        # rather than block until its 2s worker finishes - an independent guard
+        # against the original `with`-block regression, where the timeout did
+        # not bound wall-clock latency.
+        assert first_elapsed < 1.5, f"first glob blocked for {first_elapsed:.2f}s past its 0.5s timeout"
+        assert second.status == "success"
+        assert elapsed < 1.0, f"second glob waited {elapsed:.2f}s behind a stuck one"
+
+    def test_glob_surfaces_backend_exception_as_error(self):
+        """A non-timeout exception from the backend glob is returned as a tool error, not propagated."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def boom(*_args: object, **_kwargs: object) -> object:
+            msg = "path traversal not allowed"
+            raise ValueError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=boom),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert result.content == "Error: glob failed: path traversal not allowed"
+
+    def test_glob_backend_timeouterror_not_misreported_as_glob_timeout(self):
+        """A `TimeoutError` raised inside the backend must not be reported as a glob-pattern timeout.
+
+        `concurrent.futures.TimeoutError is TimeoutError` on Python 3.11+, so a
+        single `except concurrent.futures.TimeoutError` around the future's wait
+        would also swallow a backend-raised builtin `TimeoutError` and misreport
+        it as the glob pattern timing out.
+        """
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def raise_timeout(*_args: object, **_kwargs: object) -> object:
+            msg = "backend RPC timed out"
+            raise TimeoutError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=raise_timeout),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert "timed out after" not in result.content
+        assert result.content == "Error: glob failed: backend RPC timed out"
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -497,6 +587,34 @@ class TestFilesystemMiddleware:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    def test_grep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -1018,6 +1136,122 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
+    def test_intercept_command_with_overwrite_messages(self):
+        """Test that Commands wrapping messages in Overwrite are handled."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in result.update["messages"].value[0].content
+
+    async def test_aintercept_command_with_overwrite_messages(self):
+        """Test that the async path handles Overwrite-wrapped messages."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in result.update["messages"].value[0].content
+
+    def test_intercept_command_with_short_overwrite_messages(self):
+        """A small ToolMessage stays wrapped and unchanged."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        small_content = "x" * 1000
+        tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": Overwrite([tool_message]),
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert result.update["messages"].value == [tool_message]
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is None
+
+    def test_intercept_command_with_mixed_overwrite_messages(self):
+        """Non-tool messages in an Overwrite update survive in order."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        final_message = AIMessage(content="Done")
+        command = Command(
+            update={
+                "messages": Overwrite([ai_message, tool_message, final_message]),
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        messages = result.update["messages"].value
+        assert messages[0] == ai_message
+        assert "Tool result too large" in messages[1].content
+        assert messages[2] == final_message
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    async def test_aintercept_command_with_mixed_overwrite_messages(self):
+        """The async path preserves non-tool messages in Overwrite updates."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(update={"messages": Overwrite([ai_message, tool_message])})
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        messages = result.update["messages"].value
+        assert messages[0] == ai_message
+        assert "Tool result too large" in messages[1].content
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    def test_intercept_command_with_empty_overwrite_messages(self):
+        """An empty Overwrite remains an empty Overwrite."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        command = Command(update={"messages": Overwrite([]), "custom_key": "custom_value"})
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        assert isinstance(result.update["messages"], Overwrite)
+        assert result.update["messages"].value == []
+        assert result.update["custom_key"] == "custom_value"
+
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
         assert sanitize_tool_call_id("call_123") == "call_123"
@@ -1265,6 +1499,66 @@ class TestFilesystemMiddleware:
         # than hardcoding a single value.
         expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
         assert result.content[0]["mime_type"] == expected_mime
+
+    def test_read_file_empty_mapped_binary_returns_empty_content_warning(self):
+        """Empty reads of mapped binary extensions (e.g. .pdf) return the empty-file warning (#3664)."""
+
+        class EmptyPdfBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyPdfBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-pdf-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_empty_unmapped_binary_returns_empty_content_warning(self):
+        """Empty reads of unmapped binary extensions (e.g. .docx) return the empty-file warning (#3664)."""
+
+        class EmptyDocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyDocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-docx-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

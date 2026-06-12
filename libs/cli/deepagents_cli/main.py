@@ -1,9 +1,11 @@
 """Entry point for the `deepagents` CLI.
 
+This CLI exposes the deployment-oriented commands for Managed Deep Agents:
+`init`, `deploy`, `agents`, and `mcp-servers`. Bare invocations print a
+deprecation notice and exit non-zero.
+
 As of `deepagents-cli==0.1.0` the interactive Textual REPL has moved to the
-[`deepagents-code`](https://pypi.org/project/deepagents-code/) package. This
-CLI now exposes only the deployment-oriented commands: `init`, `dev`, and
-`deploy`. Bare invocations print a deprecation notice and exit non-zero.
+[`deepagents-code`](https://pypi.org/project/deepagents-code/) package.
 """
 
 from __future__ import annotations
@@ -26,8 +28,8 @@ _REPL_REDIRECT_MESSAGE = (
     "Install it with:\n\n"
     "  pip install deepagents-code\n\n"
     "Then run `deepagents-code` to start an interactive session.\n\n"
-    "The `deepagents` CLI now only provides the `init`, `dev`, and `deploy` "
-    "subcommands."
+    "The `deepagents` CLI now only provides `init`, `deploy`, "
+    "`agents`, and `mcp-servers`. "
 )
 
 
@@ -78,11 +80,11 @@ def _make_help_action(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argparse parser for the deploy/dev/init CLI.
+    """Build the top-level argparse parser for the deploy/init CLI.
 
     Returns:
-        Configured `ArgumentParser` with `init`, `dev`, and `deploy`
-        subparsers registered.
+        Configured `ArgumentParser` with `init`, `deploy`, `agents`, and
+        `mcp-servers` subparsers registered.
     """
     from deepagents_cli.deploy import setup_deploy_parsers
 
@@ -139,29 +141,37 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         # gRPC (pulled in transitively by LangSmith deps) crashes on macOS
         # when the process forks after gRPC has been initialized. Disable
-        # fork support to avoid the abort; the current deploy/dev paths
-        # don't fork, so disabling fork support is a safe default —
+        # fork support to avoid the abort; the current deploy/agents/mcp-servers
+        # paths don't fork, so disabling fork support is a safe default —
         # reconsider this env var if a future subcommand spawns workers.
         os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 
     args = parse_args()
 
     try:
-        if args.command == "init":
-            from deepagents_cli.deploy import execute_init_command
-
-            execute_init_command(args)
-        elif args.command == "dev":
-            from deepagents_cli.deploy import execute_dev_command
-
-            execute_dev_command(args)
-        elif args.command == "deploy":
-            from deepagents_cli.deploy import execute_deploy_command
-
-            execute_deploy_command(args)
-        else:
-            sys.stderr.write(_REPL_REDIRECT_MESSAGE + "\n")
-            raise SystemExit(1)
+        _dispatch_command(args)
     except KeyboardInterrupt:
         sys.stderr.write("\nInterrupted.\n")
         raise SystemExit(130) from None
+
+
+def _dispatch_command(args: argparse.Namespace) -> None:
+    if args.command == "init":
+        from deepagents_cli.deploy import execute_init_command
+
+        execute_init_command(args)
+    elif args.command == "deploy":
+        from deepagents_cli.deploy import execute_deploy_command
+
+        execute_deploy_command(args)
+    elif args.command == "agents":
+        from deepagents_cli.deploy import execute_agents_command
+
+        execute_agents_command(args)
+    elif args.command == "mcp-servers":
+        from deepagents_cli.deploy import execute_mcp_servers_command
+
+        execute_mcp_servers_command(args)
+    else:
+        sys.stderr.write(_REPL_REDIRECT_MESSAGE + "\n")
+        raise SystemExit(1)

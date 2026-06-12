@@ -25,7 +25,6 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
-    ModuleScope,
     Runtime,
     Snapshot,
     ThreadWorker,
@@ -40,17 +39,21 @@ from langchain_quickjs._format import (
     stringify,
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
-from langchain_quickjs._skills import SkillLoadError, aload_skill, scan_skill_references
+from langchain_quickjs._subagent import (
+    call_subagent_task_tool,
+    find_subagent_task_tool,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from deepagents.backends.protocol import BackendProtocol
-    from deepagents.middleware.skills import SkillMetadata
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
 logger = logging.getLogger(__name__)
+
+_MAX_TASK_CALLS_PER_THREAD = 32
+_TASK_FUNCTION_NAME = "task"
 
 
 def _clear_exception_references(exc: BaseException) -> None:
@@ -102,6 +105,15 @@ class _PTCCallBudgetExceededError(RuntimeError):
             f"(limit={self.limit}, attempted={self.attempted}, "
             f"function={self.function_name})"
         )
+
+
+class _TaskBridgeError(RuntimeError):
+    """Wrap errors from the top-level `task()` host function."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.error_type = type(exc).__name__
+        self.error_message = str(exc)
+        super().__init__(self.error_message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +359,7 @@ class _ThreadREPL:
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
+        subagents_enabled: bool = True,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -358,6 +371,7 @@ class _ThreadREPL:
         self._capture_console = capture_console
         # Static budget config; mutable counters live in ``_ptc_state``.
         self._max_ptc_calls = max_ptc_calls
+        self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. ``_registered_tools`` tracks which camel-case names
@@ -380,11 +394,7 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
-        # Slot-local skill install cache. Kept on the REPL (not registry)
-        # so thread-scoped backends can resolve same-named skills
-        # differently across threads.
-        self._installed_skills: set[_SkillCacheKey] = set()
-        self._skill_install_lock = asyncio.Lock()
+        self._task_calls: asyncio.Semaphore | None = None
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -394,6 +404,9 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
+        if self._subagents_enabled:
+            self._task_calls = asyncio.Semaphore(_MAX_TASK_CALLS_PER_THREAD)
+            self._register_task_bridge()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -484,6 +497,101 @@ class _ThreadREPL:
         self._active_tool_names = target_names
         self._tools_installed = True
 
+    async def _ainvoke_task_on_outer_loop(
+        self,
+        payload: dict[str, Any],
+        *,
+        state: _PTCState,
+    ) -> Any:
+        """Validate JS `task()` input and invoke the runner on the right loop.
+
+        The QuickJS host call runs on the REPL worker loop, but subagent runnables
+        should execute on the parent LangGraph loop when one exists so callbacks,
+        context, and async loop affinity match normal tool execution.
+        """
+        description = payload.get("description")
+        if not isinstance(description, str) or not description:
+            msg = "task() requires non-empty string field `description`"
+            raise ValueError(msg)
+
+        subagent_type = payload.get("subagent_type")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            msg = "task() requires non-empty string field `subagent_type`"
+            raise ValueError(msg)
+
+        response_schema = payload.get("response_schema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = "task() field `response_schema` must be an object when provided"
+            raise ValueError(msg)
+
+        async def _call() -> Any:
+            runtime = state.outer_runtime
+            if runtime is None:
+                msg = "task() requires an active ToolRuntime"
+                raise RuntimeError(msg)
+            task_tool = find_subagent_task_tool(getattr(runtime, "tools", ()) or ())
+            if task_tool is None:
+                msg = "task tool not configured for this eval"
+                raise RuntimeError(msg)
+            return await call_subagent_task_tool(
+                task_tool,
+                description=description,
+                subagent_type=subagent_type,
+                response_schema=response_schema,
+                runtime=runtime,
+            )
+
+        outer_loop = state.outer_loop
+        if outer_loop is None:
+            return await _call()
+        current_loop = asyncio.get_running_loop()
+        if current_loop is outer_loop:
+            return await _call()
+        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    def _register_task_bridge(self) -> None:
+        """Install the async host function backing top-level ``task()``."""
+        ctx = self._require_ctx()
+
+        async def _bridge(raw_input: Any = None) -> Any:
+            state = self._ptc_state
+            if state is None:
+                msg = "task bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            task_calls = self._task_calls
+            if task_calls is None:
+                msg = "task call limiter not initialized"
+                raise RuntimeError(msg)
+
+            payload = _normalize_tool_input(raw_input)
+            async with task_calls:
+                try:
+                    result = await self._ainvoke_task_on_outer_loop(
+                        payload,
+                        state=state,
+                    )
+                except Exception as e:
+                    # Subagent dispatches are part of the eval language, not
+                    # PTC calls. Surface their validation/runtime failures as
+                    # eval errors without changing normal `tools.*` semantics.
+                    raise _TaskBridgeError(e) from e
+            return coerce_tool_output_for_ptc(result)
+
+        ctx.register(_TASK_FUNCTION_NAME, _bridge, is_async=True)
+        ctx.eval(
+            "Object.freeze(globalThis.task);"
+            "Object.defineProperty(globalThis, 'task', {"
+            " value: globalThis.task,"
+            " writable: false,"
+            " configurable: false,"
+            "}); undefined"
+        )
+
     async def _ainvoke_tool_on_outer_loop(
         self,
         tool: BaseTool,
@@ -573,8 +681,6 @@ class _ThreadREPL:
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
@@ -584,8 +690,6 @@ class _ThreadREPL:
         return self._worker.run_sync(
             self._aeval_async(
                 code,
-                skills=skills,
-                skills_backend=skills_backend,
                 outer_runtime=outer_runtime,
             )
         )
@@ -594,16 +698,12 @@ class _ThreadREPL:
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
-                skills=skills,
-                skills_backend=skills_backend,
                 outer_runtime=outer_runtime,
                 outer_loop=outer_loop,
             )
@@ -645,57 +745,10 @@ class _ThreadREPL:
             inject_globals=inject_globals,
         )
 
-    def _collect_pending_skills(
-        self,
-        referenced: frozenset[str],
-        metadata: dict[str, SkillMetadata],
-        errors: list[SkillLoadError],
-    ) -> list[tuple[_SkillCacheKey, SkillMetadata]]:
-        """Return skill entries that still need install on this REPL."""
-        pending: list[tuple[_SkillCacheKey, SkillMetadata]] = []
-        for name in referenced:
-            meta = metadata.get(name)
-            if meta is None:
-                errors.append(
-                    SkillLoadError(
-                        f"skill {name!r} referenced but not available on this agent"
-                    )
-                )
-                continue
-            cache_key = _skill_cache_key(meta)
-            if cache_key in self._installed_skills:
-                continue
-            pending.append((cache_key, meta))
-        return pending
-
-    async def _aensure_skills_installed(
-        self,
-        referenced: frozenset[str],
-        metadata: dict[str, SkillMetadata],
-        backend: BackendProtocol,
-    ) -> list[SkillLoadError]:
-        """Worker-loop-only skill install implementation."""
-        errors: list[SkillLoadError] = []
-        async with self._skill_install_lock:
-            for cache_key, meta in self._collect_pending_skills(
-                referenced, metadata, errors
-            ):
-                try:
-                    loaded = await aload_skill(meta, backend)
-                except SkillLoadError as exc:
-                    errors.append(exc)
-                    continue
-                scope = ModuleScope({loaded.specifier: loaded.scope})
-                self._runtime.install(scope)
-                self._installed_skills.add(cache_key)
-        return errors
-
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
         code: str,
         *,
-        skills: dict[str, SkillMetadata] | None = None,
-        skills_backend: BackendProtocol | None = None,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
@@ -709,20 +762,6 @@ class _ThreadREPL:
         """
         ctx = self._require_ctx()
         outcome = EvalOutcome()
-        if skills_backend is not None:
-            referenced = scan_skill_references(code)
-            if referenced:
-                errors = await self._aensure_skills_installed(
-                    referenced, skills or {}, skills_backend
-                )
-                if errors:
-                    outcome.error_type = "SkillNotAvailable"
-                    outcome.error_message = "; ".join(str(error) for error in errors)
-                    (
-                        outcome.stdout,
-                        outcome.stdout_truncated_chars,
-                    ) = self._console.drain()
-                    return outcome
         # Save/restore rather than clear-on-exit: a second eval that hits
         # ConcurrentEvalError would otherwise null out the in-flight
         # eval's state and orphan its bridge calls.
@@ -797,6 +836,10 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
             _clear_exception_references(e)
+        except _TaskBridgeError as e:
+            outcome.error_type = e.error_type
+            outcome.error_message = e.error_message
+            _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
@@ -817,21 +860,6 @@ class _ThreadREPL:
         if self._ctx is not None:
             self._ctx.close()
             self._ctx = None
-        self._installed_skills.clear()
-
-
-_SkillCacheKey = tuple[str, str, str | None]
-
-
-def _skill_cache_key(metadata: SkillMetadata) -> _SkillCacheKey:
-    """Build a stable per-slot cache key for a skill definition.
-
-    The key intentionally includes path + module (not just name) so two
-    same-named skills from different sources do not collide inside a
-    thread-local cache.
-    """
-    entrypoint = metadata.get("metadata", {}).get("entrypoint")
-    return (metadata["name"], metadata["path"], entrypoint)
 
 
 @dataclass
@@ -862,6 +890,7 @@ class _Registry:
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
+    subagents_enabled: bool = True
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -893,6 +922,34 @@ class _Registry:
         if slot is not None:
             await self._aclose_slot(slot)
 
+    def reset_repl(self, thread_id: str) -> None:
+        """Replace the slot REPL while keeping its worker and runtime alive."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            return
+
+        with contextlib.suppress(Exception):
+            slot.repl.close()
+        new_repl = _ThreadREPL(
+            slot.worker,
+            slot.runtime,
+            timeout=self.timeout,
+            capture_console=self.capture_console,
+            max_stdout_chars=self.max_stdout_chars,
+            max_ptc_calls=self.max_ptc_calls,
+            subagents_enabled=self.subagents_enabled,
+        )
+
+        with self._lock:
+            current = self._slots.get(thread_id)
+            if current is slot:
+                slot.repl = new_repl
+                return
+        # Slot was removed/replaced while rebuilding.
+        with contextlib.suppress(Exception):
+            new_repl.close()
+
     def _build_slot_locked(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"
         worker = ThreadWorker(name=name)
@@ -904,6 +961,7 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            subagents_enabled=self.subagents_enabled,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

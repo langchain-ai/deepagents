@@ -82,3 +82,15 @@ class TestFilesystemToolSchemas:
                 f"Sync schema: {sync_schema}\n"
                 f"Async schema: {async_schema}"
             )
+
+    def test_glob_path_defaults_to_nullable_backend_root(self) -> None:
+        """Verify `glob.path` matches `grep.path` optional default semantics."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        schema = glob_tool.tool_call_schema.model_json_schema()
+        path_schema = schema["properties"]["path"]
+
+        assert path_schema["default"] is None
+        assert {"type": "null"} in path_schema["anyOf"]
+        assert "backend's default root" in path_schema["description"]

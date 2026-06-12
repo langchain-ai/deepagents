@@ -837,6 +837,16 @@ class TestGetProjectFiles:
         assert "visible.py" in files
         assert "ignored.py" not in files
 
+    def test_empty_git_listing_does_not_fall_back_to_glob(self, tmp_path: Path) -> None:
+        """Successful empty git output is authoritative."""
+        self._init_repo(tmp_path)
+        (tmp_path / ".git" / "info" / "exclude").write_text("ignored.py\n")
+        (tmp_path / "ignored.py").write_text("z = 3\n")
+
+        files = _get_project_files(tmp_path)
+
+        assert files == []
+
     def test_no_duplicate_entries(self, tmp_path: Path) -> None:
         """A file does not appear twice across tracked/untracked sources."""
         self._init_repo(tmp_path)

@@ -346,11 +346,13 @@ _MIN_FUZZY_RATIO = 0.4
 """SequenceMatcher threshold for filename-only fuzzy matches."""
 
 
-def _run_git_ls_files(git_path: str, root: Path, extra_args: list[str]) -> list[str]:
+def _run_git_ls_files(
+    git_path: str, root: Path, extra_args: list[str]
+) -> tuple[bool, list[str]]:
     """Run `git ls-files` with the given arguments and return file paths.
 
     Returns:
-        List of relative file paths, or empty list on failure.
+        Tuple of success status and relative file paths.
     """
     try:
         # S603: git_path is validated via shutil.which(), args are hardcoded
@@ -363,10 +365,10 @@ def _run_git_ls_files(git_path: str, root: Path, extra_args: list[str]) -> list[
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
+        return False, []
     if result.returncode != 0:
-        return []
-    return [f for f in result.stdout.strip().split("\n") if f]
+        return False, []
+    return True, [f for f in result.stdout.strip().split("\n") if f]
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -381,11 +383,11 @@ def _get_project_files(root: Path) -> list[str]:
     """
     git_path = _get_git_executable()
     if git_path:
-        tracked = _run_git_ls_files(git_path, root, [])
-        untracked = _run_git_ls_files(
+        tracked_ok, tracked = _run_git_ls_files(git_path, root, [])
+        untracked_ok, untracked = _run_git_ls_files(
             git_path, root, ["--others", "--exclude-standard"]
         )
-        if tracked or untracked:
+        if tracked_ok and untracked_ok:
             seen: set[str] = set()
             files: list[str] = []
             for f in (*tracked, *untracked):

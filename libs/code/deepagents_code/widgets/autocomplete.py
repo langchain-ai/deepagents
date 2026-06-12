@@ -491,18 +491,28 @@ def _fuzzy_search(
 
 
 def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list[str]:
-    """Scope a repo-relative file list to paths under `cwd`.
+    """Scope a project-root-relative file list to paths under `cwd`.
+
+    Args:
+        files: File paths relative to `project_root` (as produced by
+            `_get_project_files`).
+        project_root: Directory the `files` paths are relative to.
+        cwd: Directory to scope suggestions to.
 
     Returns:
-        Paths relative to `cwd` when `cwd` is nested under `project_root`,
-        otherwise the original list unchanged.
+        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. The input list
+        unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
+        not under `project_root`: the paths are project-root-relative and would
+        resolve to the wrong base from `cwd`, so fail closed rather than offer
+        misleading suggestions.
     """
     if cwd == project_root:
         return files
     try:
         relative_cwd = cwd.relative_to(project_root).as_posix()
     except ValueError:
-        return files
+        return []
     prefix = f"{relative_cwd}/"
     return [path[len(prefix) :] for path in files if path.startswith(prefix)]
 

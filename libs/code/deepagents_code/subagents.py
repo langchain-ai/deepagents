@@ -173,8 +173,8 @@ def _load_subagents_from_dir(
         # Look for {folder_name}/AGENTS.md
         subagent_file = entry / "AGENTS.md"
         if not subagent_file.exists():
-            # Warn when the folder looks like a misconfigured subagent (e.g. a
-            # Claude Code style `agent.md`/`<name>.md` instead of `AGENTS.md`).
+            # The folder exists but holds a differently-named markdown file
+            # (e.g. agent.md or {name}.md) instead of the required AGENTS.md.
             stray_md = [p.name for p in entry.glob("*.md")]
             if stray_md:
                 logger.warning(
@@ -189,6 +189,22 @@ def _load_subagents_from_dir(
         subagent = _parse_subagent_file(subagent_file)
         if subagent:
             subagent["source"] = source
+            # The folder name and the frontmatter `name` are independent, so two
+            # folders can declare the same `name` and silently collapse to one
+            # entry. Iteration order is filesystem-dependent, so warn rather than
+            # let a definition vanish without explanation.
+            existing = subagents.get(subagent["name"])
+            if existing is not None:
+                logger.warning(
+                    "Subagent name collision in %s: %s and %s both declare "
+                    "name=%r. Using %s; give each subagent a unique 'name' in "
+                    "its frontmatter.",
+                    agents_dir,
+                    existing["path"],
+                    subagent["path"],
+                    subagent["name"],
+                    subagent["path"],
+                )
             subagents[subagent["name"]] = subagent
 
     return subagents

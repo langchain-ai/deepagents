@@ -251,7 +251,7 @@ class TestDeepAgentEndToEnd:
         assert captured_config["tags"] == ["tool-tag", "tool-session-456"]
         assert captured_config["metadata"]["ls_integration"] == "deepagents"
         assert captured_config["metadata"]["lc_agent_name"] == "supervisor"
-        assert "deepagents" in captured_config["metadata"]["versions"]
+        assert "deepagents" in captured_config["metadata"]["lc_versions"]
 
     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
         """Test deepagent with tools using a fake LLM model.

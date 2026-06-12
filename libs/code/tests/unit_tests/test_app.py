@@ -3991,6 +3991,29 @@ class TestAppFocusRestoresChatInput:
 
             assert app._chat_input._text_area.cursor_blink is True
 
+    async def test_app_blur_then_focus_arms_refocus_suppression(self) -> None:
+        """`on_app_blur`/`on_app_focus` forward terminal focus state to the input.
+
+        Guards the wiring between the app's focus handlers and the text area:
+        without these forwarded calls the refocus-click suppression never arms,
+        so the cursor-jump fix would silently break while its own unit tests
+        (which poke the text area directly) keep passing.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            text_area = app._chat_input._text_area
+            assert text_area is not None
+
+            app.on_app_blur()
+            assert text_area._app_blurred is True
+
+            app.on_app_focus()
+            await pilot.pause()
+            assert text_area._app_blurred is False
+            assert text_area._refocus_time is not None
+
 
 class TestChatScrollKeepsInputFocus:
     """Clicking a chat message must not steal focus from the chat input."""
@@ -12810,6 +12833,65 @@ class TestStatusBarConnectionMirroring:
             app._sync_status_connection()
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "connecting"
+
+    async def test_sync_reflects_resuming(self) -> None:
+        """A `-r` initial connect reads as resuming, not the generic connecting."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = False
+            app._resuming = True
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "resuming"
+
+    async def test_sync_prefers_reconnecting_over_resuming(self) -> None:
+        """A reconnect of a resumed thread labels as reconnecting, not resuming.
+
+        Locks the precedence in `_sync_status_connection` (reconnect checked
+        before resume) so a future reorder of the branch chain can't surface
+        "Resuming" while a reconnect is in flight.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._reconnecting = True
+            app._resuming = True
+            app._sync_status_connection()
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "reconnecting"
+
+    async def test_resume_intent_arms_resuming_flag(self) -> None:
+        """A `-r` resume intent with a pending connect should arm `_resuming`."""
+        app = DeepAgentsApp(
+            thread_id="thread-123",
+            resume_thread="thread-123",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+        )
+        assert app._connecting is True
+        assert app._resuming is True
+
+    async def test_no_resume_intent_leaves_resuming_unset(self) -> None:
+        """A plain connect (no `-r`) should not arm `_resuming`."""
+        app = DeepAgentsApp(
+            thread_id="thread-123",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+        )
+        assert app._connecting is True
+        assert app._resuming is False
+
+    async def test_sync_clears_resuming_when_connected(self) -> None:
+        """Clearing `_connecting` should also drop the resuming flag."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test():
+            app._connecting = True
+            app._resuming = True
+            app._sync_status_connection()
+            app._connecting = False
+            app._sync_status_connection()
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == ""
 
     async def test_sync_clears_when_connected(self) -> None:
         """Clearing `_connecting` should empty the connection indicator."""

@@ -65,9 +65,9 @@ run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
 
-run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential)
+run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env langsmith $(AGENT_KWARG)
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir jobs/terminal-bench --env langsmith $(AGENT_KWARG)
 
 ######################
 # CHARTS

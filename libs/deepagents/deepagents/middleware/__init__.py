@@ -64,7 +64,11 @@ from deepagents.middleware.rubric import (
     RubricState,
 )
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import (
+    CompiledSubAgent,
+    SubAgent,
+    SubAgentMiddleware,
+)
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,

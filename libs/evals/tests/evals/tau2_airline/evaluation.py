@@ -182,6 +182,70 @@ def _diff_db(actual_db: FlightDB, expected_db: FlightDB) -> list[str]:
     return diffs
 
 
+def _check_payment_invariant_bookings(actual_db: FlightDB, task: dict[str, Any]) -> bool:
+    """Allocation-invariant DB check for multi-booking tasks (e.g. tau2 23/23b).
+
+    Several payment splits are equally optimal: the same set of certificates and
+    gift cards must be fully used, but which booking each lands on (and the
+    booking order, hence reservation ids) is irrelevant — the total charged per
+    payment method is identical. So instead of an exact DB hash we verify the
+    outcome that actually matters:
+
+    - every gold-cancelled reservation is cancelled;
+    - the multiset of resulting reservations matches gold by
+      (origin, destination, trip type, cabin, flights, passengers, baggage,
+      insurance), ignoring reservation id;
+    - the total charged per payment method equals gold (invariant across splits);
+    - no reservation uses more than one certificate (policy).
+    """
+    from collections import Counter  # noqa: PLC0415
+
+    actions = task.get("evaluation_criteria", {}).get("actions", [])
+    cancels = [a["arguments"]["reservation_id"] for a in actions if a["name"] == "cancel_reservation"]
+    bookings = [a["arguments"] for a in actions if a["name"] == "book_reservation"]
+
+    for rid in cancels:
+        res = actual_db.reservations.get(rid)
+        if res is None or res.status != "cancelled":
+            return False
+
+    def booking_sig(b: dict[str, Any]) -> tuple:
+        flights = frozenset((f["flight_number"], f["date"]) for f in b.get("flights", []))
+        pax = frozenset((p["first_name"], p["last_name"], p["dob"]) for p in b.get("passengers", []))
+        return (b["origin"], b["destination"], b["flight_type"], b["cabin"], flights, pax,
+                int(b.get("total_baggages", 0)), b.get("insurance", "no"))
+
+    def reservation_sig(r: Any) -> tuple:  # noqa: ANN401
+        flights = frozenset((f.flight_number, f.date) for f in r.flights)
+        pax = frozenset((p.first_name, p.last_name, p.dob) for p in r.passengers)
+        return (r.origin, r.destination, r.flight_type, r.cabin, flights, pax,
+                int(r.total_baggages), r.insurance)
+
+    expected_sigs = Counter(booking_sig(b) for b in bookings)
+    expected_pay: dict[str, int] = {}
+    for b in bookings:
+        for p in b.get("payment_methods", []):
+            expected_pay[p["payment_id"]] = expected_pay.get(p["payment_id"], 0) + int(p["amount"])
+
+    actual_sigs: Counter = Counter()
+    actual_pay: dict[str, int] = {}
+    for res in actual_db.reservations.values():
+        if res.status == "cancelled":
+            continue
+        sig = reservation_sig(res)
+        if sig not in expected_sigs:
+            continue
+        actual_sigs[sig] += 1
+        certs = sum(1 for p in res.payment_history if p.amount > 0 and p.payment_id.startswith("certificate"))
+        if certs > 1:
+            return False
+        for p in res.payment_history:
+            if p.amount > 0:
+                actual_pay[p.payment_id] = actual_pay.get(p.payment_id, 0) + int(p.amount)
+
+    return actual_sigs == expected_sigs and actual_pay == expected_pay
+
+
 def check_db_state(actual_db: FlightDB, task: dict[str, Any]) -> float:
     """Compare actual DB state against expected state after replaying actions.
 
@@ -192,6 +256,8 @@ def check_db_state(actual_db: FlightDB, task: dict[str, Any]) -> float:
     Returns:
         1.0 if states match, 0.0 otherwise.
     """
+    if task.get("evaluation_criteria", {}).get("db_check") == "payment_invariant_bookings":
+        return 1.0 if _check_payment_invariant_bookings(actual_db, task) else 0.0
     expected_db = _replay_expected_actions(task)
     actual_hash = _hash_db(actual_db)
     expected_hash = _hash_db(expected_db)

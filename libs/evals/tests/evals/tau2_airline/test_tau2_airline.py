@@ -60,6 +60,25 @@ TASK_IDS = [
     "38",
     "39",
     "44",
+    # Curated reasoning-eval set additions (sound gold, audited 2026-06):
+    # adversarial / lie-resistance, multi-step composition, and the 23b
+    # ("minimize total credit spend") variant of task 23. Selected via -k in
+    # run_reasoning_eval_set.sh; kept here so they are collectable.
+    "4",
+    "8",
+    "11",
+    "12",
+    "15",
+    "18",
+    "20",
+    "21",
+    "23b",
+    "24",
+    "25",
+    "28",
+    "47",
+    "48",
+    "49",
 ]
 
 AGENT_SYSTEM_PROMPT = """\

@@ -8,7 +8,7 @@ enable composition without fragile string parsing.
 import functools
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, overload
@@ -77,6 +77,21 @@ GrepMatch = _GrepMatch
 def _compile_glob(pattern: str) -> wcglob.WcMatcher:
     """Compile a glob pattern once and cache it (BRACE flag)."""
     return wcglob.compile(pattern, flags=wcglob.BRACE)
+
+
+def compile_grep_include_glob(glob: str) -> Callable[[str], bool]:
+    """Compile a grep `glob` filter with ripgrep-like semantics.
+
+    Mirrors how ripgrep interprets `--glob`: a pattern without `/` matches
+    file basenames at any depth; a pattern containing `/` matches the path
+    relative to the search root, with `**` support. Returns a predicate
+    applied to a root-relative path (no leading slash).
+    """
+    if "/" not in glob:
+        matcher = wcglob.compile(glob, flags=wcglob.BRACE)
+        return lambda rel_path: bool(matcher.match(Path(rel_path).name))
+    path_matcher = wcglob.compile(glob.lstrip("/"), flags=wcglob.BRACE | wcglob.GLOBSTAR)
+    return lambda rel_path: bool(path_matcher.match(rel_path))
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -705,8 +720,9 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = _compile_glob(glob)
-        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
+        glob_match = compile_grep_include_glob(glob)
+        root = normalized_path.rstrip("/")
+        filtered = {fp: fd for fp, fd in filtered.items() if glob_match((fp[len(root) :] if root and fp.startswith(root) else fp).lstrip("/"))}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

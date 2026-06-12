@@ -234,6 +234,28 @@ class FilesystemBackend(BackendProtocol):
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
+    def _display_path(self, path: Path) -> str:
+        """Render a path for agent-visible messages without leaking the real root.
+
+        In `virtual_mode`, surfacing the resolved on-disk path would defeat the
+        virtual-path abstraction (and leak `root_dir`), so convert to the virtual
+        form; fall back to the bare name if that conversion fails (e.g., the path
+        escaped the root or could not be resolved). In non-virtual mode the real
+        path is already the caller's own, so return it unchanged.
+
+        Args:
+            path: Filesystem path to render.
+
+        Returns:
+            A virtual path string in `virtual_mode`, otherwise the real path.
+        """
+        if not self.virtual_mode:
+            return str(path)
+        try:
+            return self._to_virtual_path(path)
+        except (ValueError, OSError, RuntimeError):
+            return path.name
+
     def ls(self, path: str) -> LsResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """List files and directories in the specified directory (non-recursive).
 
@@ -752,7 +774,7 @@ class FilesystemBackend(BackendProtocol):
 
         def _timed_out_msg() -> str:
             msg = (
-                f"Grep of '{base_full}' timed out after {timeout}s "
+                f"Grep of '{self._display_path(base_full)}' timed out after {timeout}s "
                 f"with {len(results)} matching file(s); try a more "
                 f"specific pattern or a narrower path."
             )
@@ -765,11 +787,13 @@ class FilesystemBackend(BackendProtocol):
             return "One or more files could not be fully searched:\n" + "\n".join(file_errors)
 
         def _safe_detail(exc: Exception) -> str:
-            # Human-readable cause without the absolute path that `str(exc)`
-            # embeds for `OSError` — keeps virtual paths virtual and avoids
-            # leaking the real root through the agent-facing error.
-            reason = getattr(exc, "strerror", None) or getattr(exc, "reason", None)
-            return f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
+            # Build an agent-safe detail string. `OSError.__str__` embeds the
+            # real filename/path, so for those surface only `strerror` (the
+            # path-free reason). `UnicodeDecodeError` exposes `.reason`; other
+            # exception messages are app-generated and path-free, so their
+            # `str()` is safe to surface.
+            detail = exc.strerror if isinstance(exc, OSError) else (getattr(exc, "reason", None) or str(exc))
+            return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:
             for fp in root.rglob("*"):
@@ -838,7 +862,9 @@ class FilesystemBackend(BackendProtocol):
             # symlink-loop detection on older Python versions. Return the
             # matches already accumulated and surface the abort so callers
             # don't treat the result as complete.
-            msg = f"Grep of '{base_full}' aborted after {len(results)} matching file(s): {e}"
+            # `_display_path`/`_safe_detail` keep the real `root_dir` out of the
+            # agent-visible error (the raw `rglob` exception can embed it too).
+            msg = f"Grep of '{self._display_path(base_full)}' aborted after {len(results)} matching file(s): {_safe_detail(e)}"
             logger.warning("%s", msg, exc_info=True)
             return results, msg
 

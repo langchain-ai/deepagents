@@ -907,7 +907,11 @@ def test_grep_python_fallback_survives_mid_iteration_failure(tmp_path: Path, mon
     assert result.matches is not None
     assert result.error is not None
     assert "aborted" in result.error
-    assert str(root) in result.error if not virtual_mode else True
+    if virtual_mode:
+        # The real `root_dir` must not leak into the agent-visible error.
+        assert str(root) not in result.error
+    else:
+        assert str(root) in result.error
 
     matched_paths = {m["path"] for m in result.matches}
     if virtual_mode:
@@ -1057,6 +1061,8 @@ class TestGrepPythonFallbackTimeout:
         _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
         assert partial_error is not None
         assert "timed out" in partial_error
+        # The real `root_dir` must not leak into the agent-visible error.
+        assert str(tmp_path) not in partial_error
 
     def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
         """The Python fallback does literal substring matching (no regex)."""
@@ -1102,6 +1108,7 @@ class TestGrepPythonFallbackTimeout:
 
         assert partial_error is not None
         assert "timed out" in partial_error
+        assert str(tmp_path) not in partial_error  # virtual mode must not leak the real root
         collected = results.get("/big.txt", [])
         assert (1, "needle") in collected
         assert all(line_num != 2500 for line_num, _ in collected)

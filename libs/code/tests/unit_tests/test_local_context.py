@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 import pytest
 from deepagents.backends.protocol import ExecuteResponse
+from deepagents.middleware._state import private_state_field_names
 
 from deepagents_code.local_context import (
     _DETECT_SCRIPT_TIMEOUT,
@@ -134,6 +135,10 @@ SAMPLE_CONTEXT_NO_GIT = (
 class TestLocalContextMiddleware:
     """Test local context middleware functionality."""
 
+    def test_local_context_is_private_state(self) -> None:
+        """Local context should not appear in public graph outputs or trace state."""
+        assert "_local_context" in private_state_field_names(LocalContextState)
+
     def test_before_agent_stores_context(self) -> None:
         """Test before_agent runs script and stores output in state."""
         backend = _make_backend(output=SAMPLE_CONTEXT)
@@ -144,18 +149,18 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)
 
         assert result is not None
-        assert "local_context" in result
-        assert "## Local Context" in result["local_context"]
-        assert "Current Directory" in result["local_context"]
+        assert "_local_context" in result
+        assert "## Local Context" in result["_local_context"]
+        assert "Current Directory" in result["_local_context"]
         backend._mock.assert_called_once()
 
     def test_before_agent_skips_when_already_set(self) -> None:
-        """Test before_agent returns None when local_context already exists."""
+        """Test before_agent returns None when _local_context already exists."""
         backend = _make_backend(output=SAMPLE_CONTEXT)
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {
             "messages": [],
-            "local_context": "already set",
+            "_local_context": "already set",
         }
         runtime: Any = Mock()
 
@@ -218,7 +223,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)
 
         assert result is not None
-        ctx = result["local_context"]
+        ctx = result["_local_context"]
         assert "**Git**: Current branch `main`" in ctx
         assert "`main`, `master` available" in ctx
         assert "1 uncommitted change" in ctx
@@ -233,7 +238,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)
 
         assert result is not None
-        ctx = result["local_context"]
+        ctx = result["_local_context"]
         assert "Current Directory" in ctx
         assert "**Git**:" not in ctx
 
@@ -244,7 +249,7 @@ class TestLocalContextMiddleware:
 
         request = Mock()
         request.system_prompt = "Base system prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
 
         overridden_request = Mock()
         request.override.return_value = overridden_request
@@ -286,7 +291,7 @@ class TestLocalContextMiddleware:
 
         request = Mock()
         request.system_prompt = "Base system prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
 
         overridden_request = Mock()
         request.override.return_value = overridden_request
@@ -329,7 +334,7 @@ class TestLocalContextMiddleware:
         event = _make_summarization_event(5)
         state: Any = {
             "messages": [],
-            "local_context": "stale context",
+            "_local_context": "stale context",
             "_summarization_event": event,
         }
         runtime: Any = Mock()
@@ -337,7 +342,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
-        assert result["local_context"] == ctx.strip()
+        assert result["_local_context"] == ctx.strip()
         assert result["_local_context_refreshed_at_cutoff"] == 5
         backend._mock.assert_called_once()
 
@@ -348,7 +353,7 @@ class TestLocalContextMiddleware:
         event = _make_summarization_event(5)
         state: Any = {
             "messages": [],
-            "local_context": "existing context",
+            "_local_context": "existing context",
             "_summarization_event": event,
             "_local_context_refreshed_at_cutoff": 5,
         }
@@ -356,7 +361,7 @@ class TestLocalContextMiddleware:
 
         result = middleware.before_agent(state, runtime)  # ty: ignore
 
-        # Falls through to initial-detection guard; local_context set.
+        # Falls through to initial-detection guard; _local_context set.
         assert result is None
         backend._mock.assert_not_called()
 
@@ -367,7 +372,7 @@ class TestLocalContextMiddleware:
         event = _make_summarization_event(10)
         state: Any = {
             "messages": [],
-            "local_context": "keep this",
+            "_local_context": "keep this",
             "_summarization_event": event,
         }
         runtime: Any = Mock()
@@ -377,8 +382,8 @@ class TestLocalContextMiddleware:
         assert result is not None
         # Cutoff recorded to prevent retry loop.
         assert result["_local_context_refreshed_at_cutoff"] == 10
-        # local_context NOT overwritten.
-        assert "local_context" not in result
+        # _local_context NOT overwritten.
+        assert "_local_context" not in result
         backend._mock.assert_called_once()
 
     def test_before_agent_second_summarization_refreshes(self) -> None:
@@ -388,7 +393,7 @@ class TestLocalContextMiddleware:
         event = _make_summarization_event(20)
         state: Any = {
             "messages": [],
-            "local_context": "first refresh",
+            "_local_context": "first refresh",
             "_summarization_event": event,
             "_local_context_refreshed_at_cutoff": 10,
         }
@@ -397,7 +402,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)  # ty: ignore
 
         assert result is not None
-        assert result["local_context"] == "refreshed again"
+        assert result["_local_context"] == "refreshed again"
         assert result["_local_context_refreshed_at_cutoff"] == 20
 
     def test_before_agent_cross_thread_isolation(self) -> None:
@@ -409,7 +414,7 @@ class TestLocalContextMiddleware:
         # Thread A: summarization at cutoff 5, not yet refreshed.
         state_a: Any = {
             "messages": [],
-            "local_context": "old A",
+            "_local_context": "old A",
             "_summarization_event": _make_summarization_event(5),
         }
         result_a = middleware.before_agent(state_a, runtime)  # ty: ignore
@@ -421,7 +426,7 @@ class TestLocalContextMiddleware:
         # Thread B: already refreshed at cutoff 5 — no re-run.
         state_b: Any = {
             "messages": [],
-            "local_context": "old B",
+            "_local_context": "old B",
             "_summarization_event": _make_summarization_event(5),
             "_local_context_refreshed_at_cutoff": 5,
         }
@@ -432,7 +437,7 @@ class TestLocalContextMiddleware:
         # Thread C: no summarization event, context already set.
         state_c: Any = {
             "messages": [],
-            "local_context": "existing C",
+            "_local_context": "existing C",
         }
         result_c = middleware.before_agent(state_c, runtime)  # ty: ignore
         assert result_c is None
@@ -445,7 +450,7 @@ class TestLocalContextMiddleware:
         event = _make_summarization_event(7)
         state: Any = {
             "messages": [],
-            "local_context": "keep this",
+            "_local_context": "keep this",
             "_summarization_event": event,
         }
         runtime: Any = Mock()
@@ -454,7 +459,7 @@ class TestLocalContextMiddleware:
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 7
-        assert "local_context" not in result
+        assert "_local_context" not in result
         backend._mock.assert_called_once()
 
     def test_before_agent_missing_cutoff_index_skips_refresh(self) -> None:
@@ -463,7 +468,7 @@ class TestLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "existing",
+            "_local_context": "existing",
             "_summarization_event": {"summary_message": None, "file_path": None},
         }
         runtime: Any = Mock()
@@ -471,7 +476,7 @@ class TestLocalContextMiddleware:
         result = middleware.before_agent(state, runtime)  # ty: ignore
 
         # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
-        # is False. Falls through to initial-detection guard; local_context set.
+        # is False. Falls through to initial-detection guard; _local_context set.
         assert result is None
         backend._mock.assert_not_called()
 
@@ -527,16 +532,16 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)
 
         assert result is not None
-        assert "## Local Context" in result["local_context"]
+        assert "## Local Context" in result["_local_context"]
         backend._mock.assert_called_once()
 
     async def test_abefore_agent_skips_when_already_set(self) -> None:
-        """Test abefore_agent returns None when local_context already exists."""
+        """Test abefore_agent returns None when _local_context already exists."""
         backend = _make_async_backend(output=SAMPLE_CONTEXT)
         middleware = LocalContextMiddleware(backend=backend)
         state: LocalContextState = {
             "messages": [],
-            "local_context": "already set",
+            "_local_context": "already set",
         }
         runtime: Any = Mock()
 
@@ -584,7 +589,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "old context",
+            "_local_context": "old context",
             "_summarization_event": _make_summarization_event(3),
         }
         runtime: Any = Mock()
@@ -592,7 +597,7 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
-        assert result["local_context"] == "refreshed context"
+        assert result["_local_context"] == "refreshed context"
         assert result["_local_context_refreshed_at_cutoff"] == 3
 
     async def test_abefore_agent_prefers_async_execute_when_both_exist(self) -> None:
@@ -625,7 +630,7 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)
 
         assert result is not None
-        assert "## Local Context" in result["local_context"]
+        assert "## Local Context" in result["_local_context"]
 
     async def test_abefore_agent_falls_back_to_sync(self) -> None:
         """Test abefore_agent falls back to sync execute for sync-only backends."""
@@ -654,7 +659,7 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)
 
         assert result is not None
-        assert "## Local Context" in result["local_context"]
+        assert "## Local Context" in result["_local_context"]
         assert backend.call_count == 1
 
     async def test_abefore_agent_refresh_failure_records_cutoff(self) -> None:
@@ -663,7 +668,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "keep this",
+            "_local_context": "keep this",
             "_summarization_event": _make_summarization_event(10),
         }
         runtime: Any = Mock()
@@ -672,7 +677,7 @@ class TestAsyncLocalContextMiddleware:
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 10
-        assert "local_context" not in result
+        assert "_local_context" not in result
 
     async def test_abefore_agent_refresh_exception_records_cutoff(self) -> None:
         """Test async refresh exception records cutoff to prevent retry loop."""
@@ -680,7 +685,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "keep this",
+            "_local_context": "keep this",
             "_summarization_event": _make_summarization_event(7),
         }
         runtime: Any = Mock()
@@ -689,7 +694,7 @@ class TestAsyncLocalContextMiddleware:
 
         assert result is not None
         assert result["_local_context_refreshed_at_cutoff"] == 7
-        assert "local_context" not in result
+        assert "_local_context" not in result
 
     async def test_abefore_agent_no_rerun_same_cutoff(self) -> None:
         """Test abefore_agent skips detection when cutoff already processed."""
@@ -697,7 +702,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "existing",
+            "_local_context": "existing",
             "_summarization_event": _make_summarization_event(5),
             "_local_context_refreshed_at_cutoff": 5,
         }
@@ -725,7 +730,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "first refresh",
+            "_local_context": "first refresh",
             "_summarization_event": _make_summarization_event(20),
             "_local_context_refreshed_at_cutoff": 10,
         }
@@ -734,7 +739,7 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         assert result is not None
-        assert result["local_context"] == "refreshed again"
+        assert result["_local_context"] == "refreshed again"
         assert result["_local_context_refreshed_at_cutoff"] == 20
 
     async def test_abefore_agent_missing_cutoff_index_skips_refresh(self) -> None:
@@ -743,7 +748,7 @@ class TestAsyncLocalContextMiddleware:
         middleware = LocalContextMiddleware(backend=backend)
         state: Any = {
             "messages": [],
-            "local_context": "existing",
+            "_local_context": "existing",
             "_summarization_event": {"summary_message": None, "file_path": None},
         }
         runtime: Any = Mock()
@@ -751,7 +756,7 @@ class TestAsyncLocalContextMiddleware:
         result = await middleware.abefore_agent(state, runtime)  # ty: ignore
 
         # Both cutoff and refreshed_cutoff are None, so cutoff != refreshed_cutoff
-        # is False. Falls through to initial-detection guard; local_context set.
+        # is False. Falls through to initial-detection guard; _local_context set.
         assert result is None
         backend._mock.assert_not_called()
 
@@ -1644,7 +1649,7 @@ class TestMcpContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
 
         overridden = Mock()
         request.override.return_value = overridden
@@ -1666,7 +1671,7 @@ class TestMcpContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
 
         overridden = Mock()
         request.override.return_value = overridden
@@ -1687,7 +1692,7 @@ class TestMcpContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
 
         overridden = Mock()
         request.override.return_value = overridden
@@ -1708,7 +1713,7 @@ class TestMcpContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base"
-        request.state = {}  # no local_context
+        request.state = {}  # no _local_context
 
         overridden = Mock()
         request.override.return_value = overridden
@@ -1804,7 +1809,7 @@ class TestTracingContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
         request.override.return_value = Mock()
         handler = Mock(return_value="response")
 
@@ -1822,7 +1827,7 @@ class TestTracingContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
         request.override.return_value = Mock()
         handler = Mock(return_value="response")
 
@@ -1841,7 +1846,7 @@ class TestTracingContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base"
-        request.state = {}  # no local_context
+        request.state = {}  # no _local_context
         request.override.return_value = Mock()
         handler = Mock(return_value="response")
 
@@ -1864,7 +1869,7 @@ class TestTracingContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
         request.override.return_value = Mock()
         handler = Mock(return_value="response")
 
@@ -1888,7 +1893,7 @@ class TestTracingContextInMiddleware:
 
         request = Mock()
         request.system_prompt = "Base prompt"
-        request.state = {"local_context": SAMPLE_CONTEXT}
+        request.state = {"_local_context": SAMPLE_CONTEXT}
         request.override.return_value = Mock()
         handler = AsyncMock(return_value="response")
 

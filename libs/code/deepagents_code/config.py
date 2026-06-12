@@ -826,19 +826,10 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects dcode and SDK versions into `metadata["versions"]` so LangSmith traces
-    can be correlated with specific releases.
-
-    Why dcode sets *both* versions:
-
-    * `create_deep_agent` bakes `versions: {"deepagents": "X.Y.Z"}` into the
-        compiled graph via `with_config`. At stream time, LangGraph merges
-        the graph config with the runtime config passed here. Because the
-        metadata merge is shallow (effectively `{**graph_meta, **runtime_meta}`
-        for top-level keys), both configs containing a `versions` key means
-        the runtime dict **replaces** the graph dict entirely — the SDK
-        version would be lost.
-    * Including the SDK version here ensures it survives the merge.
+    Injects the dcode version into `metadata["versions"]` so LangSmith traces
+    can be correlated with specific releases. `create_deep_agent` supplies the
+    SDK version through the compiled graph config, and LangChain merges nested
+    metadata dictionaries so both versions survive at stream time.
 
     Includes `ls_integration` metadata so LangSmith traces originating from
     the app are distinguishable from bare SDK usage.
@@ -852,8 +843,6 @@ def build_stream_config(
     Returns:
         Config dict with `configurable` and `metadata` keys.
     """
-    import contextlib
-    import importlib.metadata as importlib_metadata
     from datetime import UTC, datetime
 
     try:
@@ -862,13 +851,8 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    # Include SDK version alongside dcode version — see docstring for why.
-    versions: dict[str, str] = {"deepagents-code": __version__}
-    with contextlib.suppress(importlib_metadata.PackageNotFoundError):
-        versions["deepagents"] = importlib_metadata.version("deepagents")
-
     metadata: dict[str, Any] = {
-        "versions": versions,
+        "versions": {"deepagents-code": __version__},
         "ls_integration": "deepagents-code",
     }
     from deepagents_code._env_vars import USER_ID

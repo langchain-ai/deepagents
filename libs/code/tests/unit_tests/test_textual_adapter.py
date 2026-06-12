@@ -611,29 +611,6 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-ver", assistant_id=None)
         assert config["metadata"]["versions"]["deepagents-code"] == __version__
 
-    def test_versions_contains_sdk_version_when_installed(self) -> None:
-        """SDK version should be in versions when deepagents is installed."""
-        with patch(
-            "importlib.metadata.version",
-            return_value="0.5.0",
-        ):
-            config = build_stream_config("t-sdk", assistant_id=None)
-        assert config["metadata"]["versions"]["deepagents"] == "0.5.0"
-
-    def test_versions_omits_sdk_when_not_installed(self) -> None:
-        """SDK version key should be absent when deepagents is not installed."""
-        from importlib.metadata import PackageNotFoundError
-
-        with patch(
-            "importlib.metadata.version",
-            side_effect=PackageNotFoundError("deepagents"),
-        ):
-            config = build_stream_config("t-nosdk", assistant_id=None)
-        assert "deepagents" not in config["metadata"]["versions"]
-        from deepagents_code._version import __version__
-
-        assert config["metadata"]["versions"]["deepagents-code"] == __version__
-
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
         with patch.dict("os.environ", {"DEEPAGENTS_CODE_USER_ID": "mason"}):

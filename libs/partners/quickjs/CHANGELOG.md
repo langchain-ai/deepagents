@@ -4,20 +4,18 @@
 
 ## [0.2.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.4...langchain-quickjs==0.2.0) (2026-06-12)
 
-
 ### ⚠ BREAKING CHANGES
 
-* **quickjs:** add default `subagent` bridge ([#3850](https://github.com/langchain-ai/deepagents/issues/3850))
-* **quickjs:** remove `skills_backend` ([#3843](https://github.com/langchain-ai/deepagents/issues/3843))
+* Add default `subagent` bridge ([#3850](https://github.com/langchain-ai/deepagents/issues/3850))
+* Remove `skills_backend` ([#3843](https://github.com/langchain-ai/deepagents/issues/3843))
 
 ### Features
 
-* **quickjs:** add default `subagent` bridge ([#3850](https://github.com/langchain-ai/deepagents/issues/3850)) ([85fd7c2](https://github.com/langchain-ai/deepagents/commit/85fd7c283da6744e403a01861e17e99e13e0f481))
-
+* Add default `subagent` bridge ([#3850](https://github.com/langchain-ai/deepagents/issues/3850)) ([85fd7c2](https://github.com/langchain-ai/deepagents/commit/85fd7c283da6744e403a01861e17e99e13e0f481))
 
 ### Bug Fixes
 
-* **quickjs:** remove `skills_backend` ([#3843](https://github.com/langchain-ai/deepagents/issues/3843)) ([1159e50](https://github.com/langchain-ai/deepagents/commit/1159e504abaeec4f81d5e777ecde6a6cee641edb))
+* Remove `skills_backend` ([#3843](https://github.com/langchain-ai/deepagents/issues/3843)) ([1159e50](https://github.com/langchain-ai/deepagents/commit/1159e504abaeec4f81d5e777ecde6a6cee641edb))
 
 ## [0.1.4](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.3...langchain-quickjs==0.1.4) (2026-06-03)
 

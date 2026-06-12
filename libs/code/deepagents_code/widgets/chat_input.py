@@ -101,6 +101,23 @@ generous (150 ms) because the terminal emits both characters nearly
 simultaneously; a human deliberately typing `\\` then pressing Enter would
 have a much larger gap."""
 
+_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS = 0.3
+"""Window after a terminal focus regain during which a click only refocuses.
+
+When the terminal window is unfocused and the user clicks back in, we rely on
+the OS delivering a `FocusIn` (Textual `AppFocus`) before the mouse report —
+the same FocusIn support `on_app_focus` documents. Terminals without it never
+arm suppression, so clicks just behave normally (the cursor moves). A
+mouse-down landing within this window after the focus regain is treated as
+focus-only so the cursor stays put instead of jumping to the click location.
+
+The window trades off two failure modes: too small and a genuine refocus click
+leaks through and moves the cursor (the bug this guards against); too large and
+an intentional click made shortly after refocusing is wrongly suppressed. 0.3s
+comfortably covers the FocusIn-to-mouse-report latency while staying below a
+deliberate click-pause-click interaction.
+"""
+
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
@@ -453,6 +470,11 @@ class ChatTextArea(TextArea):
         self._paste_burst_window_until: float | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+        # Tracks terminal focus so a click that re-focuses the window only
+        # restores focus instead of also moving the cursor. See
+        # `_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS`.
+        self._app_blurred = False
+        self._refocus_time: float | None = None
 
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
@@ -613,6 +635,52 @@ class ChatTextArea(TextArea):
         self._backslash_pending_time = None
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
+
+    def _notify_app_blur(self) -> None:
+        """Record that the terminal window lost OS focus."""
+        self._app_blurred = True
+
+    def _notify_app_focus(self) -> None:
+        """Record that the terminal window regained OS focus via a focus event.
+
+        Stamps the regain time so the click that re-focused the window (which
+        arrives just after the focus event) can be treated as focus-only.
+        """
+        if self._app_blurred:
+            self._refocus_time = time.monotonic()
+            self._app_blurred = False
+
+    def _consume_refocus_click(self) -> bool:
+        """Return whether the current mouse-down only re-focuses the window.
+
+        `_refocus_time` is only cleared here, so a focus regain that is never
+        followed by a text-area click leaves the stamp set. The gap check
+        bounds that staleness: an old stamp exceeds the window and returns
+        `False` (clearing it), so a much later click is never suppressed.
+        """
+        refocus_time = self._refocus_time
+        if refocus_time is None:
+            return False
+        self._refocus_time = None
+        gap = time.monotonic() - refocus_time
+        return gap <= _REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS
+
+    async def _on_mouse_down(self, event: events.MouseDown) -> None:
+        """Position the cursor on click, except when the click re-focuses the app.
+
+        A mouse-down landing within a short window after a terminal focus
+        regain only restores focus and leaves the cursor where it was.
+
+        Deliberately shadows Textual's private `TextArea._on_mouse_down` to gate
+        cursor positioning; verified against Textual 8.2.7. If the base handler
+        changes, re-verify that early-returning before `super()` still leaves no
+        selection/capture state set.
+        """
+        if self._consume_refocus_click():
+            event.stop()
+            event.prevent_default()
+            return
+        await super()._on_mouse_down(event)
 
     def set_completion_active(self, *, active: bool) -> None:
         """Set whether completion suggestions are visible."""
@@ -2270,6 +2338,16 @@ class ChatInput(Vertical):
         """
         if self._text_area is not None:
             self._text_area.cursor_blink = blink
+
+    def _notify_app_blur(self) -> None:
+        """Tell the text area the terminal window lost OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_blur()
+
+    def _notify_app_focus(self) -> None:
+        """Tell the text area the terminal window regained OS focus."""
+        if self._text_area is not None:
+            self._text_area._notify_app_focus()
 
     def exit_mode(self) -> bool:
         """Exit the current input mode (command/shell) back to normal.

@@ -39,6 +39,10 @@ from langchain_quickjs._format import (
     stringify,
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
+from langchain_quickjs._subagent import (
+    call_subagent_task_tool,
+    find_subagent_task_tool,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +51,9 @@ if TYPE_CHECKING:
     from langgraph.prebuilt import ToolRuntime
 
 logger = logging.getLogger(__name__)
+
+_MAX_TASK_CALLS_PER_THREAD = 32
+_TASK_FUNCTION_NAME = "task"
 
 
 def _clear_exception_references(exc: BaseException) -> None:
@@ -98,6 +105,15 @@ class _PTCCallBudgetExceededError(RuntimeError):
             f"(limit={self.limit}, attempted={self.attempted}, "
             f"function={self.function_name})"
         )
+
+
+class _TaskBridgeError(RuntimeError):
+    """Wrap errors from the top-level `task()` host function."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.error_type = type(exc).__name__
+        self.error_message = str(exc)
+        super().__init__(self.error_message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +359,7 @@ class _ThreadREPL:
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
+        subagents_enabled: bool = True,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -354,6 +371,7 @@ class _ThreadREPL:
         self._capture_console = capture_console
         # Static budget config; mutable counters live in ``_ptc_state``.
         self._max_ptc_calls = max_ptc_calls
+        self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. ``_registered_tools`` tracks which camel-case names
@@ -376,6 +394,7 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
+        self._task_calls: asyncio.Semaphore | None = None
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -385,6 +404,9 @@ class _ThreadREPL:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
+        if self._subagents_enabled:
+            self._task_calls = asyncio.Semaphore(_MAX_TASK_CALLS_PER_THREAD)
+            self._register_task_bridge()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -474,6 +496,101 @@ class _ThreadREPL:
         ctx.eval(_render_tools_namespace_assignment(bridges))
         self._active_tool_names = target_names
         self._tools_installed = True
+
+    async def _ainvoke_task_on_outer_loop(
+        self,
+        payload: dict[str, Any],
+        *,
+        state: _PTCState,
+    ) -> Any:
+        """Validate JS `task()` input and invoke the runner on the right loop.
+
+        The QuickJS host call runs on the REPL worker loop, but subagent runnables
+        should execute on the parent LangGraph loop when one exists so callbacks,
+        context, and async loop affinity match normal tool execution.
+        """
+        description = payload.get("description")
+        if not isinstance(description, str) or not description:
+            msg = "task() requires non-empty string field `description`"
+            raise ValueError(msg)
+
+        subagent_type = payload.get("subagent_type")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            msg = "task() requires non-empty string field `subagent_type`"
+            raise ValueError(msg)
+
+        response_schema = payload.get("response_schema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = "task() field `response_schema` must be an object when provided"
+            raise ValueError(msg)
+
+        async def _call() -> Any:
+            runtime = state.outer_runtime
+            if runtime is None:
+                msg = "task() requires an active ToolRuntime"
+                raise RuntimeError(msg)
+            task_tool = find_subagent_task_tool(getattr(runtime, "tools", ()) or ())
+            if task_tool is None:
+                msg = "task tool not configured for this eval"
+                raise RuntimeError(msg)
+            return await call_subagent_task_tool(
+                task_tool,
+                description=description,
+                subagent_type=subagent_type,
+                response_schema=response_schema,
+                runtime=runtime,
+            )
+
+        outer_loop = state.outer_loop
+        if outer_loop is None:
+            return await _call()
+        current_loop = asyncio.get_running_loop()
+        if current_loop is outer_loop:
+            return await _call()
+        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
+    def _register_task_bridge(self) -> None:
+        """Install the async host function backing top-level ``task()``."""
+        ctx = self._require_ctx()
+
+        async def _bridge(raw_input: Any = None) -> Any:
+            state = self._ptc_state
+            if state is None:
+                msg = "task bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            task_calls = self._task_calls
+            if task_calls is None:
+                msg = "task call limiter not initialized"
+                raise RuntimeError(msg)
+
+            payload = _normalize_tool_input(raw_input)
+            async with task_calls:
+                try:
+                    result = await self._ainvoke_task_on_outer_loop(
+                        payload,
+                        state=state,
+                    )
+                except Exception as e:
+                    # Subagent dispatches are part of the eval language, not
+                    # PTC calls. Surface their validation/runtime failures as
+                    # eval errors without changing normal `tools.*` semantics.
+                    raise _TaskBridgeError(e) from e
+            return coerce_tool_output_for_ptc(result)
+
+        ctx.register(_TASK_FUNCTION_NAME, _bridge, is_async=True)
+        ctx.eval(
+            "Object.freeze(globalThis.task);"
+            "Object.defineProperty(globalThis, 'task', {"
+            " value: globalThis.task,"
+            " writable: false,"
+            " configurable: false,"
+            "}); undefined"
+        )
 
     async def _ainvoke_tool_on_outer_loop(
         self,
@@ -719,6 +836,10 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
             _clear_exception_references(e)
+        except _TaskBridgeError as e:
+            outcome.error_type = e.error_type
+            outcome.error_message = e.error_message
+            _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
@@ -769,6 +890,7 @@ class _Registry:
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
+    subagents_enabled: bool = True
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -816,6 +938,7 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            subagents_enabled=self.subagents_enabled,
         )
 
         with self._lock:
@@ -838,6 +961,7 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            subagents_enabled=self.subagents_enabled,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

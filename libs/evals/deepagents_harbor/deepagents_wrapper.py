@@ -92,7 +92,7 @@ class DeepAgentsWrapper(BaseAgent):
         self,
         logs_dir: Path,
         model_name: str,
-        temperature: float = 0.0,
+        temperature: float | None = None,
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
@@ -105,7 +105,7 @@ class DeepAgentsWrapper(BaseAgent):
         Args:
             logs_dir: Directory for storing logs.
             model_name: Name of the LLM model to use.
-            temperature: Temperature setting for the model.
+            temperature: Optional sampling temperature; omitted when None (the default).
             verbose: Enable verbose output.
             use_cli_agent: If `True`, use `create_cli_agent` from
                 `deepagents-code` (default). If `False`, use
@@ -154,7 +154,9 @@ class DeepAgentsWrapper(BaseAgent):
                 "only": providers,
                 "allow_fallbacks": openrouter_allow_fallbacks,
             }
-        self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
+        if temperature is not None:
+            model_kwargs["temperature"] = temperature
+        self._model = init_chat_model(model_name, **model_kwargs)
 
         self._temperature = temperature
         self._verbose = verbose

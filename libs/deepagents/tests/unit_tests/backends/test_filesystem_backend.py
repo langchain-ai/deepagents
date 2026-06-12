@@ -1279,8 +1279,9 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "f.txt").write_text("a.b\naxb\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: None)
-        result = be.grep("a.b", path="/")
-        texts = [m["text"] for m in result.matches]
+        matches = be.grep("a.b", path="/").matches
+        assert matches is not None
+        texts = [m["text"] for m in matches]
         assert "a.b" in texts
         assert "axb" not in texts
 

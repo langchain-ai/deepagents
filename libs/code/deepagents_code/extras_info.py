@@ -442,6 +442,26 @@ def get_core_dependency_versions() -> list[tuple[str, str | None]]:
     return versions
 
 
+def format_core_dependencies_plain() -> str:
+    """Render core ecosystem dependency versions as column-aligned plain text.
+
+    Suitable for stdout in non-interactive contexts (e.g. the `--version`
+    CLI flag) where a markdown renderer is unavailable.
+
+    Returns:
+        Multi-line string with a heading and one `package  version` row per
+            core dependency. Missing packages are reported as `not installed`.
+    """
+    rows = [
+        (name, version or "not installed")
+        for name, version in get_core_dependency_versions()
+    ]
+    package_width = max(len(name) for name, _ in rows)
+    lines = ["Core dependencies:"]
+    lines.extend(f"  {name.ljust(package_width)}  {version}" for name, version in rows)
+    return "\n".join(lines)
+
+
 def format_core_dependencies() -> str:
     """Render core ecosystem dependency versions as a markdown fragment.
 

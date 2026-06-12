@@ -319,6 +319,43 @@ async def test_version_slash_command_omits_editable_info_when_not_editable() -> 
         assert not any("### Core dependencies" in s for s in md_sources)
 
 
+def test_build_version_text_includes_editable_core_deps() -> None:
+    """Verify the `--version` text reports editable mode and core deps."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.config._get_editable_install_path",
+            return_value="~/src/deepagents/libs/code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Editable install: ~/src/deepagents/libs/code" in text
+    assert "Core dependencies:" in text
+    assert "langchain-core" in text
+    assert "langsmith" in text
+
+
+def test_build_version_text_omits_core_deps_when_not_editable() -> None:
+    """Verify the `--version` text hides editable info for normal installs."""
+    from deepagents_code.main import build_version_text
+
+    with patch(
+        "deepagents_code.config._is_editable_install",
+        return_value=False,
+    ):
+        text = build_version_text()
+
+    assert "Editable install" not in text
+    assert "Core dependencies:" not in text
+
+
 def test_format_core_dependencies_lists_known_packages() -> None:
     """Verify `format_core_dependencies` renders a row for each core package."""
     from deepagents_code.extras_info import (

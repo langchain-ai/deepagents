@@ -40,6 +40,74 @@ _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
 
 
+def build_version_text() -> str:
+    """Build the plain-text output for the `--version` CLI flag.
+
+    Includes the CLI and SDK versions and any installed optional
+    dependencies. For editable installs it also reports the source path and
+    the resolved versions of the core LangChain-ecosystem dependencies,
+    mirroring the `/version` slash command.
+
+    Returns:
+        Multi-line version string suitable for stdout.
+    """
+    from importlib.metadata import (
+        PackageNotFoundError,
+        version as _pkg_version,
+    )
+
+    try:
+        sdk_version = _pkg_version("deepagents")
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        sdk_version = "unknown"
+    except Exception:  # Best-effort SDK version lookup
+        logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        sdk_version = "unknown"
+
+    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+
+    editable = False
+    try:
+        from deepagents_code.config import (
+            _get_editable_install_path,
+            _is_editable_install,
+        )
+
+        editable = _is_editable_install()
+        if editable:
+            path = _get_editable_install_path()
+            text += f"\nEditable install: {path}" if path else "\nEditable install"
+    except Exception:
+        logger.warning("Unexpected error detecting editable install", exc_info=True)
+
+    try:
+        from deepagents_code.extras_info import (
+            format_extras_status_plain,
+            get_extras_status,
+        )
+
+        extras_text = format_extras_status_plain(get_extras_status())
+    except Exception:
+        logger.warning("Unexpected error collecting optional deps", exc_info=True)
+        extras_text = ""
+    if extras_text:
+        text = f"{text}\n\n{extras_text}"
+
+    if editable:
+        try:
+            from deepagents_code.extras_info import format_core_dependencies_plain
+
+            core_text = format_core_dependencies_plain()
+        except Exception:
+            logger.warning("Failed to collect core dependency versions", exc_info=True)
+            core_text = ""
+        if core_text:
+            text = f"{text}\n\n{core_text}"
+
+    return text
+
+
 def _restart_current_process() -> NoReturn:
     """Replace the current process with a fresh `deepagents_code` invocation.
 
@@ -1197,19 +1265,6 @@ def parse_args() -> argparse.Namespace:
         "'safe,task'). Default is no PTC (pure REPL).",
     )
 
-    try:
-        from importlib.metadata import (
-            PackageNotFoundError,
-            version as _pkg_version,
-        )
-
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
     parser.add_argument(
         "--update",
         action="store_true",
@@ -1244,22 +1299,12 @@ def parse_args() -> argparse.Namespace:
         help="Run as an ACP server over stdio instead of launching the Textual UI",
     )
 
-    version_text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
     # `parse_args` runs on every invocation; keep the import-heavy metadata
     # scan off the hot path unless the user explicitly asked for --version.
     if any(arg in {"-v", "--version"} for arg in sys.argv[1:]):
-        try:
-            from deepagents_code.extras_info import (
-                format_extras_status_plain,
-                get_extras_status,
-            )
-
-            extras_text = format_extras_status_plain(get_extras_status())
-        except Exception:
-            logger.warning("Unexpected error collecting optional deps", exc_info=True)
-            extras_text = ""
-        if extras_text:
-            version_text = f"{version_text}\n\n{extras_text}"
+        version_text = build_version_text()
+    else:
+        version_text = f"deepagents-code {__version__}"
     parser.add_argument(
         "-v",
         "--version",
@@ -2014,32 +2059,7 @@ def cli_main() -> None:
 
     # Fast path: print version without loading heavy dependencies
     if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
-        try:
-            from importlib.metadata import (
-                PackageNotFoundError,
-                version as _pkg_version,
-            )
-
-            sdk_version = _pkg_version("deepagents")
-        except PackageNotFoundError:
-            sdk_version = "unknown"
-        except Exception:  # Best-effort SDK version lookup
-            logger.debug("Unexpected error looking up SDK version", exc_info=True)
-            sdk_version = "unknown"
-        output = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
-        try:
-            from deepagents_code.extras_info import (
-                format_extras_status_plain,
-                get_extras_status,
-            )
-
-            extras_text = format_extras_status_plain(get_extras_status())
-        except Exception:
-            logger.warning("Unexpected error collecting optional deps", exc_info=True)
-            extras_text = ""
-        if extras_text:
-            output = f"{output}\n\n{extras_text}"
-        print(output)  # noqa: T201  # Version output
+        print(build_version_text())  # noqa: T201  # Version output
         sys.exit(0)
 
     # ACP mode does not require Textual, so skip UI dependency checks when

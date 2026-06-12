@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import signal
 import sys
@@ -1171,6 +1172,45 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     return resolved_env_var_name(key_env)
 
 
+_ANTHROPIC_THINKING_FIELD_RE = re.compile(
+    r"messages\.\d+\.content\.\d+\.thinking\.thinking"
+)
+"""Regex for the field path in an Anthropic 400 `thinking`-block error."""
+
+
+def _anthropic_thinking_block_error_body(text: str, exc: BaseException) -> str:
+    """Enrich an Anthropic 400 `thinking`-block error so it's actionable.
+
+    Surfaces the field path from the raw 400 and flags the failure as a
+    harness serialization bug rather than a user-input issue, so the
+    operator does not retry the same prompt blindly.
+
+    Args:
+        text: The already-formatted error string.
+        exc: The exception caught from the agent stream.
+
+    Returns:
+        An enriched error string that includes the offending field path and
+            an explanation that this is a harness serialization bug.
+    """
+    raw = str(exc)
+    field_match = _ANTHROPIC_THINKING_FIELD_RE.search(raw)
+    field_path = (
+        field_match.group(0)
+        if field_match
+        else "messages.N.content.M.thinking.thinking"
+    )
+    return (
+        f"{text}\n\n"
+        "Anthropic rejected the request because a `thinking` content block in "
+        f"the conversation history did not match the required nested schema "
+        f"(field path: {field_path}). This is a harness serialization issue, "
+        "not a user-input issue — retrying the same prompt will fail again. "
+        "The conversation will recover once the offending message is "
+        "normalized; restart the session if the error persists."
+    )
+
+
 def _build_agent_error_body(
     text: str, exc: BaseException, *, key_env: str | None = None
 ) -> str | Content:
@@ -1182,8 +1222,10 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    For Anthropic `BadRequestError` whose payload mentions `thinking`, returns
+    an enriched message identifying the harness `thinking`-block serialization
+    bug so the operator does not retry blindly. Returns `text` unchanged for
+    any other error.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
@@ -1197,7 +1239,10 @@ def _build_agent_error_body(
     """
     from deepagents_code.remote_client import agent_error_type
 
-    if agent_error_type(exc) != "PermissionDeniedError":
+    err_type = agent_error_type(exc)
+    if err_type == "BadRequestError" and "thinking" in str(exc):
+        return _anthropic_thinking_block_error_body(text, exc)
+    if err_type != "PermissionDeniedError":
         return text
     if key_env:
         detail = (

@@ -46,7 +46,10 @@ from deepagents.middleware.filesystem import (
     FilesystemState,
     supports_execution,
 )
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.patch_tool_calls import (
+    PatchToolCallsMiddleware,
+    _normalize_thinking_blocks,
+)
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
 
 
@@ -2139,6 +2142,42 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[6].tool_call_id == "456"
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
+
+
+class TestNormalizeThinkingBlocks:
+    def test_rewrites_bare_text_to_nested_thinking(self) -> None:
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "thinking", "text": "step one"},
+                    {"type": "text", "text": "answer"},
+                ],
+                id="1",
+            ),
+        ]
+        patched, changed = _normalize_thinking_blocks(messages)
+        assert changed is True
+        assert patched[0].content == [
+            {"type": "thinking", "thinking": "step one"},
+            {"type": "text", "text": "answer"},
+        ]
+
+    def test_preserves_already_nested_thinking(self) -> None:
+        messages = [
+            AIMessage(
+                content=[{"type": "thinking", "thinking": "ok", "signature": "sig"}],
+                id="1",
+            ),
+        ]
+        patched, changed = _normalize_thinking_blocks(messages)
+        assert changed is False
+        assert patched[0].content == [{"type": "thinking", "thinking": "ok", "signature": "sig"}]
+
+    def test_ignores_string_content(self) -> None:
+        messages = [HumanMessage(content="hello", id="1")]
+        patched, changed = _normalize_thinking_blocks(messages)
+        assert changed is False
+        assert patched[0].content == "hello"
 
 
 class TestTruncation:

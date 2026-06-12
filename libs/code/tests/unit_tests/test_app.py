@@ -3745,6 +3745,36 @@ class TestBuildAgentErrorBody:
         assert _GATEWAY_DOCS_URL in body
         assert "LANGCHAIN_DISABLE_GATEWAY" not in body
 
+    def test_anthropic_thinking_bad_request_is_enriched(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException(
+            {
+                "error": "BadRequestError",
+                "message": (
+                    "Error code: 400 - messages.3.content.1.thinking.thinking: "
+                    "Field required"
+                ),
+            }
+        )
+        body = str(_build_agent_error_body("Agent error: ...", exc))
+        assert "messages.3.content.1.thinking.thinking" in body
+        assert "harness serialization" in body
+        assert "retrying" in body.lower()
+
+    def test_other_bad_request_unchanged(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException(
+            {"error": "BadRequestError", "message": "Some other 400 error"}
+        )
+        body = _build_agent_error_body("Agent error: boom", exc)
+        assert body == "Agent error: boom"
+
 
 class TestLangsmithGatewayKeyMismatch:
     """Cover gateway/key mismatch detection without inspecting the secret."""

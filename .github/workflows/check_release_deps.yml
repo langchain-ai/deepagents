@@ -1,9 +1,10 @@
 # Resolve release PR runtime dependencies against real PyPI.
 #
-# Coordinated release-please bumps can update multiple packages in one PR. The
-# bumped wheels are not on PyPI until merge, so the helper strips only the
-# dependency pins satisfied by packages bumped in this same PR, then resolves the
-# rest with `uv pip compile --no-sources --universal --prerelease allow --all-extras`.
+# Local development installs sibling packages as editable path dependencies via
+# `[tool.uv.sources]`, which hides whether a package's published dependencies
+# actually resolve. The helper strips those local sources and resolves each
+# changed release manifest against the real index with
+# `uv pip compile --no-sources --universal --prerelease allow --all-extras`.
 
 name: "📦 Check Release Dependencies"
 

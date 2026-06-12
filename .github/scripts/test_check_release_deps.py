@@ -6,12 +6,9 @@ import tomllib
 
 import pytest
 from check_release_deps import (
-    FilteredManifest,
-    PackageBump,
     _toml_value,
-    build_filtered_manifest,
+    build_resolver_manifest,
     check_release_dependencies,
-    detect_package_bumps,
     is_transient_resolver_error,
     load_release_packages,
     main,
@@ -19,56 +16,7 @@ from check_release_deps import (
 )
 
 
-def test_detect_package_bumps_skips_new_manifest(monkeypatch, tmp_path) -> None:
-    manifest = tmp_path / "pyproject.toml"
-    manifest.write_text(
-        """
-[project]
-name = "deepagents"
-version = "0.7.0"
-dependencies = []
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
-    monkeypatch.setattr("check_release_deps._git_show", lambda _base, _path: None)
-
-    assert detect_package_bumps(["pyproject.toml"], "base-sha") == {}
-
-
-def test_detect_package_bumps_returns_changed_static_versions(monkeypatch, tmp_path) -> None:
-    manifest = tmp_path / "pyproject.toml"
-    manifest.write_text(
-        """
-[project]
-name = "deepagents"
-version = "0.7.0"
-dependencies = []
-""".strip(),
-        encoding="utf-8",
-    )
-
-    base_manifest = """
-[project]
-name = "deepagents"
-version = "0.6.8"
-dependencies = []
-""".strip()
-
-    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
-    monkeypatch.setattr("check_release_deps._git_show", lambda _base, _path: base_manifest)
-
-    bumps = detect_package_bumps(["pyproject.toml"], "base-sha")
-
-    assert bumps["deepagents"] == PackageBump(
-        name="deepagents",
-        version="0.7.0",
-        path="pyproject.toml",
-    )
-
-
-def test_filtered_manifest_removes_only_satisfied_same_pr_pins_and_preserves_uv_keys() -> None:
+def test_build_resolver_manifest_drops_sources_and_preserves_uv_keys() -> None:
     data = {
         "project": {
             "name": "deepagents-code",
@@ -93,37 +41,33 @@ def test_filtered_manifest_removes_only_satisfied_same_pr_pins_and_preserves_uv_
             }
         },
     }
-    bumped = {
-        "deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml"),
-        "langchain-daytona": PackageBump(
-            "langchain-daytona",
-            "0.0.8",
-            "libs/partners/daytona/pyproject.toml",
-        ),
-    }
 
-    filtered = build_filtered_manifest(data, bumped)
-    parsed = tomllib.loads(filtered.content)
+    parsed = tomllib.loads(build_resolver_manifest(data))
 
     assert parsed["project"]["dependencies"] == [
+        "deepagents==0.7.0",
         "langchain>=1.0,<2.0",
         "deepagents-acp>=0.0.8,<0.0.9",
     ]
-    assert parsed["project"]["optional-dependencies"]["sandbox"] == []
+    assert parsed["project"]["optional-dependencies"]["sandbox"] == [
+        "langchain-daytona>=0.0.8,<0.1.0"
+    ]
     assert parsed["project"]["optional-dependencies"]["quickjs"] == [
         "langchain-quickjs>=0.1.4,<0.2.0"
     ]
+    assert parsed["project"]["requires-python"] == ">=3.11,<4.0"
     assert parsed["tool"]["uv"]["prerelease"] == "allow"
     assert parsed["tool"]["uv"]["constraint-dependencies"] == ["example<2"]
     assert parsed["tool"]["uv"]["override-dependencies"] == ["other==1.0"]
     assert "sources" not in parsed["tool"]["uv"]
-    assert filtered.skipped == (
-        "deepagents==0.7.0",
-        "sandbox: langchain-daytona>=0.0.8,<0.1.0",
-    )
 
 
-def test_check_release_dependencies_writes_each_filtered_manifest_as_pyproject(
+def test_build_resolver_manifest_requires_project_table() -> None:
+    with pytest.raises(ValueError, match="no \\[project\\] table"):
+        build_resolver_manifest({"project": "not-a-table"})
+
+
+def test_check_release_dependencies_writes_each_manifest_as_pyproject(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -156,17 +100,29 @@ dependencies = []
         "check_release_deps.load_release_packages",
         lambda: {"libs/code": "deepagents-code", "libs/partners/daytona": "langchain-daytona"},
     )
-    monkeypatch.setattr("check_release_deps.changed_manifests", lambda _base, _head, _packages: manifests)
-    monkeypatch.setattr("check_release_deps.detect_package_bumps", lambda _manifests, _base: {})
     monkeypatch.setattr(
-        "check_release_deps.build_filtered_manifest",
-        lambda _data, _bumped: FilteredManifest(content=content, skipped=()),
+        "check_release_deps.changed_manifests", lambda _base, _head, _packages: manifests
     )
+    monkeypatch.setattr("check_release_deps.build_resolver_manifest", lambda _data: content)
     monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
 
     assert check_release_dependencies("base-sha", "head-sha") == 0
     assert len(resolver_paths) == len(manifests)
     assert len({path.parent for path in resolver_paths}) == len(manifests)
+
+
+def test_check_release_dependencies_noop_when_no_manifests_changed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages", lambda: {"libs/code": "deepagents-code"}
+    )
+    monkeypatch.setattr("check_release_deps.changed_manifests", lambda _base, _head, _packages: [])
+
+    def run_resolver(_manifest, _log) -> bool:
+        pytest.fail("resolver should not run when nothing changed")
+
+    monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
+
+    assert check_release_dependencies("base-sha", "head-sha") == 0
 
 
 def test_run_resolver_allows_prereleases_for_all_extras(monkeypatch, tmp_path) -> None:
@@ -193,113 +149,11 @@ dependencies = []
 
     command = commands[0]
     assert command[:3] == ["uv", "pip", "compile"]
+    assert "--no-sources" in command
     assert "--all-extras" in command
     assert command[command.index("--prerelease") + 1] == "allow"
     assert command[-1] == str(manifest)
     assert log.read_text(encoding="utf-8") == "resolved\n"
-
-
-def test_filtered_manifest_keeps_pin_not_satisfied_by_bump() -> None:
-    """A pin on a bumped package that the bump does NOT satisfy must be kept.
-
-    This is the core safety guarantee: stripping only happens when the same-PR
-    bump actually satisfies the specifier, so a stale pin still reaches the
-    resolver and fails.
-    """
-    data = {
-        "project": {
-            "name": "deepagents-code",
-            "version": "0.2.0",
-            "dependencies": ["deepagents==0.6.8"],
-        },
-    }
-    bumped = {"deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml")}
-
-    filtered = build_filtered_manifest(data, bumped)
-    parsed = tomllib.loads(filtered.content)
-
-    assert parsed["project"]["dependencies"] == ["deepagents==0.6.8"]
-    assert filtered.skipped == ()
-
-
-def test_filtered_manifest_keeps_unparseable_requirement() -> None:
-    """An unparseable dependency string is left in place, never silently dropped."""
-    data = {
-        "project": {
-            "name": "deepagents-code",
-            "version": "0.2.0",
-            "dependencies": ["deepagents @@@ broken"],
-        },
-    }
-    bumped = {"deepagents": PackageBump("deepagents", "0.7.0", "libs/deepagents/pyproject.toml")}
-
-    filtered = build_filtered_manifest(data, bumped)
-    parsed = tomllib.loads(filtered.content)
-
-    assert parsed["project"]["dependencies"] == ["deepagents @@@ broken"]
-    assert filtered.skipped == ()
-
-
-def test_detect_package_bumps_skips_unchanged_version(monkeypatch, tmp_path) -> None:
-    manifest = tmp_path / "pyproject.toml"
-    body = """
-[project]
-name = "deepagents"
-version = "0.7.0"
-dependencies = []
-""".strip()
-    manifest.write_text(body, encoding="utf-8")
-
-    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
-    monkeypatch.setattr("check_release_deps._git_show", lambda _base, _path: body)
-
-    assert detect_package_bumps(["pyproject.toml"], "base-sha") == {}
-
-
-def test_detect_package_bumps_skips_renamed_package(monkeypatch, tmp_path) -> None:
-    manifest = tmp_path / "pyproject.toml"
-    manifest.write_text(
-        """
-[project]
-name = "deepagents-code"
-version = "0.7.0"
-dependencies = []
-""".strip(),
-        encoding="utf-8",
-    )
-    base_manifest = """
-[project]
-name = "deepagents"
-version = "0.6.8"
-dependencies = []
-""".strip()
-
-    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
-    monkeypatch.setattr("check_release_deps._git_show", lambda _base, _path: base_manifest)
-
-    assert detect_package_bumps(["pyproject.toml"], "base-sha") == {}
-
-
-def test_detect_package_bumps_skips_dynamic_version(monkeypatch, tmp_path) -> None:
-    manifest = tmp_path / "pyproject.toml"
-    manifest.write_text(
-        """
-[project]
-name = "deepagents"
-dynamic = ["version"]
-dependencies = []
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
-    # _git_show should never be consulted once the dynamic head manifest is skipped.
-    monkeypatch.setattr(
-        "check_release_deps._git_show",
-        lambda _base, _path: pytest.fail("base manifest should not be read"),
-    )
-
-    assert detect_package_bumps(["pyproject.toml"], "base-sha") == {}
 
 
 def test_load_release_packages_resolves_name_then_component_then_path(tmp_path) -> None:

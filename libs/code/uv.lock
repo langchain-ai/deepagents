@@ -989,7 +989,7 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.2.5,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
     { name = "langsmith", specifier = ">=0.8.11" },
-    { name = "wcmatch" },
+    { name = "wcmatch", specifier = ">=10.1" },
 ]
 provides-extras = ["quickjs"]
 

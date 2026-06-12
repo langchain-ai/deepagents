@@ -4,6 +4,7 @@ import subprocess
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Self
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -906,7 +907,11 @@ def test_grep_python_fallback_survives_mid_iteration_failure(tmp_path: Path, mon
     assert result.matches is not None
     assert result.error is not None
     assert "aborted" in result.error
-    assert str(root) in result.error if not virtual_mode else True
+    if virtual_mode:
+        # The real `root_dir` must not leak into the agent-visible error.
+        assert str(root) not in result.error
+    else:
+        assert str(root) in result.error
 
     matched_paths = {m["path"] for m in result.matches}
     if virtual_mode:
@@ -934,6 +939,54 @@ def test_grep_python_fallback_survives_runtime_error_mid_walk(tmp_path: Path, mo
     assert result.matches
 
 
+def test_grep_virtual_mode_sanitizes_runtime_error_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Virtual grep fallback must not expose real paths from `RuntimeError` text."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, RuntimeError(f"symlink loop under {root}"))
+
+    result = be.grep("hello", path="/")
+
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert "RuntimeError" in result.error
+    assert str(root) not in result.error
+    assert "symlink loop under" not in result.error
+    assert result.matches
+
+
+def test_grep_virtual_mode_sanitizes_oserror_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Virtual grep fallback strips the real path embedded in a mid-walk `OSError`.
+
+    A realistic `rglob` failure (an entry unlinked mid-walk) raises an `OSError`
+    whose `str()` embeds the absolute filename. The agent-visible error must
+    carry only the path-free `strerror` reason, never the real path.
+    """
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    gone = str(root / "gone.txt")
+    _install_flaky_rglob(monkeypatch, FileNotFoundError(2, "No such file or directory", gone))
+
+    result = be.grep("hello", path="/")
+
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert "No such file or directory" in result.error  # path-free reason survives
+    assert str(root) not in result.error  # real root must not leak
+    assert "gone.txt" not in result.error  # embedded filename must not leak
+    assert result.matches
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 
@@ -957,6 +1010,38 @@ class TestToVirtualPath:
         be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
         with pytest.raises(ValueError, match="is not in the subpath of"):
             be._to_virtual_path(tmp_path / "outside.txt")
+
+
+class TestDisplayPath:
+    """Tests for FilesystemBackend._display_path."""
+
+    def test_non_virtual_returns_real_path(self, tmp_path: Path) -> None:
+        """Non-virtual mode returns the real path unchanged."""
+        target = tmp_path / "src" / "file.py"
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        assert be._display_path(target) == str(target)
+
+    def test_virtual_returns_virtual_path(self, tmp_path: Path) -> None:
+        """Virtual mode converts to the virtual path."""
+        (tmp_path / "src").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        assert be._display_path(tmp_path / "src" / "file.py") == "/src/file.py"
+
+    def test_virtual_out_of_root_falls_back_to_basename(self, tmp_path: Path) -> None:
+        """A path outside the root makes `_to_virtual_path` raise; only the basename is shown."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        result = be._display_path(tmp_path / "secret" / "leak.txt")
+        assert result == "leak.txt"  # bare name only
+        assert str(tmp_path) not in result  # parent chain / real root absent
+
+    def test_virtual_root_path_falls_back_to_slash(self, tmp_path: Path) -> None:
+        """A root path (empty `.name`) falls back to `/`, not an empty string."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        be = FilesystemBackend(root_dir=str(sub), virtual_mode=True)
+        assert be._display_path(Path("/")) == "/"
 
 
 class TestWindowsPathHandling:
@@ -1003,6 +1088,49 @@ class TestWindowsPathHandling:
             assert "\\" not in info["path"], f"Backslash in deep path: {info['path']}"
 
 
+class _FailingHandle:
+    """File-handle stub that yields one line, then raises `UnicodeDecodeError`.
+
+    Simulates a file that decodes cleanly at first and fails partway through —
+    the case a real undecodable file cannot reproduce, since a real binary file
+    fails on the first read and exercises the silent-skip path instead.
+    """
+
+    def __init__(self, first_line: str = "needle before failure\n") -> None:
+        self._first_line = first_line
+        self._emitted = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> str:
+        if not self._emitted:
+            self._emitted = True
+            return self._first_line
+        encoding = "utf-8"
+        data = b"\xff"
+        reason = "invalid start byte"
+        raise UnicodeDecodeError(encoding, data, 0, 1, reason)
+
+
+def _fake_open_for(target: Path, handle: object) -> object:
+    """Build a `Path.open` replacement that returns `handle` for `target` only."""
+    original_open = Path.open
+
+    def fake_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == target:
+            return handle
+        return original_open(path, *args, **kwargs)
+
+    return fake_open
+
+
 class TestGrepPythonFallbackTimeout:
     """Tests for the wall-clock timeout on the Python grep fallback."""
 
@@ -1013,6 +1141,238 @@ class TestGrepPythonFallbackTimeout:
         _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
         assert partial_error is not None
         assert "timed out" in partial_error
+        # The real `root_dir` must not leak; the virtual root (`/.`) is shown.
+        assert str(tmp_path) not in partial_error
+        assert "Grep of '/.'" in partial_error
+
+    def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
+        """The Python fallback does literal substring matching (no regex)."""
+        (tmp_path / "code.py").write_text("def __init__(self):\n    return [a-z]\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("[a-z]", tmp_path, None)
+        assert partial_error is None
+        all_lines = [text for items in results.values() for _, text in items]
+        assert any("[a-z]" in line for line in all_lines)
+
+    def test_python_search_streams_large_file_with_per_line_timeout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The per-line deadline check interrupts a single large file mid-stream.
+
+        `time.monotonic` is stubbed to advance 1s per call. Inside
+        `_python_search` it is called once to set the deadline, once for the
+        outer per-file check, then on each 2048-line boundary (here only the
+        check at line 2048 fires before the function returns). With the deadline
+        1.5s out, the outer check passes (so the file is opened) and the first
+        in-file check at line 2048 trips. This proves the mid-file branch runs
+        rather than the outer guard short-circuiting before any read — which is
+        what a `timeout=0` test (see `test_python_search_times_out_with_zero_timeout`)
+        cannot distinguish.
+        """
+        lines = [f"line {i}" for i in range(1, 2501)]
+        lines[0] = "needle"  # line 1 — scanned before the in-file timeout
+        lines[2499] = "needle"  # line 2500 — never reached
+        (tmp_path / "big.txt").write_text("\n".join(lines) + "\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        clock = {"t": 1000.0}
+
+        def fake_monotonic() -> float:
+            t = clock["t"]
+            clock["t"] += 1.0
+            return t
+
+        monkeypatch.setattr(fs_module.time, "monotonic", fake_monotonic)
+        results, partial_error = be._python_search("needle", tmp_path, None, timeout=1.5)
+
+        assert partial_error is not None
+        assert "timed out" in partial_error
+        assert str(tmp_path) not in partial_error  # virtual mode must not leak the real root
+        assert "Grep of '/.'" in partial_error  # the virtual root is shown instead
+        collected = results.get("/big.txt", [])
+        assert (1, "needle") in collected
+        assert all(line_num != 2500 for line_num, _ in collected)
+
+    def test_python_search_does_not_match_regex_metacharacters(self, tmp_path: Path) -> None:
+        """The fallback is a literal substring search: regex metacharacters are inert.
+
+        Both patterns would match via `re.search` but must not match literally,
+        which is the load-bearing distinction now that the regex compile is gone.
+        """
+        (tmp_path / "code.py").write_text("axb\nab\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        no_dot, err_dot = be._python_search("a.b", tmp_path, None)  # regex would match "axb"
+        assert err_dot is None
+        assert no_dot == {}
+
+        no_star, err_star = be._python_search("a*b", tmp_path, None)  # regex would match "ab"
+        assert err_star is None
+        assert no_star == {}
+
+    def test_python_search_strips_carriage_returns(self, tmp_path: Path) -> None:
+        """CRLF files yield clean match text via universal-newline translation on read."""
+        (tmp_path / "crlf.txt").write_bytes(b"hit me\r\nother\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("hit", tmp_path, None)
+        assert partial_error is None
+        matches = results.get("/crlf.txt", [])
+        assert matches == [(1, "hit me")]
+
+    def test_python_search_skips_non_utf8_file(self, tmp_path: Path) -> None:
+        """A wholly-undecodable file is skipped silently while valid files still match.
+
+        The decode fails on the first byte, so no lines are scanned and the file
+        is not reported as a partial read — mirroring ripgrep's binary-file skip.
+        """
+        (tmp_path / "good.txt").write_text("needle here\n")
+        (tmp_path / "bad.bin").write_bytes(b"\xff\xfe needle \x00\x80")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results.get("/good.txt") == [(1, "needle here")]
+        assert "/bad.bin" not in results
+
+    def test_python_search_reports_file_error_after_partial_scan(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-file read error after scanning starts is surfaced with partial matches."""
+        bad = tmp_path / "bad.txt"
+        bad.write_text("")
+        monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results == {"/bad.txt": [(1, "needle before failure")]}
+        assert partial_error is not None
+        assert "One or more files could not be fully searched" in partial_error
+        assert "- /bad.txt: UnicodeDecodeError: invalid start byte" in partial_error
+
+    def test_python_search_surfaces_open_failure_without_scanned_lines(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An open failure is surfaced even when no lines were scanned.
+
+        Unlike an undecodable binary (skipped silently), a file the caller asked
+        to search but that could not be opened is reported via `partial_error`.
+        """
+        target = tmp_path / "locked.txt"
+        target.write_text("needle\n")
+        original_open = Path.open
+
+        def fake_open(path: Path, *args: object, **kwargs: object) -> object:
+            if path == target:
+                msg = "nope"
+                raise PermissionError(msg)
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fake_open)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results == {}
+        assert partial_error is not None
+        assert "- /locked.txt: PermissionError" in partial_error
+
+    def test_python_search_returns_matches_when_another_file_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A clean file's matches are returned while a sibling's read error is surfaced."""
+        good = tmp_path / "good.txt"
+        good.write_text("needle good\n")
+        bad = tmp_path / "bad.txt"
+        bad.write_text("")
+        monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+
+        assert results.get("/good.txt") == [(1, "needle good")]
+        assert partial_error is not None
+        assert "/bad.txt" in partial_error
+        assert "/good.txt" not in partial_error
+
+    def test_python_search_glob_filters_files(self, tmp_path: Path) -> None:
+        """The compiled glob matcher restricts the fallback to matching filenames."""
+        (tmp_path / "match.py").write_text("needle in py\n")
+        (tmp_path / "skip.txt").write_text("needle in txt\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, "*.py")
+        assert partial_error is None
+        assert results.get("/match.py") == [(1, "needle in py")]
+        assert "/skip.txt" not in results
+
+    def test_python_search_glob_matches_directory_components(self, tmp_path: Path) -> None:
+        """Directory-component globs filter nested files (GLOBSTAR/BRACE flags)."""
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "a.md").write_text("needle doc\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "b.md").write_text("needle src\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, "docs/*.md")
+        assert partial_error is None
+        assert results.get("/docs/a.md") == [(1, "needle doc")]
+        assert "/src/b.md" not in results
+
+    def test_python_search_skips_file_over_size_limit(self, tmp_path: Path) -> None:
+        """Files exceeding `max_file_size_bytes` are skipped without a partial error."""
+        (tmp_path / "big.txt").write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        be.max_file_size_bytes = 3  # smaller than the file; forces the size-skip branch
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {}
+
+    def test_python_search_non_virtual_mode_keys_on_absolute_path(self, tmp_path: Path) -> None:
+        """In non-virtual mode the result key is the absolute filesystem path."""
+        target = tmp_path / "f.txt"
+        target.write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {str(target): [(1, "needle")]}
+
+    def test_python_search_accumulates_multiple_matches_per_file(self, tmp_path: Path) -> None:
+        """All matching lines are collected in order with 1-based line numbers."""
+        (tmp_path / "f.txt").write_text("needle\nno\nneedle\nno\nneedle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("needle", tmp_path, None)
+        assert partial_error is None
+        assert results == {"/f.txt": [(1, "needle"), (3, "needle"), (5, "needle")]}
+
+    def test_python_search_handles_cr_only_line_endings(self, tmp_path: Path) -> None:
+        """Classic-Mac CR line endings are normalized by universal-newline translation."""
+        (tmp_path / "cr.txt").write_bytes(b"hit me\rother\r")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results, partial_error = be._python_search("hit", tmp_path, None)
+        assert partial_error is None
+        assert results.get("/cr.txt") == [(1, "hit me")]
+
+    def test_grep_fallback_treats_pattern_literally(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`grep` passes the raw pattern to the fallback (no `re.escape`), matching literally.
+
+        Stubbing `_ripgrep_search` to `None` forces the Python fallback regardless
+        of whether ripgrep is installed, locking the call-site contract.
+        """
+        (tmp_path / "f.txt").write_text("a.b\naxb\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: None)
+        matches = be.grep("a.b", path="/").matches
+        assert matches is not None
+        texts = [m["text"] for m in matches]
+        assert "a.b" in texts
+        assert "axb" not in texts
 
     def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """`grep` surfaces the timeout as a partial error while still returning matches found so far."""

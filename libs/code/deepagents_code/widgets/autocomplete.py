@@ -332,7 +332,7 @@ class SlashCommandController:
 
 
 # ============================================================================
-# Fuzzy File Completion (from project root)
+# Fuzzy File Completion (scoped to current working directory)
 # ============================================================================
 
 # Constants for fuzzy file completion
@@ -514,8 +514,35 @@ def _fuzzy_search(
     return [c for _, c in scored[:limit]]
 
 
+def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list[str]:
+    """Scope a project-root-relative file list to paths under `cwd`.
+
+    Args:
+        files: File paths relative to `project_root` (as produced by
+            `_get_project_files`).
+        project_root: Directory the `files` paths are relative to.
+        cwd: Directory to scope suggestions to.
+
+    Returns:
+        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. The input list
+        unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
+        not under `project_root`: the paths are project-root-relative and would
+        resolve to the wrong base from `cwd`, so fail closed rather than offer
+        misleading suggestions.
+    """
+    if cwd == project_root:
+        return files
+    try:
+        relative_cwd = cwd.relative_to(project_root).as_posix()
+    except ValueError:
+        return []
+    prefix = f"{relative_cwd}/"
+    return [path[len(prefix) :] for path in files if path.startswith(prefix)]
+
+
 class FuzzyFileController:
-    """Controller for @ file completion with fuzzy matching from project root."""
+    """Controller for @ file completion with fuzzy matching from current cwd."""
 
     def __init__(
         self,
@@ -526,10 +553,10 @@ class FuzzyFileController:
 
         Args:
             view: View to render suggestions to
-            cwd: Starting directory to find project root from
+            cwd: Current working directory for file completion scope
         """
         self._view = view
-        self._cwd = cwd or Path.cwd()
+        self._cwd = (cwd or Path.cwd()).resolve()
         self._project_root = find_project_root(self._cwd) or self._cwd
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
@@ -547,7 +574,8 @@ class FuzzyFileController:
             List of project file paths.
         """
         if self._file_cache is None:
-            self._file_cache = _get_project_files(self._project_root)
+            files = _get_project_files(self._project_root)
+            self._file_cache = _scope_files_to_cwd(files, self._project_root, self._cwd)
         return self._file_cache
 
     def refresh_cache(self) -> None:
@@ -565,8 +593,8 @@ class FuzzyFileController:
         root, which is a safe narrower scope.
         """
         self._cache_generation += 1
-        self._cwd = cwd
-        self._project_root = cwd
+        self._cwd = cwd.resolve()
+        self._project_root = self._cwd
         self._project_root_pending = True
         self._file_cache = None
         self.reset()
@@ -606,7 +634,7 @@ class FuzzyFileController:
         with contextlib.suppress(Exception):
             files = await asyncio.to_thread(_get_project_files, project_root)
             if generation == self._cache_generation:
-                self._file_cache = files
+                self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

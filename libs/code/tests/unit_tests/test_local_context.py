@@ -136,7 +136,11 @@ class TestLocalContextMiddleware:
     """Test local context middleware functionality."""
 
     def test_local_context_is_private_state(self) -> None:
-        """Local context should not appear in public graph outputs or trace state."""
+        """Local context should be marked `PrivateStateAttr`.
+
+        The marker is what excludes the field from public graph outputs and
+        trace state.
+        """
         assert "_local_context" in private_state_field_names(LocalContextState)
 
     def test_before_agent_stores_context(self) -> None:

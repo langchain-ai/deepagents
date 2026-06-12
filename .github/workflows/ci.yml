@@ -398,8 +398,6 @@ jobs:
       - test-modal
       - test-runloop
       - test-quickjs
-      - benchmark-deepagents
-      - benchmark-code
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

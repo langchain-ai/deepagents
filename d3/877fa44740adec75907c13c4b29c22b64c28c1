@@ -1,0 +1,20 @@
+examples/text-to-sql-agent/README.md
+  s_79251417bd3f3c::t_0bee35c7a868d8 48
+  s_79251417bd3f3c::t_3381e77c63d2ea 262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d3877fa44740adec75907c13c4b29c22b64c28c1",
+  "prompts": {},
+  "sessions": {
+    "s_79251417bd3f3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b149a8a5-9683-4e8e-94f3-6ae838434161",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+libs/Makefile
+  s_c5b85d25b4b35c::t_69776bbe58a2d0 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "cc62121ef302da96287db4b42322d1cbd5a65f42",
+  "prompts": {},
+  "sessions": {
+    "s_c5b85d25b4b35c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb06ad8-b67a-432e-96e5-e310cd5ea77b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

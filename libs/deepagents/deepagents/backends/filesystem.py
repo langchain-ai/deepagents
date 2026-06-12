@@ -789,10 +789,16 @@ class FilesystemBackend(BackendProtocol):
         def _safe_detail(exc: Exception) -> str:
             # Build an agent-safe detail string. `OSError.__str__` embeds the
             # real filename/path, so for those surface only `strerror` (the
-            # path-free reason). `UnicodeDecodeError` exposes `.reason`; other
-            # exception messages are app-generated and path-free, so their
-            # `str()` is safe to surface.
-            detail = exc.strerror if isinstance(exc, OSError) else (getattr(exc, "reason", None) or str(exc))
+            # path-free reason). `UnicodeDecodeError` exposes `.reason`. In
+            # virtual mode, generic exception text can still contain the real
+            # root path (for example from `Path.rglob`), so keep it out of
+            # agent-visible errors.
+            if isinstance(exc, OSError):
+                detail = exc.strerror
+            else:
+                detail = getattr(exc, "reason", None)
+                if detail is None and not self.virtual_mode:
+                    detail = str(exc)
             return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:

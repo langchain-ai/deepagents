@@ -939,6 +939,27 @@ def test_grep_python_fallback_survives_runtime_error_mid_walk(tmp_path: Path, mo
     assert result.matches
 
 
+def test_grep_virtual_mode_sanitizes_runtime_error_details(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Virtual grep fallback must not expose real paths from `RuntimeError` text."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("hello\n")
+    (root / "b.txt").write_text("hello\n")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    _install_flaky_rglob(monkeypatch, RuntimeError(f"symlink loop under {root}"))
+
+    result = be.grep("hello", path="/")
+
+    assert result.error is not None
+    assert "aborted" in result.error
+    assert "RuntimeError" in result.error
+    assert str(root) not in result.error
+    assert "symlink loop under" not in result.error
+    assert result.matches
+
+
 class TestToVirtualPath:
     """Tests for FilesystemBackend._to_virtual_path."""
 

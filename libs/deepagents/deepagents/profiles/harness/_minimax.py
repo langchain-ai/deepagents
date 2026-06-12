@@ -8,7 +8,10 @@ Registers a `HarnessProfile` for each MiniMax model spec
 # each; hard-wrapping them would not change behavior but would make edits harder
 # to diff.
 
-from deepagents.profiles.harness._reasoning_gate import ReasoningGateMiddleware
+# ReasoningGateMiddleware disabled for the prompt-only MiniMax comparison
+# (see profile construction in register()); re-enable this import and the
+# `extra_middleware` line below to restore the grade-and-rerun harness.
+# from deepagents.profiles.harness._reasoning_gate import ReasoningGateMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
@@ -119,7 +122,10 @@ def register() -> None:
     profile = HarnessProfile(
         base_system_prompt=_BASE_SYSTEM_PROMPT,
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-        extra_middleware=lambda: [ReasoningGateMiddleware(grader_model="fireworks:accounts/fireworks/models/minimax-m2p7")],
+        # extra_middleware (ReasoningGate + grade-and-rerun loop with a Fireworks
+        # minimax-m2p7 grader) DISABLED for the "only prompt changes" comparison.
+        # Profile is now prompt-only (base_system_prompt + system_prompt_suffix).
+        # extra_middleware=lambda: [ReasoningGateMiddleware(grader_model="fireworks:accounts/fireworks/models/minimax-m2p7")],
     )
     for spec in _MINIMAX_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

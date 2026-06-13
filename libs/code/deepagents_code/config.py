@@ -3177,6 +3177,16 @@ def create_model(
                 "openai_codex to sign in with your ChatGPT account."
             )
             raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except _codex.CodexAuthExpiredError as exc:
+            # A token exists but its refresh token is dead. Route through the
+            # same `MissingCredentialsError` recovery path as a missing token
+            # (which the retry flow re-attempts after `/auth`) instead of the
+            # generic `ModelConfigError` below, which would not offer sign-in.
+            msg = (
+                "ChatGPT session expired. Run `/auth` and select openai_codex "
+                "to sign in again."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
         except Exception as exc:
             spec = f"{provider}:{model_name}"
             msg = f"Failed to initialize Codex model '{spec}': {exc}"

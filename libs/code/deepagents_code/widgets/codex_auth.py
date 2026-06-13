@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import threading
 import webbrowser
+from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -59,13 +60,10 @@ class _ScreenInteraction(codex_integration.CodexLoginInteraction):
         """Bind the interaction to the modal it should drive."""
         self._screen = screen
 
-    async def show_authorize_url(  # awaited by upstream protocol
+    async def show_authorize_url(  # awaited by the interaction protocol
         self, url: str, *, opened_in_browser: bool
     ) -> None:
         self._screen.on_authorize_url(url, opened_in_browser)
-
-    async def notice(self, message: str) -> None:  # awaited by upstream protocol
-        self._screen.on_notice(message)
 
 
 class CodexAuthScreen(ModalScreen[bool]):
@@ -158,8 +156,7 @@ class CodexAuthScreen(ModalScreen[bool]):
                 Content.assemble(
                     "Authorize Deep Agents to call ChatGPT Codex models on "
                     "your behalf. We will open your default browser to "
-                    "openai.com — the token is stored locally at "
-                    "~/.deepagents/.state/chatgpt-auth.json.",
+                    "openai.com to sign in.",
                 ),
                 classes="codex-auth-copy",
             )
@@ -245,11 +242,6 @@ class CodexAuthScreen(ModalScreen[bool]):
         # crash the renderer.
         url_label.update(Content.assemble((url, link_style)))
 
-    def on_notice(self, message: str) -> None:
-        """Replace the status line with a worker-supplied notice."""
-        status = self.query_one("#codex-auth-status", Static)
-        status.update(Content.from_markup("$msg", msg=message))
-
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """React to worker completion: notify, then dismiss the modal."""
         if event.worker is not self._worker:
@@ -311,6 +303,118 @@ class CodexAuthScreen(ModalScreen[bool]):
             self.dismiss(False)
 
 
+class CodexSignedInAction(StrEnum):
+    """Outcome of the `CodexSignedInScreen` quick-action overlay.
+
+    Encoded as an enum (mirroring `AuthResult`) rather than bare strings so a
+    typo in either the producing `action_*` method or the consuming dispatch
+    is a type error, not a silent no-op.
+    """
+
+    SIGN_OUT = "signout"
+    """Delete the stored ChatGPT token."""
+
+    REAUTH = "reauth"
+    """Open the OAuth flow again (e.g., to switch account)."""
+
+
+class CodexSignedInScreen(ModalScreen["CodexSignedInAction | None"]):
+    """Quick-action overlay shown when `openai_codex` is already signed in.
+
+    Dismissal values:
+
+    - `CodexSignedInAction.SIGN_OUT`: delete the stored token.
+    - `CodexSignedInAction.REAUTH`: open the OAuth flow again.
+    - `None`: close without changes.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("s", "signout", "Sign out", show=False, priority=True),
+        Binding("r", "reauth", "Reauth", show=False, priority=True),
+    ]
+
+    CSS = """
+    CodexSignedInScreen {
+        align: center middle;
+    }
+
+    CodexSignedInScreen > Vertical {
+        width: 64;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    CodexSignedInScreen .codex-signed-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    CodexSignedInScreen .codex-signed-copy {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    CodexSignedInScreen .codex-signed-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual handler signature
+        """Compose the overlay.
+
+        Yields:
+            Title + body + key-hint widgets.
+        """
+        glyphs = get_glyphs()
+        status = codex_integration.get_status()
+        if status.plan_type and status.account_id:
+            body = (
+                f"Signed in to ChatGPT ({status.plan_type}) as account "
+                f"{status.account_id}."
+            )
+        elif status.plan_type:
+            body = f"Signed in to ChatGPT ({status.plan_type})."
+        else:
+            body = "Signed in to ChatGPT."
+        with Vertical():
+            yield Static("ChatGPT sign-in", classes="codex-signed-title")
+            yield Static(
+                Content.from_markup("$body", body=body),
+                classes="codex-signed-copy",
+            )
+            yield Static(
+                f"S sign out {glyphs.bullet} R sign in again {glyphs.bullet} Esc close",
+                classes="codex-signed-help",
+            )
+
+    def on_mount(self) -> None:
+        """Apply ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def action_signout(self) -> None:
+        """Dismiss with `SIGN_OUT` so the manager deletes the stored token."""
+        self.dismiss(CodexSignedInAction.SIGN_OUT)
+
+    def action_reauth(self) -> None:
+        """Dismiss with `REAUTH` so the manager kicks off a new flow."""
+        self.dismiss(CodexSignedInAction.REAUTH)
+
+    def action_cancel(self) -> None:
+        """Close without changes."""
+        self.dismiss(None)
+
+
 def open_chatgpt_login_url() -> bool:
     """Open the ChatGPT account page in the user's browser.
 
@@ -331,4 +435,9 @@ def open_chatgpt_login_url() -> bool:
         return False
 
 
-__all__ = ["CodexAuthScreen", "open_chatgpt_login_url"]
+__all__ = [
+    "CodexAuthScreen",
+    "CodexSignedInAction",
+    "CodexSignedInScreen",
+    "open_chatgpt_login_url",
+]

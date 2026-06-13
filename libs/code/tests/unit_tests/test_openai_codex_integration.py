@@ -209,13 +209,9 @@ class _FakeUI(openai_codex.CodexLoginInteraction):
 
     def __init__(self) -> None:
         self.urls: list[tuple[str, bool]] = []
-        self.notices: list[str] = []
 
     async def show_authorize_url(self, url: str, *, opened_in_browser: bool) -> None:
         self.urls.append((url, opened_in_browser))
-
-    async def notice(self, message: str) -> None:
-        self.notices.append(message)
 
 
 class TestRunBrowserLogin:
@@ -523,6 +519,122 @@ class TestWaitForOAuthCallback:
                 )
         finally:
             holder.server_close()
+
+
+class TestCodexAuthStatusInvariants:
+    """`CodexAuthStatus.__post_init__` rejects incoherent snapshots.
+
+    These guard the cross-field rules the attribute docs promise; without a
+    test the guards are dead code that silently rots if a guard is removed.
+    """
+
+    def test_unreadable_cannot_be_logged_in(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="unreadable_reason"):
+            openai_codex.CodexAuthStatus(
+                logged_in=True,
+                store_path=tmp_path,
+                unreadable_reason="corrupt",
+            )
+
+    def test_logged_in_requires_expires_at(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="expires_at"):
+            openai_codex.CodexAuthStatus(logged_in=True, store_path=tmp_path)
+
+    def test_logged_out_rejects_expires_at(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="expires_at"):
+            openai_codex.CodexAuthStatus(
+                logged_in=False,
+                store_path=tmp_path,
+                expires_at=datetime.now(UTC),
+            )
+
+    def test_logged_out_rejects_is_expired(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="is_expired"):
+            openai_codex.CodexAuthStatus(
+                logged_in=False, store_path=tmp_path, is_expired=True
+            )
+
+    def test_logged_out_rejects_plan_metadata(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"account_id|plan_type"):
+            openai_codex.CodexAuthStatus(
+                logged_in=False, store_path=tmp_path, plan_type="pro"
+            )
+
+
+class TestRunBrowserLoginCancelDuringExchange:
+    """A cancel landing *during* the token exchange must not save a token."""
+
+    def test_cancel_during_exchange_raises_and_saves_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import langchain_openai.chatgpt_oauth as o
+
+        path = tmp_path / "auth.json"
+        cancel = threading.Event()
+        captured: dict[str, str] = {}
+        original_build = o._build_authorize_url
+
+        def _capture(**kwargs: Any) -> str:
+            captured["state"] = kwargs["state"]
+            return original_build(**kwargs)
+
+        monkeypatch.setattr(o, "_build_authorize_url", _capture)
+        # Callback arrives cleanly (cancel not yet set), so the post-callback
+        # guard passes; the cancel is then set *inside* the token exchange.
+        monkeypatch.setattr(
+            openai_codex,
+            "_wait_for_oauth_callback",
+            lambda **_kw: {"code": "fake_code", "state": captured["state"]},
+        )
+
+        def _cancel_mid_exchange(
+            _url: str, _data: dict[str, str], **_kw: Any
+        ) -> dict[str, Any]:
+            cancel.set()
+            return {
+                "access_token": "tk",
+                "refresh_token": "rk",
+                "expires_in": 3600,
+                "id_token": None,
+            }
+
+        monkeypatch.setattr(o, "_post_form", _cancel_mid_exchange)
+        with pytest.raises(openai_codex.CodexLoginCancelledError):
+            asyncio.run(
+                openai_codex.run_browser_login(
+                    _FakeUI(),
+                    store_path=path,
+                    open_browser=False,
+                    cancel_event=cancel,
+                )
+            )
+        assert not path.exists()
+
+
+class TestBuildChatModelRefresh:
+    """A revoked refresh token surfaces as `CodexAuthExpiredError`.
+
+    Mapping the raw upstream error lets `create_model` route it to the
+    `/auth` flow rather than a generic failure.
+    """
+
+    def test_refresh_failure_raises_codex_auth_expired(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import langchain_openai.chatgpt_oauth as o
+
+        path = tmp_path / "auth.json"
+        _write_token(path)
+
+        def _raise_refresh(_self: object) -> object:
+            msg = "refresh token revoked"
+            raise o._ChatGPTOAuthRefreshError(msg)
+
+        monkeypatch.setattr(
+            o._FileChatGPTOAuthTokenProvider, "get_token", _raise_refresh
+        )
+        with pytest.raises(openai_codex.CodexAuthExpiredError):
+            openai_codex.build_chat_model("gpt-5.2-codex", store_path=path)
 
 
 class _DummyBrowser:

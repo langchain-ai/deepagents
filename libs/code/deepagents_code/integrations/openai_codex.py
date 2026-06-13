@@ -93,8 +93,10 @@ class CodexAuthStatus:
         its own invariants.
 
         Raises:
-            ValueError: An unreadable token is also marked `logged_in`, or a
-                logged-out snapshot carries an `expires_at`.
+            ValueError: An unreadable token is also marked `logged_in`; a
+                logged-out snapshot carries an `expires_at`, `is_expired`,
+                `account_id`, or `plan_type`; or a logged-in snapshot is
+                missing its `expires_at`.
         """
         if self.unreadable_reason is not None and self.logged_in:
             msg = (
@@ -102,8 +104,19 @@ class CodexAuthStatus:
                 "`logged_in` must be False."
             )
             raise ValueError(msg)
+        if self.logged_in and self.expires_at is None:
+            msg = "`expires_at` must be set when `logged_in` is True."
+            raise ValueError(msg)
         if not self.logged_in and self.expires_at is not None:
             msg = "`expires_at` is only meaningful when `logged_in` is True."
+            raise ValueError(msg)
+        if not self.logged_in and self.is_expired:
+            msg = "`is_expired` is only meaningful when `logged_in` is True."
+            raise ValueError(msg)
+        if not self.logged_in and (self.account_id or self.plan_type):
+            msg = (
+                "`account_id`/`plan_type` are only meaningful when `logged_in` is True."
+            )
             raise ValueError(msg)
 
 
@@ -136,11 +149,22 @@ def get_status(*, store_path: Path | None = None) -> CodexAuthStatus:
         A `CodexAuthStatus` populated from the on-disk token, or one with
             `logged_in=False` when no token exists or the file is unreadable.
     """
-    from langchain_openai.chatgpt_oauth import (
-        _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
-    )
-
     path = store_path or default_store_path()
+    try:
+        from langchain_openai.chatgpt_oauth import (
+            _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
+        )
+    except ImportError as exc:
+        # Defensive: `get_status` sits on the `/auth` manager and `/model`
+        # switcher hot paths. A future `langchain-openai` that renamed these
+        # upstream-internal symbols would otherwise crash credential listing;
+        # degrade to an unreadable status so the UI still renders.
+        return CodexAuthStatus(
+            logged_in=False,
+            store_path=path,
+            unreadable_reason=f"langchain-openai ChatGPT OAuth API unavailable: {exc}",
+        )
+
     provider = _FileChatGPTOAuthTokenProvider(path=path)
     try:
         # `_read_from_disk` is a passive inspect; the public `get_token`
@@ -191,6 +215,16 @@ class CodexLoginCancelledError(RuntimeError):
     """Raised when the user cancels a sign-in flow mid-callback wait."""
 
 
+class CodexAuthExpiredError(RuntimeError):
+    """Raised when a stored ChatGPT token cannot be refreshed.
+
+    Distinct from a missing token (`FileNotFoundError`): a token exists on
+    disk but its refresh token was revoked or expired, so an automatic
+    refresh failed and the user must sign in again. `create_model` maps this
+    to a `MissingCredentialsError` that points at `/auth`.
+    """
+
+
 class CodexLoginInteraction:
     """UI hooks for the browser loopback sign-in flow.
 
@@ -222,10 +256,6 @@ class CodexLoginInteraction:
             else "Open this URL in a browser: "
         )
         print(f"\n{prefix}{url}\n")  # noqa: T201
-
-    async def notice(self, message: str) -> None:  # noqa: PLR6301  # override hook
-        """Surface a one-line informational notice (e.g. fallback hints)."""
-        print(f"\n{message}\n")  # noqa: T201
 
 
 _LOOPBACK_TIMEOUT_SECONDS = 300.0
@@ -284,12 +314,10 @@ async def run_browser_login(
     # `chatgpt_oauth` rather than calling `login_chatgpt`. The top-level
     # helper uses `print()` to surface the authorize URL — invisible inside
     # a Textual app — and bundles the browser open into one blocking call,
-    # so we cannot show the URL ahead of the wait. These private helpers
-    # are the same primitives upstream's own `login_chatgpt` composes,
-    # documented in PR 37569 as the supported reuse path for downstream
-    # frameworks that need a custom UI surface. PR 37569 commits to keeping
-    # them stable as an internal API; when it lands and is released we can
-    # revisit whether a public helper has appeared.
+    # so we cannot show the URL ahead of the wait. These private helpers are
+    # the same primitives upstream's own `login_chatgpt` composes; their
+    # stability is an upstream concern (see the module docstring), so re-check
+    # these names whenever the `langchain-openai` pin is bumped.
     from langchain_openai.chatgpt_oauth import (
         CHATGPT_AUTHORIZE_URL,
         CHATGPT_CLIENT_ID,
@@ -374,6 +402,14 @@ async def run_browser_login(
             "code_verifier": verifier,
         },
     )
+    if cancel_event is not None and cancel_event.is_set():
+        # The user cancelled while the token exchange was in flight. The
+        # exchange already completed in-memory, but honor the cancel so no
+        # token lands on disk for a sign-in the user abandoned — the same
+        # "no token saved on cancel" guarantee the post-callback check makes.
+        msg = "Sign-in was cancelled."
+        raise CodexLoginCancelledError(msg)
+
     token = _token_from_response(response)
     path = store_path or default_store_path()
     file_provider = _FileChatGPTOAuthTokenProvider(path=path)
@@ -480,11 +516,15 @@ def build_chat_model(
     Raises:
         FileNotFoundError: If no token has been stored yet. Surfaces as a
             `MissingCredentialsError` upstream in `create_model`.
+        CodexAuthExpiredError: If a token exists but its refresh token was
+            revoked/expired so the eager refresh failed. Also surfaces as a
+            `MissingCredentialsError` upstream, pointing the user at `/auth`.
     """  # noqa: DOC502  # `FileNotFoundError` is raised by `provider.get_token()` (`_load_existing`) when the on-disk token is missing
     from langchain_openai.chat_models.codex import (
         _ChatOpenAICodex,  # noqa: PLC2701
     )
     from langchain_openai.chatgpt_oauth import (
+        _ChatGPTOAuthRefreshError,  # noqa: PLC2701
         _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
     )
 
@@ -494,7 +534,16 @@ def build_chat_model(
     # `create_model` path expects credential failures up front. `get_token`
     # refreshes if the stored token is past `refresh_skew`, so the model
     # is guaranteed to receive a valid bearer at construction time.
-    provider.get_token()
+    try:
+        provider.get_token()
+    except _ChatGPTOAuthRefreshError as exc:
+        # A token exists but the refresh token is dead. This is a credentials
+        # problem with a clear remedy (sign in again), not an unexpected
+        # construction failure — translate it so `create_model` can route it
+        # to the same `/auth` recovery path as a missing token rather than a
+        # generic "failed to initialize" error.
+        msg = "ChatGPT session expired and could not be refreshed automatically."
+        raise CodexAuthExpiredError(msg) from exc
     return _ChatOpenAICodex(
         model=model_name,
         token_provider=provider,

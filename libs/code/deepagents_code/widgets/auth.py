@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
+    from deepagents_code.widgets.codex_auth import CodexSignedInAction
+
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
@@ -611,7 +613,10 @@ class AuthManagerScreen(ModalScreen[None]):
         the sign-in worker.
         """
         from deepagents_code.integrations import openai_codex
-        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+        from deepagents_code.widgets.codex_auth import (
+            CodexAuthScreen,
+            CodexSignedInScreen,
+        )
 
         status = openai_codex.get_status()
         if status.logged_in and not status.is_expired:
@@ -627,14 +632,16 @@ class AuthManagerScreen(ModalScreen[None]):
         clear_caches()
         self._refresh_options()
 
-    def _on_codex_signed_in_closed(self, action: str | None) -> None:
+    def _on_codex_signed_in_closed(self, action: CodexSignedInAction | None) -> None:
         """Handle dismissal of the "already signed in" overlay.
 
         Args:
-            action: `"signout"` to clear the token, `"reauth"` to run the
-                sign-in flow again, anything else to close cleanly.
+            action: `SIGN_OUT` to clear the token, `REAUTH` to run the
+                sign-in flow again, `None` to close cleanly.
         """
-        if action == "signout":
+        from deepagents_code.widgets.codex_auth import CodexSignedInAction
+
+        if action is CodexSignedInAction.SIGN_OUT:
             from deepagents_code.integrations import openai_codex
 
             removed = openai_codex.logout()
@@ -642,7 +649,7 @@ class AuthManagerScreen(ModalScreen[None]):
                 self.app.notify("Signed out of ChatGPT.", markup=False)
             clear_caches()
             self._refresh_options()
-        elif action == "reauth":
+        elif action is CodexSignedInAction.REAUTH:
             from deepagents_code.widgets.codex_auth import CodexAuthScreen
 
             self.app.push_screen(CodexAuthScreen(), self._on_codex_closed)
@@ -737,102 +744,3 @@ class AuthManagerScreen(ModalScreen[None]):
             "  ",
             badge,
         )
-
-
-class CodexSignedInScreen(ModalScreen[str]):
-    """Quick-action overlay shown when `openai_codex` is already signed in.
-
-    Dismissal values:
-
-    - `"signout"`: delete the stored token.
-    - `"reauth"`: open the OAuth flow again (e.g., switch account).
-    - `None`: close without changes.
-    """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False, priority=True),
-        Binding("s", "signout", "Sign out", show=False, priority=True),
-        Binding("r", "reauth", "Reauth", show=False, priority=True),
-    ]
-
-    CSS = """
-    CodexSignedInScreen {
-        align: center middle;
-    }
-
-    CodexSignedInScreen > Vertical {
-        width: 64;
-        height: auto;
-        background: $surface;
-        border: solid $primary;
-        padding: 1 2;
-    }
-
-    CodexSignedInScreen .codex-signed-title {
-        text-style: bold;
-        color: $primary;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    CodexSignedInScreen .codex-signed-copy {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    CodexSignedInScreen .codex-signed-help {
-        height: 1;
-        color: $text-muted;
-        text-style: italic;
-        text-align: center;
-    }
-    """
-
-    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual handler signature
-        """Compose the overlay.
-
-        Yields:
-            Title + body + key-hint widgets.
-        """
-        from deepagents_code.integrations import openai_codex
-
-        glyphs = get_glyphs()
-        status = openai_codex.get_status()
-        if status.plan_type and status.account_id:
-            body = (
-                f"Signed in to ChatGPT ({status.plan_type}) as account "
-                f"{status.account_id}."
-            )
-        elif status.plan_type:
-            body = f"Signed in to ChatGPT ({status.plan_type})."
-        else:
-            body = "Signed in to ChatGPT."
-        with Vertical():
-            yield Static("ChatGPT sign-in", classes="codex-signed-title")
-            yield Static(
-                Content.from_markup("$body", body=body),
-                classes="codex-signed-copy",
-            )
-            yield Static(
-                f"S sign out {glyphs.bullet} R sign in again {glyphs.bullet} Esc close",
-                classes="codex-signed-help",
-            )
-
-    def on_mount(self) -> None:
-        """Apply ASCII border when needed."""
-        if is_ascii_mode():
-            container = self.query_one(Vertical)
-            colors = theme.get_theme_colors(self)
-            container.styles.border = ("ascii", colors.success)
-
-    def action_signout(self) -> None:
-        """Dismiss with `"signout"` so the manager deletes the stored token."""
-        self.dismiss("signout")
-
-    def action_reauth(self) -> None:
-        """Dismiss with `"reauth"` so the manager kicks off a new flow."""
-        self.dismiss("reauth")
-
-    def action_cancel(self) -> None:
-        """Close without changes."""
-        self.dismiss(None)

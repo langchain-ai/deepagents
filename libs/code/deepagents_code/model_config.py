@@ -1017,9 +1017,23 @@ def get_available_models() -> dict[str, list[str]]:
     if config.is_provider_enabled(CODEX_PROVIDER):
         openai_models = available.get("openai")
         if openai_models:
-            available[CODEX_PROVIDER] = list(
+            codex_models = list(
                 dict.fromkeys([*available.get(CODEX_PROVIDER, []), *openai_models])
             )
+            # Place `openai_codex` directly after `openai` so the switcher
+            # keeps the two OpenAI-backed providers adjacent (codex before
+            # azure_openai etc.) instead of trailing it at the end of the
+            # dict. dict insertion order is the switcher's display order, so
+            # rebuild the dict, dropping any prior codex entry and re-inserting
+            # it right after `openai`.
+            reordered: dict[str, list[str]] = {}
+            for name, models in available.items():
+                if name == CODEX_PROVIDER:
+                    continue
+                reordered[name] = models
+                if name == "openai":
+                    reordered[CODEX_PROVIDER] = codex_models
+            available = reordered
 
     _available_models_cache = available
     return available

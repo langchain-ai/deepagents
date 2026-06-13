@@ -254,6 +254,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
@@ -283,6 +285,8 @@ jobs:
               ;;
             vercel)
               [ -z "$VERCEL_TOKEN" ] && missing+=("VERCEL_TOKEN")
+              [ -z "$VERCEL_PROJECT_ID" ] && missing+=("VERCEL_PROJECT_ID")
+              [ -z "$VERCEL_TEAM_ID" ] && missing+=("VERCEL_TEAM_ID")
               ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"

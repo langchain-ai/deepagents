@@ -539,7 +539,7 @@ requires-dist = [
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.4.1,<2.0.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
-    { name = "langchain-openai", specifier = ">=1.3.1,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.3.2,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.3.1,<2.0.0" },
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.2.3,<2.0.0" },
     { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.4.0,<2.0.0" },
@@ -1528,16 +1528,16 @@ wheels = [
 
 [[package]]
 name = "langchain-openai"
-version = "1.3.1"
+version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "openai", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tiktoken", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/ed/17174cd26b49cb4cd0df4a3c784abde6f17bde21061208a48007894e3ec8/langchain_openai-1.3.1.tar.gz", hash = "sha256:aab2e24a4e90023d2bf260ff3eab3130f3a319a4ddecb67ed9ef6a10fdfc18db", size = 3235628, upload-time = "2026-06-13T02:42:09.037Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/4c/cf3c5a03f1d2e2e4367c1527231162a99d0f1c94113e1203c00469c860e4/langchain_openai-1.3.2.tar.gz", hash = "sha256:240917ae88d754b389a6f2ae06fa262c50c094eb4f576c27d560dff6b86c2f62", size = 3236213, upload-time = "2026-06-13T05:42:12.5Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/f2/67d90a2b91d1f3525efa4faf26876f6c0170a39342c72aa2c9d0b751acc0/langchain_openai-1.3.1-py3-none-any.whl", hash = "sha256:cd9ca62951a47d2c5b7327b3ff32ae3b818437fe49b05842e63162d5b90d9556", size = 119229, upload-time = "2026-06-13T02:42:07.78Z" },
+    { url = "https://files.pythonhosted.org/packages/03/21/cbf6c3786de881b214c8c6c9f61fe44c9c47608428676a5cd5c5b2b0cda5/langchain_openai-1.3.2-py3-none-any.whl", hash = "sha256:3d247f43bba9f85d32a374b1bdf3932a0d1e3c60913ebeadf68630de52add67e", size = 119775, upload-time = "2026-06-13T05:42:11.088Z" },
 ]
 
 [[package]]

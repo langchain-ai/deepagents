@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 from textual import on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -1401,6 +1402,59 @@ class _ChatScroll(VerticalScroll):
     FOCUS_ON_CLICK = False
 
 
+class ModelProvider(Provider):
+    """Command palette provider for switching models."""
+
+    async def startup(self) -> None:
+        """Load available model specs before palette search begins."""
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
+        cli_override = getattr(self.app, "_profile_override", None)
+        all_models, _, _, _ = await asyncio.to_thread(
+            ModelSelectorScreen._load_model_data,
+            cli_override,
+        )
+        self._models = all_models
+
+    def _switch_model(self, model_spec: str) -> None:
+        """Request a model switch from the owning app.
+
+        Args:
+            model_spec: Model spec in `provider:model` format.
+        """
+        request = getattr(self.app, "_request_model_switch", None)
+        if callable(request):
+            request(model_spec)
+
+    async def discover(self) -> Hits:
+        """Yield model-switching commands for an empty palette query."""
+        for model_spec, _ in self._models:
+            command_text = f"Switch model: {model_spec}"
+            yield DiscoveryHit(
+                command_text,
+                lambda model_spec=model_spec: self._switch_model(model_spec),
+                text=command_text,
+            )
+
+    async def search(self, query: str) -> Hits:
+        """Yield matching model-switching commands.
+
+        Args:
+            query: Palette search query.
+        """
+        matcher = self.matcher(query)
+        for model_spec, _ in self._models:
+            command_text = f"Switch model: {model_spec}"
+            score = matcher.match(command_text)
+            if score > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(command_text),
+                    lambda model_spec=model_spec: self._switch_model(model_spec),
+                    text=command_text,
+                )
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1410,9 +1464,14 @@ class DeepAgentsApp(App):
     CSS_PATH = "app.tcss"
     """Path to the Textual CSS stylesheet for the app layout."""
 
-    ENABLE_COMMAND_PALETTE = False
-    """Disable Textual's built-in command palette in favor of the custom slash
-    command system."""
+    ENABLE_COMMAND_PALETTE = True
+    """Enable Textual's command palette for non-destructive quick actions."""
+
+    COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {
+        *App.COMMANDS,
+        ModelProvider,
+    }
+    """Custom Textual command palette providers."""
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
@@ -8767,6 +8826,44 @@ class DeepAgentsApp(App):
         result = await self._push_screen_wait(screen)
         return result if result is None or isinstance(result, tuple) else None
 
+    def _request_model_switch(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Schedule or defer a model switch without disturbing chat input.
+
+        Args:
+            model_spec: Model spec in `provider:model` format.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
+
+        if self._agent_running or self._shell_running or self._connecting:
+            self._defer_action(
+                DeferredAction(
+                    kind="model_switch",
+                    execute=partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    ),
+                ),
+            )
+            self.notify(
+                "Model will switch after current task completes.",
+                timeout=3,
+            )
+        else:
+            self.call_later(
+                partial(
+                    self._switch_model,
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                ),
+            )
+
     async def _show_model_selector(
         self,
         *,
@@ -8777,35 +8874,12 @@ class DeepAgentsApp(App):
         Args:
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                if self._agent_running or self._shell_running or self._connecting:
-                    self._defer_action(
-                        DeferredAction(
-                            kind="model_switch",
-                            execute=partial(
-                                self._switch_model,
-                                model_spec,
-                                extra_kwargs=extra_kwargs,
-                            ),
-                        ),
-                    )
-                    self.notify(
-                        "Model will switch after current task completes.",
-                        timeout=3,
-                    )
-                else:
-                    self.call_later(
-                        partial(
-                            self._switch_model,
-                            model_spec,
-                            extra_kwargs=extra_kwargs,
-                        ),
-                    )
+                self._request_model_switch(model_spec, extra_kwargs=extra_kwargs)
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()

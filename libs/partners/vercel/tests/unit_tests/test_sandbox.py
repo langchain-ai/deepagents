@@ -307,9 +307,7 @@ def test_download_files_maps_permission_substring() -> None:
 
 def test_download_files_surfaces_unrecognized_error() -> None:
     sandbox = _Sandbox()
-    sandbox.files["/vercel/sandbox/file.txt"] = RuntimeError(
-        "connection reset by peer"
-    )
+    sandbox.files["/vercel/sandbox/file.txt"] = RuntimeError("connection reset by peer")
 
     response = sandbox.as_backend().download_files(["/vercel/sandbox/file.txt"])[0]
 

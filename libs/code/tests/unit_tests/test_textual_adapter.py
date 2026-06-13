@@ -27,7 +27,9 @@ from deepagents_code.textual_adapter import (
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _handle_interrupt_cleanup,
+    _is_reason_chunk,
     _is_summarization_chunk,
+    _restore_action_reasons,
     execute_task_textual,
     format_token_count,
     print_usage_table,
@@ -751,6 +753,67 @@ class TestIsSummarizationChunk:
         """Should return `False` when only unrelated keys are present."""
         assert _is_summarization_chunk({"langgraph_node": "model"}) is False
         assert _is_summarization_chunk({"langgraph_node": None}) is False
+
+
+class TestIsReasonChunk:
+    """Tests for `_is_reason_chunk` detection."""
+
+    def test_true_for_reason_source(self) -> None:
+        """Returns `True` when `lc_source` is `'reason'`."""
+        assert _is_reason_chunk({"lc_source": "reason"}) is True
+
+    def test_false_for_none_or_other(self) -> None:
+        """Returns `False` for `None`, empty, or unrelated metadata."""
+        assert _is_reason_chunk(None) is False
+        assert _is_reason_chunk({}) is False
+        assert _is_reason_chunk({"lc_source": "summarization"}) is False
+
+
+class TestRestoreActionReasons:
+    """Tests for `_restore_action_reasons`."""
+
+    def test_reason_copied_by_position(self) -> None:
+        """Each raw reason is copied onto the matching validated action."""
+        validated = {"action_requests": [{"name": "execute", "args": {}}]}
+        raw = {"action_requests": [{"name": "execute", "args": {}, "reason": "why"}]}
+        _restore_action_reasons(validated, raw)
+        assert validated["action_requests"][0]["reason"] == "why"
+
+    def test_missing_reason_left_absent(self) -> None:
+        """Actions without a raw reason stay reason-less."""
+        validated = {"action_requests": [{"name": "execute", "args": {}}]}
+        raw = {"action_requests": [{"name": "execute", "args": {}}]}
+        _restore_action_reasons(validated, raw)
+        assert "reason" not in validated["action_requests"][0]
+
+    def test_blank_reason_ignored(self) -> None:
+        """A whitespace-only raw reason is not copied."""
+        validated = {"action_requests": [{"name": "execute", "args": {}}]}
+        raw = {"action_requests": [{"name": "execute", "args": {}, "reason": "  "}]}
+        _restore_action_reasons(validated, raw)
+        assert "reason" not in validated["action_requests"][0]
+
+    def test_non_dict_raw_is_noop(self) -> None:
+        """A non-dict raw value leaves the validated request untouched."""
+        validated = {"action_requests": [{"name": "execute", "args": {}}]}
+        _restore_action_reasons(validated, "not a dict")
+        assert "reason" not in validated["action_requests"][0]
+
+    def test_length_mismatch_is_noop(self) -> None:
+        """Differing list lengths bail without copying any reason.
+
+        A positional copy across mismatched lists could attach a reason to the
+        wrong tool, so no reason is restored at all.
+        """
+        validated = {
+            "action_requests": [
+                {"name": "execute", "args": {}},
+                {"name": "write_file", "args": {}},
+            ]
+        }
+        raw = {"action_requests": [{"name": "execute", "args": {}, "reason": "why"}]}
+        _restore_action_reasons(validated, raw)
+        assert all("reason" not in a for a in validated["action_requests"])
 
 
 class _FakeAgent:

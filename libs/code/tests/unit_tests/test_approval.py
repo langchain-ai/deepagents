@@ -1,5 +1,6 @@
 """Unit tests for approval widget expandable command display."""
 
+from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +11,16 @@ from deepagents_code.widgets.approval import (
     _SHELL_COMMAND_TRUNCATE_LINES,
     ApprovalMenu,
 )
+
+if TYPE_CHECKING:
+    from textual.content import Content
+
+
+class _RenderableWidget(Protocol):
+    """Test helper protocol for widgets that expose `render`."""
+
+    def render(self) -> object:
+        """Render the widget content."""
 
 
 class TestCheckExpandableCommand:
@@ -639,3 +650,77 @@ class TestRejectWithReason:
         menu._handle_selection.assert_not_called()  # ty: ignore
         assert not future.done()
         loop.close()
+
+
+class TestComposeReasons:
+    """Tests for `ApprovalMenu._compose_reasons`."""
+
+    @staticmethod
+    def _render_plain(widget: _RenderableWidget) -> str:
+        """Render a reason widget to plain text."""
+        return cast("Content", widget.render()).plain
+
+    def test_single_reason_rendered(self) -> None:
+        """A request with a reason yields one `Reason:` widget."""
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "pytest"},
+                "reason": "Validate the change end-to-end.",
+            }
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 1
+        text = self._render_plain(widgets[0])
+        assert text == "Reason: Validate the change end-to-end."
+
+    def test_no_reason_yields_nothing(self) -> None:
+        """A request without a reason yields no widget."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "ls"}})
+        assert list(menu._compose_reasons()) == []
+
+    def test_blank_reason_yields_nothing(self) -> None:
+        """A whitespace-only reason is treated as absent."""
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "ls"}, "reason": "   "}
+        )
+        assert list(menu._compose_reasons()) == []
+
+    def test_batch_reasons_are_numbered(self) -> None:
+        """Each reason in a batch is prefixed with its tool index."""
+        menu = ApprovalMenu(
+            [
+                {"name": "execute", "args": {"command": "a"}, "reason": "first"},
+                {"name": "execute", "args": {"command": "b"}, "reason": "second"},
+            ]
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 2
+        assert self._render_plain(widgets[0]) == "Reason (1): first"
+        assert self._render_plain(widgets[1]) == "Reason (2): second"
+
+    def test_batch_numbering_uses_absolute_tool_index(self) -> None:
+        """A reason-less middle tool leaves a numbering gap aligned to its tool."""
+        menu = ApprovalMenu(
+            [
+                {"name": "execute", "args": {"command": "a"}, "reason": "first"},
+                {"name": "write_file", "args": {"file_path": "x"}},
+                {"name": "execute", "args": {"command": "c"}, "reason": "third"},
+            ]
+        )
+        widgets = list(menu._compose_reasons())
+        assert len(widgets) == 2
+        assert self._render_plain(widgets[0]) == "Reason (1): first"
+        assert self._render_plain(widgets[1]) == "Reason (3): third"
+
+    def test_reason_markup_is_escaped(self) -> None:
+        """Reason text containing markup is rendered literally."""
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "ls"},
+                "reason": "check [/dim] handling",
+            }
+        )
+        widgets = list(menu._compose_reasons())
+        assert "check [/dim] handling" in self._render_plain(widgets[0])

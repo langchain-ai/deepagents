@@ -793,8 +793,8 @@ requires-dist = [
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.4.1,<2.0.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
-    { name = "langchain-openai", specifier = ">=1.3.1,<2.0.0" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.3.1,<2.0.0" },
+    { name = "langchain-openai", specifier = ">=1.3.0,<2.0.0" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.2.3,<2.0.0" },
     { name = "langchain-perplexity", marker = "extra == 'perplexity'", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", editable = "../partners/quickjs" },
@@ -1586,16 +1586,16 @@ wheels = [
 
 [[package]]
 name = "langchain-openai"
-version = "1.3.1"
+version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/ed/17174cd26b49cb4cd0df4a3c784abde6f17bde21061208a48007894e3ec8/langchain_openai-1.3.1.tar.gz", hash = "sha256:aab2e24a4e90023d2bf260ff3eab3130f3a319a4ddecb67ed9ef6a10fdfc18db", size = 3235628, upload-time = "2026-06-13T02:42:09.037Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/91/27d6d95c27518f53620b6b746240729d509c0ca7f35d1e40303f992f38bd/langchain_openai-1.3.0.tar.gz", hash = "sha256:a6aa48dc5a00249eb75a7bc15d3cb342ba2494e9c397faec0586e73cf090ecf2", size = 1159484, upload-time = "2026-06-09T20:40:26.293Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/f2/67d90a2b91d1f3525efa4faf26876f6c0170a39342c72aa2c9d0b751acc0/langchain_openai-1.3.1-py3-none-any.whl", hash = "sha256:cd9ca62951a47d2c5b7327b3ff32ae3b818437fe49b05842e63162d5b90d9556", size = 119229, upload-time = "2026-06-13T02:42:07.78Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/cd/8777c59b36861bbaa110c93032834e33fa7be527ac29f701bfedbe2e9633/langchain_openai-1.3.0-py3-none-any.whl", hash = "sha256:1d32326aea9b780c65698568ad253a82c4318b434112d05fb578aa20102c26e6", size = 99614, upload-time = "2026-06-09T20:40:25.084Z" },
 ]
 
 [[package]]

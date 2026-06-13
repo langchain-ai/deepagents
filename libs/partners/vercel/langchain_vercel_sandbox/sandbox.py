@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_OUTPUT_BYTES = 100_000
+
 
 class VercelSandbox(BaseSandbox):
     """Vercel Sandbox implementation conforming to SandboxBackendProtocol."""
@@ -116,12 +118,16 @@ class VercelSandbox(BaseSandbox):
         if stderr.strip():
             output += f"\n<stderr>{stderr.strip()}</stderr>"
 
+        truncated = False
+        if len(output) > MAX_OUTPUT_BYTES:
+            output = output[:MAX_OUTPUT_BYTES]
+            output += f"\n\n... Output truncated at {MAX_OUTPUT_BYTES} bytes."
+            truncated = True
+
         return ExecuteResponse(
             output=output,
             exit_code=current.exit_code,
-            # Vercel returns the command's full logs and the backend applies no
-            # size cap, so output is never truncated at this layer.
-            truncated=False,
+            truncated=truncated,
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

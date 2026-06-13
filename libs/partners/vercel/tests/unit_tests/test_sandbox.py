@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from langchain_vercel_sandbox import VercelSandbox
+from langchain_vercel_sandbox.sandbox import MAX_OUTPUT_BYTES
 
 if TYPE_CHECKING:
     from vercel.sandbox import Sandbox
@@ -118,6 +119,37 @@ def test_execute_preserves_non_zero_exit_code() -> None:
 
     assert result.output == "failed"
     assert result.exit_code == NON_ZERO_EXIT_CODE
+
+
+def test_execute_truncates_large_stdout() -> None:
+    sandbox = _Sandbox()
+    sandbox.detached_command = _Command(stdout="x" * (MAX_OUTPUT_BYTES + 1))
+
+    result = sandbox.as_backend().execute("yes | head -c 100001")
+
+    assert result.output == (
+        "x" * MAX_OUTPUT_BYTES
+        + f"\n\n... Output truncated at {MAX_OUTPUT_BYTES} bytes."
+    )
+    assert result.truncated is True
+
+
+def test_execute_truncates_combined_stdout_and_stderr() -> None:
+    sandbox = _Sandbox()
+    sandbox.detached_command = _Command(
+        stdout="x" * (MAX_OUTPUT_BYTES - 1),
+        stderr="err",
+    )
+
+    result = sandbox.as_backend().execute("python noisy.py")
+
+    assert result.output == (
+        "x" * (MAX_OUTPUT_BYTES - 1)
+        + "\n"
+        + f"\n\n... Output truncated at {MAX_OUTPUT_BYTES} bytes."
+    )
+    assert "<stderr>" not in result.output
+    assert result.truncated is True
 
 
 def test_execute_enforces_timeout_and_kills_command() -> None:

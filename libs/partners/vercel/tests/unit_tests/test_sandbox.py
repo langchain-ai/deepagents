@@ -22,17 +22,17 @@ class _Command:
     def __init__(
         self,
         *,
-        cmd_id: str = "cmd_123",
         exit_code: int | None = 0,
         stdout: str = "",
         stderr: str = "",
         wait_exc: Exception | None = None,
+        stdout_exc: Exception | None = None,
     ) -> None:
-        self.cmd_id = cmd_id
         self.exit_code = exit_code
         self._stdout = stdout
         self._stderr = stderr
         self._wait_exc = wait_exc
+        self._stdout_exc = stdout_exc
         self.wait_event: threading.Event | None = None
         self.kill = MagicMock()
 
@@ -44,6 +44,8 @@ class _Command:
         return self
 
     def stdout(self) -> str:
+        if self._stdout_exc is not None:
+            raise self._stdout_exc
         return self._stdout
 
     def stderr(self) -> str:
@@ -54,7 +56,6 @@ class _Sandbox:
     def __init__(self) -> None:
         self.sandbox_id = "sb_123"
         self.detached_command = _Command(stdout="hello\n")
-        self.commands: list[_Command] = []
         self.writes: list[list[dict[str, object]]] = []
         self.files: dict[str, bytes | Exception | None] = {}
         self.write_error: Exception | None = None
@@ -62,10 +63,6 @@ class _Sandbox:
     def run_command_detached(self, cmd: str, args: list[str]) -> _Command:
         self.detached_args = (cmd, args)
         return self.detached_command
-
-    def get_command(self, cmd_id: str) -> _Command:
-        assert cmd_id == self.detached_command.cmd_id
-        return self.commands.pop(0)
 
     def read_file(self, path: str) -> bytes | None:
         value = self.files[path]
@@ -226,7 +223,7 @@ def test_upload_files_maps_provider_errors_to_valid_paths() -> None:
 def test_download_files_rejects_relative_paths_and_preserves_order() -> None:
     sandbox = _Sandbox()
     sandbox.files["/vercel/sandbox/ok.txt"] = b"ok"
-    sandbox.files["/vercel/sandbox/missing.txt"] = None
+    sandbox.files["/vercel/sandbox/missing.txt"] = FileNotFoundError("missing")
 
     responses = sandbox.as_backend().download_files(
         ["relative.txt", "/vercel/sandbox/ok.txt", "/vercel/sandbox/missing.txt"]
@@ -242,6 +239,18 @@ def test_download_files_rejects_relative_paths_and_preserves_order() -> None:
     assert responses[1].error is None
     assert responses[2].content is None
     assert responses[2].error == "file_not_found"
+
+
+def test_download_files_surfaces_missing_sandbox() -> None:
+    sandbox = _Sandbox()
+    # The SDK returns None only when the sandbox itself is gone, not for a
+    # missing file; it must not be collapsed to file_not_found.
+    sandbox.files["/vercel/sandbox/file.txt"] = None
+
+    response = sandbox.as_backend().download_files(["/vercel/sandbox/file.txt"])[0]
+
+    assert response.content is None
+    assert response.error == "sandbox not found"
 
 
 def test_download_files_maps_missing_file_errors() -> None:
@@ -366,3 +375,40 @@ def test_execute_timeout_logs_kill_failure(
     assert result.exit_code == TIMEOUT_EXIT_CODE
     pending.kill.assert_called_once_with()
     assert "Failed to kill timed-out command" in caplog.text
+
+
+def test_execute_returns_response_when_log_fetch_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sandbox = _Sandbox()
+    sandbox.detached_command = _Command(
+        exit_code=NON_ZERO_EXIT_CODE,
+        stdout_exc=RuntimeError("network down"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = sandbox.as_backend().execute("echo hi")
+
+    # A failed (network) log fetch must not escape execute(): the command
+    # already ran, so the exit code is preserved and output is reported missing.
+    assert result.exit_code == NON_ZERO_EXIT_CODE
+    assert result.output == "<output unavailable: failed to fetch command logs>"
+    assert result.truncated is False
+    assert "Failed to fetch output" in caplog.text
+
+
+def test_execute_completes_through_threaded_queue() -> None:
+    sandbox = _Sandbox()
+    sandbox.detached_command = _Command(exit_code=0, stdout="done")
+
+    # A positive timeout exercises the real threaded wait + queue drain rather
+    # than the timeout=0 direct-wait shortcut.
+    result = sandbox.as_backend().execute("echo done", timeout=EXPLICIT_TIMEOUT)
+
+    assert result.output == "done"
+    assert result.exit_code == 0
+
+
+def test_init_rejects_negative_timeout() -> None:
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        VercelSandbox(sandbox=cast("Sandbox", _Sandbox()), timeout=-1)

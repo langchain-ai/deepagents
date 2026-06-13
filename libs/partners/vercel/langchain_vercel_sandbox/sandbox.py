@@ -40,8 +40,15 @@ class VercelSandbox(BaseSandbox):
         Args:
             sandbox: Existing Vercel sandbox instance to wrap.
             timeout: Default command timeout in seconds used when `execute()` is
-                called without an explicit `timeout`.
+                called without an explicit `timeout`. A timeout of 0 waits
+                indefinitely; negative values are rejected.
+
+        Raises:
+            ValueError: If `timeout` is negative.
         """
+        if timeout < 0:
+            msg = f"timeout must be non-negative, got {timeout}"
+            raise ValueError(msg)
         self._sandbox = sandbox
         self._default_timeout = timeout
 
@@ -86,14 +93,34 @@ class VercelSandbox(BaseSandbox):
             msg = f"Command timed out after {effective_timeout} seconds"
             return ExecuteResponse(output=msg, exit_code=124, truncated=False)
 
-        output = current.stdout() or ""
-        stderr = current.stderr() or ""
+        # `stdout()`/`stderr()` re-fetch logs over the network (the Vercel SDK
+        # streams them via `get_logs`), so a transient failure here must not
+        # escape `execute()` and discard the result of a command that already
+        # ran. Preserve the exit code and report that output was unavailable.
+        try:
+            output = current.stdout() or ""
+            stderr = current.stderr() or ""
+        except Exception:  # noqa: BLE001  # log fetch is a network call; keep the exit code
+            logger.warning(
+                "Failed to fetch output for completed command in Vercel sandbox "
+                "%s; returning the exit code without output.",
+                self._sandbox.sandbox_id,
+                exc_info=True,
+            )
+            return ExecuteResponse(
+                output="<output unavailable: failed to fetch command logs>",
+                exit_code=current.exit_code,
+                truncated=False,
+            )
+
         if stderr.strip():
             output += f"\n<stderr>{stderr.strip()}</stderr>"
 
         return ExecuteResponse(
             output=output,
             exit_code=current.exit_code,
+            # Vercel returns the command's full logs and the backend applies no
+            # size cap, so output is never truncated at this layer.
             truncated=False,
         )
 
@@ -118,11 +145,17 @@ class VercelSandbox(BaseSandbox):
                 )
                 continue
             if content is None:
+                # `read_file` returns None only by swallowing the SDK's
+                # `SandboxNotFoundError` (HTTP 404 on the read endpoint); every
+                # other failure raises and is mapped by `_map_file_error`.
+                # Surface it as a distinct not-found condition rather than the
+                # `file_not_found` literal, which would imply a known-good
+                # sandbox is simply missing one file.
                 responses.append(
                     FileDownloadResponse(
                         path=path,
                         content=None,
-                        error=FILE_NOT_FOUND,
+                        error="sandbox not found",
                     )
                 )
             else:
@@ -176,8 +209,9 @@ def _map_file_error(exc: Exception) -> FileOperationError | str:
     if isinstance(exc, FileNotFoundError):
         return FILE_NOT_FOUND
 
-    # Ordered substring heuristics for SDKs that raise plain exceptions. Order
-    # matters: more specific phrases are matched before broader ones.
+    # Substring heuristics for SDKs that raise plain exceptions. The groups are
+    # disjoint today; ordered defensively so a more specific phrase still wins
+    # first should future entries ever overlap.
     message = str(exc).lower()
     substring_errors: tuple[tuple[tuple[str, ...], FileOperationError], ...] = (
         (("permission", "forbidden", "access denied"), PERMISSION_DENIED),

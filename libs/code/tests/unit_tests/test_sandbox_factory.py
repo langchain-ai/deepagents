@@ -1113,6 +1113,96 @@ class TestVercelProvider:
 
         sandbox.stop.assert_not_called()
 
+    def test_pending_sandbox_waits_for_running(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pending sandbox that transitions to running yields a backend."""
+        self._clear_vercel_env(monkeypatch)
+        provider = _get_provider("vercel")
+        sandbox = MagicMock(sandbox_id="sb_123", status="pending")
+        vercel_sdk = MagicMock()
+        vercel_sdk.Sandbox.create.return_value = sandbox
+        backend = MagicMock(id="sb_123")
+        vercel_backend = MagicMock()
+        vercel_backend.VercelSandbox.return_value = backend
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "vercel.sandbox":
+                return vercel_sdk
+            return vercel_backend
+
+        with patch(
+            f"{_FACTORY}._import_provider_module",
+            side_effect=fake_import,
+        ):
+            result = provider.get_or_create(timeout=30)
+
+        sandbox.wait_for_status.assert_called_once_with("running", timeout=30)
+        assert result is backend
+
+    def test_generic_readiness_failure_stops_fresh_sandbox(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-Timeout readiness error stops a freshly created sandbox."""
+        self._clear_vercel_env(monkeypatch)
+        provider = _get_provider("vercel")
+        sandbox = MagicMock(sandbox_id="sb_123", status="pending")
+        sandbox.wait_for_status.side_effect = RuntimeError("boom")
+        vercel_sdk = MagicMock()
+        vercel_sdk.Sandbox.create.return_value = sandbox
+        vercel_backend = MagicMock()
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "vercel.sandbox":
+                return vercel_sdk
+            return vercel_backend
+
+        with (
+            patch(
+                f"{_FACTORY}._import_provider_module",
+                side_effect=fake_import,
+            ),
+            pytest.raises(RuntimeError, match="Failed while waiting"),
+        ):
+            provider.get_or_create()
+
+        sandbox.stop.assert_called_once_with()
+
+    def test_mixed_source_credentials_are_forwarded(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A single prefixed override completes via canonical values."""
+        self._clear_vercel_env(monkeypatch)
+        monkeypatch.setenv("DEEPAGENTS_CODE_VERCEL_TOKEN", "token_prefixed")
+        monkeypatch.setenv("VERCEL_PROJECT_ID", "project_canonical")
+        monkeypatch.setenv("VERCEL_TEAM_ID", "team_canonical")
+        provider = _get_provider("vercel")
+        sandbox = MagicMock(sandbox_id="sb_123", status="running")
+        vercel_sdk = MagicMock()
+        vercel_sdk.Sandbox.create.return_value = sandbox
+        vercel_backend = MagicMock()
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "vercel.sandbox":
+                return vercel_sdk
+            return vercel_backend
+
+        with patch(
+            f"{_FACTORY}._import_provider_module",
+            side_effect=fake_import,
+        ):
+            provider.get_or_create()
+
+        vercel_sdk.Sandbox.create.assert_called_once_with(
+            runtime="python3.13",
+            token="token_prefixed",
+            project_id="project_canonical",
+            team_id="team_canonical",
+        )
+
 
 class TestLangSmithSnapshotResolution:
     """Env-var-driven snapshot resolution in `_LangSmithProvider.get_or_create`."""

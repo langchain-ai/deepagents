@@ -12,7 +12,7 @@ import string
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
@@ -846,8 +846,25 @@ class _AgentCoreProvider(SandboxProvider):
             )
 
 
-_VERCEL_TERMINAL_STATUSES = {"aborted", "failed", "stopped"}
-"""Vercel sandbox statuses that cannot become ready without a new sandbox."""
+_VercelStatus = Literal[
+    "pending",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+    "aborted",
+    "snapshotting",
+]
+"""Vercel sandbox lifecycle statuses (mirrors the SDK's `SandboxStatus` enum)."""
+
+_VERCEL_TERMINAL_STATUSES: frozenset[_VercelStatus] = frozenset(
+    {"aborted", "failed", "stopped"}
+)
+"""Vercel sandbox statuses that cannot become ready without a new sandbox.
+
+Typing the members as `_VercelStatus` turns a typo into a type error rather than
+a silently-never-matching string.
+"""
 
 _VERCEL_DEFAULT_RUNTIME = "python3.13"
 """Runtime used when creating a fresh Vercel sandbox."""
@@ -882,9 +899,11 @@ class _VercelProvider(SandboxProvider):
     def _resolve_sdk_kwargs(cls) -> dict[str, str]:
         """Resolve explicit Vercel credentials when a prefixed override is set.
 
-        Canonical Vercel variables and OIDC remain SDK-managed unless at least
-        one `DEEPAGENTS_CODE_VERCEL_*` override is present. When triggered, each
-        value still resolves prefixed-first then canonical via `resolve_env_var`.
+        Credentials stay SDK-managed (canonical `VERCEL_*` variables or OIDC)
+        unless at least one of the prefixed overrides
+        `DEEPAGENTS_CODE_VERCEL_TOKEN`, `DEEPAGENTS_CODE_VERCEL_PROJECT_ID`, or
+        `DEEPAGENTS_CODE_VERCEL_TEAM_ID` is present. When triggered, each value
+        still resolves prefixed-first then canonical via `resolve_env_var`.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
@@ -951,6 +970,10 @@ class _VercelProvider(SandboxProvider):
             package="vercel",
         )
 
+        # The SDK is imported dynamically, so `Sandbox.get`/`create` are typed
+        # `Any`. Annotating pins the result to the Protocol so the type checker
+        # verifies the `.status`/`.wait_for_status`/`.stop` calls below.
+        sandbox: _VercelSandboxHandle
         try:
             if sandbox_id:
                 sandbox = vercel_sandbox.Sandbox.get(
@@ -979,7 +1002,7 @@ class _VercelProvider(SandboxProvider):
 
         return vercel_backend.VercelSandbox(sandbox=sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # **kwargs required by SandboxProvider interface
         """Stop a Vercel sandbox by id.
 
         Raises:

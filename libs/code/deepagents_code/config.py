@@ -3070,13 +3070,13 @@ def create_model(
         warn_on_split_credential_source(provider)
         apply_stored_credentials(provider)
 
+    from deepagents_code.model_config import CODEX_PROVIDER
+
     # Early credential check — fail fast with an actionable message instead of
     # letting the provider SDK raise an opaque auth error on first invocation.
     # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
     # because their env-var mapping is not a reliable indicator.
     if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
-        from deepagents_code.model_config import CODEX_PROVIDER
-
         cred_status = has_provider_credentials(provider)
         if cred_status is False:
             from deepagents_code.model_config import MissingCredentialsError
@@ -3150,8 +3150,6 @@ def create_model(
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
-
-    from deepagents_code.model_config import CODEX_PROVIDER
 
     if provider == CODEX_PROVIDER:
         # Codex models are constructed directly via `_ChatOpenAICodex` so the

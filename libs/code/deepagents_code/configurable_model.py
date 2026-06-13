@@ -23,6 +23,8 @@ from deepagents_code._cli_context import CLIContextSchema
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from deepagents_code.config import ModelResult
+
 
 logger = logging.getLogger(__name__)
 
@@ -77,47 +79,32 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     return None
 
 
-def _apply_overrides(request: ModelRequest) -> ModelRequest:
-    """Apply model/param overrides from `CLIContext` on the runtime.
+def _build_overrides(
+    request: ModelRequest, ctx: CLIContextSchema, model_result: ModelResult | None
+) -> ModelRequest:
+    """Build the overridden request from a (possibly resolved) model result.
 
-    Reads `'model'` and `'model_params'` from `runtime.context` and, when
-    present, swaps the model and/or merges extra settings into the request.
-    On a cross-provider swap away from Anthropic, Anthropic-only settings
-    (e.g. `cache_control`) are stripped. The `### Model Identity` section
-    in the system prompt is also patched to reflect the new model.
+    Holds the post-construction logic shared by the sync and async override
+    paths: applying the model swap, merging `model_params`, stripping
+    Anthropic-only settings on a cross-provider swap, and patching the
+    `### Model Identity` system-prompt section. The only thing that differs
+    between the two callers is how `model_result` is produced (a direct
+    `create_model` call vs. an `asyncio.to_thread` offload).
 
     Args:
         request: The incoming model request from the middleware chain.
+        ctx: Runtime CLI context carrying the requested overrides.
+        model_result: The resolved model result from `create_model`, or `None`
+            when no model swap was requested.
 
     Returns:
-        The original request unchanged when no `CLIContext` is present or it
-            contains no overrides, otherwise a new request with overrides
-            applied via `request.override()`.
+        The original request when no overrides apply, otherwise a new request
+            with overrides applied via `request.override()`.
     """
-    ctx = _get_context(request)
-    if ctx is None:
-        return request
-
     overrides: dict[str, Any] = {}
 
-    # Model swap
-    new_model = None
-    model = ctx.model
-    if model and not model_matches_spec(request.model, model):
-        from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
-
-        logger.debug("Overriding model to %s", model)
-        try:
-            model_result = create_model(model)
-            new_model = model_result.model
-        except ModelConfigError:
-            logger.exception(
-                "Failed to resolve runtime model override '%s'; "
-                "continuing with current model",
-                model,
-            )
-            return request
+    new_model = model_result.model if model_result is not None else None
+    if new_model is not None:
         overrides["model"] = new_model
 
     # Param merge
@@ -148,86 +135,6 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
     # We read metadata from model_result (not the app's settings singleton)
     # because the middleware runs in the server subprocess where settings
     # are never updated by /model.
-    if new_model is not None and request.system_prompt:
-        from deepagents_code.agent import (
-            MODEL_IDENTITY_RE,
-            build_model_identity_section,
-        )
-
-        prompt = request.system_prompt
-        new_identity = build_model_identity_section(
-            model_result.model_name,
-            provider=model_result.provider,
-            context_limit=model_result.context_limit,
-            unsupported_modalities=model_result.unsupported_modalities,
-        )
-        patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
-        if patched != prompt:
-            overrides["system_prompt"] = patched
-        elif "### Model Identity" in prompt:
-            logger.warning(
-                "System prompt contains '### Model Identity' but regex "
-                "did not match; identity section was NOT updated for "
-                "model '%s'. The regex may be out of sync with the "
-                "prompt template.",
-                model_result.model_name,
-            )
-
-    return request.override(**overrides)
-
-
-async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
-    """Async variant of `_apply_overrides` that offloads model construction.
-
-    Returns:
-        The original request when no async override applies, otherwise a request
-            with the runtime model or settings override applied.
-    """
-    ctx = _get_context(request)
-    if ctx is None:
-        return request
-
-    overrides: dict[str, Any] = {}
-
-    new_model = None
-    model_result = None
-    model = ctx.model
-    if model and not model_matches_spec(request.model, model):
-        from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
-
-        logger.debug("Overriding model to %s", model)
-        try:
-            model_result = await asyncio.to_thread(create_model, model)
-            new_model = model_result.model
-        except ModelConfigError:
-            logger.exception(
-                "Failed to resolve runtime model override '%s'; "
-                "continuing with current model",
-                model,
-            )
-            return request
-        overrides["model"] = new_model
-
-    model_params = ctx.model_params
-    if model_params:
-        overrides["model_settings"] = {**request.model_settings, **model_params}
-
-    if not overrides:
-        return request
-
-    if new_model is not None and not _is_anthropic_model(new_model):
-        settings = overrides.get("model_settings", request.model_settings)
-        dropped = settings.keys() & _ANTHROPIC_ONLY_SETTINGS
-        if dropped:
-            logger.debug(
-                "Stripped Anthropic-only settings %s for non-Anthropic model",
-                dropped,
-            )
-            overrides["model_settings"] = {
-                k: v for k, v in settings.items() if k not in dropped
-            }
-
     if model_result is not None and request.system_prompt:
         from deepagents_code.agent import (
             MODEL_IDENTITY_RE,
@@ -254,6 +161,78 @@ async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
             )
 
     return request.override(**overrides)
+
+
+def _apply_overrides(request: ModelRequest) -> ModelRequest:
+    """Apply model/param overrides from `CLIContext` on the runtime.
+
+    Reads `'model'` and `'model_params'` from `runtime.context` and, when
+    present, swaps the model and/or merges extra settings into the request.
+    On a cross-provider swap away from Anthropic, Anthropic-only settings
+    (e.g. `cache_control`) are stripped. The `### Model Identity` section
+    in the system prompt is also patched to reflect the new model.
+
+    Args:
+        request: The incoming model request from the middleware chain.
+
+    Returns:
+        The original request unchanged when no `CLIContext` is present or it
+            contains no overrides, otherwise a new request with overrides
+            applied via `request.override()`.
+    """
+    ctx = _get_context(request)
+    if ctx is None:
+        return request
+
+    model_result = None
+    model = ctx.model
+    if model and not model_matches_spec(request.model, model):
+        from deepagents_code.config import create_model
+        from deepagents_code.model_config import ModelConfigError
+
+        logger.debug("Overriding model to %s", model)
+        try:
+            model_result = create_model(model)
+        except ModelConfigError:
+            logger.exception(
+                "Failed to resolve runtime model override '%s'; "
+                "continuing with current model",
+                model,
+            )
+            return request
+
+    return _build_overrides(request, ctx, model_result)
+
+
+async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
+    """Async variant of `_apply_overrides` that offloads model construction.
+
+    Returns:
+        The original request when no async override applies, otherwise a request
+            with the runtime model or settings override applied.
+    """
+    ctx = _get_context(request)
+    if ctx is None:
+        return request
+
+    model_result = None
+    model = ctx.model
+    if model and not model_matches_spec(request.model, model):
+        from deepagents_code.config import create_model
+        from deepagents_code.model_config import ModelConfigError
+
+        logger.debug("Overriding model to %s", model)
+        try:
+            model_result = await asyncio.to_thread(create_model, model)
+        except ModelConfigError:
+            logger.exception(
+                "Failed to resolve runtime model override '%s'; "
+                "continuing with current model",
+                model,
+            )
+            return request
+
+    return _build_overrides(request, ctx, model_result)
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):

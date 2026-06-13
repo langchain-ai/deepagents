@@ -75,6 +75,116 @@ class AuthResult(StrEnum):
     """User dismissed the prompt without saving."""
 
 
+class AuthConfirmScreen(ModalScreen[bool]):
+    """Confirm before launching an authentication flow for a model.
+
+    A provider-agnostic gate shown when a selected model needs credentials
+    that aren't detected, and starting the auth flow is disruptive enough
+    that the user should opt in first (e.g. an OAuth flow that launches a
+    browser and a multi-minute loopback wait). The caller supplies all copy
+    so the screen carries no provider assumptions; currently only the
+    `openai_codex` model-switcher path uses it.
+
+    Dismissal values:
+
+    - `True`: proceed to the auth flow.
+    - `False`: go back without authenticating (also the outcome of Esc).
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Continue", show=False, priority=True),
+        Binding("escape", "cancel", "Back", show=False, priority=True),
+    ]
+
+    CSS = """
+    AuthConfirmScreen {
+        align: center middle;
+    }
+
+    AuthConfirmScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    AuthConfirmScreen .auth-confirm-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    AuthConfirmScreen .auth-confirm-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    AuthConfirmScreen .auth-confirm-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        body: str | Content,
+        help_text: str = "Enter to continue, Esc to go back",
+    ) -> None:
+        """Initialize the prompt.
+
+        Args:
+            title: Heading shown at the top of the dialog.
+            body: Explanatory copy. Pass a `Content` for inline styling, or a
+                plain string for unstyled text.
+            help_text: Key-hint line shown at the bottom.
+        """
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._help_text = help_text
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog.
+
+        Yields:
+            Title, body, and key-hint widgets parented inside a `Vertical`.
+        """
+        with Vertical():
+            yield Static(self._title, classes="auth-confirm-title", markup=False)
+            yield Static(self._body, classes="auth-confirm-body", markup=False)
+            yield Static(self._help_text, classes="auth-confirm-help", markup=False)
+
+    def on_mount(self) -> None:
+        """Apply ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def action_confirm(self) -> None:
+        """Dismiss with `True` to proceed to the auth flow."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Dismiss with `False` to go back without authenticating.
+
+        The method name must stay `cancel`: the app owns a priority `escape`
+        binding that, for an active `ModalScreen`, dispatches to
+        `action_cancel` if present and otherwise falls through to
+        `dismiss(None)`. Renaming this would silently regress Esc to a
+        `None` dismiss instead of an explicit "go back".
+        """
+        self.dismiss(False)
+
+
 class DeleteCredentialConfirmScreen(ModalScreen[bool]):
     """Confirmation overlay shown before clearing a stored credential.
 

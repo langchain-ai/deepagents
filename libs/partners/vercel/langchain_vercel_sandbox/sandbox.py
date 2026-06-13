@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import queue
 import threading
 import time
@@ -22,6 +22,8 @@ from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
     from vercel.sandbox import Command, CommandFinished, Sandbox, WriteFile
+
+logger = logging.getLogger(__name__)
 
 
 class VercelSandbox(BaseSandbox):
@@ -72,8 +74,15 @@ class VercelSandbox(BaseSandbox):
         cmd = self._sandbox.run_command_detached("bash", ["-lc", command])
         current = _wait_for_command(cmd, effective_timeout, started_at)
         if current is None:
-            with contextlib.suppress(Exception):
+            try:
                 cmd.kill()
+            except Exception:  # noqa: BLE001  # best-effort cleanup; surface to logs
+                logger.warning(
+                    "Failed to kill timed-out command in Vercel sandbox %s; the "
+                    "command may still be running and incurring cost.",
+                    self._sandbox.sandbox_id,
+                    exc_info=True,
+                )
             msg = f"Command timed out after {effective_timeout} seconds"
             return ExecuteResponse(output=msg, exit_code=124, truncated=False)
 
@@ -140,6 +149,10 @@ class VercelSandbox(BaseSandbox):
         try:
             self._sandbox.write_files(write_files)
         except Exception as exc:  # noqa: BLE001  # Provider exceptions vary by SDK version
+            # `write_files` is a single batched call, so a failure is
+            # batch-level: every valid path receives the same error. For
+            # unrecognized failures this is the real provider message (see
+            # `_map_file_error`) rather than a fabricated per-file code.
             error = _map_file_error(exc)
             for i, (path, _content) in enumerate(files):
                 if path.startswith("/"):
@@ -148,28 +161,35 @@ class VercelSandbox(BaseSandbox):
         return responses
 
 
-def _map_file_error(exc: Exception) -> FileOperationError:
-    """Map provider filesystem failures to Deep Agents file error literals."""
-    error: FileOperationError = FILE_NOT_FOUND
+def _map_file_error(exc: Exception) -> FileOperationError | str:
+    """Map a provider filesystem failure to a Deep Agents file error.
+
+    Recognized failures map to a `FileOperationError` literal. Unrecognized
+    exceptions return their string representation rather than defaulting to
+    `FILE_NOT_FOUND`, so that auth, network, or transient SDK failures are
+    surfaced to the agent instead of masquerading as a missing file.
+    """
     if isinstance(exc, PermissionError):
-        error = PERMISSION_DENIED
-    elif isinstance(exc, IsADirectoryError):
-        error = IS_DIRECTORY
-    elif isinstance(exc, FileNotFoundError):
-        error = FILE_NOT_FOUND
-    else:
-        message = str(exc).lower()
-        if (
-            "permission" in message
-            or "forbidden" in message
-            or "access denied" in message
-        ):
-            error = PERMISSION_DENIED
-        elif "is a directory" in message:
-            error = IS_DIRECTORY
-        elif "invalid path" in message:
-            error = INVALID_PATH
-    return error
+        return PERMISSION_DENIED
+    if isinstance(exc, IsADirectoryError):
+        return IS_DIRECTORY
+    if isinstance(exc, FileNotFoundError):
+        return FILE_NOT_FOUND
+
+    # Ordered substring heuristics for SDKs that raise plain exceptions. Order
+    # matters: more specific phrases are matched before broader ones.
+    message = str(exc).lower()
+    substring_errors: tuple[tuple[tuple[str, ...], FileOperationError], ...] = (
+        (("permission", "forbidden", "access denied"), PERMISSION_DENIED),
+        (("is a directory",), IS_DIRECTORY),
+        (("invalid path",), INVALID_PATH),
+        (("no such file",), FILE_NOT_FOUND),
+    )
+    for needles, error in substring_errors:
+        if any(needle in message for needle in needles):
+            return error
+    # Unrecognized: surface the backend's own message instead of guessing.
+    return str(exc) or FILE_NOT_FOUND
 
 
 def _wait_for_command(
@@ -177,7 +197,13 @@ def _wait_for_command(
     effective_timeout: int,
     started_at: float,
 ) -> CommandFinished | None:
-    """Wait for a Vercel command while preserving local timeout semantics."""
+    """Wait for a Vercel command while preserving local timeout semantics.
+
+    The Vercel SDK's `wait()` has no native timeout or cancellation, so on
+    timeout this returns None and intentionally leaves the daemon wait thread
+    running until the underlying command finishes. The caller is expected to
+    `kill()` the command to unblock it.
+    """
     if effective_timeout == 0:
         return cmd.wait()
 

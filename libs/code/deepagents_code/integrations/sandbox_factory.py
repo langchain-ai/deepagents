@@ -849,12 +849,15 @@ class _AgentCoreProvider(SandboxProvider):
 _VERCEL_TERMINAL_STATUSES = {"aborted", "failed", "stopped"}
 """Vercel sandbox statuses that cannot become ready without a new sandbox."""
 
+_VERCEL_DEFAULT_RUNTIME = "python3.13"
+"""Runtime used when creating a fresh Vercel sandbox."""
+
 
 class _VercelSandboxHandle(Protocol):
     """Minimal Vercel SDK sandbox surface used by the built-in provider."""
 
     sandbox_id: str
-    status: object
+    status: str
 
     def wait_for_status(self, status: str, *, timeout: int) -> None:
         """Wait for the sandbox to reach the requested status."""
@@ -877,10 +880,11 @@ class _VercelProvider(SandboxProvider):
 
     @classmethod
     def _resolve_sdk_kwargs(cls) -> dict[str, str]:
-        """Resolve a complete prefixed Vercel credential override.
+        """Resolve explicit Vercel credentials when a prefixed override is set.
 
         Canonical Vercel variables and OIDC remain SDK-managed unless at least
-        one `DEEPAGENTS_CODE_VERCEL_*` override is present.
+        one `DEEPAGENTS_CODE_VERCEL_*` override is present. When triggered, each
+        value still resolves prefixed-first then canonical via `resolve_env_var`.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
@@ -923,7 +927,7 @@ class _VercelProvider(SandboxProvider):
         Args:
             sandbox_id: Existing sandbox ID, or None to create.
             timeout: Seconds to wait for startup.
-            **kwargs: Unused.
+            **kwargs: Rejected; passing any keyword argument raises `TypeError`.
 
         Returns:
             `VercelSandbox` instance.
@@ -955,13 +959,15 @@ class _VercelProvider(SandboxProvider):
                 )
             else:
                 sandbox = vercel_sandbox.Sandbox.create(
-                    runtime="python3.13",
+                    runtime=_VERCEL_DEFAULT_RUNTIME,
                     **self._sdk_kwargs,
                 )
-        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Keep the message generic so SDK errors cannot leak credentials,
+            # but chain the original exception so tracebacks retain root cause.
             action = "connect to existing" if sandbox_id else "create"
             msg = f"Failed to {action} Vercel sandbox."
-            raise RuntimeError(msg) from None
+            raise RuntimeError(msg) from exc
 
         try:
             self._wait_until_running(sandbox, timeout=timeout)
@@ -990,9 +996,10 @@ class _VercelProvider(SandboxProvider):
                 **self._sdk_kwargs,
             )
             sandbox.stop()
-        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
             msg = "Failed to stop Vercel sandbox."
-            raise RuntimeError(msg) from None
+            raise RuntimeError(msg) from exc
 
     @staticmethod
     def _wait_until_running(
@@ -1022,9 +1029,10 @@ class _VercelProvider(SandboxProvider):
                 f"{timeout} seconds; current status is {status!r}"
             )
             raise RuntimeError(msg) from exc
-        except Exception:  # noqa: BLE001  # Vercel SDK exception types vary by version
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
             msg = "Failed while waiting for Vercel sandbox startup."
-            raise RuntimeError(msg) from None
+            raise RuntimeError(msg) from exc
 
 
 def _get_provider(

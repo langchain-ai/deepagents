@@ -963,6 +963,10 @@ class TestVercelProvider:
 
         assert secret not in str(exc_info.value)
         assert "runtime-token" not in str(exc_info.value)
+        # The original SDK error is preserved as the cause so developer
+        # tracebacks retain root cause even though the message is redacted.
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert str(exc_info.value.__cause__) == secret
 
     def test_delete_sdk_error_does_not_expose_secrets(
         self,

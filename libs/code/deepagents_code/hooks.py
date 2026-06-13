@@ -15,6 +15,20 @@ If `events` is omitted or empty the hook receives **all** events.
 
 Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
 after the user submits a non-empty preferred name.
+
+`tool.use` fires before each tool call; `tool.result` fires after:
+
+```jsonc
+{"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
+ "tool_args": {"path": "src/foo.py", "content": "..."}}
+
+{"event": "tool.result", "tool_name": "write_file", "tool_id": "toolu_abc123",
+ "tool_args": {"path": "src/foo.py", "content": "..."},
+ "tool_status": "success", "tool_output": "Written 42 bytes to src/foo.py"}
+```
+
+`tool_status` is `"success"` or `"error"`. Both `tool.result` and `tool.error`
+fire on failure so existing `tool.error` hooks are unaffected.
 """
 
 from __future__ import annotations

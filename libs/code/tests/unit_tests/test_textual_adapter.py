@@ -2965,3 +2965,159 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# tool.use / tool.result hook dispatch (textual path)
+# ---------------------------------------------------------------------------
+
+
+class TestToolHooksTextual:
+    """Tests for tool.use and tool.result hook dispatch in execute_task_textual."""
+
+    async def test_tool_use_hook_dispatched_before_mount(self) -> None:
+        """tool.use fires (with name, id, args) before the ToolCallMessage mounts."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        payload = tool_use_calls[0][0][1]
+        assert payload["tool_name"] == "read_file"
+        assert payload["tool_id"] == "call-1"
+        assert payload["tool_args"] == {"path": "foo.py"}
+
+    async def test_tool_result_hook_dispatched_on_success(self) -> None:
+        """tool.result fires with tool_status='success' after a successful tool run."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="contents", tool_call_id="call-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_name"] == "read_file"
+        assert payload["tool_id"] == "call-1"
+        assert payload["tool_status"] == "success"
+        assert payload["tool_output"] == "contents"
+        assert payload["tool_args"] == {"path": "foo.py"}
+
+    async def test_tool_result_hook_dispatched_on_error(self) -> None:
+        """tool.result fires with tool_status='error' and tool.error also fires."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("write_file", {"path": "x.py"}, "call-2"), {}),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="Permission denied",
+                        tool_call_id="call-2",
+                        status="error",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        dispatched_events = {c[0][0] for c in mock_dispatch.call_args_list}
+        assert "tool.error" in dispatched_events
+        assert "tool.result" in dispatched_events
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_status"] == "error"
+        assert payload["tool_name"] == "write_file"

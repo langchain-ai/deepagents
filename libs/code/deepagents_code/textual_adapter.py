@@ -713,6 +713,16 @@ async def execute_task_textual(
                                     "tool.error",
                                     {"tool_names": [tool_msg._tool_name]},
                                 )
+                            await dispatch_hook(
+                                "tool.result",
+                                {
+                                    "tool_name": tool_msg._tool_name,
+                                    "tool_id": tool_id,
+                                    "tool_args": tool_msg._args,
+                                    "tool_status": tool_status,
+                                    "tool_output": output_str,
+                                },
+                            )
                         elif tool_id:
                             logger.debug(
                                 "ToolMessage tool_call_id=%s not in "
@@ -972,6 +982,14 @@ async def execute_task_textual(
                                     "Mounting ToolCallMessage: %s(%s)",
                                     buffer_name,
                                     repr(parsed_args)[:200],
+                                )
+                                await dispatch_hook(
+                                    "tool.use",
+                                    {
+                                        "tool_name": buffer_name,
+                                        "tool_id": buffer_id,
+                                        "tool_args": parsed_args,
+                                    },
                                 )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)

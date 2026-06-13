@@ -10,6 +10,7 @@ import pytest
 
 from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
+    _VERCEL_SANDBOX_TIMEOUT,
     _get_provider,
     _VercelProvider,
     create_sandbox,
@@ -682,7 +683,10 @@ class TestVercelProvider:
         ):
             result = provider.get_or_create()
 
-        vercel_sdk.Sandbox.create.assert_called_once_with(runtime="python3.13")
+        vercel_sdk.Sandbox.create.assert_called_once_with(
+            runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
+        )
         vercel_sdk.Sandbox.get.assert_not_called()
         vercel_backend.VercelSandbox.assert_called_once_with(sandbox=sandbox)
         assert result is backend
@@ -713,7 +717,10 @@ class TestVercelProvider:
         ):
             provider.get_or_create()
 
-        vercel_sdk.Sandbox.create.assert_called_once_with(runtime="python3.13")
+        vercel_sdk.Sandbox.create.assert_called_once_with(
+            runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
+        )
 
     def test_existing_sandbox_calls_get(
         self,
@@ -772,6 +779,7 @@ class TestVercelProvider:
 
         vercel_sdk.Sandbox.create.assert_called_once_with(
             runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
             token="token_prefixed",
             project_id="project_prefixed",
             team_id="team_prefixed",
@@ -808,6 +816,7 @@ class TestVercelProvider:
 
         vercel_sdk.Sandbox.create.assert_called_once_with(
             runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
             token="token_prefixed",
             project_id="project_prefixed",
             team_id="team_prefixed",
@@ -851,7 +860,10 @@ class TestVercelProvider:
         ):
             provider.get_or_create()
 
-        vercel_sdk.Sandbox.create.assert_called_once_with(runtime="python3.13")
+        vercel_sdk.Sandbox.create.assert_called_once_with(
+            runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
+        )
         assert "Incomplete explicit Vercel credentials" in caplog.text
         assert not any(value in caplog.text for value in prefixed.values())
 
@@ -881,7 +893,10 @@ class TestVercelProvider:
         ):
             provider.get_or_create()
 
-        vercel_sdk.Sandbox.create.assert_called_once_with(runtime="python3.13")
+        vercel_sdk.Sandbox.create.assert_called_once_with(
+            runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
+        )
 
     def test_prefixed_values_are_reused_for_delete(
         self,
@@ -1198,6 +1213,7 @@ class TestVercelProvider:
 
         vercel_sdk.Sandbox.create.assert_called_once_with(
             runtime="python3.13",
+            timeout=_VERCEL_SANDBOX_TIMEOUT,
             token="token_prefixed",
             project_id="project_canonical",
             team_id="team_canonical",

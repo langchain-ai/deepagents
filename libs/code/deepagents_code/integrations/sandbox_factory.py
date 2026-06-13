@@ -11,6 +11,7 @@ import shlex
 import string
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -869,6 +870,9 @@ a silently-never-matching string.
 _VERCEL_DEFAULT_RUNTIME = "python3.13"
 """Runtime used when creating a fresh Vercel sandbox."""
 
+_VERCEL_SANDBOX_TIMEOUT = timedelta(minutes=30)
+"""Lifetime used for freshly created Vercel sandboxes."""
+
 
 class _VercelSandboxHandle(Protocol):
     """Minimal Vercel SDK sandbox surface used by the built-in provider."""
@@ -983,6 +987,7 @@ class _VercelProvider(SandboxProvider):
             else:
                 sandbox = vercel_sandbox.Sandbox.create(
                     runtime=_VERCEL_DEFAULT_RUNTIME,
+                    timeout=_VERCEL_SANDBOX_TIMEOUT,
                     **self._sdk_kwargs,
                 )
         except Exception as exc:  # Vercel SDK exception types vary by version

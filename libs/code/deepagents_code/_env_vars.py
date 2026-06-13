@@ -170,7 +170,6 @@ THEME = "DEEPAGENTS_CODE_THEME"
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 
-
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
 

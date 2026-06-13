@@ -1204,7 +1204,7 @@ def parse_args() -> argparse.Namespace:
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution (default: none - local only). "
-            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop, vercel. "
             "Third-party and config-declared providers are also accepted. "
             "Pass --sandbox with no value to use [sandboxes].default from "
             "config (keep the bare form last on the command line so a "
@@ -1216,7 +1216,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-id",
         metavar="ID",
-        help="Existing sandbox ID to reuse (skips creation and cleanup)",
+        help="Existing sandbox ID to attach to",
     )
 
     parser.add_argument(

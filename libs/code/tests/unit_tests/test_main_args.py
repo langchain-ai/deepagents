@@ -296,10 +296,25 @@ class TestSandboxArgument:
     def test_sandbox_id_accepted_for_supported_provider(
         self, mock_argv: MockArgvType
     ) -> None:
-        with mock_argv("-n", "task", "--sandbox", "daytona", "--sandbox-id", "abc"):
+        with mock_argv("-n", "task", "--sandbox", "vercel", "--sandbox-id", "abc"):
             parsed = parse_args()
-            assert parsed.sandbox == "daytona"
+            assert parsed.sandbox == "vercel"
             assert parsed.sandbox_id == "abc"
+
+    def test_snapshot_name_rejected_for_vercel(self, mock_argv: MockArgvType) -> None:
+        with (
+            mock_argv(
+                "-n",
+                "task",
+                "--sandbox",
+                "vercel",
+                "--sandbox-snapshot-name",
+                "snap",
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
 
     def test_malformed_config_surfaces_note(
         self,

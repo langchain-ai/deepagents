@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.6.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.9...deepagents==0.6.10) (2026-06-13)
+
+### Bug Fixes
+
+* Compare provider in `model_matches_spec` ([#3943](https://github.com/langchain-ai/deepagents/issues/3943)) ([34244b6](https://github.com/langchain-ai/deepagents/commit/34244b6aebde4c237758dacedccdc3e22f3ca8e5))
+
 ## [0.6.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.8...deepagents==0.6.9) (2026-06-12)
 
 ### Features

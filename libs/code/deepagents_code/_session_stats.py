@@ -14,6 +14,12 @@ from typing import Literal
 SpinnerStatus = Literal["Thinking", "Offloading", "Loading thread"] | None
 """Valid spinner display states, or `None` to hide."""
 
+TurnSpinnerStatus = Literal["Thinking", "Offloading"]
+"""Phases the streaming adapter may set on the live turn spinner.
+
+Excludes `None`: the adapter can update the spinner's phase but never hides
+it. Spinner lifecycle is owned by the app's turn lifecycle."""
+
 
 @dataclass
 class ModelStats:

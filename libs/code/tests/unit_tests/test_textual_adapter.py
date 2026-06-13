@@ -1010,10 +1010,10 @@ class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
     async def test_spinner_transitions_for_summarization_stream(self) -> None:
-        """Spinner should move Thinking -> Offloading -> Thinking."""
-        statuses: list[str | None] = []
+        """Turn spinner phase should move Thinking -> Offloading -> Thinking."""
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1033,7 +1033,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1150,48 +1150,33 @@ class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
     async def test_spinner_not_shown_until_all_parallel_tools_complete(self) -> None:
-        """With two parallel tools, Thinking appears only at start and after last."""
-        statuses: list[str | None] = []
+        """Turn spinner stays on "Thinking" across parallel tools.
 
-        async def record_spinner(status: str | None) -> None:
+        With the turn-owned spinner the top-level indicator is never hidden
+        mid-turn; per-tool widgets carry their own running state.
+        """
+        statuses: list[str] = []
+
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
         async def mount_message(_widget: object) -> None:
             await asyncio.sleep(0)
 
+        tc = _tool_call_message
         chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
             (
                 (),
                 "messages",
-                (
-                    _tool_call_message("task", {"task": "a"}, "tool-a"),
-                    {},
-                ),
+                (ToolMessage(content="result a", tool_call_id="tool-a"), {}),
             ),
             (
                 (),
                 "messages",
-                (
-                    _tool_call_message("task", {"task": "b"}, "tool-b"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="result a", tool_call_id="tool-a"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="result b", tool_call_id="tool-b"),
-                    {},
-                ),
+                (ToolMessage(content="result b", tool_call_id="tool-b"), {}),
             ),
         ]
 
@@ -1199,7 +1184,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1210,12 +1195,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
+        assert statuses, "expected at least one phase update"
         assert statuses[0] == "Thinking"
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_on_tool_complete_fires_per_tool_message(self) -> None:
         """`on_tool_complete` should fire once per `ToolMessage`, even in parallel."""
@@ -1269,29 +1251,19 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
     async def test_spinner_shown_after_single_tool_completes(self) -> None:
-        """Spinner should show Thinking after the only tool completes."""
-        statuses: list[str | None] = []
+        """Turn spinner returns to "Thinking" after the only tool completes."""
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
         chunks = [
+            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
             (
                 (),
                 "messages",
-                (
-                    _tool_call_message("ls", {"path": "."}, "tool-1"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="file1.py", tool_call_id="tool-1"),
-                    {},
-                ),
+                (ToolMessage(content="file1.py", tool_call_id="tool-1"), {}),
             ),
         ]
 
@@ -1299,7 +1271,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1311,12 +1283,13 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         assert statuses[-1] == "Thinking"
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_edit_file_tool_keeps_thinking_spinner_while_pending(self) -> None:
         """`edit_file` should not leave a visual gap before approval/execution."""
-        statuses: list[str | None] = []
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1340,10 +1313,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(content="edited", tool_call_id="tool-1"),
-                    {},
-                ),
+                (ToolMessage(content="edited", tool_call_id="tool-1"), {}),
             ),
         ]
 
@@ -1351,7 +1321,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1363,7 +1333,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         assert statuses[:2] == ["Thinking", "Thinking"]
-        assert None not in statuses
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_auto_executed_tool_shows_running_at_mount(self) -> None:
         """Auto-executed tools (no approval) spin immediately when mounted.
@@ -1442,10 +1412,10 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert tool_msg._status != "running"
 
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
-        """Three parallel tools completed out of order; Thinking after all."""
-        statuses: list[str | None] = []
+        """Top-level spinner stays "Thinking" with three out-of-order tools."""
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1454,39 +1424,20 @@ class TestExecuteTaskTextualParallelToolSpinner:
             ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
             ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
             ((), "messages", (tc("task", {"task": "c"}, "tool-c"), {})),
-            # Complete out of dispatch order: B, A, C
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(
-                        content="result b",
-                        tool_call_id="tool-b",
-                    ),
-                    {},
-                ),
+                (ToolMessage(content="result b", tool_call_id="tool-b"), {}),
             ),
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(
-                        content="result a",
-                        tool_call_id="tool-a",
-                    ),
-                    {},
-                ),
+                (ToolMessage(content="result a", tool_call_id="tool-a"), {}),
             ),
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(
-                        content="result c",
-                        tool_call_id="tool-c",
-                    ),
-                    {},
-                ),
+                (ToolMessage(content="result c", tool_call_id="tool-c"), {}),
             ),
         ]
 
@@ -1494,7 +1445,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1505,45 +1456,29 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert statuses, "expected phase updates"
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
-        """Spinner still shows Thinking with an untracked tool_call_id."""
-        statuses: list[str | None] = []
+        """Turn spinner stays "Thinking" even with an untracked tool_call_id."""
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
         tc = _tool_call_message
         chunks = [
             ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
-            # Result with a tool_call_id that was never dispatched
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(
-                        content="result a",
-                        tool_call_id="tool-a",
-                    ),
-                    {},
-                ),
+                (ToolMessage(content="result a", tool_call_id="tool-a"), {}),
             ),
             (
                 (),
                 "messages",
-                (
-                    ToolMessage(
-                        content="unknown",
-                        tool_call_id="tool-unknown",
-                    ),
-                    {},
-                ),
+                (ToolMessage(content="unknown", tool_call_id="tool-unknown"), {}),
             ),
         ]
 
@@ -1551,7 +1486,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -1562,12 +1497,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        # After the tracked tool completes, dict is empty so spinner should show.
-        # The untracked ToolMessage should not break spinner recovery.
         thinking_calls = [i for i, s in enumerate(statuses) if s == "Thinking"]
-        assert len(thinking_calls) >= 2, (
-            f"Expected at least 2 Thinking calls; got {len(thinking_calls)}: {statuses}"
-        )
+        assert len(thinking_calls) >= 2
+        assert all(s == "Thinking" for s in statuses)
 
 
 class TestExecuteTaskTextualTextThenToolSpinner:
@@ -1580,10 +1512,11 @@ class TestExecuteTaskTextualTextThenToolSpinner:
     """
 
     async def test_spinner_not_hidden_when_text_chunk_arrives(self) -> None:
-        """Streaming a text block must not hide the Thinking spinner."""
-        statuses: list[str | None] = []
+        """Streaming a text block must not hide the top-level turn spinner."""
+        statuses: list[str] = []
+        set_spinner = AsyncMock()
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1597,10 +1530,10 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_spinner=set_spinner,
+            set_turn_spinner_status=record_status,
         )
 
-        # Patch AssistantMessage so it doesn't require a real Textual DOM.
         fake_msg = AsyncMock()
         fake_msg.id = "asst-test"
         with patch(
@@ -1614,37 +1547,20 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Expected sequence:
-        #   1. "Thinking" before astream
-        #   2. "Thinking" after mounting the streaming AssistantMessage
-        #      (re-anchor the spinner below the message so the user still
-        #      sees activity if the model pauses before the tool call)
-        #   3. None when the tool call mounts
-        #   4. "Thinking" after the tool result
+        # The turn spinner is never hidden during streaming; the adapter only
+        # updates its phase, and that phase is always "Thinking" here.
+        for call in set_spinner.await_args_list:
+            assert call.args != (None,)
+        assert statuses
         assert statuses[0] == "Thinking"
-        assert statuses[1] == "Thinking"
-        assert None in statuses
         assert statuses[-1] == "Thinking"
-
-        # The spinner must never be hidden before the tool call arrives.
-        first_none = statuses.index(None)
-        text_thinking_seen = statuses[:first_none].count("Thinking") >= 2
-        assert text_thinking_seen, (
-            f"Spinner was hidden during text streaming before tool call: {statuses}"
-        )
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_spinner_reanchors_for_text_after_tool_cycle(self) -> None:
-        """Text -> tool_call -> tool_result -> text must re-anchor the spinner.
+        """Text -> tool_call -> tool_result -> text must re-anchor the spinner."""
+        statuses: list[str] = []
 
-        After a tool cycle completes, the tool_call handler pops the previous
-        AssistantMessage from `assistant_message_by_namespace`, so the next
-        text chunk mounts a fresh widget. The new re-anchor call at
-        `textual_adapter.py:780-784` must fire for that second text burst so
-        the spinner stays visible between it and any follow-up tool call.
-        """
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1659,7 +1575,7 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         fake_msg = AsyncMock()
@@ -1675,29 +1591,23 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Expected Thinking calls:
-        #   1. Before astream (line 517)
-        #   2. After first AssistantMessage mount (re-anchor, line 784)
-        #   3. After tool result (line 705)
-        #   4. After second AssistantMessage mount (re-anchor again)
+        # Re-anchors fire after each text mount and after the tool result, so
+        # there are at least four phase updates, all "Thinking".
         thinking_count = sum(1 for s in statuses if s == "Thinking")
         assert thinking_count >= 4, (
-            f"Expected at least 4 Thinking calls including re-anchors after "
-            f"each text mount; got {thinking_count}: {statuses}"
+            f"Expected at least 4 re-anchor updates; got {thinking_count}: {statuses}"
         )
+        assert all(s == "Thinking" for s in statuses)
 
-    async def test_spinner_reanchor_skipped_while_tools_pending(self) -> None:
-        """The re-anchor must be gated on `not _current_tool_messages`.
+    async def test_spinner_reanchors_even_while_tools_pending(self) -> None:
+        """The turn spinner re-anchors even while a tool is still in flight.
 
-        Contrived sequence: a tool call mounts (populating
-        `_current_tool_messages`), then a text chunk arrives before the tool
-        result. The new re-anchor logic must NOT call `_set_spinner("Thinking")`
-        in that window — the tool-call widget is the dominant progress
-        indicator.
+        The top-level spinner is no longer gated on `_current_tool_messages`:
+        it stays visible for the whole turn alongside per-tool indicators.
         """
-        statuses: list[str | None] = []
+        statuses: list[str] = []
 
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -1711,7 +1621,7 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         fake_msg = AsyncMock()
@@ -1727,15 +1637,13 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Thinking calls should be:
-        #   1. Before astream
-        #   2. After tool result (guard is back to empty)
-        # The re-anchor must NOT fire while the tool is in flight.
+        # start + tool-call mount + text-while-pending + tool-result, all
+        # "Thinking" and never hidden.
         thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            f"Expected 2 Thinking calls (start + after tool); got "
-            f"{thinking_count}: {statuses}"
+        assert thinking_count >= 3, (
+            f"Expected re-anchors including one while pending; got {statuses}"
         )
+        assert all(s == "Thinking" for s in statuses)
 
 
 class TestExecuteTaskTextualHITLShellSuppression:
@@ -2562,14 +2470,10 @@ class TestExecuteTaskTextualAskUser:
         assert ask_user_resume["answers"] == [""]
 
     async def test_spinner_reappears_after_ask_user_resume(self) -> None:
-        """Spinner should re-show Thinking on each astream iteration.
+        """Turn spinner phase is refreshed to "Thinking" on each astream pass."""
+        statuses: list[str] = []
 
-        Regression for a gap where the model was working on the resume
-        payload after an ask_user response but no spinner was visible.
-        """
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
+        async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
             statuses.append(status)
 
@@ -2598,7 +2502,7 @@ class TestExecuteTaskTextualAskUser:
             update_status=_noop_status,
             request_approval=_mock_approval,
             request_ask_user=request_ask_user,
-            set_spinner=record_spinner,
+            set_turn_spinner_status=record_status,
         )
 
         await execute_task_textual(
@@ -2609,14 +2513,14 @@ class TestExecuteTaskTextualAskUser:
             adapter=adapter,
         )
 
-        # Two astream iterations (interrupt, then resume) -> expect
-        # Thinking set before each, and nothing above that count since
-        # no tool calls stream in this test.
+        # Two astream iterations (interrupt, then resume) -> "Thinking" set
+        # before each, and never hidden across the ask_user pause.
         assert len(agent.stream_inputs) == 2
         thinking_count = sum(1 for s in statuses if s == "Thinking")
         assert thinking_count == 2, (
             f"Expected Thinking spinner on each iteration; got {statuses}"
         )
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_invalid_ask_user_interrupt_payload_raises_validation_error(
         self,
@@ -2965,3 +2869,130 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestTurnSpinnerContract:
+    """The streaming adapter never hides the app-owned turn spinner."""
+
+    async def test_assistant_text_does_not_hide_top_level_spinner(self) -> None:
+        """Streaming assistant text must never hide the turn spinner."""
+        statuses: list[str] = []
+        set_spinner = AsyncMock()
+
+        async def record_status(status: str, _turn_id: int) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "messages", (_text_message("hello "), {})),
+            ((), "messages", (_text_message("world"), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+            set_turn_spinner_status=record_status,
+        )
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+        for call in set_spinner.await_args_list:
+            assert call.args != (None,)
+        assert statuses
+        assert all(s == "Thinking" for s in statuses)
+
+    async def test_mounting_tool_call_does_not_hide_top_level_spinner(self) -> None:
+        """Mounting a tool call widget must not hide the turn spinner."""
+        set_spinner = AsyncMock()
+        statuses: list[str] = []
+
+        async def record_status(status: str, _turn_id: int) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("grep", {"pattern": "x"}, "tool-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+            set_turn_spinner_status=record_status,
+        )
+        await execute_task_textual(
+            user_input="search",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+        for call in set_spinner.await_args_list:
+            assert call.args != (None,)
+        assert adapter._current_tool_messages["tool-1"]._status == "running"
+
+    async def test_tool_completion_not_gated_on_current_tool_messages(self) -> None:
+        """Tool completion re-anchors the spinner regardless of tracked tools."""
+        statuses: list[str] = []
+
+        async def record_status(status: str, _turn_id: int) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        tc = _tool_call_message
+        chunks = [
+            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
+            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
+            ((), "messages", (ToolMessage(content="a", tool_call_id="tool-a"), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_turn_spinner_status=record_status,
+        )
+        await execute_task_textual(
+            user_input="go",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+        assert statuses
+        assert all(s == "Thinking" for s in statuses)
+        assert "tool-b" in adapter._current_tool_messages
+
+    async def test_phase_updates_forward_turn_id(self) -> None:
+        """The adapter forwards the given `turn_id` on each phase update."""
+        seen: list[int] = []
+
+        async def record_status(_status: str, turn_id: int) -> None:
+            await asyncio.sleep(0)
+            seen.append(turn_id)
+
+        chunks = [((), "messages", (_text_message("hi"), {}))]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_turn_spinner_status=record_status,
+        )
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+            turn_id=7,
+        )
+        assert seen
+        assert all(t == 7 for t in seen)

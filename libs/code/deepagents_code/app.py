@@ -50,6 +50,7 @@ from deepagents_code._git import (
 from deepagents_code._session_stats import (
     SessionStats,
     SpinnerStatus,
+    TurnSpinnerStatus,
     format_token_count,
 )
 
@@ -1877,6 +1878,13 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._spinner_turn_id = 0
+        """Monotonic id for the current agent turn's top-level spinner.
+
+        Incremented when a turn starts so delayed phase updates from the
+        streaming adapter (e.g. a late `"Thinking"`/`"Offloading"`) can be
+        ignored if they belong to a turn that has already finished."""
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -2523,6 +2531,7 @@ class DeepAgentsApp(App):
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
             set_spinner=self._set_spinner,
+            set_turn_spinner_status=self._set_turn_spinner_status,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
@@ -4632,6 +4641,33 @@ class DeepAgentsApp(App):
         """
         if self._loading_widget is not None:
             self._loading_widget.resume()
+
+    async def _set_turn_spinner_status(
+        self,
+        status: TurnSpinnerStatus,
+        turn_id: int,
+    ) -> None:
+        """Update the live turn spinner's phase without owning its lifetime.
+
+        The streaming adapter calls this to reflect the current phase
+        (`"Thinking"` or `"Offloading"`) and to re-anchor the spinner below
+        freshly-mounted widgets. It deliberately cannot hide the spinner:
+        lifecycle is owned by `_send_to_agent` (show) and
+        `_cleanup_agent_task` (hide).
+
+        Stale updates are dropped: a phase update is applied only while the
+        agent is still running and `turn_id` matches the current turn, so a
+        late update from a previous turn can't resurrect or mutate a new
+        turn's spinner.
+
+        Args:
+            status: The phase to display (`"Thinking"` or `"Offloading"`).
+            turn_id: The turn the update was issued for; ignored if it does
+                not match the active turn.
+        """
+        if not self._agent_running or turn_id != self._spinner_turn_id:
+            return
+        await self._set_spinner(status)
 
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
@@ -7153,6 +7189,13 @@ class DeepAgentsApp(App):
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
 
+            # The top-level "Thinking" spinner is owned by the turn
+            # lifecycle: mount it once here at the start and hide it once in
+            # `_cleanup_agent_task()`. The streaming adapter only updates its
+            # phase (e.g. "Offloading") during the turn; it never hides it.
+            self._spinner_turn_id += 1
+            await self._set_spinner("Thinking")
+
             # Flush any buffered non-incognito `!` shell output into thread
             # state so this turn's model sees commands run since the last turn.
             await self._flush_pending_shell_messages()
@@ -7258,6 +7301,7 @@ class DeepAgentsApp(App):
                     effective_model=self._effective_model_spec(),
                 ),
                 turn_stats=turn_stats,
+                turn_id=self._spinner_turn_id,
             )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")

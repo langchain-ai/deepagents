@@ -14029,3 +14029,79 @@ class TestEnsureManagedRipgrep:
             await app._start_server_background()
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
+
+
+class TestTurnSpinnerOwnership:
+    """The app owns the top-level turn spinner lifecycle."""
+
+    async def test_send_to_agent_starts_turn_spinner_once(self) -> None:
+        """A normal turn shows the spinner once near start with a new turn id."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            spinner = AsyncMock()
+            app._agent = MagicMock()  # ty: ignore
+            app._ui_adapter = MagicMock()  # ty: ignore
+            app._session_state = MagicMock()  # ty: ignore
+            app._set_spinner = spinner  # ty: ignore
+            app._flush_pending_shell_messages = AsyncMock()  # ty: ignore
+            app._run_agent_task = AsyncMock()  # ty: ignore
+            before = app._spinner_turn_id
+
+            await app._send_to_agent("hello")
+            await pilot.pause()
+
+            spinner.assert_awaited_once_with("Thinking")
+            assert app._spinner_turn_id == before + 1
+
+    async def test_cleanup_agent_task_hides_turn_spinner_once(self) -> None:
+        """Cleanup hides the turn spinner exactly once at the end of the turn."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            spinner = AsyncMock()
+            app._set_spinner = spinner  # ty: ignore
+
+            await app._cleanup_agent_task()
+            await pilot.pause()
+
+            spinner.assert_awaited_once_with(None)
+
+    async def test_turn_spinner_status_applies_for_active_turn(self) -> None:
+        """A matching, in-turn phase update mounts/updates the spinner."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._spinner_turn_id = 9
+
+            await app._set_turn_spinner_status("Offloading", 9)
+            await pilot.pause()
+
+            assert app._loading_widget is not None
+
+    async def test_turn_spinner_status_ignores_stale_turn(self) -> None:
+        """A phase update from a previous turn id is dropped."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._spinner_turn_id = 9
+
+            await app._set_turn_spinner_status("Thinking", 8)
+            await pilot.pause()
+
+            assert app._loading_widget is None
+
+    async def test_turn_spinner_status_ignored_when_not_running(self) -> None:
+        """A phase update after the turn ended is dropped."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = False
+            app._spinner_turn_id = 9
+
+            await app._set_turn_spinner_status("Thinking", 9)
+            await pilot.pause()
+
+            assert app._loading_widget is None

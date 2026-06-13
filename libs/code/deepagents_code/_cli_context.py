@@ -7,7 +7,17 @@ middleware stack.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
+
+
+@dataclass
+class CLIContextSchema:
+    """Server-side schema for run-scoped CLI context."""
+
+    model: str | None = None
+    model_params: dict[str, Any] = field(default_factory=dict)
+    effective_model: str | None = None
 
 
 class CLIContext(TypedDict, total=False):

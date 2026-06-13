@@ -18,6 +18,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
+from deepagents_code._cli_context import CLIContextSchema
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -57,14 +59,22 @@ _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 must be stripped on cross-provider swap."""
 
 
-def _get_context(request: ModelRequest) -> dict[str, Any] | None:
-    """Return runtime context when it is a dict, otherwise `None`."""
+def _get_context(request: ModelRequest) -> CLIContextSchema | None:
+    """Return runtime context when it matches the CLI context shape."""
     runtime = request.runtime
     if runtime is None:
         return None
 
     ctx = runtime.context
-    return ctx if isinstance(ctx, dict) else None
+    if isinstance(ctx, CLIContextSchema):
+        return ctx
+    if isinstance(ctx, dict):
+        return CLIContextSchema(
+            model=ctx.get("model"),
+            model_params=ctx.get("model_params") or {},
+            effective_model=ctx.get("effective_model"),
+        )
+    return None
 
 
 def _apply_overrides(request: ModelRequest) -> ModelRequest:
@@ -92,7 +102,7 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
 
     # Model swap
     new_model = None
-    model = ctx.get("model")
+    model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
         from deepagents_code.model_config import ModelConfigError
@@ -111,7 +121,7 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
         overrides["model"] = new_model
 
     # Param merge
-    model_params = ctx.get("model_params", {})
+    model_params = ctx.model_params
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
 
@@ -181,7 +191,7 @@ async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
 
     new_model = None
     model_result = None
-    model = ctx.get("model")
+    model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
         from deepagents_code.model_config import ModelConfigError
@@ -199,7 +209,7 @@ async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
             return request
         overrides["model"] = new_model
 
-    model_params = ctx.get("model_params", {})
+    model_params = ctx.model_params
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
 

@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_code import theme
-from deepagents_code._cli_context import CLIContext
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
@@ -1119,7 +1119,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
-) -> tuple[Pregel, CompositeBackend]:
+) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
     This is the main entry point for creating a Deep Agents Code agent, usable
@@ -1579,7 +1579,7 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
-        context_schema=cast("type[Any]", CLIContext),
+        context_schema=CLIContextSchema,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),

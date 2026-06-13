@@ -10,7 +10,7 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_code._cli_context import CLIContext
+from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
@@ -29,7 +29,7 @@ def _make_model(name: str) -> MagicMock:
 
 def _make_request(
     model: BaseChatModel,
-    context: CLIContext | None = None,
+    context: CLIContext | CLIContextSchema | None = None,
     model_settings: dict[str, Any] | None = None,
     system_prompt: str | None = None,
 ) -> ModelRequest:
@@ -119,7 +119,7 @@ class TestNoOverride:
     def test_provider_prefixed_spec_mismatch_overrides_same_model_name(self) -> None:
         request = _make_request(
             _make_model("gpt-5.5"),
-            context=CLIContext(model="openai_codex:gpt-5.5"),
+            context=CLIContextSchema(model="openai_codex:gpt-5.5"),
         )
         replacement = _make_model("gpt-5.5")
         replacement._get_ls_params.return_value = {"ls_provider": "openai-codex"}

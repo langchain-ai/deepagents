@@ -77,9 +77,10 @@ class CodexAuthScreen(ModalScreen[bool]):
         retry the operation that needed the credential).
     - `False`: the user cancelled, or the flow failed irrecoverably.
 
-    The flow lives in a worker so the modal stays responsive to the
-    cancel keybinding while the upstream `_wait_for_callback` blocks for
-    up to 5 minutes.
+    The flow lives in a worker so the modal stays responsive to the cancel
+    keybinding while `_wait_for_oauth_callback` blocks for up to 5 minutes;
+    pressing Esc sets the worker's `cancel_event`, which frees the loopback
+    port within one poll interval rather than holding it until the timeout.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -158,7 +159,7 @@ class CodexAuthScreen(ModalScreen[bool]):
                     "Authorize Deep Agents to call ChatGPT Codex models on "
                     "your behalf. We will open your default browser to "
                     "openai.com — the token is stored locally at "
-                    "~/.langchain/chatgpt-auth.json.",
+                    "~/.deepagents/.state/chatgpt-auth.json.",
                 ),
                 classes="codex-auth-copy",
             )
@@ -218,7 +219,11 @@ class CodexAuthScreen(ModalScreen[bool]):
         return status
 
     def on_authorize_url(self, url: str, opened_in_browser: bool) -> None:
-        """Render the authorize URL in the modal (called from worker thread)."""
+        """Render the authorize URL in the modal.
+
+        Called on the event loop from the async sign-in worker (the worker is
+        started with `thread=False`), so it can mutate widgets directly.
+        """
         status = self.query_one("#codex-auth-status", Static)
         url_label = self.query_one("#codex-auth-url", Static)
         if opened_in_browser:
@@ -269,18 +274,20 @@ class CodexAuthScreen(ModalScreen[bool]):
                 self.app.notify("Sign-in cancelled.", markup=False)
                 self.dismiss(False)
                 return
-            if isinstance(error, WorkerFailed):
-                # `WorkerFailed.__cause__` carries the real exception, but
-                # the framework also surfaces it via `error.error`; either is
-                # safe to render here.
-                inner = getattr(error, "error", error)
-                detail = str(inner)
-            else:
-                detail = str(error) if error else "Sign-in failed."
-            if isinstance(error, codex_integration.CodexLoginCancelledError):
+            # `WorkerFailed` wraps the real exception (surfaced via
+            # `error.error`); unwrap it so we can both detect a cancellation
+            # that arrived via ERROR rather than CANCELLED and render an
+            # accurate message. Test `inner`, not the wrapper.
+            inner = (
+                getattr(error, "error", error)
+                if isinstance(error, WorkerFailed)
+                else error
+            )
+            if isinstance(inner, codex_integration.CodexLoginCancelledError):
                 self.app.notify("Sign-in cancelled.", markup=False)
                 self.dismiss(False)
                 return
+            detail = str(inner) if inner else "Sign-in failed."
             logger.warning("ChatGPT OAuth sign-in failed: %s", detail)
             self.app.notify(
                 f"Sign-in failed: {detail}",
@@ -316,7 +323,10 @@ def open_chatgpt_login_url() -> bool:
     """
     try:
         return webbrowser.open("https://chatgpt.com/")
-    except webbrowser.Error as exc:
+    except (webbrowser.Error, OSError) as exc:
+        # `OSError` (not just `webbrowser.Error`) escapes when a configured
+        # launcher's binary is missing; treat it as "no browser launched" so
+        # the caller can fall back to a manual-URL toast.
         logger.warning("Could not open chatgpt.com: %s", exc)
         return False
 

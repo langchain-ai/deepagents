@@ -826,7 +826,7 @@ class CodexSignedInScreen(ModalScreen[str]):
             container.styles.border = ("ascii", colors.success)
 
     def action_signout(self) -> None:
-        """Confirm and dismiss with `"signout"`."""
+        """Dismiss with `"signout"` so the manager deletes the stored token."""
         self.dismiss("signout")
 
     def action_reauth(self) -> None:

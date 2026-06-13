@@ -5000,3 +5000,30 @@ max_input_tokens = 8192
         assert entry["profile"]["max_output_tokens"] == 2048
         assert "max_output_tokens" in entry["overridden_keys"]
         assert "max_input_tokens" in entry["overridden_keys"]
+
+
+class TestCodexProviderMirror:
+    """`openai_codex` mirrors the full `openai` model list (no name filter).
+
+    The provider previously filtered to `-codex` names, which wrongly dropped
+    flagship reasoning models like `gpt-5.5`. Eligibility is now unfiltered.
+    """
+
+    def test_available_models_mirror_openai_verbatim(self) -> None:
+        model_config.clear_caches()
+        available = model_config.get_available_models()
+        openai_models = available.get("openai", [])
+        assert openai_models, "expected openai models to be discoverable"
+        assert available.get(model_config.CODEX_PROVIDER) == openai_models
+        # The flagship the old `-codex` heuristic dropped is now present.
+        assert "gpt-5.5" in available[model_config.CODEX_PROVIDER]
+
+    def test_profiles_mirror_every_openai_model_under_codex(self) -> None:
+        model_config.clear_caches()
+        profiles = model_config.get_model_profiles()
+        openai_models = [
+            spec.split(":", 1)[1] for spec in profiles if spec.startswith("openai:")
+        ]
+        assert openai_models, "expected openai profiles to load"
+        for model_name in openai_models:
+            assert f"{model_config.CODEX_PROVIDER}:{model_name}" in profiles

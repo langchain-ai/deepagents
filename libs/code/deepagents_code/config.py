@@ -3154,7 +3154,7 @@ def create_model(
     from deepagents_code.model_config import CODEX_PROVIDER
 
     if provider == CODEX_PROVIDER:
-        # Codex models are constructed directly via `ChatOpenAICodex` so the
+        # Codex models are constructed directly via `_ChatOpenAICodex` so the
         # `token_provider=` kwarg is wired to the on-disk OAuth token store
         # before any request goes out. `init_chat_model` does not know about
         # this class and would route through API-key `ChatOpenAI` instead.
@@ -3164,9 +3164,10 @@ def create_model(
             ModelConfigError,
         )
 
-        # `_get_provider_kwargs` may have left an `api_key` from a residual
-        # `OPENAI_API_KEY`; drop it so the bearer always comes from the
-        # OAuth provider rather than a stale shell export.
+        # Drop any `api_key` left in kwargs (e.g. from a config-level
+        # `api_key_env` set on the codex provider, or a `--model-params
+        # api_key=...`) so the bearer always comes from the OAuth
+        # `token_provider` rather than a static key.
         kwargs.pop("api_key", None)
         try:
             model = _codex.build_chat_model(model_name, **kwargs)

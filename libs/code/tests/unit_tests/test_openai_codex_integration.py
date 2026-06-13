@@ -55,18 +55,30 @@ def _write_token(
     path.chmod(0o600)
 
 
+def _free_port() -> int:
+    """Return a currently-free localhost TCP port.
+
+    Small TOCTOU window between close and rebind, acceptable for a local
+    unit test that just needs a port unlikely to collide with the fixed
+    OAuth default (1455) or a parallel test run.
+    """
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("localhost", 0))
+        return sock.getsockname()[1]
+
+
 @contextmanager
 def _override_default_store(path: Path) -> Iterator[None]:
-    """Point upstream's default store path at `path` for the duration."""
-    import langchain_openai.chatgpt_oauth as o
-
-    original = o.DEFAULT_STORE_PATH
-    o.DEFAULT_STORE_PATH = path
+    """Point `openai_codex.default_store_path` at `path` for the duration."""
+    original = openai_codex.default_store_path
+    setattr(openai_codex, "default_store_path", lambda: path)  # noqa: B010  # restored in finally
     clear_caches()
     try:
         yield
     finally:
-        o.DEFAULT_STORE_PATH = original
+        setattr(openai_codex, "default_store_path", original)  # noqa: B010  # restore original
         clear_caches()
 
 
@@ -174,25 +186,16 @@ class TestProviderAuthStatus:
 class TestBuildChatModel:
     """`build_chat_model` raises `FileNotFoundError` when no token exists."""
 
-    def test_raises_when_no_token(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Force the file provider to look at a clean temp path.
-        import langchain_openai.chatgpt_oauth as o
-
-        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", tmp_path / "missing.json")
+    def test_raises_when_no_token(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
-            openai_codex.build_chat_model("gpt-5.2-codex")
+            openai_codex.build_chat_model(
+                "gpt-5.2-codex", store_path=tmp_path / "missing.json"
+            )
 
-    def test_returns_chat_model_when_token_present(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import langchain_openai.chatgpt_oauth as o
-
+    def test_returns_chat_model_when_token_present(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
         _write_token(path)
-        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", path)
-        model = openai_codex.build_chat_model("gpt-5.2-codex")
+        model = openai_codex.build_chat_model("gpt-5.2-codex", store_path=path)
         from langchain_openai.chat_models.codex import (
             _ChatOpenAICodex,
         )
@@ -249,7 +252,7 @@ class TestRunBrowserLogin:
         def fake_wait(**_kwargs: Any) -> dict[str, str]:
             return {"code": "fake_code", "state": captured_state["state"]}
 
-        monkeypatch.setattr(o, "_wait_for_callback", fake_wait)
+        monkeypatch.setattr(openai_codex, "_wait_for_oauth_callback", fake_wait)
 
         # Fake the token exchange.
         token_payload = {
@@ -302,7 +305,7 @@ class TestRunBrowserLogin:
                 "state": secrets.token_urlsafe(8),
             }
 
-        monkeypatch.setattr(o, "_wait_for_callback", fake_wait)
+        monkeypatch.setattr(openai_codex, "_wait_for_oauth_callback", fake_wait)
 
         def _explode(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             msg = "should not reach token exchange on state mismatch"
@@ -335,8 +338,8 @@ class TestRunBrowserLogin:
 
         monkeypatch.setattr(o, "_build_authorize_url", _capture)
         monkeypatch.setattr(
-            o,
-            "_wait_for_callback",
+            openai_codex,
+            "_wait_for_oauth_callback",
             lambda **_kw: {
                 "state": captured["state"],
                 "error": "access_denied",
@@ -374,7 +377,7 @@ class TestRunBrowserLogin:
             cancel.set()
             return {"code": "fake_code", "state": captured["state"]}
 
-        monkeypatch.setattr(o, "_wait_for_callback", fake_wait)
+        monkeypatch.setattr(openai_codex, "_wait_for_oauth_callback", fake_wait)
         with pytest.raises(openai_codex.CodexLoginCancelledError):
             asyncio.run(
                 openai_codex.run_browser_login(
@@ -384,6 +387,142 @@ class TestRunBrowserLogin:
                     cancel_event=cancel,
                 )
             )
+
+    def test_missing_code_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A callback with the right state but no `code` must fail closed."""
+        import langchain_openai.chatgpt_oauth as o
+
+        path = tmp_path / "auth.json"
+        captured: dict[str, str] = {}
+        original_build = o._build_authorize_url
+
+        def _capture(**kwargs: Any) -> str:
+            captured["state"] = kwargs["state"]
+            return original_build(**kwargs)
+
+        monkeypatch.setattr(o, "_build_authorize_url", _capture)
+        monkeypatch.setattr(
+            openai_codex,
+            "_wait_for_oauth_callback",
+            lambda **_kw: {"state": captured["state"]},
+        )
+
+        def _explode(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            msg = "should not exchange a token when no code was returned"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(o, "_post_form", _explode)
+
+        with pytest.raises(RuntimeError, match="authorization code"):
+            asyncio.run(
+                openai_codex.run_browser_login(
+                    _FakeUI(), store_path=path, open_browser=False
+                )
+            )
+        assert not path.exists()
+
+    def test_browser_launch_oserror_falls_back_to_manual_url(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A browser launcher raising `OSError` must not abort sign-in."""
+        import webbrowser as _wb
+
+        import langchain_openai.chatgpt_oauth as o
+
+        path = tmp_path / "auth.json"
+        captured: dict[str, str] = {}
+        original_build = o._build_authorize_url
+
+        def _capture(**kwargs: Any) -> str:
+            captured["state"] = kwargs["state"]
+            return original_build(**kwargs)
+
+        monkeypatch.setattr(o, "_build_authorize_url", _capture)
+
+        def _raise_oserror(*_a: Any, **_kw: Any) -> bool:
+            msg = "no such browser binary"
+            raise OSError(msg)
+
+        # `OSError` is not a `webbrowser.Error`; the flow must still continue.
+        monkeypatch.setattr(_wb, "open", _raise_oserror)
+        monkeypatch.setattr(
+            openai_codex,
+            "_wait_for_oauth_callback",
+            lambda **_kw: {"code": "fake_code", "state": captured["state"]},
+        )
+        monkeypatch.setattr(
+            o,
+            "_post_form",
+            lambda *_a, **_kw: {
+                "access_token": "tk",
+                "refresh_token": "rk",
+                "expires_in": 3600,
+                "id_token": None,
+            },
+        )
+
+        ui = _FakeUI()
+        result = asyncio.run(
+            openai_codex.run_browser_login(ui, store_path=path, open_browser=True)
+        )
+        assert result.logged_in is True
+        # URL surfaced with `opened_in_browser=False` so the user can copy it.
+        assert len(ui.urls) == 1
+        assert ui.urls[0][1] is False
+
+
+class TestWaitForOAuthCallback:
+    """The cancel-aware callback wait releases the port promptly on cancel."""
+
+    def test_closes_server_on_cancel(self) -> None:
+        """A set `cancel_event` raises and frees the bound port immediately."""
+        import http.server
+
+        port = _free_port()
+        cancel = threading.Event()
+        cancel.set()  # Already cancelled before the first poll.
+        with pytest.raises(openai_codex.CodexLoginCancelledError):
+            openai_codex._wait_for_oauth_callback(
+                host="localhost",
+                port=port,
+                callback_path="/auth/callback",
+                timeout=5.0,
+                cancel_event=cancel,
+                poll_interval=0.05,
+            )
+        # The server bound then closed in the `finally`, so the same port is
+        # immediately rebindable — this is the regression guard for the
+        # cancel-leaks-the-port bug.
+        rebind = http.server.HTTPServer(
+            ("localhost", port), http.server.BaseHTTPRequestHandler
+        )
+        rebind.server_close()
+
+    def test_bind_failure_raises_runtimeerror(self) -> None:
+        """A port already in use surfaces as a `RuntimeError`, not `OSError`."""
+        import http.server
+
+        port = _free_port()
+        holder = http.server.HTTPServer(
+            ("localhost", port), http.server.BaseHTTPRequestHandler
+        )
+        try:
+            with pytest.raises(RuntimeError, match="Could not bind"):
+                openai_codex._wait_for_oauth_callback(
+                    host="localhost",
+                    port=port,
+                    callback_path="/auth/callback",
+                    timeout=1.0,
+                    poll_interval=0.05,
+                )
+        finally:
+            holder.server_close()
 
 
 class _DummyBrowser:

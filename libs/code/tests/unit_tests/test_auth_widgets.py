@@ -558,11 +558,12 @@ class TestCodexAuthInManager:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Missing token store renders the "[sign in to chatgpt]" badge."""
-        import langchain_openai.chatgpt_oauth as o
-
+        from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
 
-        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", tmp_path / "missing.json")
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
         clear_caches()
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -582,8 +583,6 @@ class TestCodexAuthInManager:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Choosing `openai_codex` while signed out opens the OAuth modal."""
-        import langchain_openai.chatgpt_oauth as o
-
         from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
         from deepagents_code.widgets.codex_auth import CodexAuthScreen
@@ -599,7 +598,9 @@ class TestCodexAuthInManager:
 
         monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
 
-        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", tmp_path / "missing.json")
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
         clear_caches()
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -665,8 +666,7 @@ class TestCodexAuthInManager:
         import json
         from datetime import datetime, timedelta
 
-        import langchain_openai.chatgpt_oauth as o
-
+        from deepagents_code.integrations import openai_codex as codex_integration
         from deepagents_code.model_config import clear_caches
         from deepagents_code.widgets.auth import CodexSignedInScreen
 
@@ -686,7 +686,7 @@ class TestCodexAuthInManager:
             )
         )
         path.chmod(0o600)
-        monkeypatch.setattr(o, "DEFAULT_STORE_PATH", path)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: path)
         clear_caches()
         app = _AuthHostApp()
         async with app.run_test() as pilot:

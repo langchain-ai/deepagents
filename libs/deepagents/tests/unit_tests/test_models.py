@@ -218,6 +218,13 @@ class TestGetModelProvider:
         model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
         assert get_model_provider(model) is None
 
+    def test_returns_none_when_get_ls_params_returns_non_mapping(self) -> None:
+        # A custom integration may return `None` instead of a mapping; this
+        # must not raise `AttributeError` on the subsequent `.get`.
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value=None)
+        assert get_model_provider(model) is None
+
 
 class TestModelMatchesSpec:
     """Tests for `model_matches_spec`."""
@@ -248,6 +255,16 @@ class TestModelMatchesSpec:
         model._get_ls_params = MagicMock(return_value={})
 
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_falls_back_when_ls_params_non_mapping(
+        self,
+    ) -> None:
+        # `_get_ls_params` returning `None` must fall back to identifier-only
+        # matching rather than raising `AttributeError` out of the match.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value=None)
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
 
     def test_no_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})

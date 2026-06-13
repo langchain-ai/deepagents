@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -77,6 +78,11 @@ def get_model_provider(model: BaseChatModel) -> str | None:
             type(model).__name__,
             exc,
         )
+        return None
+    if not isinstance(ls_params, Mapping):
+        # A custom integration may return `None` (or another non-mapping)
+        # instead of raising. Treat that as "provider unavailable" rather than
+        # letting the subsequent `.get` raise `AttributeError`.
         return None
     provider = ls_params.get("ls_provider")
     if isinstance(provider, str) and provider:

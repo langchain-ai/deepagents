@@ -30,9 +30,9 @@ dependencies = [
 packages = ["langchain_vercel_sandbox"]
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/vercel-sandbox"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/vercel"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/vercel-sandbox"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/vercel"
 
 [dependency-groups]
 test = [

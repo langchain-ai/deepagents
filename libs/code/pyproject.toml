@@ -173,7 +173,7 @@ langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
-langchain-vercel-sandbox = { path = "../partners/vercel-sandbox", editable = true }
+langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
@@ -183,7 +183,7 @@ extra-paths = [
     "../partners/modal",
     "../partners/quickjs",
     "../partners/runloop",
-    "../partners/vercel-sandbox",
+    "../partners/vercel",
 ]
 
 [tool.ty.rules]

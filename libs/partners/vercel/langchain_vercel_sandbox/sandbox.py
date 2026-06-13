@@ -165,7 +165,7 @@ def _map_file_error(exc: Exception) -> FileOperationError:
             or "access denied" in message
         ):
             error = PERMISSION_DENIED
-        elif "is a directory" in message or "directory" in message:
+        elif "is a directory" in message:
             error = IS_DIRECTORY
         elif "invalid path" in message:
             error = INVALID_PATH

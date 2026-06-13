@@ -255,3 +255,31 @@ def test_download_files_maps_directory_errors() -> None:
 
     assert response.content is None
     assert response.error == "is_directory"
+
+
+def test_download_files_maps_generic_directory_errors() -> None:
+    sandbox = _Sandbox()
+    sandbox.files["/vercel/sandbox/dir"] = RuntimeError("Is a directory")
+
+    response = sandbox.as_backend().download_files(["/vercel/sandbox/dir"])[0]
+
+    assert response.content is None
+    assert response.error == "is_directory"
+
+
+def test_download_files_does_not_treat_missing_path_as_directory() -> None:
+    sandbox = _Sandbox()
+    paths = [
+        "/vercel/sandbox/no-such-file.txt",
+        "/vercel/sandbox/not-a-directory/file.txt",
+    ]
+    sandbox.files[paths[0]] = RuntimeError("No such file or directory")
+    sandbox.files[paths[1]] = RuntimeError("not a directory")
+
+    responses = sandbox.as_backend().download_files(paths)
+
+    assert [response.content for response in responses] == [None, None]
+    assert [response.error for response in responses] == [
+        "file_not_found",
+        "file_not_found",
+    ]

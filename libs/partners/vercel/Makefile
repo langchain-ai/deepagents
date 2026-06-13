@@ -34,7 +34,7 @@ benchmark: ## Run benchmark tests
 
 PYTHON_FILES=.
 lint format: PYTHON_FILES=.
-lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/partners/vercel-sandbox --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
+lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/partners/vercel --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 lint_package: ## Lint only the package
 lint_package: PYTHON_FILES=langchain_vercel_sandbox
 

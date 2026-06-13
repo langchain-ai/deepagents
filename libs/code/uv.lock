@@ -1229,7 +1229,7 @@ requires-dist = [
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", editable = "../partners/quickjs" },
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<2.0.0" },
-    { name = "langchain-vercel-sandbox", marker = "extra == 'vercel'", editable = "../partners/vercel-sandbox" },
+    { name = "langchain-vercel-sandbox", marker = "extra == 'vercel'", editable = "../partners/vercel" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.2.2,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.29,<1.0.0" },
@@ -3025,7 +3025,7 @@ wheels = [
 [[package]]
 name = "langchain-vercel-sandbox"
 version = "0.0.1"
-source = { editable = "../partners/vercel-sandbox" }
+source = { editable = "../partners/vercel" }
 dependencies = [
     { name = "deepagents" },
     { name = "vercel" },

@@ -532,7 +532,7 @@ registry fallback.
 """
 
 CODEX_PROVIDER = "openai_codex"
-"""Provider name for `ChatOpenAICodex` models authenticated via ChatGPT OAuth.
+"""Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.
 
 Distinct from `"openai"` (which uses an `OPENAI_API_KEY`) because the auth
 source, model class, and request endpoint all differ. See

@@ -129,11 +129,28 @@ def _format_codex_badge(status: ProviderAuthStatus) -> Content:
         badge_text = "[chatgpt]"
         # `_get_codex_auth_status` encodes the plan as a trailing "(plan)" in
         # the detail string (e.g. "signed in to ChatGPT (pro)").
-        if status.detail and "(" in status.detail:
-            plan = status.detail.split("(", 1)[1].rstrip(")")
+        if status.detail and (plan := _codex_plan_from_detail(status.detail)):
             badge_text = f"[chatgpt: {plan}]"
         return Content.styled(badge_text, "bold $success")
     return Content.styled("[sign in to chatgpt]", "bold $warning")
+
+
+def _codex_plan_from_detail(detail: str) -> str | None:
+    """Extract the ChatGPT plan from a codex auth detail string.
+
+    Args:
+        detail: Human-readable codex auth status detail.
+
+    Returns:
+        The ChatGPT plan text, or `None` when no bounded plan is present.
+    """
+    _, marker, plan_tail = detail.partition("(")
+    if not marker:
+        return None
+    plan, marker, _ = plan_tail.partition(")")
+    if not marker or not plan:
+        return None
+    return plan
 
 
 def _format_configured_badge(status: ProviderAuthStatus) -> Content:

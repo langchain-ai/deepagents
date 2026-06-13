@@ -1017,7 +1017,9 @@ def get_available_models() -> dict[str, list[str]]:
     if config.is_provider_enabled(CODEX_PROVIDER):
         openai_models = available.get("openai")
         if openai_models:
-            available[CODEX_PROVIDER] = list(openai_models)
+            available[CODEX_PROVIDER] = list(
+                dict.fromkeys([*available.get(CODEX_PROVIDER, []), *openai_models])
+            )
 
     _available_models_cache = available
     return available

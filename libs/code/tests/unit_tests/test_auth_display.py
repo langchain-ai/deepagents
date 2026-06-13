@@ -204,6 +204,17 @@ def test_codex_badge_configured_with_plan() -> None:
     assert format_auth_badge(status).plain == "[chatgpt: pro]"
 
 
+def test_codex_badge_configured_with_expired_token_refresh_detail() -> None:
+    """The codex badge plan parser ignores refresh details after the plan."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail="signed in to ChatGPT (pro); access token will refresh on use",
+    )
+    assert format_auth_badge(status).plain == "[chatgpt: pro]"
+
+
 def test_codex_badge_configured_without_plan() -> None:
     """A signed-in codex status with no plan in the detail renders bare."""
     status = ProviderAuthStatus(

@@ -31,7 +31,7 @@ jobs:
     name: Block empty commits on main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 2
       - name: Reject empty commits
@@ -69,10 +69,11 @@ jobs:
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 2
 
@@ -176,6 +177,13 @@ jobs:
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
+            echo "vercel-release=true" >> "$GITHUB_OUTPUT"
+            echo "Vercel release detected: $COMMIT_MSG"
+          else
+            echo "vercel-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
             echo "quickjs-release=true" >> "$GITHUB_OUTPUT"
             echo "QuickJS release detected: $COMMIT_MSG"
@@ -234,7 +242,7 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
       - name: Wait for in-flight releases
@@ -365,7 +373,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -417,7 +425,7 @@ jobs:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
@@ -536,6 +544,7 @@ jobs:
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
+      needs.detect-release-commit.outputs.vercel-release == 'true' ||
       needs.detect-release-commit.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -554,6 +563,7 @@ jobs:
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
+      VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
       QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
     steps:
       - name: Dispatch release workflows
@@ -678,6 +688,7 @@ jobs:
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
+          VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
 
           # Banner: log + step summary. The step summary renders at the top of the
@@ -716,6 +727,7 @@ jobs:
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
+          if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
 
           # Now that every package has been dispatched, correlate each one to its

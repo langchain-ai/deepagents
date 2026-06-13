@@ -151,6 +151,18 @@
       ],
       "changelog-path": "CHANGELOG.md"
     },
+    "libs/partners/vercel": {
+      "release-type": "python",
+      "package-name": "langchain-vercel-sandbox",
+      "component": "langchain-vercel-sandbox",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_vercel_sandbox/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
     "libs/partners/quickjs": {
       "release-type": "python",
       "package-name": "langchain-quickjs",

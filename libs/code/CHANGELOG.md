@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.16](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.15...deepagents-code==0.1.16) (2026-06-13)
+
+### Features
+
+* ChatGPT OAuth sign-in for Codex models ([#3532](https://github.com/langchain-ai/deepagents/issues/3532)) ([202e0bd](https://github.com/langchain-ai/deepagents/commit/202e0bd3e5b8b874a69656815489308d75a77d05))
+* Add Vercel Sandbox provider ([#3588](https://github.com/langchain-ai/deepagents/issues/3588)) ([e5e4748](https://github.com/langchain-ai/deepagents/commit/e5e4748cb6c66ddaa9444ab464990c1a5d10854d))
+
 ## [0.1.15](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.14...deepagents-code==0.1.15) (2026-06-12)
 
 ### Features

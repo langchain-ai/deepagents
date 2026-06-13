@@ -3070,6 +3070,8 @@ def create_model(
         warn_on_split_credential_source(provider)
         apply_stored_credentials(provider)
 
+    from deepagents_code.model_config import CODEX_PROVIDER
+
     # Early credential check — fail fast with an actionable message instead of
     # letting the provider SDK raise an opaque auth error on first invocation.
     # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
@@ -3079,6 +3081,13 @@ def create_model(
         if cred_status is False:
             from deepagents_code.model_config import MissingCredentialsError
 
+            if provider == CODEX_PROVIDER:
+                # No env var to set; point the user at `/auth` instead.
+                msg = (
+                    "Not signed in to ChatGPT. Run `/auth` and select "
+                    "openai_codex to sign in with your ChatGPT account."
+                )
+                raise MissingCredentialsError(msg, provider=provider, env_var=None)
             env_var = get_credential_env_var(provider)
             display_env = env_var or f"<{provider} API key>"
             msg = (
@@ -3142,7 +3151,45 @@ def create_model(
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
+    if provider == CODEX_PROVIDER:
+        # Codex models are constructed directly via `_ChatOpenAICodex` so the
+        # `token_provider=` kwarg is wired to the on-disk OAuth token store
+        # before any request goes out. `init_chat_model` does not know about
+        # this class and would route through API-key `ChatOpenAI` instead.
+        from deepagents_code.integrations import openai_codex as _codex
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            ModelConfigError,
+        )
+
+        # Drop any `api_key` left in kwargs (e.g. from a config-level
+        # `api_key_env` set on the codex provider, or a `--model-params
+        # api_key=...`) so the bearer always comes from the OAuth
+        # `token_provider` rather than a static key.
+        kwargs.pop("api_key", None)
+        try:
+            model = _codex.build_chat_model(model_name, **kwargs)
+        except FileNotFoundError as exc:
+            msg = (
+                "Not signed in to ChatGPT. Run `/auth` and select "
+                "openai_codex to sign in with your ChatGPT account."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except _codex.CodexAuthExpiredError as exc:
+            # A token exists but its refresh token is dead. Route through the
+            # same `MissingCredentialsError` recovery path as a missing token
+            # (which the retry flow re-attempts after `/auth`) instead of the
+            # generic `ModelConfigError` below, which would not offer sign-in.
+            msg = (
+                "ChatGPT session expired. Run `/auth` and select openai_codex "
+                "to sign in again."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except Exception as exc:
+            spec = f"{provider}:{model_name}"
+            msg = f"Failed to initialize Codex model '{spec}': {exc}"
+            raise ModelConfigError(msg) from exc
+    elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)

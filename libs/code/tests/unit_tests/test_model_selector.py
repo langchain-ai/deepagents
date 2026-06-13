@@ -1,5 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -270,6 +271,23 @@ class TestRecommendedToggle:
 
         assert screen._filtered_models == [("openai:gpt-4o", "openai")]
 
+    def test_recent_codex_keeps_recommended_provider_order(self) -> None:
+        """A recent Codex model should stay between OpenAI and OpenRouter."""
+        screen = ModelSelectorScreen()
+        screen._recent_specs = ["openai_codex:gpt-5.5"]
+        all_models = [
+            ("anthropic:claude-sonnet-4-6", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+            ("openai_codex:gpt-5.5", "openai_codex"),
+            ("openrouter:openai/gpt-5.5", "openrouter"),
+        ]
+
+        providers = [provider for _, provider in screen._apply_subset(all_models)]
+
+        assert providers.index("openai") < providers.index("openai_codex")
+        assert providers.index("openai_codex") < providers.index("openrouter")
+        assert providers[0] != "openai_codex"
+
     async def test_info_line_reflects_active_search(self) -> None:
         """Typing a filter should avoid stale recommended-only copy."""
         app = ModelSelectorTestApp()
@@ -446,6 +464,79 @@ class TestRecentModelsSection:
             specs = [w.model_spec for w in screen._option_widgets]
             assert specs.count("anthropic:claude-opus-4-7") == 2
 
+    async def test_recent_entries_do_not_duplicate_on_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshing an open selector should not compound recent entries."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {
+                "openai": ["gpt-5.5"],
+                "openai_codex": ["gpt-5.5"],
+            },
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen._update_display()
+
+            specs = [w.model_spec for w in screen._option_widgets]
+            assert specs.count("openai:gpt-5.5") == 2
+            assert specs.count("openai_codex:gpt-5.5") == 2
+
+    async def test_refresh_preserves_provider_section_recent_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshing should not move selection from provider row to Recent."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {
+                "openai": ["gpt-5.5"],
+                "openai_codex": ["gpt-5.5"],
+            },
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            provider_index = [
+                i
+                for i, entry in enumerate(screen._filtered_models)
+                if entry == ("openai_codex:gpt-5.5", "openai_codex")
+            ][1]
+            screen._selected_index = provider_index
+
+            await screen._update_display()
+
+            assert screen._selected_index == provider_index
+            assert screen._filtered_models[screen._selected_index] == (
+                "openai_codex:gpt-5.5",
+                "openai_codex",
+            )
+
     async def test_recent_entries_survive_recommended_toggle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -574,6 +665,165 @@ class TestModelSelectorKeyboardNavigation:
             assert app.result is not None
             assert isinstance(app.result, tuple)
             assert len(app.result) == 2
+
+
+class TestModelSelectorAuthRouting:
+    """Selecting a credential-less model routes to the right auth modal."""
+
+    @staticmethod
+    def _patch_missing_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Force every provider to report missing (start-blocking) creds."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                detail="missing",
+            ),
+        )
+
+    @staticmethod
+    def _capture_pushes(
+        monkeypatch: pytest.MonkeyPatch, app: App
+    ) -> list[tuple[object, Callable[[bool | None], None] | None]]:
+        """Replace `app.push_screen` with a recorder of (screen, callback)."""
+        pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+
+        def _capture(
+            target: object,
+            callback: Callable[[bool | None], None] | None = None,
+            *_a: object,
+            **_k: object,
+        ) -> None:
+            pushed.append((target, callback))
+
+        monkeypatch.setattr(app, "push_screen", _capture)
+        return pushed
+
+    async def test_missing_codex_creds_opens_confirm_not_api_key_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enter on a codex model with no creds opens the sign-in confirm gate.
+
+        `openai_codex` authenticates via ChatGPT OAuth and has no API key, so
+        the generic key/base-url `AuthPromptScreen` must not appear. The OAuth
+        flow itself is gated behind a confirmation modal, not launched yet.
+        """
+        from deepagents_code.widgets.auth import AuthConfirmScreen, AuthPromptScreen
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        self._patch_missing_auth(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[object] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, *_a, **_k: pushed.append(s),
+            )
+
+            screen._select_with_auth_check("openai_codex:gpt-5.5", "openai_codex")
+
+            assert len(pushed) == 1
+            assert isinstance(pushed[0], AuthConfirmScreen)
+            assert not isinstance(pushed[0], AuthPromptScreen)
+            assert not isinstance(pushed[0], CodexAuthScreen)
+            assert app.dismissed is False
+
+    async def test_codex_confirm_proceeds_to_oauth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming the gate launches the OAuth flow without dismissing."""
+        from deepagents_code.widgets.auth import AuthConfirmScreen
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        self._patch_missing_auth(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed = self._capture_pushes(monkeypatch, screen.app)
+
+            screen._prompt_codex_sign_in("openai_codex:gpt-5.5", "openai_codex")
+
+            assert isinstance(pushed[0][0], AuthConfirmScreen)
+            # Simulate the user confirming on the gate.
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(True)
+            await pilot.pause()
+
+            assert any(isinstance(s, CodexAuthScreen) for s, _ in pushed)
+            assert app.dismissed is False
+
+    async def test_codex_confirm_declined_stays_on_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declining the gate returns to the selector without OAuth."""
+        from deepagents_code.widgets.auth import AuthConfirmScreen
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        self._patch_missing_auth(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed = self._capture_pushes(monkeypatch, screen.app)
+
+            screen._prompt_codex_sign_in("openai_codex:gpt-5.5", "openai_codex")
+            assert isinstance(pushed[0][0], AuthConfirmScreen)
+            # Simulate the user declining on the gate.
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(False)
+            await pilot.pause()
+
+            assert not any(isinstance(s, CodexAuthScreen) for s, _ in pushed)
+            assert app.dismissed is False
+
+    async def test_missing_api_key_provider_opens_api_key_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-codex providers still open the API-key/base-url prompt."""
+        from deepagents_code.widgets.auth import AuthPromptScreen
+
+        self._patch_missing_auth(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[object] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, *_a, **_k: pushed.append(s),
+            )
+
+            screen._select_with_auth_check("openai:gpt-5.1", "openai")
+
+            assert len(pushed) == 1
+            assert isinstance(pushed[0], AuthPromptScreen)
 
 
 class TestModelSelectorFiltering:

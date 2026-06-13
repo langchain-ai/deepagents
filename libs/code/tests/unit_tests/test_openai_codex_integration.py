@@ -55,20 +55,6 @@ def _write_token(
     path.chmod(0o600)
 
 
-def _free_port() -> int:
-    """Return a currently-free localhost TCP port.
-
-    Small TOCTOU window between close and rebind, acceptable for a local
-    unit test that just needs a port unlikely to collide with the fixed
-    OAuth default (1455) or a parallel test run.
-    """
-    import socket
-
-    with socket.socket() as sock:
-        sock.bind(("localhost", 0))
-        return sock.getsockname()[1]
-
-
 @contextmanager
 def _override_default_store(path: Path) -> Iterator[None]:
     """Point `openai_codex.default_store_path` at `path` for the duration."""
@@ -493,49 +479,68 @@ class TestRunBrowserLogin:
 class TestWaitForOAuthCallback:
     """The cancel-aware callback wait releases the port promptly on cancel."""
 
-    def test_closes_server_on_cancel(self) -> None:
-        """A set `cancel_event` raises and frees the bound port immediately."""
+    def test_closes_server_on_cancel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A set `cancel_event` raises and closes the callback server."""
         import http.server
 
-        port = _free_port()
+        class FakeHTTPServer:
+            def __init__(self, _address: tuple[str, int], _handler: type[Any]) -> None:
+                self.timeout: float | None = None
+                self.closed = False
+
+            def handle_request(self) -> None:
+                msg = "cancelled wait should not handle requests"
+                raise AssertionError(msg)
+
+            def server_close(self) -> None:
+                self.closed = True
+
+        servers: list[FakeHTTPServer] = []
+
+        def fake_http_server(
+            address: tuple[str, int], handler: type[Any]
+        ) -> FakeHTTPServer:
+            server = FakeHTTPServer(address, handler)
+            servers.append(server)
+            return server
+
+        monkeypatch.setattr(http.server, "HTTPServer", fake_http_server)
+
         cancel = threading.Event()
-        cancel.set()  # Already cancelled before the first poll.
+        cancel.set()
         with pytest.raises(openai_codex.CodexLoginCancelledError):
             openai_codex._wait_for_oauth_callback(
                 host="localhost",
-                port=port,
+                port=1455,
                 callback_path="/auth/callback",
                 timeout=5.0,
                 cancel_event=cancel,
                 poll_interval=0.05,
             )
-        # The server bound then closed in the `finally`, so the same port is
-        # immediately rebindable — this is the regression guard for the
-        # cancel-leaks-the-port bug.
-        rebind = http.server.HTTPServer(
-            ("localhost", port), http.server.BaseHTTPRequestHandler
-        )
-        rebind.server_close()
 
-    def test_bind_failure_raises_runtimeerror(self) -> None:
-        """A port already in use surfaces as a `RuntimeError`, not `OSError`."""
+        assert len(servers) == 1
+        assert servers[0].closed is True
+
+    def test_bind_failure_raises_runtimeerror(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bind failure surfaces as a `RuntimeError`, not `OSError`."""
         import http.server
 
-        port = _free_port()
-        holder = http.server.HTTPServer(
-            ("localhost", port), http.server.BaseHTTPRequestHandler
-        )
-        try:
-            with pytest.raises(RuntimeError, match="Could not bind"):
-                openai_codex._wait_for_oauth_callback(
-                    host="localhost",
-                    port=port,
-                    callback_path="/auth/callback",
-                    timeout=1.0,
-                    poll_interval=0.05,
-                )
-        finally:
-            holder.server_close()
+        def fake_http_server(_address: tuple[str, int], _handler: type[Any]) -> None:
+            msg = "address already in use"
+            raise OSError(msg)
+
+        monkeypatch.setattr(http.server, "HTTPServer", fake_http_server)
+
+        with pytest.raises(RuntimeError, match="Could not bind"):
+            openai_codex._wait_for_oauth_callback(
+                host="localhost",
+                port=1455,
+                callback_path="/auth/callback",
+                timeout=1.0,
+                poll_interval=0.05,
+            )
 
 
 class TestCodexAuthStatusInvariants:

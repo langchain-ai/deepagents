@@ -35,7 +35,13 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
-    from langchain.agents.middleware.types import AgentState
+    from langchain.agents.middleware.types import (
+        AgentState,
+        ExtendedModelResponse,
+        ModelRequest,
+        ModelResponse,
+        ResponseT,
+    )
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
@@ -213,6 +219,95 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if (rejection := self._validate_tool_call(request)) is not None:
             return rejection
         return await handler(request)
+
+
+def _get_tool_name(tool: BaseTool | dict[str, Any]) -> str | None:
+    """Return the name of a tool, whether it is a BaseTool or a dict schema."""
+    if isinstance(tool, dict):
+        name = tool.get("name")
+        return name if isinstance(name, str) else None
+    name = getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
+
+
+class _ToolAllowListMiddleware(AgentMiddleware):
+    """Keep only explicitly allowed tools in every model request.
+
+    Placed last in the middleware stack so it sees the final tool list
+    (including tools injected by Skills, Filesystem, and other middleware).
+    """
+
+    def __init__(self, *, allowed: frozenset[str]) -> None:
+        self._allowed = allowed
+
+    def _filter(
+        self, tools: list[BaseTool | dict[str, Any]]
+    ) -> list[BaseTool | dict[str, Any]]:
+        return [t for t in tools if _get_tool_name(t) in self._allowed]
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        """Filter tools to the allow-list before reaching the model.
+
+        Returns:
+            Model response after filtering tools to only allowed names.
+        """
+        return handler(request.override(tools=self._filter(request.tools)))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        """Async variant of wrap_model_call.
+
+        Returns:
+            Model response after filtering tools to only allowed names.
+        """
+        return await handler(request.override(tools=self._filter(request.tools)))
+
+
+class _ToolDenyListMiddleware(AgentMiddleware):
+    """Remove explicitly excluded tools from every model request.
+
+    Placed last in the middleware stack so it sees the final tool list
+    (including tools injected by Skills, Filesystem, and other middleware).
+    """
+
+    def __init__(self, *, excluded: frozenset[str]) -> None:
+        self._excluded = excluded
+
+    def _filter(
+        self, tools: list[BaseTool | dict[str, Any]]
+    ) -> list[BaseTool | dict[str, Any]]:
+        return [t for t in tools if _get_tool_name(t) not in self._excluded]
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        """Remove excluded tools before reaching the model.
+
+        Returns:
+            Model response after removing denied tools.
+        """
+        return handler(request.override(tools=self._filter(request.tools)))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        """Async variant of wrap_model_call.
+
+        Returns:
+            Model response after removing denied tools.
+        """
+        return await handler(request.override(tools=self._filter(request.tools)))
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
@@ -1119,6 +1214,8 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1202,6 +1299,12 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        allowed_tools: When set, only the named tools are visible to the model. All
+            other tools (including those injected by middleware) are hidden. Mutually
+            exclusive with `disallowed_tools`.
+        disallowed_tools: When set, the named tools are removed from the model's tool
+            list. All other tools remain available. Mutually exclusive with
+            `allowed_tools`.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1566,6 +1669,16 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+
+    # Wire tool allow/deny-list middleware (placed last so it sees all injected tools).
+    if allowed_tools is not None:
+        agent_middleware.append(
+            _ToolAllowListMiddleware(allowed=frozenset(allowed_tools))
+        )
+    elif disallowed_tools:
+        agent_middleware.append(
+            _ToolDenyListMiddleware(excluded=frozenset(disallowed_tools))
+        )
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

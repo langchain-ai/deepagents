@@ -290,6 +290,8 @@ async def start_server_and_get_agent(
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = 2024,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -317,6 +319,8 @@ async def start_server_and_get_agent(
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port.
+        allowed_tools: Allow-list of tool names; all others are hidden.
+        disallowed_tools: Deny-list of tool names to remove.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -359,6 +363,8 @@ async def start_server_and_get_agent(
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
     )
     _apply_server_config(config)
 
@@ -411,6 +417,8 @@ async def server_session(
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = 2024,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -441,6 +449,8 @@ async def server_session(
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port.
+        allowed_tools: Allow-list of tool names; all others are hidden.
+        disallowed_tools: Deny-list of tool names to remove.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.
@@ -470,6 +480,8 @@ async def server_session(
             interactive=interactive,
             host=host,
             port=port,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
         )
         yield agent, server_proc
     finally:

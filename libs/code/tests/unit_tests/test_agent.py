@@ -3349,3 +3349,231 @@ class TestApplyInheritedPythonpath:
         env = {"PATH": "/usr/bin"}
         _apply_inherited_pythonpath(env)
         assert "PYTHONPATH" not in env
+
+
+# ---------------------------------------------------------------------------
+# _ToolAllowListMiddleware / _ToolDenyListMiddleware unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_request(tool_names: list[str]) -> Mock:
+    """Build a minimal mock request with named tools."""
+    tools = []
+    for name in tool_names:
+        t = Mock()
+        t.name = name
+        tools.append(t)
+    req = Mock()
+    req.tools = tools
+    req.override = lambda tools: Mock(tools=tools)
+    return req
+
+
+class TestToolAllowListMiddleware:
+    """Tests for the allow-list model-call middleware."""
+
+    def test_keeps_only_allowed_tools(self) -> None:
+        from deepagents_code.agent import _ToolAllowListMiddleware
+
+        mw = _ToolAllowListMiddleware(allowed=frozenset({"read_file", "ls"}))
+        req = _make_tool_request(["read_file", "ls", "write_file", "execute"])
+        handler = Mock(return_value=Mock())
+
+        mw.wrap_model_call(req, handler)
+        filtered_names = [t.name for t in handler.call_args[0][0].tools]
+        assert filtered_names == ["read_file", "ls"]
+
+    def test_empty_allowed_set_hides_all_tools(self) -> None:
+        from deepagents_code.agent import _ToolAllowListMiddleware
+
+        mw = _ToolAllowListMiddleware(allowed=frozenset())
+        req = _make_tool_request(["read_file", "execute"])
+        handler = Mock(return_value=Mock())
+
+        mw.wrap_model_call(req, handler)
+        assert handler.call_args[0][0].tools == []
+
+    async def test_async_variant_filters_identically(self) -> None:
+        from deepagents_code.agent import _ToolAllowListMiddleware
+
+        mw = _ToolAllowListMiddleware(allowed=frozenset({"ls"}))
+        req = _make_tool_request(["ls", "grep", "execute"])
+        from unittest.mock import AsyncMock
+
+        handler = AsyncMock(return_value=Mock())
+        await mw.awrap_model_call(req, handler)
+        assert [t.name for t in handler.call_args[0][0].tools] == ["ls"]
+
+
+class TestToolDenyListMiddleware:
+    """Tests for the deny-list model-call middleware."""
+
+    def test_removes_excluded_tools(self) -> None:
+        from deepagents_code.agent import _ToolDenyListMiddleware
+
+        mw = _ToolDenyListMiddleware(excluded=frozenset({"execute", "task"}))
+        req = _make_tool_request(["read_file", "execute", "ls", "task"])
+        handler = Mock(return_value=Mock())
+
+        mw.wrap_model_call(req, handler)
+        assert [t.name for t in handler.call_args[0][0].tools] == ["read_file", "ls"]
+
+    def test_empty_excluded_set_passes_all_tools(self) -> None:
+        from deepagents_code.agent import _ToolDenyListMiddleware
+
+        mw = _ToolDenyListMiddleware(excluded=frozenset())
+        req = _make_tool_request(["read_file", "execute"])
+        handler = Mock(return_value=Mock())
+
+        mw.wrap_model_call(req, handler)
+        assert len(handler.call_args[0][0].tools) == 2
+
+    async def test_async_variant_removes_tools(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from deepagents_code.agent import _ToolDenyListMiddleware
+
+        mw = _ToolDenyListMiddleware(excluded=frozenset({"write_file"}))
+        req = _make_tool_request(["read_file", "write_file", "ls"])
+        handler = AsyncMock(return_value=Mock())
+
+        await mw.awrap_model_call(req, handler)
+        assert [t.name for t in handler.call_args[0][0].tools] == ["read_file", "ls"]
+
+
+class TestToolFilterMiddlewareWiring:
+    """Tests that create_cli_agent wires allow/deny-list middleware correctly."""
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = None
+        mock_settings.user_langchain_project = None
+        mock_settings.interpreter_timeout_seconds = 5.0
+        mock_settings.interpreter_memory_limit_mb = 64
+        mock_settings.interpreter_max_ptc_calls = 256
+        mock_settings.interpreter_max_result_chars = 4000
+        mock_settings.interpreter_ptc = False
+        mock_settings.interpreter_ptc_acknowledge_unsafe = False
+        return mock_settings
+
+    def test_allowed_tools_adds_allow_list_middleware(self, tmp_path: Path) -> None:
+        from deepagents_code.agent import _ToolAllowListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        captured_middleware: list[Any] = []
+
+        def fake_create_deep_agent(**kwargs: Any) -> Mock:
+            captured_middleware.extend(kwargs.get("middleware", []))
+            return mock_agent
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                side_effect=fake_create_deep_agent,
+            ),
+        ):
+            create_cli_agent(
+                model=fake_model,
+                assistant_id="agent",
+                cwd=str(tmp_path),
+                allowed_tools=["read_file", "ls"],
+            )
+
+        allow_mws = [
+            m for m in captured_middleware if isinstance(m, _ToolAllowListMiddleware)
+        ]
+        assert len(allow_mws) == 1
+        assert allow_mws[0]._allowed == frozenset({"read_file", "ls"})
+
+    def test_disallowed_tools_adds_deny_list_middleware(self, tmp_path: Path) -> None:
+        from deepagents_code.agent import _ToolDenyListMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        captured_middleware: list[Any] = []
+
+        def fake_create_deep_agent(**kwargs: Any) -> Mock:
+            captured_middleware.extend(kwargs.get("middleware", []))
+            return mock_agent
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                side_effect=fake_create_deep_agent,
+            ),
+        ):
+            create_cli_agent(
+                model=fake_model,
+                assistant_id="agent",
+                cwd=str(tmp_path),
+                disallowed_tools=["execute", "task"],
+            )
+
+        deny_mws = [
+            m for m in captured_middleware if isinstance(m, _ToolDenyListMiddleware)
+        ]
+        assert len(deny_mws) == 1
+        assert deny_mws[0]._excluded == frozenset({"execute", "task"})
+
+    def test_no_filter_middleware_when_neither_flag_set(self, tmp_path: Path) -> None:
+        from deepagents_code.agent import (
+            _ToolAllowListMiddleware,
+            _ToolDenyListMiddleware,
+        )
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        captured_middleware: list[Any] = []
+
+        def fake_create_deep_agent(**kwargs: Any) -> Mock:
+            captured_middleware.extend(kwargs.get("middleware", []))
+            return mock_agent
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                side_effect=fake_create_deep_agent,
+            ),
+        ):
+            create_cli_agent(
+                model=fake_model,
+                assistant_id="agent",
+                cwd=str(tmp_path),
+            )
+
+        filter_mws = [
+            m
+            for m in captured_middleware
+            if isinstance(m, (_ToolAllowListMiddleware, _ToolDenyListMiddleware))
+        ]
+        assert not filter_mws

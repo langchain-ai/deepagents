@@ -1239,6 +1239,22 @@ def parse_args() -> argparse.Namespace:
         "Applies to both -n and interactive modes.",
     )
     parser.add_argument(
+        "--allowed-tools",
+        metavar="TOOLS",
+        help="Comma-separated allow-list of tool names. All other tools are "
+        "hidden from the model for the duration of the session. "
+        "E.g. --allowed-tools read_file,ls,glob,grep for a read-only session. "
+        "Mutually exclusive with --disallowed-tools.",
+    )
+    parser.add_argument(
+        "--disallowed-tools",
+        metavar="TOOLS",
+        help="Comma-separated deny-list of tool names to remove. All other "
+        "tools remain available. "
+        "E.g. --disallowed-tools execute,task to prevent shell and subagent calls. "
+        "Mutually exclusive with --allowed-tools.",
+    )
+    parser.add_argument(
         "--mcp-config",
         help="Path to MCP servers JSON configuration file (Claude Desktop format). "
         "Merged on top of auto-discovered configs (highest precedence). "
@@ -1436,6 +1452,8 @@ async def run_textual_cli_async(
     enable_interpreter: bool = False,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -1487,6 +1505,8 @@ async def run_textual_cli_async(
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allowed_tools: Allow-list of tool names; all others are hidden from the model.
+        disallowed_tools: Deny-list of tool names to remove from the model's tool list.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -1565,6 +1585,8 @@ async def run_textual_cli_async(
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "allowed_tools": allowed_tools,
+        "disallowed_tools": disallowed_tools,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -2198,6 +2220,28 @@ def cli_main() -> None:
             from deepagents_code.config import parse_shell_allow_list
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
+
+        # Parse and validate --allowed-tools / --disallowed-tools
+        raw_allowed = getattr(args, "allowed_tools", None)
+        raw_disallowed = getattr(args, "disallowed_tools", None)
+        if raw_allowed and raw_disallowed:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --allowed-tools and --disallowed-tools "
+                "are mutually exclusive. Use one or the other."
+            )
+            sys.exit(2)
+        allowed_tools: list[str] | None = (
+            [t.strip() for t in raw_allowed.split(",") if t.strip()]
+            if raw_allowed
+            else None
+        )
+        disallowed_tools: list[str] | None = (
+            [t.strip() for t in raw_disallowed.split(",") if t.strip()]
+            if raw_disallowed
+            else None
+        )
 
         apply_stdin_pipe(args)
 
@@ -2837,6 +2881,8 @@ def cli_main() -> None:
                             enable_interpreter=getattr(args, "interpreter", False),
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
+                            allowed_tools=allowed_tools,
+                            disallowed_tools=disallowed_tools,
                         ),
                         timeout=timeout,
                     )
@@ -2934,6 +2980,8 @@ def cli_main() -> None:
                         trust_project_mcp=mcp_trust_decision,
                         enable_interpreter=getattr(args, "interpreter", False),
                         interpreter_ptc=interpreter_ptc,
+                        allowed_tools=allowed_tools,
+                        disallowed_tools=disallowed_tools,
                     )
                 )
                 return_code = result.return_code

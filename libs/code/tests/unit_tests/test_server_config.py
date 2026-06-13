@@ -242,3 +242,67 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_snapshot_name is None
+
+
+# ------------------------------------------------------------------
+# allowed_tools / disallowed_tools round-trips
+# ------------------------------------------------------------------
+
+
+class TestToolFilterRoundTrip:
+    """Verify allowed_tools and disallowed_tools survive to_env / from_env."""
+
+    def _round_trip(self, original: ServerConfig) -> ServerConfig:
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            return ServerConfig.from_env()
+
+    def test_allowed_tools_round_trips(self) -> None:
+        original = ServerConfig(allowed_tools=["read_file", "ls", "glob"])
+        restored = self._round_trip(original)
+        assert restored.allowed_tools == ["read_file", "ls", "glob"]
+
+    def test_disallowed_tools_round_trips(self) -> None:
+        original = ServerConfig(disallowed_tools=["execute", "task"])
+        restored = self._round_trip(original)
+        assert restored.disallowed_tools == ["execute", "task"]
+
+    def test_none_allowed_tools_round_trips_to_none(self) -> None:
+        original = ServerConfig(allowed_tools=None)
+        restored = self._round_trip(original)
+        assert restored.allowed_tools is None
+
+    def test_none_disallowed_tools_round_trips_to_none(self) -> None:
+        original = ServerConfig(disallowed_tools=None)
+        restored = self._round_trip(original)
+        assert restored.disallowed_tools is None
+
+    def test_allowed_tools_to_env_is_comma_joined(self) -> None:
+        config = ServerConfig(allowed_tools=["read_file", "ls"])
+        env = config.to_env()
+        assert env["ALLOWED_TOOLS"] == "read_file,ls"
+
+    def test_disallowed_tools_to_env_is_comma_joined(self) -> None:
+        config = ServerConfig(disallowed_tools=["execute", "task"])
+        env = config.to_env()
+        assert env["DISALLOWED_TOOLS"] == "execute,task"
+
+    def test_allowed_tools_none_produces_none_env_value(self) -> None:
+        config = ServerConfig(allowed_tools=None)
+        assert config.to_env()["ALLOWED_TOOLS"] is None
+
+    def test_disallowed_tools_none_produces_none_env_value(self) -> None:
+        config = ServerConfig(disallowed_tools=None)
+        assert config.to_env()["DISALLOWED_TOOLS"] is None
+
+    def test_from_env_strips_whitespace_around_tool_names(self) -> None:
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}ALLOWED_TOOLS": " read_file , ls , glob "},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+        assert restored.allowed_tools == ["read_file", "ls", "glob"]

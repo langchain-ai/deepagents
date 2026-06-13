@@ -184,6 +184,12 @@ def show_help() -> None:
     console.print(
         "  -S, --shell-allow-list CMDS  Comma-separated cmds, 'recommended', or 'all'"
     )
+    console.print(
+        "  --allowed-tools TOOLS      Allow-list; all other tools hidden from the model"
+    )
+    console.print(
+        "  --disallowed-tools TOOLS   Comma-separated deny-list of tools to disable"
+    )
     console.print("  --default-model [MODEL]    Set, show, or manage the default model")
     console.print("  --clear-default-model      Clear the default model")
     console.print(

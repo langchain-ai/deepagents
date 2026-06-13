@@ -933,6 +933,8 @@ async def run_non_interactive(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -996,6 +998,8 @@ async def run_non_interactive(
             `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
+        allowed_tools: Allow-list of tool names; all others are hidden from the model.
+        disallowed_tools: Deny-list of tool names to remove from the model's tool list.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
@@ -1174,6 +1178,8 @@ async def run_non_interactive(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=False,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:

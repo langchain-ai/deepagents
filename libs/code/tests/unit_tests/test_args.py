@@ -861,3 +861,30 @@ class TestJsonArg:
         assert args.command == "skills"
         assert args.skills_command == "list"
         assert args.output_format == "json"
+
+
+class TestAllowedDisallowedToolsArgs:
+    """Tests for --allowed-tools and --disallowed-tools argument parsing."""
+
+    def test_allowed_tools_flag_parsed(self) -> None:
+        """--allowed-tools stores the raw comma-separated string."""
+        with patch.object(
+            sys, "argv", ["deepagents", "--allowed-tools", "read_file,ls,glob"]
+        ):
+            args = parse_args()
+        assert args.allowed_tools == "read_file,ls,glob"
+
+    def test_disallowed_tools_flag_parsed(self) -> None:
+        """--disallowed-tools stores the raw comma-separated string."""
+        with patch.object(
+            sys, "argv", ["deepagents", "--disallowed-tools", "execute,task"]
+        ):
+            args = parse_args()
+        assert args.disallowed_tools == "execute,task"
+
+    def test_allowed_tools_absent_is_none(self) -> None:
+        """Neither flag produces None."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.allowed_tools is None
+        assert args.disallowed_tools is None

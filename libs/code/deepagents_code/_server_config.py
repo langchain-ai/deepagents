@@ -206,6 +206,18 @@ class ServerConfig:
     """Tri-state trust flag for project-scoped MCP servers: `True`/`False`/`None`
     (prompt user)."""
 
+    allowed_tools: list[str] | None = None
+    """Allow-list of tool names; all other tools are hidden from the model.
+
+    Mutually exclusive with `disallowed_tools`. `None` means no restriction.
+    """
+
+    disallowed_tools: list[str] | None = None
+    """Deny-list of tool names to remove from the model's tool list.
+
+    Mutually exclusive with `allowed_tools`. `None` means no restriction.
+    """
+
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
 
@@ -274,6 +286,14 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "ALLOWED_TOOLS": (
+                ",".join(self.allowed_tools) if self.allowed_tools is not None else None
+            ),
+            "DISALLOWED_TOOLS": (
+                ",".join(self.disallowed_tools)
+                if self.disallowed_tools is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -318,6 +338,18 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            allowed_tools=(
+                [t.strip() for t in raw.split(",") if t.strip()]
+                if (raw := _read_env_str("ALLOWED_TOOLS"))
+                else None
+            )
+            or None,
+            disallowed_tools=(
+                [t.strip() for t in raw.split(",") if t.strip()]
+                if (raw := _read_env_str("DISALLOWED_TOOLS"))
+                else None
+            )
+            or None,
         )
 
     # ------------------------------------------------------------------
@@ -348,6 +380,8 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        allowed_tools: list[str] | None = None,
+        disallowed_tools: list[str] | None = None,
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -381,6 +415,8 @@ class ServerConfig:
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
             interactive: Whether the agent is interactive.
+            allowed_tools: Allow-list of tool names; all others are hidden.
+            disallowed_tools: Deny-list of tool names to remove.
 
         Returns:
             A fully resolved `ServerConfig`.
@@ -418,6 +454,8 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
         )
 
 

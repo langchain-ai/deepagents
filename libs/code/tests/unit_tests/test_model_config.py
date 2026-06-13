@@ -5003,20 +5003,29 @@ max_input_tokens = 8192
 
 
 class TestCodexProviderMirror:
-    """`openai_codex` mirrors the full `openai` model list (no name filter).
+    """`openai_codex` mirrors the curated `CODEX_MODELS` subset of `openai`.
 
-    The provider previously filtered to `-codex` names, which wrongly dropped
-    flagship reasoning models like `gpt-5.5`. Eligibility is now unfiltered.
+    The Codex backend serves a narrower lineup than the full `openai` API, so
+    only models in the `CODEX_MODELS` allowlist are exposed under
+    `openai_codex`; other openai models are not mirrored.
     """
 
-    def test_available_models_mirror_openai_verbatim(self) -> None:
+    def test_available_models_mirror_codex_allowlist(self) -> None:
         model_config.clear_caches()
         available = model_config.get_available_models()
         openai_models = available.get("openai", [])
         assert openai_models, "expected openai models to be discoverable"
-        assert available.get(model_config.CODEX_PROVIDER) == openai_models
-        # The flagship the old `-codex` heuristic dropped is now present.
-        assert "gpt-5.5" in available[model_config.CODEX_PROVIDER]
+        codex_models = available.get(model_config.CODEX_PROVIDER, [])
+        # Only allowlisted openai models are mirrored under codex.
+        assert codex_models == [
+            name for name in openai_models if name in model_config.CODEX_MODELS
+        ]
+        # The curated flagship is present...
+        assert "gpt-5.5" in codex_models
+        # ...while a non-allowlisted openai model is excluded from codex even
+        # though openai itself offers it.
+        assert "gpt-5.4-pro" in openai_models
+        assert "gpt-5.4-pro" not in codex_models
 
     def test_available_models_preserve_configured_codex_models(
         self, tmp_path: Path
@@ -5051,7 +5060,7 @@ models = ["gpt-custom-codex", "gpt-5.5"]
             "gpt-5.2",
         ]
 
-    def test_profiles_mirror_every_openai_model_under_codex(self) -> None:
+    def test_profiles_mirror_codex_allowlist_under_codex(self) -> None:
         model_config.clear_caches()
         profiles = model_config.get_model_profiles()
         openai_models = [
@@ -5059,7 +5068,11 @@ models = ["gpt-custom-codex", "gpt-5.5"]
         ]
         assert openai_models, "expected openai profiles to load"
         for model_name in openai_models:
-            assert f"{model_config.CODEX_PROVIDER}:{model_name}" in profiles
+            codex_spec = f"{model_config.CODEX_PROVIDER}:{model_name}"
+            if model_name in model_config.CODEX_MODELS:
+                assert codex_spec in profiles
+            else:
+                assert codex_spec not in profiles
 
     def test_codex_positioned_immediately_after_openai(self) -> None:
         """The switcher lists `openai_codex` right after `openai`.

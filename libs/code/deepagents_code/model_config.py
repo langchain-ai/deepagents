@@ -539,6 +539,23 @@ source, model class, and request endpoint all differ. See
 `deepagents_code.integrations.openai_codex` for the OAuth flow.
 """
 
+CODEX_MODELS: frozenset[str] = frozenset(
+    {
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+    }
+)
+"""Curated allowlist of models the Codex (ChatGPT OAuth) backend serves.
+
+The provider mirrors `openai` profiles, but only models in this set are
+exposed under `openai_codex`. The Codex backend serves a narrower lineup than
+the full `openai` API, so mirroring every openai model would surface specs the
+backend rejects at call time.
+"""
+
 
 RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "anthropic": "max_retries",
@@ -1007,18 +1024,17 @@ def get_available_models() -> dict[str, list[str]]:
                 endpoint or OLLAMA_DEFAULT_BASE_URL,
             )
 
-    # Mirror every `openai` model under a dedicated `openai_codex` provider
-    # entry so the switcher offers them under their own ChatGPT-OAuth auth
-    # context. Eligibility is deliberately *not* filtered by model name:
-    # upstream `_ChatOpenAICodex` accepts any model and `create_model` never
-    # gates on a list, so a name heuristic could only mislabel (e.g. drop
-    # `gpt-5.5`, which the Codex backend serves). The backend rejects models
-    # it does not support at call time.
+    # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
+    # dedicated `openai_codex` provider entry so the switcher offers them under
+    # their own ChatGPT-OAuth auth context. Eligibility is filtered by the
+    # allowlist because the Codex backend serves a narrower lineup than the
+    # full `openai` API and rejects unsupported models at call time.
     if config.is_provider_enabled(CODEX_PROVIDER):
         openai_models = available.get("openai")
         if openai_models:
+            mirrored = [name for name in openai_models if name in CODEX_MODELS]
             codex_models = list(
-                dict.fromkeys([*available.get(CODEX_PROVIDER, []), *openai_models])
+                dict.fromkeys([*available.get(CODEX_PROVIDER, []), *mirrored])
             )
             # Place `openai_codex` directly after `openai` so the switcher
             # keeps the two OpenAI-backed providers adjacent (codex before
@@ -1141,11 +1157,15 @@ def get_model_profiles(
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             result[spec] = _build_entry(upstream_profile, overrides, cli_override)
-            # Mirror every openai profile under the `openai_codex` provider so
-            # `/model openai_codex:<model>` resolves to the same upstream
-            # profile without duplicating data. Not filtered by name — see the
-            # note in `get_available_models`.
-            if provider == "openai" and config.is_provider_enabled(CODEX_PROVIDER):
+            # Mirror the curated `CODEX_MODELS` subset of openai profiles under
+            # the `openai_codex` provider so `/model openai_codex:<model>`
+            # resolves to the same upstream profile without duplicating data.
+            # Filtered by the allowlist — see the note in `get_available_models`.
+            if (
+                provider == "openai"
+                and model_name in CODEX_MODELS
+                and config.is_provider_enabled(CODEX_PROVIDER)
+            ):
                 codex_spec = f"{CODEX_PROVIDER}:{model_name}"
                 seen_specs.add(codex_spec)
                 codex_overrides = config.get_profile_overrides(

@@ -203,6 +203,23 @@ class TestBuildChatModel:
         assert isinstance(model, _ChatOpenAICodex)
         assert model.model_name == "gpt-5.2-codex"
 
+    def test_forwards_arbitrary_model_name_verbatim(self, tmp_path: Path) -> None:
+        """Non-allowlisted model names still reach the API unchanged.
+
+        `CODEX_MODELS` only curates the discoverable list (`get_available_models`
+        and `get_model_profiles`); an explicit `openai_codex:<name>` spec must
+        construct a model that forwards `<name>` to the backend verbatim.
+        """
+        path = tmp_path / "auth.json"
+        _write_token(path)
+        model = openai_codex.build_chat_model("dsjhfbshjdf", store_path=path)
+        from langchain_openai.chat_models.codex import (
+            _ChatOpenAICodex,
+        )
+
+        assert isinstance(model, _ChatOpenAICodex)
+        assert model.model_name == "dsjhfbshjdf"
+
 
 class _FakeUI(openai_codex.CodexLoginInteraction):
     """Capture interaction calls in-memory for assertion."""

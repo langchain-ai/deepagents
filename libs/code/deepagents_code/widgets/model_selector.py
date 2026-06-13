@@ -700,6 +700,48 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         ]
         self._selected_index = 0
 
+    @staticmethod
+    def _unique_model_entries(
+        models: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Return unique model/provider pairs while preserving first-seen order."""
+        seen: set[tuple[str, str]] = set()
+        unique: list[tuple[str, str]] = []
+        for entry in models:
+            if entry in seen:
+                continue
+            seen.add(entry)
+            unique.append(entry)
+        return unique
+
+    @staticmethod
+    def _find_same_occurrence_index(
+        models: list[tuple[str, str]],
+        entry: tuple[str, str],
+        occurrence: int,
+    ) -> int:
+        """Find the `occurrence`th matching model/provider tuple in `models`.
+
+        Args:
+            models: Render-ordered model/provider pairs to search.
+            entry: Exact `(model_spec, provider)` tuple to match.
+            occurrence: One-based occurrence count to find.
+
+        Returns:
+            Matching index, or `0` if no matching occurrence exists.
+        """
+        matches = 0
+        first_match: int | None = None
+        for i, candidate in enumerate(models):
+            if candidate != entry:
+                continue
+            if first_match is None:
+                first_match = i
+            matches += 1
+            if matches == occurrence:
+                return i
+        return first_match or 0
+
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
 
@@ -740,14 +782,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
+        has_filter = bool(self._filter_text.strip())
+        source = self._filtered_models if has_filter else self._all_models
+        source_models = self._unique_model_entries(source)
+
         # Resolve which recent specs are present in the current filtered set.
         # Recent rendering only happens at the top of an unfiltered view; once
         # the user starts fuzzy-filtering, recents are surfaced through the
         # match logic like any other model so the search remains predictable.
-        if self._filter_text.strip():
+        if has_filter:
             recent_entries: list[tuple[str, str]] = []
         else:
-            spec_to_provider = dict(self._filtered_models)
+            spec_to_provider = dict(source_models)
             recent_entries = [
                 (spec, spec_to_provider[spec])
                 for spec in self._recent_specs
@@ -759,7 +805,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # who opens `/model` always finds their model at its provider's
         # familiar position in addition to the MRU shortcut at the top.
         by_provider: dict[str, list[tuple[str, str]]] = {}
-        for model_spec, provider in self._filtered_models:
+        for model_spec, provider in source_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
 
         # Rebuild _filtered_models to match the rendered order (recents first,
@@ -771,12 +817,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         for entries in by_provider.values():
             grouped_order.extend(entries)
 
-        # Remap selected_index so the same model stays highlighted.
-        old_spec = self._filtered_models[self._selected_index][0]
+        # Remap selected_index so the same visual occurrence stays highlighted.
+        old_entry = self._filtered_models[self._selected_index]
+        old_occurrence = self._filtered_models[: self._selected_index + 1].count(
+            old_entry
+        )
         self._filtered_models = grouped_order
-        self._selected_index = next(
-            (i for i, (s, _) in enumerate(grouped_order) if s == old_spec),
-            0,
+        self._selected_index = self._find_same_occurrence_index(
+            grouped_order,
+            old_entry,
+            old_occurrence,
         )
 
         glyphs = get_glyphs()

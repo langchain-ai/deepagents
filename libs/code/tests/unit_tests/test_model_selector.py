@@ -464,6 +464,79 @@ class TestRecentModelsSection:
             specs = [w.model_spec for w in screen._option_widgets]
             assert specs.count("anthropic:claude-opus-4-7") == 2
 
+    async def test_recent_entries_do_not_duplicate_on_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshing an open selector should not compound recent entries."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {
+                "openai": ["gpt-5.5"],
+                "openai_codex": ["gpt-5.5"],
+            },
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen._update_display()
+
+            specs = [w.model_spec for w in screen._option_widgets]
+            assert specs.count("openai:gpt-5.5") == 2
+            assert specs.count("openai_codex:gpt-5.5") == 2
+
+    async def test_refresh_preserves_provider_section_recent_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshing should not move selection from provider row to Recent."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {
+                "openai": ["gpt-5.5"],
+                "openai_codex": ["gpt-5.5"],
+            },
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai_codex:gpt-5.5", "openai:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            provider_index = [
+                i
+                for i, entry in enumerate(screen._filtered_models)
+                if entry == ("openai_codex:gpt-5.5", "openai_codex")
+            ][1]
+            screen._selected_index = provider_index
+
+            await screen._update_display()
+
+            assert screen._selected_index == provider_index
+            assert screen._filtered_models[screen._selected_index] == (
+                "openai_codex:gpt-5.5",
+                "openai_codex",
+            )
+
     async def test_recent_entries_survive_recommended_toggle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

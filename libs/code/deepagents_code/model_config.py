@@ -1695,11 +1695,11 @@ def _get_codex_auth_status() -> ProviderAuthStatus:
     UI badges (`[stored]`) render unchanged.
 
     Returns:
-        `CONFIGURED` / `STORED` when a valid (non-expired) token sits at the
-            upstream default store path; `MISSING` otherwise. An expired
-            token is reported as `MISSING` because the file provider would
-            refresh on read, so persistent expiry implies the refresh
-            token itself has been revoked.
+        `CONFIGURED` / `STORED` when a token bundle sits at the upstream
+            default store path; `MISSING` otherwise. Expired access tokens
+            are still reported as configured because the file-backed model
+            provider can refresh them with the saved refresh token when the
+            model is constructed.
     """
     from deepagents_code.integrations import openai_codex
 
@@ -1716,18 +1716,11 @@ def _get_codex_auth_status() -> ProviderAuthStatus:
             provider=CODEX_PROVIDER,
             detail="not signed in to ChatGPT",
         )
-    if status.is_expired:
-        # The file provider refreshes on read, so an expired token here
-        # implies the refresh token has been revoked; treat as missing so
-        # `/auth` surfaces "sign in again" instead of pretending it's fine.
-        return ProviderAuthStatus(
-            state=ProviderAuthState.MISSING,
-            provider=CODEX_PROVIDER,
-            detail="ChatGPT token expired",
-        )
     detail = "signed in to ChatGPT"
     if status.plan_type:
         detail = f"signed in to ChatGPT ({status.plan_type})"
+    if status.is_expired:
+        detail = f"{detail}; access token will refresh on use"
     return ProviderAuthStatus(
         state=ProviderAuthState.CONFIGURED,
         provider=CODEX_PROVIDER,

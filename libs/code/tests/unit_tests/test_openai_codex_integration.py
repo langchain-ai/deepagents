@@ -161,12 +161,14 @@ class TestProviderAuthStatus:
         assert status.state is ProviderAuthState.MISSING
         assert "unreadable" in (status.detail or "")
 
-    def test_expired_token_reports_missing(self, tmp_path: Path) -> None:
+    def test_expired_token_reports_configured(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
         _write_token(path, expires_in=timedelta(seconds=-3600))
         with _override_default_store(path):
             status = get_provider_auth_status(CODEX_PROVIDER)
-        assert status.state is ProviderAuthState.MISSING
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.STORED
+        assert "refresh on use" in (status.detail or "")
 
 
 class TestBuildChatModel:

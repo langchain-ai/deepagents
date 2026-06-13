@@ -260,6 +260,9 @@ class CodexAuthScreen(ModalScreen[bool]):
                 detail = f"Signed in to ChatGPT ({result.plan_type})."
             self.app.notify(detail, markup=False)
             self.dismiss(True)
+        elif state is WorkerState.CANCELLED:
+            self.app.notify("Sign-in cancelled.", markup=False)
+            self.dismiss(False)
         elif state is WorkerState.ERROR:
             error = event.worker.error
             if isinstance(error, WorkerCancelled):

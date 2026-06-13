@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
@@ -627,6 +628,35 @@ class TestCodexAuthInManager:
             await pilot.press("enter")
             await pilot.pause()
         assert CodexAuthScreen in pushed
+
+    async def test_codex_oauth_cancel_dismisses_modal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc after the OAuth worker starts dismisses the modal as cancelled."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        async def _fake_run(
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            await asyncio.Event().wait()
+            return codex_integration.CodexAuthStatus(
+                logged_in=True, store_path=tmp_path / "auth.json"
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+
+        results: list[bool | None] = []
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.push_screen(CodexAuthScreen(), results.append)
+            await pilot.pause()
+            await pilot.press("escape")
+            for _ in range(5):
+                await pilot.pause()
+                if results:
+                    break
+        assert results == [False]
 
     async def test_codex_selection_when_signed_in_shows_signout_overlay(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

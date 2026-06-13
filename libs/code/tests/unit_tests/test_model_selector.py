@@ -270,6 +270,23 @@ class TestRecommendedToggle:
 
         assert screen._filtered_models == [("openai:gpt-4o", "openai")]
 
+    def test_recent_codex_keeps_recommended_provider_order(self) -> None:
+        """A recent Codex model should stay between OpenAI and OpenRouter."""
+        screen = ModelSelectorScreen()
+        screen._recent_specs = ["openai_codex:gpt-5.5"]
+        all_models = [
+            ("anthropic:claude-sonnet-4-6", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+            ("openai_codex:gpt-5.5", "openai_codex"),
+            ("openrouter:openai/gpt-5.5", "openrouter"),
+        ]
+
+        providers = [provider for _, provider in screen._apply_subset(all_models)]
+
+        assert providers.index("openai") < providers.index("openai_codex")
+        assert providers.index("openai_codex") < providers.index("openrouter")
+        assert providers[0] != "openai_codex"
+
     async def test_info_line_reflects_active_search(self) -> None:
         """Typing a filter should avoid stale recommended-only copy."""
         app = ModelSelectorTestApp()

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langgraph.runtime import Runtime
 
+from deepagents_code._cli_context import CLIContext
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
@@ -773,6 +774,7 @@ class TestCreateCliAgentInteractiveForwarding:
         _, kwargs = mock_get_prompt.call_args
         assert kwargs["interactive"] is False
         assert mock_create_deep_agent.call_args.kwargs["name"] == "my_agent"
+        assert mock_create_deep_agent.call_args.kwargs["context_schema"] is CLIContext
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

@@ -230,6 +230,25 @@ class TestModelMatchesSpec:
         model = _make_model({"model_name": "claude-sonnet-4-6"})
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
 
+    def test_provider_prefixed_match_checks_provider_when_available(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai"})
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is False
+
+    def test_provider_match_normalizes_langsmith_provider_spelling(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai-codex"})
+
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is True
+
+    def test_provider_prefixed_match_falls_back_when_provider_unknown(self) -> None:
+        model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={})
+
+        assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
     def test_no_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})
         assert model_matches_spec(model, "openai:gpt-5") is False

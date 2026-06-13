@@ -7,6 +7,7 @@ the graph.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +57,16 @@ _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 must be stripped on cross-provider swap."""
 
 
+def _get_context(request: ModelRequest) -> dict[str, Any] | None:
+    """Return runtime context when it is a dict, otherwise `None`."""
+    runtime = request.runtime
+    if runtime is None:
+        return None
+
+    ctx = runtime.context
+    return ctx if isinstance(ctx, dict) else None
+
+
 def _apply_overrides(request: ModelRequest) -> ModelRequest:
     """Apply model/param overrides from `CLIContext` on the runtime.
 
@@ -73,12 +84,8 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
             contains no overrides, otherwise a new request with overrides
             applied via `request.override()`.
     """
-    runtime = request.runtime
-    if runtime is None:
-        return request
-
-    ctx = runtime.context
-    if not isinstance(ctx, dict):
+    ctx = _get_context(request)
+    if ctx is None:
         return request
 
     overrides: dict[str, Any] = {}
@@ -159,6 +166,86 @@ def _apply_overrides(request: ModelRequest) -> ModelRequest:
     return request.override(**overrides)
 
 
+async def _apply_overrides_async(request: ModelRequest) -> ModelRequest:
+    """Async variant of `_apply_overrides` that offloads model construction.
+
+    Returns:
+        The original request when no async override applies, otherwise a request
+            with the runtime model or settings override applied.
+    """
+    ctx = _get_context(request)
+    if ctx is None:
+        return request
+
+    overrides: dict[str, Any] = {}
+
+    new_model = None
+    model_result = None
+    model = ctx.get("model")
+    if model and not model_matches_spec(request.model, model):
+        from deepagents_code.config import create_model
+        from deepagents_code.model_config import ModelConfigError
+
+        logger.debug("Overriding model to %s", model)
+        try:
+            model_result = await asyncio.to_thread(create_model, model)
+            new_model = model_result.model
+        except ModelConfigError:
+            logger.exception(
+                "Failed to resolve runtime model override '%s'; "
+                "continuing with current model",
+                model,
+            )
+            return request
+        overrides["model"] = new_model
+
+    model_params = ctx.get("model_params", {})
+    if model_params:
+        overrides["model_settings"] = {**request.model_settings, **model_params}
+
+    if not overrides:
+        return request
+
+    if new_model is not None and not _is_anthropic_model(new_model):
+        settings = overrides.get("model_settings", request.model_settings)
+        dropped = settings.keys() & _ANTHROPIC_ONLY_SETTINGS
+        if dropped:
+            logger.debug(
+                "Stripped Anthropic-only settings %s for non-Anthropic model",
+                dropped,
+            )
+            overrides["model_settings"] = {
+                k: v for k, v in settings.items() if k not in dropped
+            }
+
+    if model_result is not None and request.system_prompt:
+        from deepagents_code.agent import (
+            MODEL_IDENTITY_RE,
+            build_model_identity_section,
+        )
+
+        prompt = request.system_prompt
+        new_identity = build_model_identity_section(
+            model_result.model_name,
+            provider=model_result.provider,
+            context_limit=model_result.context_limit,
+            unsupported_modalities=model_result.unsupported_modalities,
+        )
+        patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
+        if patched != prompt:
+            overrides["system_prompt"] = patched
+        elif "### Model Identity" in prompt:
+            logger.warning(
+                "System prompt contains '### Model Identity' but regex "
+                "did not match; identity section was NOT updated for "
+                "model '%s'. The regex may be out of sync with the "
+                "prompt template.",
+                model_result.model_name,
+            )
+
+    return request.override(**overrides)
+
+
 class ConfigurableModelMiddleware(AgentMiddleware):
     """Swap the model or per-call settings from `runtime.context`.
 
@@ -198,4 +285,4 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         Returns:
             The `ModelResponse` produced by the downstream handler.
         """
-        return await handler(_apply_overrides(request))
+        return await handler(await _apply_overrides_async(request))

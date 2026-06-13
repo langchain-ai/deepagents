@@ -218,6 +218,13 @@ class TestGetModelProvider:
         model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
         assert get_model_provider(model) is None
 
+    def test_returns_none_when_get_ls_params_returns_non_mapping(self) -> None:
+        # A custom integration may return `None` instead of a mapping; this
+        # must not raise `AttributeError` on the subsequent `.get`.
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value=None)
+        assert get_model_provider(model) is None
+
 
 class TestModelMatchesSpec:
     """Tests for `model_matches_spec`."""
@@ -227,7 +234,11 @@ class TestModelMatchesSpec:
         assert model_matches_spec(model, "claude-sonnet-4-6") is True
 
     def test_provider_prefixed_match(self) -> None:
+        # Set `ls_provider` explicitly so this exercises the provider-match
+        # path rather than the identifier-only fallback (an unset mock returns
+        # a non-mapping, which would route through the fallback instead).
         model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
 
     def test_provider_prefixed_match_checks_provider_when_available(self) -> None:
@@ -243,11 +254,44 @@ class TestModelMatchesSpec:
 
         assert model_matches_spec(model, "openai_codex:gpt-5.5") is True
 
+    def test_provider_match_normalizes_spec_provider_spelling(self) -> None:
+        # The reverse of the case above: a hyphenated spec must match an
+        # underscored `ls_provider`. Normalization is applied to both operands,
+        # so neither spelling direction should read as a mismatch.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai_codex"})
+
+        assert model_matches_spec(model, "openai-codex:gpt-5.5") is True
+
+    @pytest.mark.parametrize(
+        ("spec_provider", "ls_provider"),
+        [
+            ("azure_openai", "azure"),
+            ("mistralai", "mistral"),
+            ("nvidia", "NVIDIA"),
+        ],
+    )
+    def test_provider_match_normalizes_langchain_provider_aliases(self, spec_provider: str, ls_provider: str) -> None:
+        model = _make_model({"model_name": "provider-model"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": ls_provider})
+
+        assert model_matches_spec(model, f"{spec_provider}:provider-model") is True
+
     def test_provider_prefixed_match_falls_back_when_provider_unknown(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})
         model._get_ls_params = MagicMock(return_value={})
 
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_falls_back_when_ls_params_non_mapping(
+        self,
+    ) -> None:
+        # `_get_ls_params` returning `None` must fall back to identifier-only
+        # matching rather than raising `AttributeError` out of the match.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value=None)
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
 
     def test_no_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})

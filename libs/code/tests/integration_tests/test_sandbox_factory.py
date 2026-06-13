@@ -19,7 +19,6 @@ from collections.abc import Iterator
 
 import pytest
 from deepagents.backends.protocol import SandboxBackendProtocol
-from deepagents.backends.sandbox import BaseSandbox
 
 from deepagents_code.integrations.sandbox_factory import create_sandbox
 
@@ -297,7 +296,7 @@ class TestRunLoopIntegration(BaseSandboxIntegrationTest):
     """Test RunLoop backend integration."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[BaseSandbox]:
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         """Provide a RunLoop sandbox instance."""
         with create_sandbox("runloop") as sandbox:
             yield sandbox
@@ -307,7 +306,7 @@ class TestDaytonaIntegration(BaseSandboxIntegrationTest):
     """Test Daytona backend integration."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[BaseSandbox]:
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         """Provide a Daytona sandbox instance."""
         with create_sandbox("daytona") as sandbox:
             yield sandbox
@@ -317,7 +316,7 @@ class TestModalIntegration(BaseSandboxIntegrationTest):
     """Test Modal backend integration."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[BaseSandbox]:
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         """Provide a Modal sandbox instance."""
         with create_sandbox("modal") as sandbox:
             yield sandbox
@@ -327,7 +326,7 @@ class TestLangSmithIntegration(BaseSandboxIntegrationTest):
     """Test LangSmith backend integration."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[BaseSandbox]:
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         """Provide a LangSmith sandbox instance."""
         with create_sandbox("langsmith") as sandbox:
             yield sandbox
@@ -343,7 +342,7 @@ class TestAgentCoreIntegration(BaseSandboxIntegrationTest):
     """Test AgentCore Code Interpreter backend integration."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[BaseSandbox]:
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
         """Provide an AgentCore sandbox instance."""
         with create_sandbox("agentcore") as sandbox:
             yield sandbox

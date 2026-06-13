@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from textual.app import App
 from textual.widgets import Log, Static
 
@@ -13,7 +14,7 @@ async def test_update_progress_screen_shows_tail_when_details_toggle(tmp_path) -
     """The progress modal keeps a bounded tail hidden until details are toggled."""
     screen = UpdateProgressScreen(
         latest="2.0.0",
-        command="pip install --upgrade deepagents-code",
+        command="uv tool upgrade deepagents-code",
         log_path=tmp_path / "update.log",
         tail_limit=2,
     )
@@ -26,7 +27,7 @@ async def test_update_progress_screen_shows_tail_when_details_toggle(tmp_path) -
         log_path = screen.query(Static).filter(".up-log").first()
         assert details.display is False
         assert log_path.display is False
-        assert "Running command: pip install --upgrade deepagents-code" in str(
+        assert "Running command: uv tool upgrade deepagents-code" in str(
             details.render()
         )
         assert "tail -f" not in str(details.render())
@@ -45,18 +46,20 @@ async def test_update_progress_screen_shows_tail_when_details_toggle(tmp_path) -
         assert list(screen._tail) == ["second", "third"]
 
 
-async def test_update_progress_screen_copies_log_path_only_in_details(tmp_path) -> None:
+async def test_update_progress_screen_copies_log_path_only_in_details(
+    tmp_path, monkeypatch
+) -> None:
     """Pressing c copies the log path only when details are visible."""
     log_path = tmp_path / "update.log"
     screen = UpdateProgressScreen(
         latest="2.0.0",
-        command="pip install --upgrade deepagents-code",
+        command="uv tool upgrade deepagents-code",
         log_path=log_path,
     )
 
     copied: list[str] = []
     app = App()
-    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
     async with app.run_test() as pilot:
         app.push_screen(screen)
         await pilot.pause()
@@ -96,7 +99,7 @@ async def test_update_progress_screen_close_waits_until_done(tmp_path) -> None:
     """Esc is ignored while the update is running and closes after completion."""
     screen = UpdateProgressScreen(
         latest="2.0.0",
-        command="pip install --upgrade deepagents-code",
+        command="uv tool upgrade deepagents-code",
         log_path=tmp_path / "update.log",
     )
 

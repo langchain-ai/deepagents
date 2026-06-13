@@ -264,11 +264,134 @@ async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None
         assert "Update available" not in content
 
 
+async def test_version_slash_command_indicates_editable_install() -> None:
+    """Verify `/version` reports editable mode and lists core dependencies."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.config._get_editable_install_path",
+                return_value="~/src/deepagents/libs/code",
+            ),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        msgs = app.query(AppMessage)
+        plain = str([m for m in msgs if not m._is_markdown][-1]._content)
+        assert "Editable install: ~/src/deepagents/libs/code" in plain
+
+        md_sources = [str(m._content) for m in msgs if m._is_markdown]
+        core = [s for s in md_sources if "### Core dependencies" in s]
+        assert core
+        assert "langchain-core" in core[-1]
+        assert "langgraph" in core[-1]
+        assert "langsmith" in core[-1]
+
+
+async def test_version_slash_command_omits_editable_info_when_not_editable() -> None:
+    """Verify `/version` hides editable info and core deps for normal installs."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        msgs = app.query(AppMessage)
+        plain = str([m for m in msgs if not m._is_markdown][-1]._content)
+        assert "Editable install" not in plain
+        md_sources = [str(m._content) for m in msgs if m._is_markdown]
+        assert not any("### Core dependencies" in s for s in md_sources)
+
+
+def test_build_version_text_includes_editable_core_deps() -> None:
+    """Verify the `--version` text reports editable mode and core deps."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.config._get_editable_install_path",
+            return_value="~/src/deepagents/libs/code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Editable install: ~/src/deepagents/libs/code" in text
+    assert "Core dependencies:" in text
+    assert "langchain-core" in text
+    assert "langsmith" in text
+
+
+def test_build_version_text_omits_core_deps_when_not_editable() -> None:
+    """Verify the `--version` text hides editable info for normal installs."""
+    from deepagents_code.main import build_version_text
+
+    with patch(
+        "deepagents_code.config._is_editable_install",
+        return_value=False,
+    ):
+        text = build_version_text()
+
+    assert "Editable install" not in text
+    assert "Core dependencies:" not in text
+
+
+def test_format_core_dependencies_lists_known_packages() -> None:
+    """Verify `format_core_dependencies` renders a row for each core package."""
+    from deepagents_code.extras_info import (
+        CORE_DEPENDENCIES,
+        format_core_dependencies,
+    )
+
+    rendered = format_core_dependencies()
+    assert rendered.startswith("### Core dependencies")
+    for name in CORE_DEPENDENCIES:
+        assert f"| {name} |" in rendered
+
+
+def test_get_core_dependency_versions_marks_missing_as_none() -> None:
+    """Verify missing core packages resolve to `None` rather than raising."""
+    from importlib.metadata import PackageNotFoundError
+
+    from deepagents_code.extras_info import get_core_dependency_versions
+
+    def patched_version(name: str) -> str:
+        if name == "langgraph-sdk":
+            raise PackageNotFoundError(name)
+        return "1.2.3"
+
+    with patch("deepagents_code.extras_info.pkg_version", side_effect=patched_version):
+        result = dict(get_core_dependency_versions())
+
+    assert result["langgraph-sdk"] is None
+    assert result["langchain"] == "1.2.3"
+
+
 async def test_update_slash_command_editable_install_short_circuits() -> None:
     """Editable install must not invoke `perform_upgrade` from the TUI.
 
-    A regression here would run `pip install --upgrade deepagents-code` on
-    an editable dev checkout and overwrite the local install.
+    A regression here would run `uv tool upgrade deepagents-code` on an
+    editable dev checkout and clobber the local install with a PyPI copy.
     """
     from unittest.mock import AsyncMock
 

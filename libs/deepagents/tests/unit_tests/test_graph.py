@@ -20,13 +20,14 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
+    DeepAgentState,
     create_deep_agent,
     get_default_model,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.subagents import SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness.harness_profiles import (
@@ -60,11 +61,11 @@ class TestCreateDeepAgentMetadata:
     """Tests for metadata on the compiled graph."""
 
     def test_versions_metadata_contains_sdk_version(self) -> None:
-        """`create_deep_agent` should attach SDK version in metadata.versions."""
+        """`create_deep_agent` should attach SDK version in metadata.lc_versions."""
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         agent = create_deep_agent(model=model)
         assert agent.config is not None
-        versions = agent.config["metadata"]["versions"]
+        versions = agent.config["metadata"]["lc_versions"]
         assert versions["deepagents"] == __version__
 
     def test_ls_integration_metadata_preserved(self) -> None:
@@ -696,6 +697,89 @@ class TestExtraMiddlewareWiring:
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+
+class TestStateSchema:
+    """Tests for the `state_schema` parameter on `create_deep_agent`.
+
+    Covers wiring (the schema reaches `create_agent` and `SubAgentMiddleware`) and
+    that a custom schema is applied when declarative subagents compile, so the
+    custom field is exposed as a channel on the subagent graph.
+
+    The round-trip of a custom field through a compiled agent is not retested here:
+    it is `create_agent`'s contract, covered upstream in langchain's
+    `test_state_schema.py`. These tests only assert deepagents' own wiring.
+    """
+
+    def test_default_state_schema_uses_deep_agent_state(self) -> None:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model")
+
+        assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
+
+    def test_custom_state_schema_passed_through(self) -> None:
+        class MyState(DeepAgentState):
+            page_url: str
+            file_urls: list[str]
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        assert mock_create.call_args.kwargs["state_schema"] is MyState
+
+    def test_custom_state_schema_propagates_to_subagent_middleware(self) -> None:
+        """Custom schema reaches `SubAgentMiddleware` so declarative subagents compile with it."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        mw_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
+        assert sub_mw._state_schema is MyState
+
+    def test_declarative_subagent_compiles_with_custom_state_schema(self) -> None:
+        """A declarative subagent's compiled runnable exposes the custom field as a channel."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        runnable = create_sub_agent(
+            {
+                "name": "researcher",
+                "description": "Research agent",
+                "system_prompt": "You are a researcher.",
+                "model": GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
+                "tools": [],
+            },
+            state_schema=MyState,
+        )
+
+        properties = runnable.get_input_jsonschema()["properties"]
+        assert "page_url" in properties
 
 
 class _OtherStubMW(AgentMiddleware[Any, Any, Any]):

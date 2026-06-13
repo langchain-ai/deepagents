@@ -215,3 +215,30 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_type is None
+
+    def test_sandbox_snapshot_name_round_trips(self) -> None:
+        """Snapshot/blueprint names survive server env serialization."""
+        original = ServerConfig(
+            sandbox_type="langsmith",
+            sandbox_snapshot_name="customer-image",
+        )
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.sandbox_type == "langsmith"
+        assert restored.sandbox_snapshot_name == "customer-image"
+
+    def test_sandbox_snapshot_name_empty_env_normalizes_to_none(self) -> None:
+        """An empty `SANDBOX_SNAPSHOT_NAME` env var must not trip the validator."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}SANDBOX_SNAPSHOT_NAME": ""},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.sandbox_snapshot_name is None

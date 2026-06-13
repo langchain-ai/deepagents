@@ -35,7 +35,7 @@ curl -LsSf https://langch.in/dcode | bash
 
 An open-source, async coding agent for your org's internal workflows. Runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end.
 
-```bash
+```text
 @open-swe fix this user-reported bug plz!
 ```
 
@@ -113,3 +113,8 @@ When adding a new example:
 - **Follow the structure** of existing examples (see `deep_research/` or `text-to-sql-agent/` as references)
 
 </details>
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -15,7 +15,11 @@ A documentation research agent deployed with `deepagents deploy`. It answers dev
 deepagents deploy
 ```
 
-The `mcp.json` wires in the LangChain docs MCP server at `https://docs.langchain.com/mcp`. No additional setup is needed — the agent discovers and uses the docs tools automatically.
+MCP servers are now workspace-level resources. Register the LangChain docs server once, then reference it in `tools.json`:
+
+```bash
+deepagents mcp-servers add --url https://docs.langchain.com/mcp --name docs-langchain
+```
 
 ## What to try
 
@@ -50,12 +54,13 @@ Find your deployment URL in LangSmith under **Deployments**. See the [LangGraph 
 
 ```
 deploy-mcp-docs-agent/
-├── AGENTS.md          # Agent instructions and answer format
-├── deepagents.toml    # Deploy config (model)
-└── mcp.json           # LangChain docs MCP server
+├── AGENTS.md     # Agent instructions and answer format
+└── agent.json    # Deploy config (name, model)
 ```
 
 ## Resources
 
 - [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)
 - [MCP server docs](https://docs.langchain.com/deepagents/mcp)
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

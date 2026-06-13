@@ -43,6 +43,29 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def non_negative_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 0.
+
+    Args:
+        value: Raw argument string to parse.
+
+    Returns:
+        Parsed non-negative integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 0.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 0:
+        msg = f"must be a non-negative integer (>= 0), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
 def _print_option_section(*lines: str, title: str = "Options") -> None:
     """Print a help-screen options section with shared JSON/help flags.
 
@@ -83,6 +106,7 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
+    console.print("  dcode config <show|list|get|path>         Inspect configuration")
     console.print(
         "  dcode update                              Check for and install updates"
     )
@@ -97,6 +121,9 @@ def show_help() -> None:
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
+    console.print(
+        "  --max-retries N            Override max retries for transient model errors"
+    )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print("  --skill NAME               Invoke a skill when the session starts")
@@ -109,18 +136,22 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Agentcore/Modal/Daytona/Runloop/Vercel"
         " require downloading extras"
     )
+    console.print("  --sandbox-id ID            Attach to existing sandbox")
+    console.print("  --sandbox-snapshot-name NAME")
     console.print(
-        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
+        "                             Snapshot (langsmith) or blueprint (runloop)"
+        " name to use or create"
     )
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
     console.print(
         "  --mcp-config PATH          Load MCP tools from config file"
-        " (merged on top of auto-discovered configs)"
+        " (merged on top of auto-discovered configs;"
+        " run `dcode mcp config` to list discovery paths)"
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
@@ -132,7 +163,7 @@ def show_help() -> None:
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
-        "tool names"
+        "tool names (may include 'safe')"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
@@ -161,6 +192,14 @@ def show_help() -> None:
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
+    console.print(
+        "  --install NAME             Install an optional extra (e.g. quickjs)"
+    )
+    console.print(
+        "  --package                  With --install, treat NAME as a package "
+        "(uv --with), not an extra"
+    )
+    console.print("  --yes                      Skip --install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show dcode and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
@@ -441,19 +480,21 @@ def show_mcp_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print("  config            Show MCP config discovery paths")
     console.print()
     _print_option_section()
     console.print()
     _print_mcp_discovery_paths()
     console.print()
     console.print(
-        "  Pass --config <path> to any subcommand to bypass discovery.",
+        "  Pass --mcp-config <path> to any subcommand to bypass discovery.",
         style=theme.MUTED,
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
     console.print()
 
 
@@ -461,10 +502,10 @@ def show_mcp_login_help() -> None:
     """Show help information for the `mcp login` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode mcp login <server> [--config PATH]")
+    console.print("  dcode mcp login <server> [--mcp-config PATH]")
     console.print()
     _print_option_section(
-        "  --config PATH           Path to an MCP config JSON file "
+        "  --mcp-config PATH       Path to an MCP config JSON file "
         "(default: auto-discovered)",
     )
     console.print()
@@ -475,7 +516,54 @@ def show_mcp_login_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode mcp login notion")
-    console.print("  dcode mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login linear --mcp-config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_config_help() -> None:
+    """Show help information for the `mcp config` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode mcp config")
+    console.print()
+    console.print(
+        "Print the MCP config discovery paths in precedence order, marking"
+        " which files exist on disk.",
+    )
+    console.print()
+    _print_mcp_discovery_paths()
+    console.print()
+
+
+def show_config_help() -> None:
+    """Show help information for the `config` subcommand.
+
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_config_command` when no config subcommand is given. Kept import-light
+    so it stays on the startup fast path.
+    """
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode config <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  show              Show effective values and their source")
+    console.print("  list|ls           List all available options")
+    console.print("  get <key>         Show one option's value and source")
+    console.print("  path              Show config file locations")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print(
+        "  Credentials are reported as set/not set only; values are never printed.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode config show")
+    console.print("  dcode config list --json")
+    console.print("  dcode config get interpreter.memory_limit_mb")
+    console.print("  dcode config path")
     console.print()
 
 

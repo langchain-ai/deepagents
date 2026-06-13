@@ -8,7 +8,7 @@ assertions are deterministic regardless of terminal configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 if TYPE_CHECKING:
@@ -107,8 +107,8 @@ class TestCoerceTimeoutSeconds:
         assert _coerce_timeout_seconds(None) is None
 
     def test_float_type_returns_none(self) -> None:
-        # `type(x) is int` rejects floats (and bool subclass isn't int either).
-        assert _coerce_timeout_seconds(1.5) is None  # type: ignore[arg-type]
+        # Intentionally pass a wrong runtime type to verify defensive coercion.
+        assert _coerce_timeout_seconds(cast("Any", 1.5)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +230,40 @@ class TestFormatToolDisplay:
         result = format_tool_display("grep", {"pattern": "def foo"})
         assert 'grep("def foo")' in result
 
+    def test_grep_shows_scoped_path(self) -> None:
+        abs_path = str(Path.cwd() / "subdir")
+        result = format_tool_display("grep", {"pattern": "def foo", "path": abs_path})
+        assert 'grep("def foo" in subdir)' in result
+
+    def test_grep_omits_default_root_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": "/"})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_omits_empty_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": ""})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_omits_none_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": None})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_shows_out_of_cwd_path(self) -> None:
+        # A path outside cwd cannot be made relative; it must still render.
+        result = format_tool_display(
+            "grep", {"pattern": "def foo", "path": "/etc/nginx"}
+        )
+        assert " in /etc/nginx" in result
+
+    def test_grep_scoped_path_strips_dangerous_unicode(self) -> None:
+        # A zero-width space in the path is stripped and flagged for the user.
+        abs_path = str(Path.cwd() / "subdir") + "\u200b"
+        result = format_tool_display("grep", {"pattern": "def foo", "path": abs_path})
+        assert " in subdir" in result
+        assert _HIDDEN_CHAR_MARKER in result
+
     # --- execute ---
 
     def test_execute_shows_command(self) -> None:
@@ -273,6 +307,48 @@ class TestFormatToolDisplay:
     def test_glob_shows_pattern(self) -> None:
         result = format_tool_display("glob", {"pattern": "**/*.py"})
         assert 'glob("**/*.py")' in result
+
+    def test_glob_shows_scoped_path(self) -> None:
+        abs_path = str(Path.cwd() / "subdir")
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": abs_path})
+        assert 'glob("**/*.py" in subdir)' in result
+
+    def test_glob_omits_default_root_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": "/"})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_distinguishes_scoped_from_unscoped(self) -> None:
+        # The two calls from the LangSmith trace must render differently.
+        unscoped = format_tool_display("glob", {"pattern": "**/*.py"})
+        scoped = format_tool_display(
+            "glob", {"pattern": "**/*.py", "path": str(Path.cwd() / "langchain")}
+        )
+        assert unscoped != scoped
+
+    def test_glob_omits_empty_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": ""})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_omits_none_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": None})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_shows_out_of_cwd_path(self) -> None:
+        # A path outside cwd cannot be made relative; it must still render.
+        result = format_tool_display(
+            "glob", {"pattern": "**/*.py", "path": "/etc/nginx"}
+        )
+        assert " in /etc/nginx" in result
+
+    def test_glob_scoped_path_strips_dangerous_unicode(self) -> None:
+        # A zero-width space in the path is stripped and flagged for the user.
+        abs_path = str(Path.cwd() / "subdir") + "\u200b"
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": abs_path})
+        assert " in subdir" in result
+        assert _HIDDEN_CHAR_MARKER in result
 
     # --- fetch_url ---
 

@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -64,6 +64,10 @@ run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+
+run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
+	@mkdir -p jobs/terminal-bench
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir jobs/terminal-bench --env langsmith $(AGENT_KWARG)
 
 ######################
 # CHARTS

@@ -25,6 +25,7 @@ from deepagents_code.mcp_tools import (
     _check_remote_server,
     _check_stdio_server,
     _load_tools_from_config,
+    _normalize_mcp_arguments,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_project_server_summaries,
@@ -676,9 +677,9 @@ class TestMCPSessionManager:
     async def test_configure_noop_when_connections_match(self) -> None:
         """`configure` is a no-op if the same connection dict is re-applied."""
         conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
-        manager = MCPSessionManager(connections=conn)  # ty: ignore[invalid-argument-type]
+        manager = MCPSessionManager(connections=conn)  # ty: ignore
         # Should not raise even without any sessions yet.
-        manager.configure(dict(conn))  # ty: ignore[no-matching-overload]
+        manager.configure(dict(conn))  # ty: ignore
 
     @pytest.mark.usefixtures("fake_home")
     async def test_configure_accepts_equivalent_oauth_connections(self) -> None:
@@ -735,7 +736,7 @@ class TestMCPSessionManager:
             yield session
 
         conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
-        manager = MCPSessionManager(connections=conn)  # ty: ignore[invalid-argument-type]
+        manager = MCPSessionManager(connections=conn)  # ty: ignore
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             await manager.get_session("filesystem")
 
@@ -999,7 +1000,7 @@ class TestGetMCPTools:
         _tools, manager, server_infos = await get_mcp_tools(path)
 
         assert server_infos[0].tools[0].input_schema == rich_schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_extraction_survives_attribute_error(
         self,
@@ -1035,14 +1036,14 @@ class TestGetMCPTools:
 
         session.list_tools = AsyncMock(
             return_value=_make_tool_page(
-                [_ExplodingSchemaTool()]  # type: ignore[list-item]
+                [_ExplodingSchemaTool()]  # ty: ignore
             )
         )
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 
         assert server_infos[0].tools[0].input_schema is None
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_pairs_when_tool_name_starts_with_server_prefix(
         self,
@@ -1072,7 +1073,7 @@ class TestGetMCPTools:
         info = server_infos[0]
         assert [t.name for t in info.tools] == ["srv_srv_read"]
         assert info.tools[0].input_schema == schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
     async def test_input_schema_paired_to_post_filter_tools(
         self,
@@ -1108,7 +1109,7 @@ class TestGetMCPTools:
         names = [t.name for t in server_infos[0].tools]
         assert names == ["srv_read_file"]
         assert server_infos[0].tools[0].input_schema == read_schema
-        await manager.cleanup()  # type: ignore[union-attr]
+        await manager.cleanup()  # ty: ignore
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -1755,7 +1756,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke({})  # ty: ignore
 
         assert len(sessions) == 2
         sessions[1].call_tool.assert_awaited_once_with("echo", {})
@@ -1795,8 +1796,8 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            await tools[0].ainvoke({})  # ty: ignore
+            await tools[0].ainvoke({})  # ty: ignore
 
         # Reuse is the observable: the runtime session services both
         # calls. Counting sessions is implementation detail — await_count
@@ -1845,19 +1846,19 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            await tools[0].ainvoke({})  # ty: ignore
 
         assert call_counter["n"] == 3
         sessions[2].call_tool.assert_awaited_once()
         await manager.cleanup()
 
-    async def test_repeated_transient_error_surfaces_tool_exception(
+    async def test_repeated_transient_error_surfaces_tool_message(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A second transient failure becomes a `ToolException`."""
+        """A second transient failure becomes a tool-local error message."""
         from anyio import ClosedResourceError
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1887,9 +1888,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="failed after one retry"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "failed after one retry" in result.content
         assert call_counter["n"] == 3
         await manager.cleanup()
 
@@ -1899,7 +1904,7 @@ class TestCachedSessionProxy:
         fake_tool_result: Any,  # noqa: ANN401
     ) -> None:
         """Generic `OSError`s do not trigger session invalidation and retry."""
-        from langchain_core.tools import ToolException
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
@@ -1931,11 +1936,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            # Non-transient exceptions now surface as `ToolException` so the
-            # agent sees a structured error instead of a raw `OSError`.
-            with pytest.raises(ToolException, match="socket glitch"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "socket glitch" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 
@@ -1943,8 +1950,8 @@ class TestCachedSessionProxy:
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """A logical tool failure propagates without retrying the session."""
-        from langchain_core.tools import ToolException
+        """MCP `isError=True` returns a failed `ToolMessage` without retrying."""
+        from langchain_core.messages import ToolMessage
         from mcp.types import CallToolResult, TextContent
 
         path = write_config(
@@ -1982,20 +1989,78 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="boom"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-1"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == "boom"
         assert call_counter["n"] == 2
         assert runtime_session is not None
         assert runtime_session.call_tool.await_count == 1
         await manager.cleanup()
 
-    async def test_reauth_signal_surfaces_tool_exception_without_retry(
+    async def test_empty_mcp_error_content_uses_placeholder_tool_message(
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """Runtime re-auth signals surface as actionable `ToolException`s."""
-        from langchain_core.tools import ToolException
+        """Empty MCP error content gets the adapter placeholder text block."""
+        from langchain_core.messages import ToolMessage
+        from mcp.types import CallToolResult
+
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["s.js"]}}}
+        )
+        runtime_session: AsyncMock | None = None
+
+        def _new_session() -> AsyncMock:
+            nonlocal runtime_session
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool("echo")])
+            )
+            session.call_tool = AsyncMock(
+                return_value=CallToolResult(content=[], isError=True)
+            )
+            runtime_session = session
+            return session
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield _new_session()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.content_blocks[0]["type"] == "text"
+        assert result.content_blocks[0]["text"] == (
+            "MCP tool returned an error with empty content."
+        )
+        assert runtime_session is not None
+        assert runtime_session.call_tool.await_count == 1
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_reauth_signal_surfaces_tool_message_without_retry(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Runtime re-auth signals surface as actionable tool messages."""
+        from langchain_core.messages import ToolMessage
 
         path = write_config(
             {
@@ -2036,9 +2101,13 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="re-authentication"):
-                await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
+            result = await tools[0].ainvoke(
+                {"args": {}, "id": "call-1", "type": "tool_call"}
+            )  # ty: ignore
 
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "re-authentication" in result.content
         assert call_counter["n"] == 2
         await manager.cleanup()
 
@@ -2088,7 +2157,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = asyncio.run(get_mcp_tools(path))
-            result = asyncio.run(tools[0].ainvoke({}))  # ty: ignore[missing-typed-dict-key]
+            result = asyncio.run(tools[0].ainvoke({}))  # ty: ignore
             assert manager is not None
             asyncio.run(manager.cleanup())
 
@@ -2526,7 +2595,11 @@ class TestToolFilterEndToEnd:
             _mcp_callbacks: object | None = None,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
-            yield sessions_by_url.get(connection.get("url"), fs_session)
+            url = connection.get("url")
+            if isinstance(url, str):
+                yield sessions_by_url.get(url, fs_session)
+            else:
+                yield fs_session
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
@@ -2535,3 +2608,135 @@ class TestToolFilterEndToEnd:
         assert names == ["api_search", "fs_read_file"]
         assert manager is not None
         await manager.cleanup()
+
+
+class TestNormalizeMCPArguments:
+    """Cover the empty-string-stripping at the MCP tool boundary."""
+
+    def _schema(
+        self,
+        properties: dict[str, dict],
+        required: list[str] | None = None,
+    ) -> dict:
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+        }
+
+    def test_drops_empty_optional_string(self) -> None:
+        schema = self._schema(
+            {
+                "query": {"type": "string"},
+                "context_channel_id": {"type": "string"},
+            },
+            required=["query"],
+        )
+        out = _normalize_mcp_arguments(
+            {"query": "hello", "context_channel_id": ""}, schema
+        )
+        assert out == {"query": "hello"}
+
+    def test_keeps_empty_required_string(self) -> None:
+        schema = self._schema({"query": {"type": "string"}}, required=["query"])
+        out = _normalize_mcp_arguments({"query": ""}, schema)
+        assert out == {"query": ""}
+
+    def test_keeps_nonempty_strings(self) -> None:
+        schema = self._schema({"q": {"type": "string"}})
+        out = _normalize_mcp_arguments({"q": "x"}, schema)
+        assert out == {"q": "x"}
+
+    def test_keeps_non_string_values(self) -> None:
+        schema = self._schema(
+            {
+                "limit": {"type": "integer"},
+                "include_bots": {"type": "boolean"},
+            }
+        )
+        out = _normalize_mcp_arguments({"limit": 0, "include_bots": False}, schema)
+        assert out == {"limit": 0, "include_bots": False}
+
+    def test_drops_empty_when_property_missing_type(self) -> None:
+        schema = self._schema({"hint": {"description": "free-form"}})
+        out = _normalize_mcp_arguments({"hint": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_unknown_property(self) -> None:
+        # Tool calls sometimes carry extra fields not listed in `properties`.
+        # Without a schema entry we can't prove the field is string-typed,
+        # but treating empty as "omitted" is the safer default.
+        schema = self._schema({"known": {"type": "string"}})
+        out = _normalize_mcp_arguments({"known": "a", "extra": ""}, schema)
+        assert out == {"known": "a"}
+
+    def test_passes_through_when_schema_is_not_dict(self) -> None:
+        out = _normalize_mcp_arguments({"a": "", "b": 1}, None)
+        assert out == {"a": "", "b": 1}
+
+    def test_handles_union_string_type(self) -> None:
+        schema = self._schema({"v": {"type": ["string", "null"]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_oneof_schema(self) -> None:
+        """`oneOf` props have no top-level `type` → conservative drop."""
+        schema = self._schema({"v": {"oneOf": [{"type": "string"}, {"type": "null"}]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_anyof_schema(self) -> None:
+        """`anyOf` props share the same no-top-level-`type` shape."""
+        schema = self._schema({"v": {"anyOf": [{"type": "string"}]}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_for_ref_schema(self) -> None:
+        """`$ref` props look like `{"$ref": "#/..."}` — no `type` either."""
+        schema = self._schema({"v": {"$ref": "#/definitions/ChannelId"}})
+        out = _normalize_mcp_arguments({"v": ""}, schema)
+        assert out == {}
+
+    def test_drops_empty_when_property_is_boolean_schema(self) -> None:
+        """JSON Schema allows `{"properties": {"k": true}}` — `prop` non-dict.
+
+        `isinstance(prop, dict)` guards the `.get("type")` call so we don't
+        crash, and the field is treated as ambiguous (drop).
+        """
+        schema = {"type": "object", "properties": {"k": True}, "required": []}
+        out = _normalize_mcp_arguments({"k": ""}, schema)
+        assert out == {}
+
+    def test_passes_through_falsy_non_string_values(self) -> None:
+        """Guards against a `if not value` refactor — `0`/`False`/`[]`/`{}` survive."""
+        schema = self._schema(
+            {
+                "i": {"type": "integer"},
+                "b": {"type": "boolean"},
+                "a": {"type": "array"},
+                "o": {"type": "object"},
+            }
+        )
+        out = _normalize_mcp_arguments({"i": 0, "b": False, "a": [], "o": {}}, schema)
+        assert out == {"i": 0, "b": False, "a": [], "o": {}}
+
+    def test_required_takes_precedence_over_string_schema(self) -> None:
+        """`required` wins even when properties confirm the field is string-typed."""
+        schema = self._schema({"query": {"type": "string"}}, required=["query"])
+        out = _normalize_mcp_arguments({"query": ""}, schema)
+        assert out == {"query": ""}
+
+    def test_logs_dropped_keys(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Diagnostic log fires when at least one key is stripped."""
+        import logging
+
+        schema = self._schema(
+            {"q": {"type": "string"}, "ctx": {"type": "string"}},
+            required=["q"],
+        )
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            _normalize_mcp_arguments({"q": "x", "ctx": ""}, schema)
+        assert any(
+            "dropped empty-string keys" in r.message and "ctx" in r.message
+            for r in caplog.records
+        )

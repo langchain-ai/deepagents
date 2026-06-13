@@ -30,7 +30,7 @@ repl_swarm/
 
 1. `swarm_agent.py` creates a `create_deep_agent` with
    `skills=[".../skills"]` and
-   `CodeInterpreterMiddleware(ptc=["task"], skills_backend=backend)`.
+   `CodeInterpreterMiddleware(ptc=["task"])`.
 2. `SkillsMiddleware` parses `SKILL.md` frontmatter, including the new
    `module` key, and writes a `SkillMetadata` entry into state.
 3. When the model writes
@@ -71,3 +71,8 @@ actually runs.
 - **Hundreds of tasks.** The default `concurrency=5` cap (hard-max 10)
   is intentional — subagent invocations aren't free. For mass fan-out
   at thousands of tasks, batch them in a job queue, not a REPL call.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

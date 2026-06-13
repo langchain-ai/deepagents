@@ -164,7 +164,9 @@ class ServerConfig:
 
     `None` means "fall through to whatever `settings.interpreter_ptc` resolves
     to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
-    a list is an explicit allowlist of tool names.
+    a list is an explicit allowlist of tool names that may also include the
+    `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
+    a list.
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
@@ -178,6 +180,10 @@ class ServerConfig:
 
     sandbox_id: str | None = None
     """Existing sandbox ID to attach to; `None` creates a fresh sandbox."""
+
+    sandbox_snapshot_name: str | None = None
+    """Sandbox snapshot (langsmith) or blueprint (runloop) name; must be `None`
+    when `sandbox_id` is set."""
 
     sandbox_setup: str | None = None
     """Absolute path to a setup script executed inside the sandbox on first attach."""
@@ -257,6 +263,7 @@ class ServerConfig:
             ).lower(),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
+            "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
             "SANDBOX_SETUP": self.sandbox_setup,
             "CWD": self.cwd,
             "PROJECT_ROOT": self.project_root,
@@ -304,6 +311,7 @@ class ServerConfig:
             ),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
+            sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
             sandbox_setup=_read_env_str("SANDBOX_SETUP"),
             cwd=_read_env_str("CWD"),
             project_root=_read_env_str("PROJECT_ROOT"),
@@ -329,6 +337,7 @@ class ServerConfig:
         shell_allow_list: list[str] | None = None,
         sandbox_type: str = "none",
         sandbox_id: str | None,
+        sandbox_snapshot_name: str | None,
         sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
@@ -358,6 +367,8 @@ class ServerConfig:
                 server subprocess for `ShellAllowListMiddleware`.
             sandbox_type: Sandbox type.
             sandbox_id: Existing sandbox ID to reuse.
+            sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop)
+                name to use or create.
             sandbox_setup: Path to setup script for the sandbox.
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
@@ -391,6 +402,7 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
             sandbox_setup=_normalize_path(
                 sandbox_setup, project_context, "sandbox setup"
             ),

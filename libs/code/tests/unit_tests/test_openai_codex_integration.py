@@ -191,9 +191,11 @@ class TestBuildChatModel:
         _write_token(path)
         monkeypatch.setattr(o, "DEFAULT_STORE_PATH", path)
         model = openai_codex.build_chat_model("gpt-5.2-codex")
-        from langchain_openai import ChatOpenAICodex
+        from langchain_openai.chat_models.codex import (
+            _ChatOpenAICodex,
+        )
 
-        assert isinstance(model, ChatOpenAICodex)
+        assert isinstance(model, _ChatOpenAICodex)
         assert model.model_name == "gpt-5.2-codex"
 
 

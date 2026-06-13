@@ -4,7 +4,7 @@ import asyncio
 import io
 import signal
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -291,6 +291,51 @@ class TestSandboxTypeForwarding:
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+
+    async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
+        """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(
+                message="test task",
+                sandbox_type="langsmith",
+                sandbox_snapshot_name="my-snap",
+            )
+
+        _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_snapshot_name"] == "my-snap"
 
 
 class TestQuietMode:
@@ -1582,7 +1627,7 @@ class TestRunStartupCommand:
         assert buf.getvalue() == ""
 
 
-async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
+async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item

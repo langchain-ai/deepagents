@@ -22,6 +22,7 @@ Example file (researcher/AGENTS.md):
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, TypedDict
 
@@ -29,6 +30,8 @@ import yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class SubagentMetadata(TypedDict):
@@ -67,21 +70,35 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     """
     try:
         content = file_path.read_text(encoding="utf-8")
-    except OSError:
+    except OSError as exc:
+        logger.warning("Skipping subagent %s: could not read file (%s)", file_path, exc)
         return None
 
     # Extract YAML frontmatter (--- delimited)
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", content, re.DOTALL)
     if not match:
+        logger.warning(
+            "Skipping subagent %s: missing YAML frontmatter. The file must start "
+            "with a '---' delimited block containing 'name' and 'description'.",
+            file_path,
+        )
         return None
 
     try:
         frontmatter = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        logger.warning(
+            "Skipping subagent %s: invalid YAML frontmatter (%s)", file_path, exc
+        )
         return None
 
     # Validate frontmatter structure and required fields
     if not isinstance(frontmatter, dict):
+        logger.warning(
+            "Skipping subagent %s: frontmatter must be a mapping with 'name' and "
+            "'description' fields.",
+            file_path,
+        )
         return None
 
     name = frontmatter.get("name")
@@ -95,6 +112,18 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     model_valid = model is None or isinstance(model, str)
 
     if not (name_valid and description_valid and model_valid):
+        invalid_fields: list[str] = []
+        if not name_valid:
+            invalid_fields.append("name (non-empty string required)")
+        if not description_valid:
+            invalid_fields.append("description (non-empty string required)")
+        if not model_valid:
+            invalid_fields.append("model (string required when present)")
+        logger.warning(
+            "Skipping subagent %s: invalid or missing frontmatter field(s): %s",
+            file_path,
+            ", ".join(invalid_fields),
+        )
         return None
 
     return {
@@ -126,18 +155,56 @@ def _load_subagents_from_dir(
     if not agents_dir.exists() or not agents_dir.is_dir():
         return subagents
 
-    for folder in agents_dir.iterdir():
-        if not folder.is_dir():
+    for entry in agents_dir.iterdir():
+        if not entry.is_dir():
+            # A stray file directly under agents/ is a common mistake: subagents
+            # must live at agents/{name}/AGENTS.md, not agents/{name}.md.
+            if entry.suffix.lower() == ".md":
+                logger.warning(
+                    "Ignoring %s subagent file %s: subagents must be defined at "
+                    "%s/{subagent-name}/AGENTS.md, not as a file directly in the "
+                    "agents directory.",
+                    source,
+                    entry,
+                    agents_dir,
+                )
             continue
 
         # Look for {folder_name}/AGENTS.md
-        subagent_file = folder / "AGENTS.md"
+        subagent_file = entry / "AGENTS.md"
         if not subagent_file.exists():
+            # The folder exists but holds a differently-named markdown file
+            # (e.g. agent.md or {name}.md) instead of the required AGENTS.md.
+            stray_md = [p.name for p in entry.glob("*.md")]
+            if stray_md:
+                logger.warning(
+                    "Ignoring %s subagent folder %s: expected an AGENTS.md file "
+                    "but found %s. Rename the definition to AGENTS.md.",
+                    source,
+                    entry,
+                    ", ".join(sorted(stray_md)),
+                )
             continue
 
         subagent = _parse_subagent_file(subagent_file)
         if subagent:
             subagent["source"] = source
+            # The folder name and the frontmatter `name` are independent, so two
+            # folders can declare the same `name` and silently collapse to one
+            # entry. Iteration order is filesystem-dependent, so warn rather than
+            # let a definition vanish without explanation.
+            existing = subagents.get(subagent["name"])
+            if existing is not None:
+                logger.warning(
+                    "Subagent name collision in %s: %s and %s both declare "
+                    "name=%r. Using %s; give each subagent a unique 'name' in "
+                    "its frontmatter.",
+                    agents_dir,
+                    existing["path"],
+                    subagent["path"],
+                    subagent["name"],
+                    subagent["path"],
+                )
             subagents[subagent["name"]] = subagent
 
     return subagents

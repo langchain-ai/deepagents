@@ -100,10 +100,12 @@ def get_status(*, store_path: Path | None = None) -> CodexAuthStatus:
         A `CodexAuthStatus` populated from the on-disk token, or one with
             `logged_in=False` when no token exists or the file is unreadable.
     """
-    from langchain_openai.chatgpt_oauth import FileChatGPTOAuthTokenProvider
+    from langchain_openai.chatgpt_oauth import (
+        _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
+    )
 
     path = store_path or default_store_path()
-    provider = FileChatGPTOAuthTokenProvider(path=path)
+    provider = _FileChatGPTOAuthTokenProvider(path=path)
     try:
         # `_read_from_disk` is a passive inspect; the public `get_token`
         # would refresh on expiry and hit the network, which is wrong for
@@ -207,11 +209,11 @@ async def run_browser_login(
 ) -> CodexAuthStatus:
     """Run the ChatGPT OAuth Authorization Code Flow with PKCE.
 
-    Mirrors `langchain_openai.chatgpt_oauth.login_chatgpt` but routes the
-    authorize-URL display through `interaction` so a Textual screen can
-    render it inline. The blocking callback wait and the synchronous token
-    exchange both run inside `asyncio.to_thread` so the calling event loop
-    stays responsive.
+    Reimplements the upstream `langchain_openai.chatgpt_oauth` browser
+    sign-in flow over its lower-level helpers, but routes the authorize-URL
+    display through `interaction` so a Textual screen can render it inline.
+    The blocking callback wait and the synchronous token exchange both run
+    inside `asyncio.to_thread` so the calling event loop stays responsive.
 
     Args:
         interaction: UI hooks for surfacing the URL / notices. A default
@@ -235,6 +237,7 @@ async def run_browser_login(
             or upstream token-endpoint error.
 
     !!! note
+
         Upstream's `_wait_for_callback` raises `TimeoutError` after 300s of
         inactivity; that exception propagates unchanged.
     """
@@ -257,8 +260,8 @@ async def run_browser_login(
         DEFAULT_REDIRECT_HOST,
         DEFAULT_REDIRECT_PATH,
         DEFAULT_REDIRECT_PORT,
-        FileChatGPTOAuthTokenProvider,
         _build_authorize_url,  # noqa: PLC2701
+        _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
         _generate_pkce_pair,  # noqa: PLC2701
         _post_form,  # noqa: PLC2701
         _token_from_response,  # noqa: PLC2701
@@ -328,38 +331,42 @@ async def run_browser_login(
     )
     token = _token_from_response(response)
     path = store_path or default_store_path()
-    file_provider = FileChatGPTOAuthTokenProvider(path=path)
+    file_provider = _FileChatGPTOAuthTokenProvider(path=path)
     file_provider.save(token)
     return get_status(store_path=path)
 
 
 def build_chat_model(model_name: str, /, **kwargs: Any) -> BaseChatModel:
-    """Construct a `ChatOpenAICodex` model wired to the on-disk token store.
+    """Construct a `_ChatOpenAICodex` model wired to the on-disk token store.
 
     Args:
         model_name: Codex model identifier (e.g., `gpt-5.2-codex`).
-        **kwargs: Extra constructor kwargs forwarded to `ChatOpenAICodex`.
+        **kwargs: Extra constructor kwargs forwarded to `_ChatOpenAICodex`.
 
     Returns:
-        A configured `ChatOpenAICodex` instance, narrowed to `BaseChatModel`
+        A configured `_ChatOpenAICodex` instance, narrowed to `BaseChatModel`
             so `create_model` can splice it into the standard return path.
 
     Raises:
         FileNotFoundError: If no token has been stored yet. Surfaces as a
             `MissingCredentialsError` upstream in `create_model`.
     """  # noqa: DOC502  # `FileNotFoundError` is raised by `provider.get_token()` (`_load_existing`) when the on-disk token is missing
-    from langchain_openai import ChatOpenAICodex
-    from langchain_openai.chatgpt_oauth import FileChatGPTOAuthTokenProvider
+    from langchain_openai.chat_models.codex import (
+        _ChatOpenAICodex,  # noqa: PLC2701
+    )
+    from langchain_openai.chatgpt_oauth import (
+        _FileChatGPTOAuthTokenProvider,  # noqa: PLC2701
+    )
 
-    provider = FileChatGPTOAuthTokenProvider()
+    provider = _FileChatGPTOAuthTokenProvider()
     # Touch the provider's read path eagerly so a missing token surfaces as
     # `FileNotFoundError` here instead of on first invocation — the app's
     # `create_model` path expects credential failures up front. `get_token`
     # refreshes if the stored token is past `refresh_skew`, so the model
     # is guaranteed to receive a valid bearer at construction time.
     provider.get_token()
-    return ChatOpenAICodex(
-        model_name=model_name,
+    return _ChatOpenAICodex(
+        model=model_name,
         token_provider=provider,
         **kwargs,
     )

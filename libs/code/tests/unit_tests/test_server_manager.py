@@ -108,6 +108,7 @@ class TestApplyServerConfig:
             auto_approve=False,
             sandbox_type="none",
             sandbox_id=None,
+            sandbox_snapshot_name=None,
             sandbox_setup=None,
             enable_shell=True,
             enable_ask_user=False,

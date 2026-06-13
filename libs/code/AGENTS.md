@@ -10,10 +10,10 @@ For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmark
 
 **Key Textual resources:**
 
-- **Guide:** https://textual.textualize.io/guide/
-- **Widget gallery:** https://textual.textualize.io/widget_gallery/
-- **CSS reference:** https://textual.textualize.io/styles/
-- **API reference:** https://textual.textualize.io/api/
+- **Guide:** <https://textual.textualize.io/guide/>
+- **Widget gallery:** <https://textual.textualize.io/widget_gallery/>
+- **CSS reference:** <https://textual.textualize.io/styles/>
+- **API reference:** <https://textual.textualize.io/api/>
 
 ### Styled text in widgets
 
@@ -38,6 +38,13 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 `console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
 
+### Glyphs and spinners — reuse, don't redefine
+
+Charset-dependent characters and animations have **single sources of truth**. Reuse them instead of hand-rolling new ones — copies drift, and (more subtly) a hardcoded Unicode literal won't degrade to ASCII on terminals that need it.
+
+- **Glyphs** (checkmarks, arrows, ellipsis, cursor, box-drawing, branch icon, etc.): pull from `get_glyphs()` (`config.Glyphs`). Each glyph has a Unicode and an ASCII variant; `get_glyphs()` returns the right set for the active terminal. Never inline `"✓"`, `"…"`, `"›"`, and friends.
+- **Animated spinners**: reuse the `Spinner` class in `widgets/loading.py`, which wraps `get_glyphs().spinner_frames` (braille on Unicode, `(-) (\) (|) (/)` on ASCII) and exposes `next_frame()`/`current_frame()`. Do **not** define your own frame tuples or interval constants for a spinner — drive a `Spinner` on a `set_interval`. The status-bar reconnect indicator (`widgets/status.py`) is the reference example; it ticks at the same 0.1s cadence as `LoadingWidget`. All connection/queue progress lives in the status bar — the welcome banner deliberately stays out of it, so there are currently no bespoke spinners to carve an exception for.
+
 ### Textual patterns used in this codebase
 
 - **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
@@ -48,10 +55,56 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+- For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
+- Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
+- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal.
+
+### Typing and test doubles
+
+When fixing `ty` diagnostics, do not mechanically replace `# type: ignore[...]` with `cast(...)`. First try to improve the actual type shape: narrower annotations, typed futures/callbacks, covariant read-only types such as `Mapping`/`Sequence`, local mock variables, or `monkeypatch.setattr(...)`. Treat `cast("Any", ...)` as a last resort.
+
+For Textual tests that intentionally replace concrete app methods with `MagicMock` or `AsyncMock`, prefer `monkeypatch.setattr(...)` or one small documented dynamic helper over repeated `cast("Any", app)` expressions. Assert on local mock variables instead of re-reading mocked methods from the concrete object when possible.
+
+Casts are acceptable when the type violation is the point of the test (for example, passing a wrong runtime type to exercise defensive validation) or when a third-party overload is narrower than verified runtime behavior. In those cases, keep the cast narrowly scoped and add a short comment explaining why it is intentional.
 
 ## SDK dependency pin
 
 `deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+
+## Local dev installs
+
+Keep the released CLI and editable development CLI separate:
+
+- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
+- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
+
+This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
+
+`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
+
+Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
+
+```bash
+uv venv ~/.local/share/dcode-dev --python 3.13
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
+ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
+```
+
+When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
+
+```bash
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
+```
+
+Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
+
+```bash
+which dcode
+which dcode-dev
+dcode --version
+dcode-dev --version
+~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
+```
 
 ## Startup performance
 
@@ -64,6 +117,14 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 - When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
 - Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
+
+## Logging
+
+Debug logging is configured **once**, on the `deepagents_code` package logger, by the `configure_debug_logging` call in `deepagents_code/__init__.py`. Child module loggers (`logging.getLogger(__name__)`) reach the shared debug file via propagation.
+
+- Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
+- Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
+- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEV.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
 
 ## CLI help screen
 
@@ -84,8 +145,19 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 `deepagents-code` supports LangChain-based chat model providers as optional dependencies. To add a new provider, update these files (all entries alphabetically sorted):
 
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
-2. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-3. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`
+2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
+3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
+4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
+5. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+
+### `PROVIDER_BASE_URL_ENV` guidelines
+
+`PROVIDER_BASE_URL_ENV` pairs a provider with the endpoint env var(s) its LangChain integration and SDK read, so a stored `/auth` endpoint resolves and an inherited gateway URL cannot leak. Before adding an entry:
+
+- **Verify against source — never infer from naming.** Read both the `langchain-<provider>` chat model (look for `from_env` / `get_from_dict_or_env` / `secret_from_env`, or a `Field` default on the `base_url`/`endpoint` alias) and the underlying vendor SDK, and record the exact env var name each reads. The integration and the SDK often read different names (e.g. `GROQ_API_BASE` vs `GROQ_BASE_URL`).
+- **Canonical name first.** Element `[0]` is written by `apply_stored_credentials` and read by `get_base_url`; every other name the integration or SDK may read goes in the tuple so it is cleared too. By convention the SDK's `*_BASE_URL`-style name is canonical and the integration's `*_API_BASE`/`*_API_URL` name is the alternate.
+- **Never list another provider's shared var.** OpenAI-compatible providers (e.g. `deepseek`, `openrouter`, `together`, `xai`, `baseten`) sit on the `openai` SDK, whose only endpoint var is the shared `OPENAI_BASE_URL`. Listing it under those providers would clobber the user's real OpenAI endpoint when their credential is written or cleared — list only the provider's own var (e.g. `DEEPSEEK_API_BASE`), or nothing.
+- **Omit providers with no dedicated var.** When the endpoint is a hardcoded default plus a constructor arg (`baseten`), an `api_base` arg resolved per-provider inside the library (`litellm`), or derived from the region (`google_vertexai`), leave the provider out. A `/auth` endpoint still resolves through `get_base_url`'s stored-credential step and reaches the model as the `base_url` kwarg.
 
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 

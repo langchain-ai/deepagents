@@ -293,7 +293,7 @@ async def perform_offload(
                 else {"max_input_tokens": context_limit}
             )
             try:
-                model.profile = merged  # type: ignore[union-attr]
+                model.profile = merged  # ty: ignore[invalid-assignment]
             except (AttributeError, TypeError, ValueError):
                 logger.warning(
                     "Could not patch context limit (%d) into model profile; "
@@ -307,7 +307,7 @@ async def perform_offload(
     if offload_backend is None:
         from deepagents.backends.filesystem import FilesystemBackend
 
-        offload_backend = FilesystemBackend()
+        offload_backend = FilesystemBackend(virtual_mode=False)
         logger.info("Using local FilesystemBackend for offload")
 
     middleware = SummarizationMiddleware(

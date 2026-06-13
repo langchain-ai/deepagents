@@ -258,8 +258,8 @@ class TestLaunchDependenciesScreen:
                 msg = "stack torn down"
                 raise ScreenStackError(msg)
 
-            app.switch_screen = fake_switch_screen  # type: ignore[method-assign]
-            app.notify = fake_notify  # type: ignore[method-assign]
+            app.switch_screen = fake_switch_screen  # ty: ignore
+            app.notify = fake_notify  # ty: ignore
 
             await pilot.press("enter")
             await pilot.pause()

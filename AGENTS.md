@@ -47,6 +47,15 @@ make lint
 make format
 ```
 
+#### Environment and dependency management
+
+Use `uv` for all environment and dependency operations in this monorepo. Do not invoke `pip`, `poetry`, or `conda` directly.
+
+- Let `uv` manage the interpreter and virtual environments — `uv sync` and `uv run` operate without manual `source .venv/bin/activate`. Do not create ad-hoc virtual environments outside the package directory.
+- Each package targets its own supported Python range via its `pyproject.toml`; do not pin a global Python version. If you need an interpreter explicitly, defer to the package's `requires-python` rather than assuming system Python.
+- Install dependencies explicitly through `uv sync` (optionally `--group <name>` / `--all-groups`); never let them install implicitly.
+- Don't mix environments within a session, and don't add new dependencies unless strictly required — when you do, justify them (recent releases/commits, adoption).
+
 #### Suppressing ruff lint rules
 
 Prefer inline `# noqa: RULE` over `[tool.ruff.lint.per-file-ignores]` for individual exceptions. `per-file-ignores` silences a rule for the *entire* file — If you add it for one violation, all future violations of that rule in the same file are silently ignored. Inline `# noqa` is precise to the line, self-documenting, and keeps the safety net intact for the rest of the file. Add comments to justify silencing. If you can't make a good justification for the ignore, it is probably code smell and should be re-evaluated.
@@ -87,6 +96,22 @@ style(cli): strip trailing annotations from `ask_user` questions
 ```
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
+
+#### Branch naming
+
+Branches should be prefixed `<github-username>/<scope>/<short-description>`:
+
+- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<short-description>` — kebab-case, brief, no trailing slash.
+
+Examples:
+
+```txt
+mdrxy/sdk/concrete-toolruntime-middleware-tools
+mdrxy/code/help-screen-drift-test
+mdrxy/cli/startup-cmd-flag
+```
 
 #### PR descriptions
 
@@ -293,6 +318,10 @@ See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overridi
 
 See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
 
+#### Developing a new version line
+
+See [Developing a new version line](.github/RELEASING.md#developing-a-new-version-line) in `RELEASING.md` before creating a version branch (e.g. staging `0.7` while `main` stays `0.6.x`, or maintaining `0.6.x` after `main` moves on). Branches must be named `vX.Y` to match the protection ruleset (CI-passing PRs required like `main`, but `v[0-9].*` additionally allows merge commits — `main` stays squash-only); release-please only runs on `main`; keep a staging branch current by opening forward-merge PRs from `main` (a merge commit, not squash), reserving cherry-pick for when the branch deliberately diverges; and the cutover is an admin merge-commit to `main` that preserves individual commits (don't squash) so the changelog stays itemized.
+
 ### PR labeling and linting
 
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
@@ -321,7 +350,7 @@ When adding a new partner package, update these files:
 - `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
 - `.github/workflows/release-please.yml` – Add release detection output and trigger job
 - `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add initial version entry
+- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
 - `.github/RELEASING.md` – Add to Managed Packages table
 - `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
 

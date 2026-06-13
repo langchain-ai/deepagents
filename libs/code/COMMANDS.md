@@ -6,7 +6,7 @@ Canonical list of slash commands for `deepagents-code`, derived from
 regenerate after editing the registry.
 
 
-## Public (25)
+## Public (28)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ regenerate after editing the registry.
 | `/feedback` |  | Submit a bug report or feature request |
 | `/force-clear` |  | Interrupt active work, clear chat, and start new thread |
 | `/help` |  | Show help |
+| `/install` |  | Install an optional extra (e.g. quickjs, daytona, fireworks) |
 | `/mcp` |  | Show MCP servers; `/mcp login <server>` to authenticate, `/mcp reconnect` to load deferred logins, F2 in the viewer to disable/enable a server |
 | `/model` |  | Switch or configure model (--model-params, --default) |
 | `/notifications` |  | Configure startup warning preferences |
@@ -28,17 +29,18 @@ regenerate after editing the registry.
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload config from environment variables and .env |
 | `/remember` |  | Update memory and skills from conversation |
+| `/restart` |  | Restart the app-owned LangGraph server |
 | `/skill-creator` |  | Guide for creating effective agent skills |
 | `/theme` |  | Switch color theme |
 | `/threads` |  | Browse and resume previous threads |
+| `/timestamps` |  | Toggle message timestamp footers |
 | `/tokens` |  | Token usage |
 | `/trace` |  | Open current thread in LangSmith |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version |
 
-## Hidden (2)
+## Hidden (1)
 
 Hidden commands not exposed in autocomplete or help. See the `HIDDEN_COMMANDS` docstring in the registry for context.
 
 - `/debug-error`
-- `/restart`

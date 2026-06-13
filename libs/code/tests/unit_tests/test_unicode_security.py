@@ -12,6 +12,7 @@ from deepagents_code.unicode_security import (
     iter_string_values,
     looks_like_url_key,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
@@ -34,6 +35,74 @@ def test_detect_dangerous_unicode_finds_bidi_and_zero_width() -> None:
 def test_strip_dangerous_unicode_removes_hidden_chars() -> None:
     """Sanitizer should remove hidden controls and preserve visible text."""
     assert strip_dangerous_unicode("ap\u200bple") == "apple"
+
+
+def test_sanitize_control_chars_plain_text_unchanged() -> None:
+    """Plain printable text passes through untouched."""
+    assert sanitize_control_chars("Connection refused") == "Connection refused"
+
+
+def test_sanitize_control_chars_strips_ansi_escapes() -> None:
+    """ANSI escape sequences are replaced so they cannot reach the terminal."""
+    result = sanitize_control_chars("\x1b[31mred error\x1b[0m")
+    assert "\x1b" not in result
+    assert "red error" in result
+
+
+def test_sanitize_control_chars_removes_dangerous_unicode() -> None:
+    """Invisible/bidi code points are dropped, not merely spaced."""
+    result = sanitize_control_chars("safe\u200btext")
+    assert "\u200b" not in result
+    assert "safetext" in result
+
+
+def test_sanitize_control_chars_flattens_newlines_by_default() -> None:
+    """Newlines collapse to a single space when not explicitly kept."""
+    assert sanitize_control_chars("line one\nline two") == "line one line two"
+
+
+def test_sanitize_control_chars_keeps_newlines_when_requested() -> None:
+    """`keep_newlines` preserves line breaks for multiline surfaces."""
+    result = sanitize_control_chars(
+        "line one\nline two", keep_newlines=True, collapse_whitespace=False
+    )
+    assert result == "line one\nline two"
+
+
+def test_sanitize_control_chars_keeps_newlines_but_strips_other_controls() -> None:
+    """With `keep_newlines`, only newlines survive — escapes still go."""
+    result = sanitize_control_chars(
+        "a\x1b[2J\nb\x07c", keep_newlines=True, collapse_whitespace=False
+    )
+    assert "\x1b" not in result
+    assert "\x07" not in result
+    assert "\n" in result
+
+
+def test_sanitize_control_chars_collapse_preserves_lines_with_newlines() -> None:
+    """Per-line collapse trims intra-line runs while keeping line breaks."""
+    result = sanitize_control_chars(
+        "a   b\n  c  ", keep_newlines=True, collapse_whitespace=True
+    )
+    assert result == "a b\nc"
+
+
+def test_sanitize_control_chars_no_collapse_keeps_internal_spacing() -> None:
+    """Without collapsing, original spacing is retained."""
+    assert sanitize_control_chars("a   b", collapse_whitespace=False) == "a   b"
+
+
+def test_sanitize_control_chars_truncates_with_ellipsis() -> None:
+    """`max_length` bounds the output and marks truncation."""
+    result = sanitize_control_chars("x" * 300, max_length=200)
+    assert len(result) <= 200
+    assert result.endswith("…")
+
+
+def test_sanitize_control_chars_no_truncation_by_default() -> None:
+    """Without `max_length`, the full text survives."""
+    long_text = "x" * 300
+    assert sanitize_control_chars(long_text, collapse_whitespace=False) == long_text
 
 
 def test_render_with_unicode_markers_makes_hidden_chars_visible() -> None:

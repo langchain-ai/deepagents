@@ -57,10 +57,11 @@ def setup_mcp_parsers(
     )
     login_parser.add_argument("server", help="Server name from mcpServers config")
     login_parser.add_argument(
-        "--config",
+        "--mcp-config",
         dest="config_path",
         default=None,
-        help="Path to an MCP config JSON file (default: auto-discovered)",
+        help="Path to an MCP config JSON file. Falls back to the top-level "
+        "`--mcp-config`, then to auto-discovered configs.",
     )
     login_parser.add_argument(
         "-h",
@@ -68,7 +69,22 @@ def setup_mcp_parsers(
         action=make_help_action(_lazy_ui_help("show_mcp_login_help")),
     )
 
+    config_parser = mcp_sub.add_parser(
+        "config",
+        help="Show MCP config discovery paths",
+        add_help=False,
+    )
+    config_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(_lazy_ui_help("show_mcp_config_help")),
+    )
 
+
+# Maintainer note: `deepagents-talon` dynamically imports `run_mcp_login` from
+# this module for its `talon mcp login` command. Keep the function name,
+# keyword-only signature, async behavior, and integer exit-code contract stable
+# unless `deepagents-talon` is migrated in the same change.
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     """Handle `dcode mcp login <server>`.
 
@@ -157,6 +173,66 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
             file=sys.stderr,
         )
         return 1
+    return 0
+
+
+def run_mcp_config() -> int:
+    """Handle `dcode mcp config`.
+
+    Prints the MCP config discovery paths in precedence order with a
+    marker showing which exist on disk. Stat-only; never opens config
+    files, so config-trust prompts are not triggered.
+
+    Returns:
+        Process exit code: always 0.
+    """
+    from pathlib import Path
+
+    from deepagents_code.mcp_tools import (
+        _resolve_project_config_base,
+        discover_mcp_configs,
+    )
+    from deepagents_code.ui import console
+
+    found = {str(p.resolve()) for p in discover_mcp_configs()}
+    user_dir = Path.home() / ".deepagents"
+    project_root = _resolve_project_config_base(None)
+
+    rows: list[tuple[str, str, bool]] = []
+    for display, label, resolved in (
+        ("~/.deepagents/.mcp.json", "user-level", user_dir / ".mcp.json"),
+        (
+            "<project-root>/.deepagents/.mcp.json",
+            "project subdir",
+            project_root / ".deepagents" / ".mcp.json",
+        ),
+        ("<project-root>/.mcp.json", "project root", project_root / ".mcp.json"),
+    ):
+        exists = str(resolved.resolve()) in found or resolved.is_file()
+        rows.append((display, label, exists))
+
+    width = max(len(p) for p, _, _ in rows)
+    console.print(
+        "MCP config discovery paths (lowest to highest precedence):",
+        highlight=False,
+    )
+    for display, label, exists in rows:
+        marker = "found" if exists else "missing"
+        console.print(
+            f"  [{marker:>7}]  {display:<{width}}  ({label})",
+            highlight=False,
+            markup=False,
+        )
+    console.print()
+    console.print(
+        "<project-root> = nearest ancestor with `.git`, else current directory.",
+        highlight=False,
+    )
+    console.print(
+        "Override via `--mcp-config <path>` at the top level or on "
+        "`dcode mcp login <server>`.",
+        highlight=False,
+    )
     return 0
 
 

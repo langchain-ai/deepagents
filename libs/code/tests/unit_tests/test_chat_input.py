@@ -286,7 +286,7 @@ async def _pause_for_strip(pilot: Pilot[None]) -> None:
 
 def _prompt_text(prompt: Static) -> str:
     """Read the current text content of a Static widget."""
-    return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
+    return str(prompt._Static__content)  # ty: ignore  # accessing internal content store
 
 
 def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
@@ -490,8 +490,8 @@ class TestHistoryNavigationFlag:
             assert text_area is not None
 
             # Call set_text_from_history twice without letting events process
-            text_area.set_text_from_history("first")
-            text_area.set_text_from_history("second")
+            text_area.set_text_from_history("first", cursor_at_end=False)
+            text_area.set_text_from_history("second", cursor_at_end=False)
             assert text_area._skip_history_change_events == 2
 
             # Let both Changed events fire and drain the counter
@@ -536,30 +536,155 @@ class TestHistoryNavigationFlag:
             assert text_area._skip_history_change_events == 0
 
 
+class TestSetValueAtEnd:
+    """Tests for programmatically setting input text at the end cursor position."""
+
+    async def test_places_cursor_at_end(self) -> None:
+        """set_value_at_end loads text and lands the cursor after the last char."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("ls -la")
+            await pilot.pause()
+
+            assert text_area.text == "ls -la"
+            assert text_area.cursor_location == (0, len("ls -la"))
+
+    async def test_multiline_places_cursor_at_end(self) -> None:
+        """set_value_at_end handles multi-line text by targeting the last line."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input._text_area
+            assert text_area is not None
+
+            chat_input.set_value_at_end("first\nsecond")
+            await pilot.pause()
+
+            assert text_area.text == "first\nsecond"
+            assert text_area.cursor_location == (1, len("second"))
+
+
+class TestRefocusClickSuppression:
+    """Clicks that re-focus the terminal window should not move the cursor."""
+
+    async def test_refocus_click_does_not_move_cursor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A click within the refocus window only restores focus."""
+        # Widen the window so the test never depends on how fast the event loop
+        # delivers the click after the refocus stamp (avoids wall-clock flake).
+        monkeypatch.setattr(
+            chat_input_module, "_REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+
+            text_area.insert("hello world")
+            text_area.move_cursor((0, 0))
+            await pilot.pause()
+            assert text_area.cursor_location == (0, 0)
+
+            chat._notify_app_blur()
+            chat._notify_app_focus()
+            await pilot.click(ChatTextArea, offset=(6, 0))
+            await pilot.pause()
+
+            assert text_area.cursor_location == (0, 0)
+
+    async def test_click_while_focused_moves_cursor(self) -> None:
+        """A click without a preceding refocus moves the cursor normally."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+
+            text_area.insert("hello world")
+            text_area.move_cursor((0, 0))
+            await pilot.pause()
+            assert text_area.cursor_location == (0, 0)
+
+            await pilot.click(ChatTextArea, offset=(6, 0))
+            await pilot.pause()
+
+            assert text_area.cursor_location != (0, 0)
+
+    def test_consume_refocus_click_requires_blur(self) -> None:
+        """Without a preceding blur, focus does not arm click suppression."""
+        text_area = ChatTextArea()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is False
+
+    def test_consume_refocus_click_fires_once(self) -> None:
+        """Only the first click after a refocus is suppressed."""
+        text_area = ChatTextArea()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is True
+        assert text_area._consume_refocus_click() is False
+
+    def test_consume_refocus_click_expires_after_window(self) -> None:
+        """A click landing after the window elapses moves the cursor normally."""
+        text_area = ChatTextArea()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        # Backdate the refocus stamp past the window so the gap check fails.
+        text_area._refocus_time = (
+            chat_input_module.time.monotonic()
+            - chat_input_module._REFOCUS_CLICK_SUPPRESS_WINDOW_SECONDS
+            - 0.01
+        )
+        assert text_area._consume_refocus_click() is False
+
+    def test_consume_refocus_click_rearms_each_cycle(self) -> None:
+        """Suppression re-arms on every blur/focus cycle, not just the first."""
+        text_area = ChatTextArea()
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is True
+        # A second cycle must arm suppression again.
+        text_area._notify_app_blur()
+        text_area._notify_app_focus()
+        assert text_area._consume_refocus_click() is True
+
+
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""
 
-    async def test_up_arrow_only_triggers_at_cursor_start(self) -> None:
-        """Up arrow should only navigate history when cursor is at (0, 0)."""
+    async def test_up_at_end_of_single_line_snaps_cursor_first(self) -> None:
+        """Up at end of single-line typed input snaps cursor to start, no history."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append("previous entry")
+            # Entry must contain "hello" — substring-filtered history.
+            chat._history._entries.append("say hello world")
 
-            # Type some text — cursor ends up at the end
             chat._text_area.insert("hello")
             await pilot.pause()
             assert chat._text_area.cursor_location == (0, 5)
 
-            # Up arrow should NOT trigger history (cursor not at start)
+            # First up moves the cursor to (0, 0) — there is no row above.
             await pilot.press("up")
             await pilot.pause()
             assert chat._text_area.text == "hello"
+            assert chat._text_area.cursor_location == (0, 0)
 
-    async def test_up_arrow_triggers_at_cursor_zero(self) -> None:
-        """Up arrow should navigate history when cursor is at (0, 0)."""
+            # Second up has no further cursor movement available, so history.
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "say hello world"
+
+    async def test_up_at_cursor_zero_navigates_history(self) -> None:
+        """Up at (0, 0) goes straight to history."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -567,42 +692,17 @@ class TestHistoryBoundaryNavigation:
 
             chat._history._entries.append("say hello world")
 
-            # Type text then move cursor to start
             chat._text_area.insert("hello")
             await pilot.pause()
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
 
-            # Up arrow should trigger history (cursor at start)
             await pilot.press("up")
             await pilot.pause()
             assert chat._text_area.text == "say hello world"
 
-    async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
-        """Down arrow at start navigates history when `_in_history` is True."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            assert chat._text_area is not None
-
-            chat._history._entries.extend(["first", "second"])
-
-            # Navigate into history first (cursor at start on empty)
-            await pilot.press("up")
-            await pilot.pause()
-            assert chat._text_area.text == "second"
-
-            # Move cursor to start — still a boundary
-            chat._text_area.move_cursor((0, 0))
-            await pilot.pause()
-
-            # _in_history is True so down at start (boundary) still navigates
-            await pilot.press("down")
-            await pilot.pause()
-            assert chat._text_area.text == ""
-
-    async def test_down_arrow_does_not_trigger_at_non_end(self) -> None:
-        """Down arrow should not navigate history when cursor is not at end."""
+    async def test_down_at_non_end_moves_cursor_not_history(self) -> None:
+        """Down with a row below moves the cursor, not history."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -610,43 +710,18 @@ class TestHistoryBoundaryNavigation:
 
             chat._history._entries.append("previous entry")
 
-            # Type text — cursor ends up at the end
-            chat._text_area.insert("hello world")
+            chat._text_area.text = "line one\nline two"
+            chat._text_area.move_cursor((0, 3))
             await pilot.pause()
 
-            # Move cursor to middle (not at end)
-            chat._text_area.move_cursor((0, 5))
-            await pilot.pause()
-
-            # Down arrow should NOT trigger history
             await pilot.press("down")
             await pilot.pause()
-            assert chat._text_area.text == "hello world"
+            assert chat._text_area.text == "line one\nline two"
+            cursor_row, _ = chat._text_area.cursor_location
+            assert cursor_row == 1
 
-    async def test_down_arrow_at_end_triggers_history(self) -> None:
-        """Down arrow at end of text should navigate history forward."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            assert chat._text_area is not None
-
-            chat._history._entries.extend(["first", "second"])
-
-            # Navigate up twice into history
-            await pilot.press("up")
-            await pilot.pause()
-            await pilot.press("up")
-            await pilot.pause()
-            assert chat._text_area.text == "first"
-
-            # Cursor should be at end after set_text_from_history
-            # Down arrow at end should navigate forward
-            await pilot.press("down")
-            await pilot.pause()
-            assert chat._text_area.text == "second"
-
-    async def test_up_at_middle_of_multiline_does_not_trigger(self) -> None:
-        """Up arrow on a middle line should not navigate history."""
+    async def test_up_in_middle_of_multiline_moves_cursor(self) -> None:
+        """Up from a middle row moves the cursor, not history."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -654,57 +729,95 @@ class TestHistoryBoundaryNavigation:
 
             chat._history._entries.append("previous entry")
 
-            # Insert multiline text and place cursor on line 1
             chat._text_area.text = "line one\nline two\nline three"
-            await pilot.pause()
             chat._text_area.move_cursor((1, 3))
             await pilot.pause()
 
-            # Up arrow should move cursor, not navigate history
             await pilot.press("up")
             await pilot.pause()
             assert chat._text_area.text == "line one\nline two\nline three"
+            cursor_row, _ = chat._text_area.cursor_location
+            assert cursor_row == 0
 
-    async def test_in_history_allows_up_from_end(self) -> None:
-        """When browsing history, up arrow at end should also navigate."""
+    async def test_up_load_places_cursor_at_top(self) -> None:
+        """A history entry loaded via up has cursor at (0, 0).
+
+        This is what enables continuous up-navigation: the next up press
+        immediately triggers another history previous without snapping the
+        cursor first.
+        """
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.extend(["first", "second"])
+            chat._history._entries.append("line one\nline two")
 
-            # Navigate into history
             await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area.text == "second"
-            assert chat._text_area._in_history is True
+            assert chat._text_area.text == "line one\nline two"
+            assert chat._text_area.cursor_location == (0, 0)
 
-            # Cursor is at end after set_text_from_history; up should
-            # still navigate because _in_history is True and at boundary
-            await pilot.press("up")
-            await pilot.pause()
-            assert chat._text_area.text == "first"
-
-    async def test_in_history_resets_after_submission(self) -> None:
-        """Submitting should clear the _in_history flag."""
-        app = _RecordingApp()
+    async def test_continuous_up_navigates_through_history(self) -> None:
+        """Repeated up presses walk back through history without manual cursor moves."""
+        app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append("recalled entry")
+            chat._history._entries.extend(
+                ["oldest", "middle entry\nwith two lines", "newest"]
+            )
 
             await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area._in_history is True
+            assert chat._text_area.text == "newest"
 
-            await pilot.press("enter")
+            await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area._in_history is False
+            assert chat._text_area.text == "middle entry\nwith two lines"
 
-    async def test_in_history_resets_after_navigating_past_end(self) -> None:
-        """Pressing down past history end should set `_in_history` to False."""
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "oldest"
+
+    async def test_continuous_down_navigates_forward_through_history(self) -> None:
+        """Repeated down presses walk forward through history.
+
+        After down-navigation, cursor lands at the end of the loaded entry,
+        so the next down press triggers another history next.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.extend(["oldest", "middle", "newest"])
+
+            # Walk up to the oldest entry.
+            for _ in range(3):
+                await pilot.press("up")
+                await pilot.pause()
+            assert chat._text_area.text == "oldest"
+            assert chat._text_area.cursor_location == (0, 0)
+
+            # Switching direction requires one snap-to-end press first.
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "oldest"
+            assert chat._text_area.cursor_location == (0, len("oldest"))
+
+            # Subsequent down presses navigate forward continuously.
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "middle"
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert chat._text_area.text == "newest"
+
+    async def test_down_past_newest_restores_typed_input(self) -> None:
+        """Down past the newest history entry restores the user's typed input."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -712,17 +825,121 @@ class TestHistoryBoundaryNavigation:
 
             chat._history._entries.append("only entry")
 
-            # Navigate up into history
             await pilot.press("up")
             await pilot.pause()
             assert chat._text_area.text == "only entry"
-            assert chat._text_area._in_history is True
 
-            # Navigate down past the end — returns to original (empty) input
+            # Cursor at (0, 0) after up-load; need to move to end first.
+            chat._text_area.move_cursor((0, len("only entry")))
+            await pilot.pause()
+
             await pilot.press("down")
             await pilot.pause()
             assert chat._text_area.text == ""
-            assert chat._text_area._in_history is False
+
+    async def test_typed_newlines_up_from_end_walks_rows(self) -> None:
+        """Up from the end of multi-row typed input walks the cursor up rows."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "abc\ndef\nghi"
+            chat._text_area.move_cursor((2, len("ghi")))
+            await pilot.pause()
+
+            for expected_row in (1, 0):
+                await pilot.press("up")
+                await pilot.pause()
+                assert chat._text_area.text == "abc\ndef\nghi"
+                cursor_row, _ = chat._text_area.cursor_location
+                assert cursor_row == expected_row
+
+            # Cursor is now at (0, 3); next up snaps to (0, 0).
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "abc\ndef\nghi"
+            assert chat._text_area.cursor_location == (0, 0)
+
+    async def test_soft_wrapped_single_row_navigates_visual_lines(self) -> None:
+        """Up/down on a soft-wrapped single doc row walks visual lines.
+
+        A row-based history trigger (`row == 0`) would incorrectly fire on the
+        last visual line of a wrapped doc row. The cursor-cannot-move check
+        avoids that: visual lines below the top of the wrapped row still have
+        a "row above" in the wrapped document, so cursor movement wins.
+        """
+        app = _ChatInputTestApp()
+        # Constrain width so a long single-line entry wraps to several
+        # visual lines but stays on doc row 0.
+        async with app.run_test(size=(20, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("history entry")
+
+            long_line = "word " * 30  # ~150 chars, well past wrap width
+            chat._text_area.text = long_line.strip()
+            chat._text_area.move_cursor((0, len(chat._text_area.text)))
+            await pilot.pause()
+
+            # Cursor on the last visual line of doc row 0 — up should walk
+            # back through visual lines, not fire history.
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == long_line.strip()
+            # Cursor should still be on doc row 0 but at a smaller column
+            # corresponding to the previous visual line.
+            row, col = chat._text_area.cursor_location
+            assert row == 0
+            assert col < len(chat._text_area.text)
+
+    async def test_shift_up_at_top_extends_selection_not_history(self) -> None:
+        """`shift+up` at (0, 0) should not fire history navigation.
+
+        The action_cursor_up guard requires `not select`, so shift+up must
+        fall through to TextArea's selection-extending behavior even when
+        the cursor literally cannot move further up.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("older entry")
+
+            chat._text_area.text = "hello"
+            chat._text_area.move_cursor((0, 3))
+            await pilot.pause()
+
+            # shift+up at row 0 should not replace text with history.
+            await pilot.press("shift+up")
+            await pilot.pause()
+            assert chat._text_area.text == "hello"
+
+    async def test_up_with_unmatched_query_is_noop(self) -> None:
+        """Up at (0,0) with typed text that matches no history entry is a no-op.
+
+        `HistoryManager.get_previous` filters by substring; when typed text
+        doesn't appear in any entry, the load is skipped. The text area
+        should stay unchanged (and the bell on the handler is allowed to
+        ring as a boundary signal).
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("totally different entry")
+
+            chat._text_area.insert("abc")
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert chat._text_area.text == "abc"
+            assert chat._text_area.cursor_location == (0, 0)
 
 
 class TestCompletionPopupClickBubbling:
@@ -1384,6 +1601,89 @@ class TestHistoryRecallModeReset:
 
 class TestSlashCompletionCursorMapping:
     """Regression: virtual-to-real index translation for slash replacement."""
+
+    async def test_stale_enter_single_slash_match_submits_completion(self) -> None:
+        """Fast Enter on an unambiguous slash prefix should submit the match."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "mod"
+            chat._text_area.move_cursor((0, 3))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["/model"]
+            assert app.submitted[0].mode == "command"
+
+    async def test_stale_enter_multiple_slash_matches_shows_popup(self) -> None:
+        """Fast Enter on an ambiguous slash prefix should show choices."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "re"
+            chat._text_area.move_cursor((0, 2))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            labels = [label for label, _ in chat._current_suggestions]
+            assert not app.submitted
+            assert "/reload" in labels
+            assert "/remember" in labels
+            assert chat._text_area._completion_active is True
+
+    async def test_stale_enter_multiple_slash_matches_next_enter_selects(
+        self,
+    ) -> None:
+        """Popup shown by stale Enter should remain keyboard-operable."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "re"
+            chat._text_area.move_cursor((0, 2))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+            assert not app.submitted
+            assert chat._current_suggestions
+            selected_label = chat._current_suggestions[chat._current_selected_index][0]
+
+            await chat.on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == [selected_label]
+            assert app.submitted[0].mode == "command"
+
+    async def test_stale_enter_submits_exact_restart_command(self) -> None:
+        """Exact restart command should submit without requiring autocomplete."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.mode = "command"
+            chat._text_area.text = "restart"
+            chat._text_area.move_cursor((0, 7))
+            chat._text_area.set_completion_active(active=False)
+
+            await chat._text_area._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["/restart"]
+            assert app.submitted[0].mode == "command"
 
     async def test_tab_completion_mid_token_preserves_suffix(self) -> None:
         """Applying slash completion mid-token should keep text after cursor."""
@@ -2192,8 +2492,8 @@ class TestPathPayloadDetectionGating:
                 replace_calls += 1
                 return original_replace(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
-            chat._apply_inline_dropped_path_replacement = counting_replace  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
+            chat._apply_inline_dropped_path_replacement = counting_replace  # ty: ignore
 
             for char in "hello":
                 await pilot.press(char)
@@ -2223,7 +2523,7 @@ class TestPathPayloadDetectionGating:
                 detect_calls += 1
                 return original_detect(text)
 
-            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+            chat._is_dropped_path_payload = counting_detect  # ty: ignore
 
             ta.text = str(target)
             await pilot.pause()
@@ -2290,6 +2590,52 @@ class TestBackslashEnterNewline:
             assert "\n" in ta.text
             assert "\\" not in ta.text
             assert len(app.submitted) == 0
+
+    @pytest.mark.parametrize(
+        "newline_keys",
+        [
+            pytest.param(["shift+enter"], id="modifier_enter"),
+            pytest.param(["ctrl+j"], id="ctrl_j"),
+            pytest.param(["backslash", "enter"], id="vscode_backslash_fallback"),
+        ],
+    )
+    async def test_newline_past_max_height_scrolls_cursor_into_view(
+        self, monkeypatch: pytest.MonkeyPatch, newline_keys: list[str]
+    ) -> None:
+        """Every newline-insertion path keeps the cursor in view past max-height.
+
+        All three paths (binding, `_NEWLINE_KEYS` branch, and the
+        backslash+enter fallback for terminals that emulate shift+enter)
+        must route through `action_insert_newline`, where the
+        `call_after_refresh(scroll_cursor_visible)` keeps the cursor visible.
+        """
+        # Widen the backslash+enter gap so the fallback test isn't racy on CI.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            # Build a doc tall enough to overflow the widget's max height,
+            # then move the cursor to the last row.
+            ta.text = "\n".join(f"row {i}" for i in range(15))
+            ta.move_cursor((14, len("row 14")))
+            await pilot.pause()
+            assert ta.scroll_offset.y > 0
+
+            for key in newline_keys:
+                await pilot.press(key)
+            await pilot.pause()
+
+            cursor_row = ta.cursor_location[0]
+            assert cursor_row == 15
+            rel_y = cursor_row - ta.scroll_offset.y
+            assert 0 <= rel_y < ta.size.height, (
+                f"cursor row {cursor_row} not in viewport "
+                f"[{ta.scroll_offset.y}, {ta.scroll_offset.y + ta.size.height})"
+            )
 
     async def test_backslash_alone_inserts_normally(self) -> None:
         """A lone backslash should be inserted immediately as normal text."""
@@ -2402,6 +2748,47 @@ class TestVSCodeSpaceWorkaround:
             await pilot.pause()
 
             assert ta.text == "hello "
+
+
+class TestLockKeysDoNotType:
+    """Lock keys must never insert text.
+
+    Under the kitty keyboard protocol with associated-text reporting (iTerm2,
+    VS Code's xterm.js, etc.), pressing Caps Lock arrives as
+    Key(key='caps_lock', character='A'), which would otherwise make TextArea
+    insert a stray letter.
+    """
+
+    @pytest.mark.parametrize(
+        "lock_key",
+        [
+            "caps_lock",
+            "num_lock",
+            "scroll_lock",
+            # Modifier-prefixed variants: the lock bit can arrive alongside
+            # other modifier bits, so the key string is suffixed.
+            "ctrl+caps_lock",
+            "alt+ctrl+hyper+meta+super+caps_lock",
+        ],
+    )
+    async def test_lock_key_with_associated_text_inserts_nothing(
+        self, lock_key: str
+    ) -> None:
+        """A lock-key event carrying associated text should insert nothing."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            # iTerm2/kitty protocol reports the would-be text as `character`.
+            await ta._on_key(events.Key(lock_key, "A"))
+            await pilot.pause()
+
+            assert ta.text == "hello"
 
 
 class TestCtrlUDeleteToLineStart:
@@ -2867,3 +3254,172 @@ class TestSetCursorBlink:
             await pilot.pause()
 
             assert chat._text_area.has_focus is True
+
+
+class TestPasteBurstEnterSuppression:
+    """Multi-line pastes replayed as key events must not submit mid-stream.
+
+    Terminals without bracketed paste deliver a paste as rapid `Char`/`Enter`
+    key events. A short run of fast keystrokes arms a suppression window so the
+    embedded `enter` events insert newlines instead of submitting.
+    """
+
+    async def test_rapid_burst_with_newline_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fast keystroke run followed by enter inserts a newline."""
+        # Widen the burst gap so wall-clock delays between pilot.press calls on
+        # slow CI runners still register as a single rapid burst.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.press("w")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+
+    async def test_slow_typing_then_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deliberate typing (no burst) keeps enter as submit."""
+        # Force every inter-key gap to exceed the burst threshold.
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello"
+
+    async def test_single_line_burst_then_manual_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-line paste followed by manual enter still submits."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = (
+                now - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS - 0.01
+            )
+            ta._paste_burst_window_until = (
+                now + chat_input_module._PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+            )
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "abc"
+            assert "\n" not in ta.text
+
+    async def test_suppressed_enter_rearms_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A suppressed enter extends the window so trailing lines stay grouped."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            now = chat_input_module.time.monotonic()
+            # Fresh keystroke within the char gap and an open (but nearly
+            # closed) window: this enter belongs to a replayed paste.
+            ta._paste_burst_last_key_time = now
+            original_until = now + 0.01
+            ta._paste_burst_window_until = original_until
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\n" in ta.text
+            assert ta._paste_burst_window_until is not None
+            assert ta._paste_burst_window_until > original_until
+
+    async def test_blank_line_paste_keeps_consecutive_enter_grouped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delayed second enter in a blank-line paste does not submit."""
+        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(
+            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "abc"
+            ta.move_cursor((0, len(ta.text)))
+            now = chat_input_module.time.monotonic()
+            ta._paste_burst_last_key_time = now
+            ta._paste_burst_window_until = now + 60.0
+
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+            assert ta.text == "abc\n"
+
+            ta._paste_burst_last_key_time = (
+                chat_input_module.time.monotonic()
+                - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS
+                - 0.01
+            )
+            await ta._on_key(events.Key("enter", None))
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert ta.text == "abc\n\n"
+
+    async def test_slash_command_enter_still_submits_during_burst(self) -> None:
+        """Slash-command context keeps enter dispatching even after a burst."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            for char in "/help":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1

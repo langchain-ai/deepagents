@@ -1,9 +1,11 @@
 """Unit tests for message widgets markup safety."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
+from textual.app import App, ComposeResult
 from textual.content import Content
 
 from deepagents_code import theme
@@ -19,7 +21,6 @@ from deepagents_code.widgets.messages import (
     ToolCallMessage,
     UserMessage,
     _MutedRichMarkdown,
-    _show_timestamp_toast,
     _strip_frontmatter,
     _strip_success_exit_line,
 )
@@ -104,19 +105,15 @@ class TestErrorMessageMarkupSafety:
             app=SimpleNamespace(notify=MagicMock()),
             stop=MagicMock(),
         )
-        with (
-            patch("deepagents_code.widgets.messages.open_style_link") as mock_open_link,
-            patch(
-                "deepagents_code.widgets.messages._show_timestamp_toast"
-            ) as mock_toast,
-        ):
-            msg.on_click(event)  # type: ignore[arg-type]
+        with patch(
+            "deepagents_code.widgets.messages.open_style_link"
+        ) as mock_open_link:
+            msg.on_click(event)  # ty: ignore
 
         mock_open_link.assert_called_once_with(event)
-        mock_toast.assert_not_called()
 
-    def test_error_message_click_off_link_shows_timestamp(self) -> None:
-        """Click outside a link span should fall back to the timestamp toast."""
+    def test_error_message_click_off_link_no_ops(self) -> None:
+        """Click outside a link span should not perform timestamp side effects."""
         from types import SimpleNamespace
 
         msg = ErrorMessage("plain error, no URL")
@@ -125,16 +122,12 @@ class TestErrorMessageMarkupSafety:
             app=SimpleNamespace(notify=MagicMock()),
             stop=MagicMock(),
         )
-        with (
-            patch("deepagents_code.widgets.messages.open_style_link") as mock_open_link,
-            patch(
-                "deepagents_code.widgets.messages._show_timestamp_toast"
-            ) as mock_toast,
-        ):
-            msg.on_click(event)  # type: ignore[arg-type]
+        with patch(
+            "deepagents_code.widgets.messages.open_style_link"
+        ) as mock_open_link:
+            msg.on_click(event)  # ty: ignore
 
         mock_open_link.assert_not_called()
-        mock_toast.assert_called_once_with(msg)
 
 
 class TestAppMessageMarkupSafety:
@@ -155,7 +148,7 @@ class TestAppMessageMarkupSafety:
     def test_app_message_str_gets_dim_italic(self) -> None:
         """String input should be rendered as dim italic `Content`."""
         msg = AppMessage("hello")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, Content)
         assert rendered.plain == "hello"
 
@@ -163,13 +156,13 @@ class TestAppMessageMarkupSafety:
         """Pre-styled `Content` should pass through unchanged."""
         pre = Content.styled("styled", "bold cyan")
         msg = AppMessage(pre)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
     def test_app_message_markdown_uses_muted_wrapper(self) -> None:
         """`markdown=True` should route through `_MutedRichMarkdown`."""
         msg = AppMessage("### heading", markdown=True)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, _MutedRichMarkdown)
 
     def test_app_message_markdown_requires_string(self) -> None:
@@ -204,7 +197,7 @@ class TestMutedRichMarkdown:
             legacy_windows=False,
         )
         console.print(renderable)
-        return console.file.getvalue()  # type: ignore[attr-defined]
+        return console.file.getvalue()  # ty: ignore
 
     def test_strips_heading_and_table_colors(self) -> None:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
@@ -295,6 +288,167 @@ class TestAssistantMessageMarkdownRendering:
         assert msg._content == "```python\nnew content\n```"
 
 
+class _AssistantMessageApp(App[None]):
+    """Minimal app that mounts an AssistantMessage for timer-based tests."""
+
+    def compose(self) -> ComposeResult:
+        widget = AssistantMessage()
+        widget.id = "assistant"
+        yield widget
+
+
+class TestAssistantMessageStreamCoalescing:
+    """Tests for the throttled streaming flush that keeps input responsive."""
+
+    async def test_append_buffers_until_flush(self) -> None:
+        """Tokens accumulate in `_content` but defer the markdown write."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("hello ")
+            await msg.append_content("world")
+
+            # No immediate write — tokens are buffered for the timer.
+            stream.write.assert_not_awaited()
+            assert msg._content == "hello world"
+            assert msg._pending_append == "hello world"
+            assert msg._flush_timer is not None
+
+    async def test_timer_flushes_coalesced_text_once(self) -> None:
+        """The throttled timer writes buffered tokens as a single fragment."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("foo")
+            await msg.append_content("bar")
+            await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
+            await pilot.pause()
+
+            stream.write.assert_awaited_once_with("foobar")
+            assert msg._pending_append == ""
+
+    async def test_stop_stream_flushes_and_cancels_timer(self) -> None:
+        """Stopping the stream drains buffered text and clears the timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            markdown = MagicMock()
+            markdown.update = AsyncMock()
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            stream.stop = AsyncMock()
+            msg._markdown = markdown
+            msg._stream = stream
+
+            await msg.append_content("partial")
+            await msg.stop_stream()
+
+            stream.write.assert_awaited_once_with("partial")
+            stream.stop.assert_awaited_once_with()
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
+
+    async def test_set_content_drains_and_cancels_active_timer(self) -> None:
+        """`set_content` cancels a live flush timer and drops the buffer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            markdown = MagicMock()
+            markdown.update = AsyncMock()
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            stream.stop = AsyncMock()
+            msg._markdown = markdown
+            msg._stream = stream
+
+            await msg.append_content("buffered")
+            assert msg._flush_timer is not None
+
+            await msg.set_content("replacement")
+            # Give a stale timer the chance to fire if it was not cancelled.
+            await asyncio.sleep(msg._STREAM_FLUSH_INTERVAL * 2)
+            await pilot.pause()
+
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
+            # Buffered token must not bleed into the replacement render.
+            stream.write.assert_not_awaited()
+            markdown.update.assert_awaited_once_with("replacement")
+
+    async def test_timer_created_once_across_appends(self) -> None:
+        """Repeated appends reuse a single flush timer rather than spawning many."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("a")
+            timer = msg._flush_timer
+            assert timer is not None
+
+            await msg.append_content("b")
+            await msg.append_content("c")
+
+            assert msg._flush_timer is timer
+
+    async def test_flush_drains_successive_batches(self) -> None:
+        """Each flush writes the latest batch; an empty buffer is a no-op."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock()
+            msg._stream = stream
+
+            await msg.append_content("first")
+            await msg._flush_pending_append()
+            stream.write.assert_awaited_once_with("first")
+
+            # Idle tick with nothing buffered must not write again.
+            await msg._flush_pending_append()
+            assert stream.write.await_count == 1
+
+            await msg.append_content("second")
+            await msg._flush_pending_append()
+            assert stream.write.await_count == 2
+            stream.write.assert_awaited_with("second")
+
+    async def test_append_empty_text_is_noop(self) -> None:
+        """Empty tokens neither buffer text nor arm the flush timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            await msg.append_content("")
+
+            assert msg._flush_timer is None
+            assert msg._pending_append == ""
+            assert msg._content == ""
+
+    async def test_flush_restores_buffer_when_write_fails(self) -> None:
+        """A failed write keeps the buffer for retry and never escapes the timer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            stream = MagicMock()
+            stream.write = AsyncMock(side_effect=RuntimeError("render boom"))
+            msg._stream = stream
+
+            await msg.append_content("kept")
+            # Must not raise: an escaping exception here would crash the app
+            # via the Textual timer's exception handler.
+            await msg._flush_pending_append()
+
+            stream.write.assert_awaited_once_with("kept")
+            assert msg._pending_append == "kept"
+
+            # Text arriving after the failure queues behind the retried fragment.
+            await msg.append_content(" more")
+            assert msg._pending_append == "kept more"
+
+
 class TestSummarizationMessage:
     """Tests for summarization notification widget."""
 
@@ -311,7 +465,7 @@ class TestSummarizationMessage:
     def test_summarization_message_str_input(self) -> None:
         """String input should be rendered as bold cyan `Content`."""
         msg = SummarizationMessage("custom text")
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert isinstance(rendered, Content)
         assert rendered.plain == "custom text"
 
@@ -319,7 +473,7 @@ class TestSummarizationMessage:
         """Pre-styled `Content` should pass through unchanged."""
         pre = Content.styled("pre-styled", "bold cyan")
         msg = SummarizationMessage(pre)
-        rendered = msg._Static__content  # type: ignore[attr-defined]
+        rendered = msg._Static__content  # ty: ignore
         assert rendered is pre
 
 
@@ -350,7 +504,7 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         # Second widget is the task description line (Static with dim style).
         # Content.styled() produces a Content object stored on the Static.
-        content = widgets[1]._Static__content  # type: ignore[attr-defined]
+        content = widgets[1]._Static__content  # ty: ignore
         assert "[/dim]" in content.plain
 
     def test_tool_args_line_escapes_markup_values(self) -> None:
@@ -362,7 +516,7 @@ class TestToolCallMessageMarkupSafety:
 
         widgets = list(msg.compose())
         args_widget = widgets[1]
-        content = args_widget._Static__content  # type: ignore[attr-defined]
+        content = args_widget._Static__content  # ty: ignore
         assert isinstance(content, Content)
         assert "[foo]" in content.plain
         assert "[/dim]" in content.plain
@@ -385,7 +539,7 @@ class TestToolCallMessageMarkupSafety:
         widgets = list(msg.compose())
         visible = []
         for widget in widgets[:3]:
-            content = widget._Static__content  # type: ignore[attr-defined]
+            content = widget._Static__content  # ty: ignore
             visible.append(content.plain if isinstance(content, Content) else content)
         visible_plain = "\n".join(visible)
 
@@ -436,7 +590,7 @@ class TestToolCallMessageTodos:
 
             assert app.msg._preview_widget is not None
             assert app.msg._hint_widget is not None
-            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            content = app.msg._preview_widget._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert "..." in content.plain
             assert long not in content.plain
@@ -508,6 +662,388 @@ class TestToolCallMessageTodos:
 
         assert len(lines) > todo_start + 1
         assert lines[todo_start + 1].startswith("             ")
+
+
+class _ToolMsgApp(App[None]):
+    """Single-`ToolCallMessage` Textual app for pilot-driven tests."""
+
+    def __init__(self, tool_name: str, args: dict | None = None) -> None:
+        super().__init__()
+        self.msg = ToolCallMessage(tool_name, args)
+
+    def compose(self) -> ComposeResult:
+        yield self.msg
+
+
+def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
+    """Build a single-`ToolCallMessage` Textual app for pilot-driven tests.
+
+    Args:
+        tool_name: Tool name the message represents.
+        args: Optional tool-call arguments.
+
+    Returns:
+        An unmounted `App` exposing the message as `app.msg`.
+    """
+    return _ToolMsgApp(tool_name, args)
+
+
+class TestToolCallMessageOutputGutter:
+    """The output glyph lives in a fixed gutter so wrapped lines stay aligned."""
+
+    async def test_glyph_in_gutter_not_baked_into_content(self) -> None:
+        """The output marker renders in its own gutter column, not in content.
+
+        Regression: when a single long output line soft-wraps, the wrapped
+        remainder must not fall under the glyph. Keeping the glyph in a fixed
+        gutter (instead of baked into the first content line) lets the content
+        widget own a single hanging indent for every wrapped line.
+        """
+        from deepagents_code.config import get_glyphs
+
+        # Two logical lines; the first is long enough to soft-wrap in a terminal.
+        output = (
+            "[stderr] fatal: ambiguous argument 'main..branch': unknown revision "
+            "or path not in the working tree.\n[stderr] Use '--' to separate paths."
+        )
+
+        app = _tool_msg_app("execute", {"command": "git diff main..branch"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            glyph = get_glyphs().output_prefix
+            assert app.msg._preview_widget is not None
+            content = app.msg._preview_widget._Static__content  # ty: ignore
+
+            # Content is bare: no glyph, and no hand-rolled hanging indent on
+            # any logical line (alignment is owned by the gutter layout).
+            assert glyph not in content.plain
+            assert all(not line.startswith(" ") for line in content.plain.split("\n"))
+
+            # The glyph renders exactly once, in the gutter beside the content.
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is True
+            gutters = app.msg._preview_row.query(".tool-output-gutter")
+            assert len(gutters) == 1
+            gutter_content = gutters.first()._Static__content  # ty: ignore
+            assert gutter_content == glyph
+
+    async def test_collapsed_preview_preserves_uniform_leading_indent(self) -> None:
+        """Collapsed preview keeps line 0's indent so indented rows align.
+
+        Regression: the preview branch pre-stripped the output, lstripping the
+        first line only while continuation lines kept their indent. Uniformly
+        indented output (e.g. `git branch -r`, which prefixes every branch with
+        two spaces) then rendered with line 0 flush and the rest indented. The
+        formatter must preserve the shared leading indent across all rows.
+        """
+        # Mirror `git branch -r`: every row indented by two spaces, > preview
+        # line budget so the collapsed preview is shown.
+        output = "\n".join(f"  origin/branch-{i}" for i in range(8))
+
+        app = _tool_msg_app("execute", {"command": "git branch -r"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._expanded is False
+            content = app.msg._preview_widget._Static__content  # ty: ignore
+
+            preview_lines = content.plain.split("\n")
+            # Every visible row — including the first — keeps git's two-space
+            # indent, so they share a left edge beside the glyph gutter.
+            assert preview_lines
+            assert all(line.startswith("  origin/") for line in preview_lines)
+
+
+class TestToolCallMessageSearchOutput:
+    """Tests for grep/glob result formatting in `_format_search_output`."""
+
+    def test_glob_list_output_has_no_hardcoded_indent(self) -> None:
+        """Glob (list) results must not carry a hardcoded leading indent.
+
+        Alignment is owned by the output gutter layout; the formatter emits
+        bare paths so results aren't double-indented under the output marker.
+        """
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        result = msg._format_search_output(
+            "['/tmp/zzz_a.py', '/tmp/zzz_b.py']", is_preview=False
+        )
+        lines = result.content.plain.split("\n")
+        assert lines
+        assert all(not line.startswith(" ") for line in lines)
+
+    def test_grep_line_output_has_no_hardcoded_indent(self) -> None:
+        """Grep (line-based) results must not carry a hardcoded leading indent.
+
+        This is a distinct branch from the glob list path: `ast.literal_eval`
+        fails for grep output, so it falls through to line-based formatting.
+        """
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        result = msg._format_search_output(
+            "file.py:1:match one\nfile.py:2:match two", is_preview=False
+        )
+        assert result.content.plain.split("\n") == [
+            "file.py:1:match one",
+            "file.py:2:match two",
+        ]
+
+    def test_grep_preview_truncates_long_single_line(self) -> None:
+        """Grep previews should cap long single-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "file.py:1:" + "x" * ToolCallMessage._PREVIEW_CHARS
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        # The visible slice is exactly the leading char budget of the input,
+        # not just any string of the right length.
+        assert result.content.plain == output[: ToolCallMessage._PREVIEW_CHARS]
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_long_multiline_by_chars(self) -> None:
+        """Grep previews should cap long multi-line output by characters."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        # Two wide lines, each under the budget but together over it, so both
+        # become rows (no hidden line) and the second is char-sliced — forcing
+        # the char hint over the line hint. Width derives from the budget.
+        char_run = ToolCallMessage._PREVIEW_CHARS // 2
+        lines = [f"file.py:{index}:" + "x" * char_run for index in range(2)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_glob_preview_truncates_long_paths_by_chars(self) -> None:
+        """Glob previews cap wide path lists by characters with a file hint."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        # Two paths that each fit under the budget but together overflow it, so
+        # both become rows (no hidden line) and the second is char-sliced —
+        # forcing the char hint rather than the file-count hint.
+        long_path = "/tmp/" + "z" * (ToolCallMessage._PREVIEW_CHARS // 2) + ".py"
+        output = repr([long_path, long_path])
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert len(result.content.plain) == ToolCallMessage._PREVIEW_CHARS
+        assert result.truncation is not None
+        assert result.truncation.endswith("more chars")
+
+    def test_grep_preview_truncates_by_line_count(self) -> None:
+        """Grep previews over the line cap report hidden lines, not chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:hit" for index in range(8))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        # 8 short lines, preview cap is 5 → 3 hidden, counted as lines.
+        assert result.truncation == "3 more lines"
+
+    def test_glob_preview_truncates_by_file_count(self) -> None:
+        """Glob previews over the line cap report hidden files, not lines."""
+        msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+        paths = [f"/tmp/result_{index}.py" for index in range(8)]
+
+        result = msg._format_search_output(repr(paths), is_preview=True)
+
+        # The "files" unit is what distinguishes the glob path from grep.
+        assert result.truncation == "3 more files"
+
+    def test_grep_preview_prefers_line_count_when_both_caps_hit(self) -> None:
+        """When both caps trip, the hidden-line count wins over chars."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        output = "\n".join(f"file.py:{index}:" + "y" * 100 for index in range(10))
+
+        result = msg._format_search_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert result.truncation.endswith("more lines")
+
+    def test_search_full_output_is_untruncated(self) -> None:
+        """Non-preview formatting returns every row with no truncation hint."""
+        msg = ToolCallMessage("grep", {"pattern": "x"})
+        lines = [f"file.py:{index}:" + "z" * 200 for index in range(10)]
+
+        result = msg._format_search_output("\n".join(lines), is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain.split("\n") == lines
+
+
+class TestToolCallMessageExpandHint:
+    """Tests for the preview/expand hint on collapsed tool output."""
+
+    async def test_long_single_line_search_output_truncates_and_expands(self) -> None:
+        """Long single-line grep/glob output should use the shared char cap."""
+        from textual.app import App, ComposeResult
+
+        output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
+        assert "\n" not in output
+        assert len(output) > ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            assert app.msg._has_expandable_output() is True
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert len(preview.plain) == ToolCallMessage._PREVIEW_CHARS
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == output
+
+    async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
+        """A short force-expanded error must not show a collapse affordance.
+
+        `set_error` force-expands so the full error is always visible. When the
+        error is short enough that the collapsed form would be identical, there
+        is nothing to collapse — so no hint, and toggling is a no-op.
+        """
+        from textual.app import App, ComposeResult
+
+        error = "Error: glob timed out after 20.0s. Try a narrower path."
+        assert "\n" not in error
+        assert len(error) < ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            # Nothing to collapse — stays expanded with the hint hidden.
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is False
+
+    async def test_multiline_error_force_expanded_offers_collapse(self) -> None:
+        """A long force-expanded error should still offer a collapse affordance.
+
+        The positive counterpart to the short-error case: a multi-line error
+        exceeds the line threshold and the formatter truncates it, so a smaller
+        collapsed form exists and the collapse hint must appear.
+        """
+        error = "\n".join(f"line {index} of the traceback" for index in range(10))
+        assert error.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("glob", {"pattern": "**/*.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "collapse" in hint.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is True
+            collapsed = app.msg._hint_widget._Static__content
+            assert "expand" in collapsed.plain
+
+    async def test_long_grep_output_truncates_and_expands(self) -> None:
+        """A multi-line grep result should preview-truncate then expand on toggle."""
+        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
+        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("grep", {"pattern": "hit"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._preview_widget is not None
+            assert app.msg._full_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in hint.plain
+            # The preview hides the trailing lines.
+            preview = app.msg._preview_widget._Static__content  # ty: ignore
+            assert "hit 7" not in preview.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            full = app.msg._full_widget._Static__content
+            assert "hit 7" in full.plain
+            collapsed = app.msg._hint_widget._Static__content
+            assert "collapse" in collapsed.plain
+
+    async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
+        """Short non-todo output uses non-preview formatting and shows no hint.
+
+        Guards the merged collapsed branch: `is_preview` must stay `False` for
+        a non-`write_todos` tool below the size threshold, so the full content
+        is shown rather than a truncated preview.
+        """
+        # Five lines: under `_PREVIEW_LINES` (6) but over the file formatter's
+        # own four-line preview cap, so a stray `is_preview=True` would truncate.
+        output = "\n".join(f"line {index}" for index in range(5))
+        assert output.count("\n") + 1 < ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._has_expandable_output() is False
+            assert app.msg._preview_widget is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            preview = app.msg._preview_widget._Static__content  # ty: ignore
+            assert "line 0" in preview.plain
+            assert "line 4" in preview.plain
 
 
 class TestToolCallMessageExpandableArgs:
@@ -712,6 +1248,304 @@ class TestToolCallMessageShellCommand:
         assert lines[2].plain == "$ not a command"
         assert "dim" not in lines[2].markup
 
+    def test_format_shell_output_preview_truncates_long_single_line(self) -> None:
+        """Preview should char-truncate single-line output past the budget."""
+        msg = ToolCallMessage("execute", {"command": "gh api graphql"})
+        # One huge JSON-like line, well past _PREVIEW_CHARS (400).
+        output = "x" * 5000
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert "more chars" in result.truncation
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_shell_output_preview_short_no_truncation(self) -> None:
+        """Short shell output should not report any truncation in preview."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        output = "$ echo hi\nhi"
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_shell_output_preview_cumulative_chars_exceed_budget(self) -> None:
+        """Many small lines whose total exceeds the budget should char-truncate.
+
+        Char budget is hit, but some lines weren't even attempted — hidden line
+        count is the more useful signal than hidden char count.
+        """
+        msg = ToolCallMessage("execute", {"command": "noisy"})
+        # 4 lines of 200 chars => 800 + 3 separators, well past 400.
+        output = "\n".join("x" * 200 for _ in range(4))
+        result = msg._format_shell_output(output, is_preview=True)
+
+        assert result.truncation is not None
+        assert "more lines" in result.truncation
+        # Rendered content stays under budget.
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_shell_output_preview_preserves_dim_when_first_line_clipped(
+        self,
+    ) -> None:
+        """Char-clipping line 0 must keep the `$ ` prefix dim styling."""
+        msg = ToolCallMessage("execute", {"command": "echo"})
+        output = "$ " + ("x" * 5000)
+        result = msg._format_shell_output(output, is_preview=True)
+
+        first_line = result.content.split("\n")[0]
+        assert first_line.plain.startswith("$ ")
+        assert "dim" in first_line.markup
+
+    def test_format_shell_output_full_never_truncates(self) -> None:
+        """`is_preview=False` must render full output regardless of size."""
+        msg = ToolCallMessage("execute", {"command": "big"})
+        output = "x" * 5000
+        result = msg._format_shell_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_output_preserves_first_line_leading_indent(self) -> None:
+        """`_format_output` must keep the first line's own leading indentation.
+
+        A bare `strip()` lstrips only the first line while continuation lines
+        keep their indent, so uniformly indented command output (e.g.
+        `git branch -r`, which prefixes every branch with two spaces) renders
+        misaligned. All rows should retain their leading spaces.
+        """
+        msg = ToolCallMessage("execute", {"command": "git branch -r"})
+        # Mirror `git branch -r`: every row indented by two spaces, trailing \n.
+        output = "  origin/HEAD -> origin/main\n  origin/main\n  origin/dev\n"
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        assert lines == [
+            "  origin/HEAD -> origin/main",
+            "  origin/main",
+            "  origin/dev",
+        ]
+        # Every line shares the same leading indent, so they align beside the
+        # fixed glyph gutter.
+        assert all(line.startswith("  ") for line in lines)
+
+    def test_format_output_still_trims_leading_blank_lines(self) -> None:
+        """Leading blank lines are trimmed while first-line indent survives."""
+        msg = ToolCallMessage("execute", {"command": "noop"})
+        result = msg._format_output("\n\n  indented\n", is_preview=False)
+
+        assert result.content.plain == "  indented"
+
+
+class TestToolCallMessageFileOutput:
+    """Tests for `_format_file_output` char-budget handling.
+
+    Files with very long lines (minified HTML/JS/CSS) used to overflow the
+    preview because only line count was capped. Preview now caps both, and
+    prefers line counts over char counts in the truncation hint when both
+    were hit.
+    """
+
+    def test_format_file_output_preview_truncates_long_single_line(self) -> None:
+        """A single huge line must be char-clipped under the preview budget.
+
+        Single-line input: no lines hidden, so the hint reports remaining chars.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        output = "x" * 5000
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == f"{5000 - msg._PREVIEW_CHARS} more chars"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_file_output_preview_cumulative_chars_exceed_budget(self) -> None:
+        """Within the 4-line cap, total chars past budget prefers `more lines`.
+
+        Some lines weren't even attempted — line count is more useful than
+        char count when the line cap also kicked in.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        # 4 x 200-char lines: line 0 fits (200), line 1 clips (199), lines 2-3
+        # are never attempted, so 2 lines are hidden.
+        output = "\n".join("x" * 200 for _ in range(4))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "2 more lines"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS
+
+    def test_format_file_output_preview_line_truncation_when_under_char_budget(
+        self,
+    ) -> None:
+        """Many short lines should report `more lines` truncation."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"line {i}" for i in range(20))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "16 more lines"
+
+    def test_format_file_output_preview_short_no_truncation(self) -> None:
+        """Short file content should render fully with no truncation hint."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "hello\nworld"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_full_never_truncates(self) -> None:
+        """`is_preview=False` must render full output regardless of size."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/big.html"})
+        output = "x" * 5000
+        result = msg._format_file_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_exact_budget_boundary(self) -> None:
+        """A single line that exactly fills the budget should not truncate."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_trailing_newline_at_budget(self) -> None:
+        r"""Trailing newline at exact budget shouldn't produce a phantom hint.
+
+        File content fits in the budget exactly; the trailing `\n` is a
+        text-file convention, not real hidden content.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS + "\n"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+
+    def test_format_file_output_preview_trailing_newline_short_file(self) -> None:
+        r"""Short file ending in `\n` should not report a phantom extra line."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "hello\nworld\n"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == "hello\nworld"
+
+    def test_format_file_output_preview_empty_output(self) -> None:
+        """Empty output should produce empty content with no truncation hint."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/empty"})
+        result = msg._format_file_output("", is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == ""
+
+    def test_format_file_output_preview_exactly_four_short_lines(self) -> None:
+        """Exactly 4 short lines should render fully with no truncation."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"line {i}" for i in range(4))
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation is None
+        assert result.content.plain == output
+
+    def test_format_file_output_preview_budget_hit_on_separator(self) -> None:
+        """Separator-cost path must trigger truncation when line 0 fills budget.
+
+        When line 0 exactly fills the budget, the next line's separator
+        triggers the `remaining <= 0` branch (distinct from the
+        `len(line) > remaining` branch). Line count should be reported since
+        lines were hidden.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "x" * msg._PREVIEW_CHARS + "\nsecond\nthird"
+        result = msg._format_file_output(output, is_preview=True)
+
+        assert result.truncation == "2 more lines"
+
+    def test_format_output_compacts_line_number_gutter(self) -> None:
+        r"""Line-number gutters are tightened, all rows aligned to one column.
+
+        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — which renders far from the line numbers and (when
+        the first row's padding was stripped) misaligned. The TUI recomputes a
+        compact gutter: numbers right-justified to the widest number present,
+        two spaces, then the original source indentation.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # cat -n style: 6-wide right-justified number + tab + source line.
+        output = '     1\t"""doc"""\n     2\t\n     3\t    indented'
+        result = msg._format_output(output, is_preview=False)
+
+        # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
+        # indentation (the 4 spaces on line 3) preserved verbatim.
+        assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+
+    def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
+        r"""Multi-digit line numbers set a uniform, right-justified gutter."""
+        # Lines 9 and 10: single- vs double-digit numbers must align right.
+        output = "     9\tnine\n    10\tten"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 9  nine\n10  ten"
+
+    def test_compact_line_gutter_handles_continuation_markers(self) -> None:
+        r"""`N.M` wrapped-line markers are gutters and drive the column width.
+
+        Long lines are chunked by the SDK with decimal continuation markers
+        (`f"{line_num}.{chunk_idx}"`). The marker's width (e.g. `1.1` = 3)
+        must set the right-justified column like any other line number.
+        """
+        output = "     1\tfirst\n   1.1\twrapped"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "  1  first\n1.1  wrapped"
+
+    def test_compact_line_gutter_preserves_source_tabs(self) -> None:
+        r"""Only the first (gutter) tab is consumed; source tabs stay put.
+
+        Tab-indented source means a tab immediately after the gutter tab.
+        `partition` splits on the first tab only, so the source tab survives.
+        """
+        output = "     1\t\tdef foo():"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  \tdef foo():"
+
+    def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
+        """Output without a cat -n gutter is returned unchanged."""
+        output = "plain text\nno line numbers here"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_rejects_malformed_number_heads(self) -> None:
+        r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
+
+        Guards against corrupting tab-separated data whose first column merely
+        resembles a number (leading/trailing dot, multiple dots).
+        """
+        # Leading dot, trailing dot, and multi-dot heads must all pass through.
+        output = "   .5\tweird\n   5.\talso\n 1.2.3\tnope"
+        assert ToolCallMessage._compact_line_gutter(output) == output
+
+    def test_compact_line_gutter_preview_truncates_with_compacted_gutters(
+        self,
+    ) -> None:
+        """Compaction runs before truncation: previews show compact gutters.
+
+        The char budget and `more lines` hint operate on the already-compacted
+        string, so a long cat -n file previews with tight gutters and a
+        line-count hint.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        output = "\n".join(f"{i:6d}\tline {i}" for i in range(1, 21))
+        result = msg._format_file_output(output, is_preview=True)
+
+        rendered = result.content.plain.split("\n")
+        assert rendered[0] == " 1  line 1"  # width 2 (max line number is 20)
+        assert result.truncation == "16 more lines"
+
+    def test_compact_line_gutter_empty_output(self) -> None:
+        """Empty output has no gutter lines and is returned unchanged."""
+        assert ToolCallMessage._compact_line_gutter("") == ""
+
 
 class TestToolCallMessageAwaitingApproval:
     """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
@@ -761,6 +1595,116 @@ class TestToolCallMessageAwaitingApproval:
             msg.clear_awaiting_approval()
             await pilot.pause()
             assert msg.display is True
+
+
+class TestToolCallMessageRunningSpinner:
+    """Tests for `set_running` / `pause_running` spinner state."""
+
+    async def test_set_running_shows_status_widget(self) -> None:
+        """`set_running` should reveal the status row and start the timer."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status_widget is not None
+            # Pending tools hide the status row until they run.
+            assert msg._status_widget.display is False
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._status_widget.display is True
+            assert msg._animation_timer is not None
+
+    async def test_pause_running_hides_status_and_stops_timer(self) -> None:
+        """`pause_running` should revert a running tool to its pending look."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._start_time is None
+            assert msg._animation_timer is None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_pause_running_no_op_when_not_running(self) -> None:
+        """Pausing a pending tool should leave its status untouched."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status == "pending"
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is False
+
+    async def test_set_running_resumes_after_pause(self) -> None:
+        """A paused tool should be resumable via `set_running` (HITL approve)."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_file", {"file_path": "a.txt"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_running()
+            await pilot.pause()
+            msg.pause_running()
+            await pilot.pause()
+            assert msg._status == "pending"
+
+            msg.set_running()
+            await pilot.pause()
+            assert msg._status == "running"
+            assert msg._start_time is not None
+            assert msg._animation_timer is not None
+            assert msg._status_widget is not None
+            assert msg._status_widget.display is True
 
 
 class TestToolCallMessageRejectReason:
@@ -1065,68 +2009,6 @@ class TestAppMessageOnClickOpensLink:
 
         mock_open.assert_not_called()
         event.stop.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Timestamp toast tests
-# ---------------------------------------------------------------------------
-
-_MSG_STORE_PATH = "deepagents_code.widgets.messages"
-
-
-class TestTimestampClickMixin:
-    """Tests for `_TimestampClickMixin` on message widgets."""
-
-    @pytest.mark.parametrize(
-        "cls",
-        [UserMessage, AssistantMessage, DiffMessage, ErrorMessage],
-        ids=["UserMessage", "AssistantMessage", "DiffMessage", "ErrorMessage"],
-    )
-    def test_mixin_classes_have_on_click(self, cls: type) -> None:
-        """Mixin widget classes should have an `on_click` handler."""
-        assert hasattr(cls, "on_click")
-
-    def test_tool_call_message_click_without_output_shows_toast(self) -> None:
-        """ToolCallMessage click with no output should show timestamp toast."""
-        msg = ToolCallMessage("test_tool", {})
-        msg._output = ""
-        event = MagicMock()
-
-        with patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast:
-            msg.on_click(event)
-
-        event.stop.assert_called_once()
-        mock_toast.assert_called_once_with(msg)
-
-    def test_tool_call_message_click_with_output_toggles(self) -> None:
-        """ToolCallMessage click with output should toggle, not toast."""
-        msg = ToolCallMessage("test_tool", {})
-        msg._output = "some output"
-        event = MagicMock()
-
-        with (
-            patch.object(msg, "toggle_output") as mock_toggle,
-            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
-        ):
-            msg.on_click(event)
-
-        event.stop.assert_called_once()
-        mock_toggle.assert_called_once()
-        mock_toast.assert_not_called()
-
-    def test_app_message_click_shows_toast_alongside_link(self) -> None:
-        """AppMessage click should open link and show toast."""
-        msg = AppMessage("test")
-        event = MagicMock()
-        event.style = Style()
-
-        with (
-            patch(_WEBBROWSER_OPEN),
-            patch(f"{_MSG_STORE_PATH}._show_timestamp_toast") as mock_toast,
-        ):
-            msg.on_click(event)
-
-        mock_toast.assert_called_once_with(msg)
 
 
 class TestMountMessageIdSync:

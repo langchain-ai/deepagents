@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` and fill in both keys.
 deepagents deploy
 ```
 
-The agent is deployed using the config in `deepagents.toml`. The `[sandbox]` section provisions a LangSmith coding sandbox with a Python 3.12 image so the agent can run code safely.
+The agent is deployed using the config in `agent.json`.
 
 ## What to try
 
@@ -34,14 +34,14 @@ The agent follows a Plan → Implement → Review → Deliver workflow defined i
 ```
 deploy-coding-agent/
 ├── AGENTS.md                  # Agent instructions and workflow
-├── deepagents.toml            # Deploy config (model, sandbox)
-├── deepagents.assistant-scope.toml  # Assistant-scoped config variant
-├── mcp.json                   # MCP server config
+├── agent.json                 # Deploy config (name, model)
 └── skills/
     ├── code-review/           # Code review skill with lint helper
     ├── coding-prefs/          # Coding style preferences
     └── planning/              # Task planning skill
 ```
+
+> **MCP servers:** This example previously used `mcp.json` to wire in the LangChain docs MCP server. MCP servers are now workspace-level resources. Register them once with `deepagents mcp-servers add --url <url>` and reference them in a `tools.json` file.
 
 ## Query via SDK
 
@@ -65,3 +65,5 @@ Find your deployment URL in LangSmith under **Deployments**. See the [LangGraph 
 
 - [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)
 - [LangSmith sandbox docs](https://docs.langchain.com/deepagents/sandbox)
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

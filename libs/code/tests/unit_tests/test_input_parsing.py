@@ -412,3 +412,71 @@ def test_extract_leading_pasted_file_path_unquoted_path_with_spaces(
     resolved, end = result
     assert resolved == img.resolve()
     assert payload[end:] == " what's in this"
+
+
+def test_parse_pasted_file_paths_handles_overlong_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An over-long path component must not crash path probing.
+
+    Regression test: holding a key floods the input with a single long token.
+    Resolving it against the cwd produces a path whose component exceeds the
+    filesystem name limit, so `os.stat` raises `OSError` (`ENAMETOOLONG`). On
+    Python <=3.13 `pathlib` lets that propagate (the original crash); on 3.14
+    it is swallowed, so this asserts the no-match contract on every version.
+    The version-independent guard is `*_handles_oserror_on_probe` below.
+    """
+    monkeypatch.chdir(tmp_path)
+    overlong = "a" * 5000
+
+    assert parse_pasted_file_paths(overlong) == []
+
+
+def test_parse_pasted_path_payload_handles_overlong_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dropped-path entrypoint must not crash on an over-long token.
+
+    This mirrors the exact path that crashed the TUI: `on_text_area_changed`
+    routes freshly typed text through `parse_pasted_path_payload`.
+    """
+    monkeypatch.chdir(tmp_path)
+    overlong = "a" * 5000
+
+    assert parse_pasted_path_payload(overlong) is None
+
+
+def test_parse_pasted_file_paths_handles_oserror_on_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """`OSError` raised by an `is_file` probe must be swallowed, not propagated.
+
+    Guards against platforms/filesystems that surface the limit at a different
+    probe than `resolve`, ensuring the fix does not rely on a specific errno.
+    """
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "real.txt"
+    target.write_text("hi")
+    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+
+    assert parse_pasted_file_paths(str(target)) == []
+
+
+def test_parse_pasted_file_paths_handles_oserror_in_unicode_variant(
+    tmp_path: Path, mocker
+) -> None:
+    """An `OSError` probe inside the Unicode-space fallback must not propagate.
+
+    Exercises the `_resolve_with_unicode_space_variants` traversal: the on-disk
+    name carries a narrow no-break space while the paste uses an ASCII space,
+    forcing the `iterdir`-match branch where component `is_file`/`is_dir` probes
+    run. The path is quoted so it stays a single token instead of being split.
+    """
+    unicode_name = "Screenshot 2026-02-26 at 2.02.42 AM.png"
+    img = tmp_path / unicode_name
+    img.write_bytes(b"img")
+    ascii_name = unicode_name.replace(chr(0x202F), " ")
+    pasted = f"'{str(img).replace(unicode_name, ascii_name)}'"
+    mocker.patch("pathlib.Path.is_file", side_effect=OSError(63, "File name too long"))
+
+    assert parse_pasted_file_paths(pasted) == []

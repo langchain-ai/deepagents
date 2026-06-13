@@ -10,9 +10,11 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
+| `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
+| `langchain-vercel-sandbox` | `libs/partners/vercel` | `langchain-vercel-sandbox` | [`langchain-vercel-sandbox`](https://pypi.org/project/langchain-vercel-sandbox/) |
 | `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
 
 ## Overview
@@ -21,7 +23,7 @@ Releases are managed via release-please, which:
 
 1. Analyzes commits made to `main`
 2. Creates/updates a release PR [(example)](https://github.com/langchain-ai/deepagents/pull/1956) with automated changelog and version bumps
-3. When said release PR is merged, creates both a GitHub and PyPI release
+3. When said release PR is merged, triggers the release workflow for that merge commit, which creates both a GitHub and PyPI release
 
 ## How It Works
 
@@ -145,30 +147,43 @@ Defines release-please behavior for each package.
 
 ### `.release-please-manifest.json`
 
-Tracks the current version of each package. Automatically updated by release-please — **do not edit manually**. Example (versions shown are illustrative; check the actual file for current values):
+Tracks the current version of each package. Automatically updated by release-please — **do not edit manually** except when adding a new release-please-managed package. Example (versions shown are illustrative; check the actual file for current values):
 
 ```json
 {
   "libs/cli": "0.0.35",
   "libs/deepagents": "0.5.1",
   "libs/acp": "0.0.5",
+  "libs/talon": "0.0.1",
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
+  "libs/partners/vercel": "0.0.1",
   "libs/partners/quickjs": "0.0.1"
 }
 ```
+
+### Adding a release-please-managed package
+
+When adding a new managed package, add it to both `release-please-config.json` and `.release-please-manifest.json`. The manifest entry is the **latest released version baseline**, not the package's current source version.
+
+User story: you are adding a first-party integration package, such as a new sandbox provider under `libs/partners/<provider>`, and the PR title is release-worthy (`feat(<scope>): ...`). The package source starts at `0.0.1`, and you want the first release PR for that package to publish `0.0.1`, not immediately bump to `0.0.2` before the package has ever shipped. In this case, set the new `.release-please-manifest.json` entry to `0.0.0` while keeping the package's own `pyproject.toml` and `_version.py` at `0.0.1`.
+
+Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` has already been released outside release-please. If the new manifest baseline is `0.0.1`, release-please treats that as already released and opens the initial release PR for `0.0.2`. The `Release-please initial baseline check` workflow blocks PRs that add a new `0.0.1` managed package baseline.
 
 ## Release Workflow
 
 ### Detection Mechanism
 
-The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects releases by checking two conditions on the merge commit:
+The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects merged release PRs by checking two conditions on the merge commit:
 
 1. The package's `CHANGELOG.md` was modified (e.g., `libs/cli/CHANGELOG.md` for the CLI)
 2. The commit message matches the `release(<component>): <version>` pattern
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
+
+> [!NOTE]
+> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
 
 ### Lockfile Updates
 
@@ -202,7 +217,7 @@ This label transition signals to release-please that the merged PR has been full
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.
 
-1. Go to **Actions** > `⚠️ Manual Package Release`
+1. Go to **Actions** > `🚀 Package Release`
 2. Click **Run workflow**
 3. Select the package to release
 4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
@@ -220,8 +235,8 @@ Something went wrong with a release. This section tells you what to do.
 
 The right answer depends on a single question: **is the broken version already on PyPI?**
 
-- **No** → [Case A](#case-a--release-failed-before-pypi-publish): the release workflow failed partway through. Nothing public, you have options.
-- **Yes** → [Case B](#case-b--bug-found-after-pypi-publish): the bad version is out there. You'll ship a new patch version.
+- **No** -> [Case A](#case-a--release-failed-before-pypi-publish): the release workflow failed partway through. Nothing public, you have options.
+- **Yes** -> [Case B](#case-b--bug-found-after-pypi-publish): the bad version is out there. You'll ship a new patch version.
 
 > [!IMPORTANT]
 > **The rule we have to maintain:** a version should mean one exact thing. If `mypackage==1.2.3` is on PyPI, then the GitHub tag for `mypackage==1.2.3` must point at the same code.
@@ -239,7 +254,7 @@ Because nothing was published, you still get to decide what eventually goes out 
 1. **Figure out why the release failed.** Look at the workflow run logs.
 2. **Open a PR with the fix.** Use a `hotfix(<scope>): <description>` title so it doesn't trigger another release PR update. Merge it to `main`.
    - Important: leave `pyproject.toml`'s version exactly as the release-please PR set it. The hotfix should only fix the problem that broke the release.
-3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = `main`'s HEAD (the hotfix commit). The workflow will build, publish, and tag that commit.
+3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = the SHA of your hotfix commit — the one that fixed the release *and* still declares the target version. Right after you merge it, that's the tip of `main`, but pin the explicit SHA rather than relying on `HEAD` (e.g. `gh pr view <hotfix-pr-number> --json mergeCommit --jq .mergeCommit.oid`), since `main` can advance if another PR lands first. The workflow checks out, builds, publishes, and tags that exact commit.
 4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `autorelease: pending` label to `autorelease: tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 > [!NOTE]
@@ -267,9 +282,9 @@ That's it. The new patch version has its own commit, tag, and wheel. The broken 
 
 If the GitHub tag for `<version>` points at different code than the PyPI package for `<version>`, users get different software depending on how they install it:
 
-- `pip install <pkg>==<version>` → gets the PyPI wheel.
-- `pip install git+https://.../<repo>@<pkg>==<version>` → gets whatever's at the GitHub tag.
-- `git checkout <pkg>==<version>` (vendored copies, distro packagers, security tools pinning by SHA) → also gets the GitHub tag's code.
+- `pip install <pkg>==<version>` -> gets the PyPI wheel.
+- `pip install git+https://.../<repo>@<pkg>==<version>` -> gets whatever's at the GitHub tag.
+- `git checkout <pkg>==<version>` (vendored copies, distro packagers, security tools pinning by SHA) -> also gets the GitHub tag's code.
 
 When these disagree, the same version can behave differently for different users. The workflow pinning and the "never re-release a version" rule are there to prevent that.
 
@@ -305,7 +320,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 
 4. **Trigger the release workflow:**
 
-   - Go to **Actions** > `⚠️ Manual Package Release` > **Run workflow**
+   - Go to **Actions** > `🚀 Package Release` > **Run workflow**
    - Branch: `alpha/<PACKAGE>-<VERSION>`
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
@@ -338,6 +353,81 @@ Increment the PEP 440 pre-release number on each iteration: `0.0.35a1`, `0.0.35a
 
 For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
 
+## Developing a new version line
+
+Most version progression needs **no dedicated branches**. Keep developing on `main` and let release-please cut the next version — including minor bumps, since a `feat!:` / `BREAKING CHANGE:` bumps the minor pre-1.0 (see [Version Bumping](#version-bumping)).
+
+Reach for a dedicated branch only when you need to (often temporarily) *decouple* a version line from `main`:
+
+| Scenario | Branch | release-please runs there? | Releases via |
+| -------- | ------ | -------------------------- | ------------ |
+| Normal progression (incl. minor bumps) | none — use `main` | yes (on `main`) | automatic (on release PR merge) |
+| **Staging** the next line before cutover (e.g. work toward `0.7` while `main` stays `0.6.x`) | `vX.Y` integration branch | no | optional pre-release builds ([Alpha/Beta](#how-to-publish-a-pre-release)) |
+| **Maintenance** of an old line after cutover (e.g. patch `0.6.x` after `main` moves to `0.7`) | `vX.Y` maintenance branch | no (not wired) | [Manual Release](#manual-release) + `dangerous-nonmain-release` |
+
+> [!IMPORTANT]
+> **Name the branch with a `v` prefix** — `v0.7`, `v0.6`, etc. A branch named `0.7` gets **no branch protection**.
+
+Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only difference is that `v[0-9].*` allows merge commits in order to facilitate syncing `main` -> `vX.Y` ([staging](#staging-branch-main-stays-on-the-current-line) step 2) and the **cutover** (admin bypass — see below).
+
+### TL;DR — staging the next line of work (e.g. `v0.7` while `main` stays `v0.6.x`)
+
+1. **Branch:** create `v0.7` from `main`.
+2. **Build `0.7`:** land net-new work via **squash PRs into `v0.7`** (same flow as `main`).
+3. **Sync `main` -> `v0.7` periodically:** open a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
+4. **Cutover:** an admin merges `v0.7` onto `main` with `git merge --no-ff` under admin bypass. See [Cutover](#cutover-main-adopts-the-new-line).
+
+### Staging branch (`main` stays on the current line)
+
+1. Create `vX.Y` from `main`. Do feature work via **squash PRs into `vX.Y`** — same flow as `main`, so every change is CI-gated and reviewed. Each PR becomes one clean conventional commit on the branch.
+2. **Pulling in `main` fixes:** keep `vX.Y` current by opening a **merge PR from `main` -> `vX.Y`** and landing it as a **merge commit (not squash)**. Do this periodically. It buys three things:
+   - **Still CI-gated.** The PR runs CI on the *merged* result, so you test `vX.Y` against the latest `main` before it lands.
+   - **Conflicts stay small.** They surface in each sync PR instead of piling up for the final cutover.
+   - **Clean cutover.** The merge brings `main`'s commits in as **shared history** (same SHAs, not copies), so they're not ultimately double-counted in the changelog(s).
+
+   Use a merge commit **only** for these sync PRs.
+
+   > [!TIP]
+   > If `vX.Y` deliberately *diverges* from `main` (it removed or rewrote code that `main` keeps patching), a full sync re-surfaces the same conflict every time. In that case **cherry-pick only the fixes you want** instead.
+3. **Need an installable build?** Cut a pre-release (`0.7.0a1`, …) with the throwaway-branch flow in [How to publish a pre-release](#how-to-publish-a-pre-release). release-please is never involved and `main` is untouched.
+
+### Cutover (`main` adopts the new line)
+
+When the new line is ready to become `main`:
+
+1. Confirm `vX.Y` `HEAD` is green.
+2. **Merge `vX.Y` onto `main` preserving individual commits.** The cutover can't be a normal PR (a `vX.Y` -> `main` PR would squash the whole version branch into one commit and gut the changelog!), so an **admin** brings it over with a merge commit under bypass. If you've kept `vX.Y` synced (staging step 2), there's little left to reconcile here:
+
+   ```bash
+   git checkout main && git pull
+   git merge --no-ff vX.Y
+   git push origin main
+   ```
+
+   release-please ignores the merge commit itself and itemizes each per-PR squash commit from `vX.Y` into the changelog(s).
+3. After the merge, release-please reads the incoming commits and computes the next version. Compare it to the version you intend to cut:
+
+   - **If they match, you're done.** The commits already justify the target (e.g. a `feat!:` / `BREAKING CHANGE:` in the line bumps the minor if pre-1.0).
+   - **If release-please picks a lower version, force it.** The commits resolve to less than your target (e.g. a line of only `feat:`/`fix:` stays as a `PATCH` bump pre-1.0). Override release-please's choice in one of two ways:
+
+     - **`Release-As` footer** — put the footer on a commit that touches the package's files. release-please reads the footer and pins that version for the next release PR:
+
+       ```bash
+       git commit -m "feat(sdk): release X.Y.Z" -m "Release-As: X.Y.Z"
+       ```
+
+     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same effect, but it lives in config rather than a commit message. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
+
+   > [!CAUTION]
+   > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key sidesteps this since editing the config file is itself a non-empty change.
+
+### Maintenance branch (patching the old line after cutover)
+
+After `main` adopts the new line, cut a `vX.Y` branch from the **last release commit** of the old line (e.g. branch `v0.6` from the `release(deepagents): 0.6.N` merge commit). Branching from the release commit means the latest `0.6` tag is its ancestor, so version math stays on the `0.6.x` line.
+
+- **Backport** fixes by landing them on `main` first, then cherry-picking onto `vX.Y` with the conventional-commit message intact.
+- **Release** from the branch with [Manual Release](#manual-release) + `dangerous-nonmain-release` (its stated purpose is backports): bump the version files on the branch, then dispatch `🚀 Package Release` with that branch, package, version, and `dangerous-nonmain-release` ✓. It is usually rare to need to release old versions so these steps remain manual.
+
 ## Troubleshooting
 
 ### Empty commit fan-out
@@ -347,11 +437,22 @@ For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
 
 This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
 
-The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose head commit changes zero files fails fast with a clear error before the release-please action runs.
+The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
 
 **If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 
 **If a fan-out has already happened** (release PRs opened for packages you didn't change), revert the offending commit on `main`. release-please will reconcile the open release PRs on the next push that actually touches package files; PRs for unaffected packages can be closed manually.
+
+### Lockfile churn fan-out
+
+A subtler sibling of the empty-commit case. release-please scopes a commit to a package by the file *paths* it touches and has no notion of "this file is just a lockfile." When a bump-worthy commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of every package that depends on it, release-please attributes the bump-worthy commit to those dependents too and opens a release PR for each — even though their only change is a regenerated lockfile.
+
+> [!NOTE]
+> Closing such a stray release PR does **not** make it stay closed. release-please decides what to release by comparing each component's last-released SHA in `.release-please-manifest.json` against `main`; the unreleased lockfile commit is still there, so the PR is regenerated on the next run. The only ways to stop it are to release the package (merge the PR) or to remove the unreleased bump from `main` — see [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+
+**Avoid it** by landing lockfile regeneration in a separate `chore(deps):` commit/PR — `chore` is hidden and triggers no release, so only the package with real source changes is released.
+
+The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
 
 ### Overriding a Merged Commit's Changelog Entry
 
@@ -485,7 +586,7 @@ The `pre-release-checks` job runs after the package is built but before anything
 
 3. **Manually re-dispatch the release** ([Manual Release](#manual-release)). Pass:
    - `version` = the same version you were originally trying to release.
-   - `release-sha` = `main` HEAD (the hotfix commit you just merged).
+   - `release-sha` = `main` `HEAD` (the hotfix commit you just merged).
 
    The workflow will build, test, publish, and tag that commit.
 
@@ -554,7 +655,7 @@ This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pypr
    ```
 
 2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/code/CHANGELOG.md`):
-   - Go to **Actions** > `⚠️ Manual Package Release`
+   - Go to **Actions** > `🚀 Package Release`
    - Click **Run workflow**
    - Select `main` branch and `deepagents-code` package
 

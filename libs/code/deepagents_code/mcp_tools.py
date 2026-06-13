@@ -18,10 +18,10 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -30,6 +30,11 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+# Maintainer note: `deepagents-talon` imports `MCPConfigError`,
+# `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
+# `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
+# shapes stable unless `deepagents-talon` is migrated in the same change.
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +56,29 @@ class MCPToolInfo:
     """
 
 
-MCPServerStatus = Literal["ok", "unauthenticated", "error", "disabled"]
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
 """Load states a configured MCP server can end up in.
+
+`ok` means the server loaded successfully and has an authoritative tool list.
+
+`unauthenticated` means the server requires OAuth login before tools can load.
+
+`error` means the server failed to load after a connection or configuration
+failure.
 
 `disabled` is set when the user has turned the server off via the TUI
 (`/mcp` -> F2). No connection is attempted and no tools are loaded, but
 the entry is still surfaced in the viewer so the user can re-enable it.
+
+`awaiting_reconnect` is a transient UI-only state used after OAuth login
+has succeeded but before the LangGraph server has restarted and loaded
+the newly available MCP tools.
 """
 
 
@@ -77,7 +99,11 @@ class MCPServerInfo:
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
-    """Load status — `ok`, `unauthenticated`, `error`, or `disabled`."""
+    """Load status.
+
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
+    `disabled`.
+    """
 
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
@@ -110,6 +136,14 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+
+    def is_loaded(self) -> bool:
+        """Return whether this server has successfully loaded tools."""
+        return self.status == "ok"
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
@@ -931,6 +965,69 @@ async def _discover_tools(session: ClientSession) -> list[Any]:
     raise RuntimeError(msg)
 
 
+def _normalize_mcp_arguments(
+    arguments: dict[str, Any],
+    input_schema: Any,  # noqa: ANN401  # raw JSON Schema dict from the MCP tool
+) -> dict[str, Any]:
+    """Drop empty-string values for optional MCP tool params.
+
+    Some MCP servers (e.g. Slack's `slack_search_public_and_private`) validate
+    optional ID-typed params with `value is not a channel ID` when the model
+    fills them in with `""` instead of omitting them. JSON-Schema-derived
+    Pydantic models happily accept `""` for `Optional[str]`, so the request
+    reaches the server and gets rejected with a generic `ToolException`.
+
+    Treat `""` for non-required string fields as "omitted" so the MCP server
+    sees the same payload it would have for a field the model genuinely
+    skipped. Required fields are passed through unchanged so the server's
+    own missing-field error path still runs when applicable.
+
+    Only `""` is normalized; `None` is left to the caller / server. Schemas
+    that declare `["string", "null"]` will see `""` dropped but `None`
+    forwarded — callers that want symmetric "no value" handling should
+    omit the kwarg explicitly.
+
+    Dropped keys are logged at debug so unexpected MCP behavior is
+    diagnosable when a tool semantically distinguishes `""` from omitted.
+
+    Args:
+        arguments: Keyword arguments collected by LangChain's tool runner.
+        input_schema: The MCP tool's `inputSchema` (raw JSON Schema dict).
+
+    Returns:
+        A new dict suitable for `session.call_tool`.
+    """
+    if not isinstance(input_schema, dict):
+        return arguments
+    required = set(input_schema.get("required") or ())
+    properties = input_schema.get("properties") or {}
+    cleaned: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if value != "" or key in required:  # noqa: PLC1901  # distinguishing "" from other falsy types (0, False, []) is the point
+            cleaned[key] = value
+            continue
+        prop = properties.get(key)
+        prop_type = prop.get("type") if isinstance(prop, dict) else None
+        is_string_typed = prop_type == "string" or (
+            isinstance(prop_type, list) and "string" in prop_type
+        )
+        # Three drop conditions converge here:
+        #   - explicit string type (the original Slack-style failure mode);
+        #   - missing `type` (oneOf/anyOf/$ref or untyped — treat as ambiguous
+        #     and conservatively drop, since the server will reject `""` for
+        #     any ID-shaped slot anyway);
+        #   - key absent from `properties` entirely (model invented a field).
+        # Anything with an explicit non-string `type` is kept — `""` can't be
+        # a valid integer/bool/array so it was the model's mistake to send,
+        # and the server's own validation gives a clearer error than ours.
+        if isinstance(prop, dict) and not is_string_typed and prop_type is not None:
+            cleaned[key] = value
+    if cleaned.keys() != arguments.keys():
+        dropped = sorted(set(arguments) - set(cleaned))
+        logger.debug("MCP arg normalize: dropped empty-string keys %s", dropped)
+    return cleaned
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -953,6 +1050,7 @@ def _build_cached_mcp_tool(
     from langchain_core.tools import StructuredTool, ToolException
     from langchain_mcp_adapters.tools import (
         _convert_call_tool_result,  # noqa: PLC2701
+        _handle_mcp_tool_error,  # noqa: PLC2701
     )
 
     original_tool_name = mcp_tool.name
@@ -969,6 +1067,18 @@ def _build_cached_mcp_tool(
     wrapped_meta = {"_meta": meta} if meta is not None else {}
     metadata = {**base_meta, **wrapped_meta} or None
 
+    def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
+        try:
+            return _handle_mcp_tool_error(error)
+        except ToolException:
+            logger.warning(
+                "MCP tool %r failed with recoverable ToolException: %s",
+                lc_tool_name,
+                error,
+                exc_info=True,
+            )
+            return str(error) or f"{lc_tool_name} failed with no error detail"
+
     async def coroutine(
         # `runtime` is injected by LangChain's tool-calling plumbing.
         # MCP tools don't use it but the kwarg must still be accepted.
@@ -977,9 +1087,17 @@ def _build_cached_mcp_tool(
     ) -> Any:  # noqa: ANN401
         from deepagents_code.mcp_auth import find_reauth_required
 
+        arguments = _normalize_mcp_arguments(arguments, mcp_tool.inputSchema)
+
         session = await session_manager.get_session(server_name)
         try:
             result = await session.call_tool(original_tool_name, arguments)
+        # Re-raise control-flow/shutdown signals (CancelledError,
+        # KeyboardInterrupt, SystemExit) and ToolException unchanged. Wrapping a
+        # ToolException here would bury its actionable message (e.g. an MCP
+        # `isError` instruction like "use the X tool instead") under a generic
+        # retry wrapper; re-raising preserves it for the tool-local error
+        # handler and the model.
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, ToolException):
             raise
         except Exception as exc:
@@ -1045,6 +1163,11 @@ def _build_cached_mcp_tool(
                             exc_info=True,
                         )
 
+        # On an MCP `isError=True` result the adapter's `_convert_call_tool_result`
+        # raises, and the `handle_tool_error` callback registered below converts
+        # the MCP content blocks into a `ToolMessage(status="error")`. Other
+        # expected `ToolException`s raised by this wrapper are formatted by that
+        # same tool-local handler.
         return _convert_call_tool_result(result)
 
     return StructuredTool(
@@ -1054,6 +1177,7 @@ def _build_cached_mcp_tool(
         coroutine=coroutine,
         response_format="content_and_artifact",
         metadata=metadata,
+        handle_tool_error=cast("Any", _handle_cached_mcp_tool_error),
     )
 
 
@@ -1088,11 +1212,27 @@ def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
     return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
 
 
+@overload
 def _apply_tool_filter(
     tools: list[BaseTool],
     server_name: str,
     server_config: dict[str, Any],
-) -> list[BaseTool]:
+) -> list[BaseTool]: ...
+
+
+@overload
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]: ...
+
+
+def _apply_tool_filter(
+    tools: Sequence[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> Sequence[BaseTool]:
     """Filter a server's loaded tools by its `allowedTools` / `disabledTools`.
 
     Entries may be literal tool names or `fnmatch`-style glob patterns

@@ -78,6 +78,8 @@ pytest /foo/bar/tests
 cd /foo/bar && pytest tests
 </bad-example>
 
+When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
+
 ### web_search
 
 Search for documentation, error solutions, and code examples.
@@ -88,9 +90,9 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 
 **Pattern for codebase exploration:**
 
-1. First scan: `read_file(path, limit=100)` - See file structure and key sections
-2. Targeted read: `read_file(path, offset=100, limit=200)` - Read specific sections
-3. Full read: Only use `read_file(path)` without limit when necessary for editing
+1. First scan: `read_file(file_path="...", limit=100)` - See file structure and key sections
+2. Targeted read: `read_file(file_path="...", offset=100, limit=200)` - Read specific sections
+3. Full read: Only use `read_file(file_path="...")` without limit when necessary for editing
 
 **When to paginate:**
 

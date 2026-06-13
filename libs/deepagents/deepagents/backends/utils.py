@@ -5,6 +5,7 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import functools
 import os
 import re
 from collections.abc import Sequence
@@ -70,6 +71,12 @@ TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
 GrepMatch = _GrepMatch
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_glob(pattern: str) -> wcglob.WcMatcher:
+    """Compile a glob pattern once and cache it (BRACE flag)."""
+    return wcglob.compile(pattern, flags=wcglob.BRACE)
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -291,15 +298,12 @@ def slice_read_response(
     if not content or content.strip() == "":
         return content
 
-    # Normalize line endings to LF before slicing. State/Store backends may
-    # carry CRLF or CR content as written; downstream tooling (edit match,
-    # grep, format) assumes LF.
-    content = content.replace("\r\n", "\n").replace("\r", "\n")
-
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
     # round-trips the trailing-newline state of the file faithfully —
-    # required so `edit()` can report EOF-newline mismatches accurately.
+    # required so `edit()` can report EOF-newline mismatches accurately. It
+    # also splits on CR / CRLF, so line indexing matches the LF-normalized
+    # form without first rewriting the whole (potentially huge) string.
     lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
@@ -307,7 +311,10 @@ def slice_read_response(
     if start_idx >= len(lines):
         return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
-    return "".join(lines[start_idx:end_idx])
+    # Normalize line endings to LF, but only across the requested window.
+    # State/Store backends may carry CRLF or CR content as written;
+    # downstream tooling (edit match, grep, format) assumes LF.
+    return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
 
 
 def perform_string_replacement(
@@ -386,6 +393,45 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
         return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
     return result
+
+
+# Characters that mark a glob path component as a wildcard segment for the
+# purposes of `_glob_anchor`. Keep in sync with the wcmatch flags used by the
+# filesystem middleware (`BRACE | GLOBSTAR`).
+_GLOB_WILDCARD_CHARS = frozenset("*?[{")
+
+
+def _glob_anchor(pattern: str) -> str:
+    """Return the longest leading directory of `pattern` with no wildcards.
+
+    For `/secrets/**` returns `/secrets`; for `/a/*/b` returns `/a`; for a
+    pattern with a wildcard at or near the root (`/**/secrets`, `/*/foo`)
+    falls back to `/`. The root fallback causes overlap checks to match
+    *any* subtree — conservative over-gating, since we cannot statically
+    pin down where the rule could resolve. Callers wanting precise gating
+    should anchor the rule's leading components.
+    """
+    parts = PurePosixPath(to_posix_path(pattern)).parts
+    safe: list[str] = []
+    for part in parts:
+        if any(c in _GLOB_WILDCARD_CHARS for c in part):
+            break
+        safe.append(part)
+    if not safe:
+        return "/"
+    return str(PurePosixPath(*safe))
+
+
+def _paths_overlap(call_path: str, rule_anchor: str) -> bool:
+    """Return True if the subtree at `call_path` intersects the subtree at `rule_anchor`.
+
+    Two subtrees overlap when one is a (component-wise) prefix of the other,
+    or they're equal. Comparison runs on `PurePosixPath` components, so
+    `/secret` does not overlap `/secrets`. The root `/` overlaps everything.
+    """
+    a = PurePosixPath(call_path)
+    b = PurePosixPath(rule_anchor)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 def to_posix_path(path: str) -> str:
@@ -546,14 +592,14 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
-    path: str = "/",
+    path: str | None = None,
 ) -> str:
     r"""Search files dict for paths matching glob pattern.
 
     Args:
         files: Dictionary of file paths to FileData.
         pattern: Glob pattern (e.g., "*.py", "**/*.ts").
-        path: Base path to search from.
+        path: Base path to search from. `None` defaults to root.
 
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).
@@ -634,61 +680,6 @@ def _format_grep_results(
     return "\n".join(lines)
 
 
-def _grep_search_files(
-    files: dict[str, Any],
-    pattern: str,
-    path: str | None = None,
-    glob: str | None = None,
-    output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
-) -> str:
-    r"""Search file contents for regex pattern.
-
-    Args:
-        files: Dictionary of file paths to FileData.
-        pattern: Regex pattern to search for.
-        path: Base path to search from.
-        glob: Optional glob pattern to filter files (e.g., "*.py").
-        output_mode: Output format - "files_with_matches", "content", or "count".
-
-    Returns:
-        Formatted search results. Returns "No matches found" if no results.
-
-    Example:
-        ```python
-        files = {"/file.py": FileData(content="import os\nprint('hi')", ...)}
-        _grep_search_files(files, "import", "/")
-        # Returns: "/file.py" (with output_mode="files_with_matches")
-        ```
-    """
-    try:
-        regex = re.compile(pattern)
-    except re.error as e:
-        return f"Invalid regex pattern: {e}"
-
-    try:
-        normalized_path = _normalize_path(path)
-    except ValueError:
-        return "No matches found"
-
-    filtered = _filter_files_by_path(files, normalized_path)
-
-    if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
-
-    results: dict[str, list[tuple[int, str]]] = {}
-    for file_path, file_data in filtered.items():
-        content_str = _normalize_content(file_data)
-        for line_num, line in enumerate(content_str.split("\n"), 1):
-            if regex.search(line):
-                if file_path not in results:
-                    results[file_path] = []
-                results[file_path].append((line_num, line))
-
-    if not results:
-        return "No matches found"
-    return _format_grep_results(results, output_mode)
-
-
 # -------- Structured helpers for composition --------
 
 
@@ -714,7 +705,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        matcher = _compile_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

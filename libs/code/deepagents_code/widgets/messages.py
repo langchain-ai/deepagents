@@ -10,10 +10,10 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual import on
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
 from textual.message_pump import NoActiveAppError
@@ -41,48 +41,6 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
 logger = logging.getLogger(__name__)
-
-
-def _show_timestamp_toast(widget: Static | Vertical) -> None:  # noqa: ARG001  # temporarily disabled
-    """Show a toast with the message's creation timestamp.
-
-    No-ops silently if the widget is not mounted or has no associated message
-    data in the store.
-
-    Args:
-        widget: The message widget whose timestamp to display.
-    """
-    # TODO: temporarily disabled — uncomment to restore click-to-show-timestamp
-    return  # early return while feature is disabled
-    # from datetime import UTC, datetime  # noqa: ERA001
-    #
-    # try:  # noqa: ERA001
-    #     app = widget.app  # noqa: ERA001
-    # except Exception:  # Textual raises when widget has no app  # noqa: ERA001
-    #     return  # noqa: ERA001
-    # if not widget.id:
-    #     return  # noqa: ERA001
-    # store = app._message_store  # noqa: ERA001
-    # data = store.get_message(widget.id)  # noqa: ERA001
-    # if not data:
-    #     return  # noqa: ERA001
-    # dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()  # noqa: ERA001
-    # label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"  # noqa: ERA001, E501
-    # app.notify(label, timeout=3)  # noqa: ERA001
-
-
-class _TimestampClickMixin:
-    """Mixin that shows a timestamp toast on click.
-
-    Add to any message widget that should display its creation timestamp when
-    clicked. Widgets needing additional click behavior (e.g. `ToolCallMessage`,
-    `AppMessage`) should override `on_click` and call `_show_timestamp_toast`
-    directly instead.
-    """
-
-    def on_click(self, event: Click) -> None:  # noqa: ARG002  # Textual event handler
-        """Show timestamp toast on click."""
-        _show_timestamp_toast(self)  # type: ignore[arg-type]
 
 
 def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
@@ -167,7 +125,7 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
-class UserMessage(_TimestampClickMixin, Static):
+class UserMessage(Static):
     """Widget displaying a user message."""
 
     DEFAULT_CSS = """
@@ -177,6 +135,7 @@ class UserMessage(_TimestampClickMixin, Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $primary;
+        pointer: text;
     }
     """
 
@@ -267,6 +226,7 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
+        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -578,11 +538,9 @@ class SkillMessage(Vertical):
         event.stop()
         if self._stripped_body.strip():
             self.toggle_body()
-        else:
-            _show_timestamp_toast(self)
 
 
-class AssistantMessage(_TimestampClickMixin, Vertical):
+class AssistantMessage(Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -593,7 +551,16 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     the first chunk, so any later recompose (click, focus change, theme
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
+
+    Streamed tokens are coalesced in `_pending_append` and flushed to the
+    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
+    every token immediately forced a markdown re-parse per chunk on the UI
+    event loop, which starved keyboard input while the model streamed.
+    Batching the writes keeps the event loop free so typing stays responsive.
     """
+
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+    """Seconds between coalesced flushes of streamed text to the markdown widget."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -605,6 +572,13 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     AssistantMessage Markdown {
         padding: 0;
         margin: 0;
+        pointer: text;
+    }
+
+    /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
+       on the final block so the message has no trailing blank row. */
+    AssistantMessage Markdown > *:last-child {
+        margin-bottom: 0;
     }
     """
 
@@ -616,9 +590,22 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
+        self._pending_append = ""
+        self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -661,19 +648,49 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append content to the message (for streaming).
+        """Append streamed content, coalescing writes onto a throttled timer.
 
-        Uses MarkdownStream for smoother rendering instead of re-rendering
-        the full content on each chunk.
+        Tokens are buffered in `_pending_append` and written to the
+        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
+        event loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
         """
         if not text:
             return
-        self._content += text
-        stream = self._ensure_stream()
-        await stream.write(text)
+        self._content_parts.append(text)
+        self._pending_append += text
+        if self._flush_timer is None:
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
+            )
+
+    async def _flush_pending_append(self) -> None:
+        """Write any buffered streamed text to the markdown stream.
+
+        Runs from a Textual timer callback, where an unhandled exception
+        escalates to `App._handle_exception` and tears down the whole REPL.
+        On a transient write failure the buffer is restored (re-prepended
+        ahead of any text that arrived in the meantime) so the next tick
+        retries instead of silently dropping the fragment.
+        """
+        if not self._pending_append:
+            return
+        pending = self._pending_append
+        self._pending_append = ""
+        try:
+            stream = self._ensure_stream()
+            await stream.write(pending)
+        except Exception:  # a render hiccup must not crash the app
+            self._pending_append = pending + self._pending_append
+            logger.exception("Failed to flush streamed markdown fragment")
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -682,6 +699,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
+        self._stop_flush_timer()
+        await self._flush_pending_append()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
@@ -697,6 +716,8 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
         Args:
             content: The markdown content to display
         """
+        self._stop_flush_timer()
+        self._pending_append = ""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
@@ -766,16 +787,32 @@ class ToolCallMessage(Vertical):
         color: $text-muted;
     }
 
+    ToolCallMessage .tool-output-row {
+        layout: horizontal;
+        height: auto;
+        width: 1fr;
+    }
+
+    /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
+       aligned to a single hanging indent instead of falling under the glyph. */
+    ToolCallMessage .tool-output-gutter {
+        width: 2;
+        height: 1;
+        color: $text-muted;
+    }
+
     ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-preview {
         margin-left: 0;
         margin-top: 0;
+        width: 1fr;
     }
 
     ToolCallMessage .tool-output-hint {
@@ -820,8 +857,10 @@ class ToolCallMessage(Vertical):
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
+        self._preview_row: Horizontal | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
+        self._full_row: Horizontal | None = None
         self._reject_reason_widget: Static | None = None
         # Animation state
         self._spinner_position = 0
@@ -876,9 +915,22 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-status", id="status")
         # Optional HITL reject reason (only shown when user rejected with a message)
         yield Static("", classes="tool-reject-reason", id="reject-reason")
-        # Output area - hidden initially, shown when output is set
-        yield Static("", classes="tool-output-preview", id="output-preview")
-        yield Static("", classes="tool-output", id="output-full")
+        # Output area - hidden initially, shown when output is set. The glyph
+        # lives in a fixed-width gutter so wrapped content aligns to a single
+        # hanging indent rather than wrapping back under the glyph.
+        output_prefix = get_glyphs().output_prefix
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output-preview", id="output-preview"),
+            classes="tool-output-row",
+            id="output-preview-row",
+        )
+        yield Horizontal(
+            Static(output_prefix, classes="tool-output-gutter"),
+            Static("", classes="tool-output", id="output-full"),
+            classes="tool-output-row",
+            id="output-full-row",
+        )
         yield Static("", classes="tool-output-hint", id="output-hint")
 
     def on_mount(self) -> None:
@@ -890,16 +942,18 @@ class ToolCallMessage(Vertical):
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
+        self._preview_row = self.query_one("#output-preview-row", Horizontal)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
+        self._full_row = self.query_one("#output-full-row", Horizontal)
         self._reject_reason_widget = self.query_one("#reject-reason", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
         self._args_widget.display = False
         self._args_hint_widget.display = False
-        self._preview_widget.display = False
+        self._preview_row.display = False
         self._hint_widget.display = False
-        self._full_widget.display = False
+        self._full_row.display = False
         self._reject_reason_widget.display = False
         self._update_args_display()
 
@@ -1006,6 +1060,23 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(text, theme.get_theme_colors(self).warning)
         )
+
+    def pause_running(self) -> None:
+        """Pause the running spinner while the tool awaits a user decision.
+
+        Reverts the row to its pending appearance (status hidden) and stops the
+        animation so a tool blocked on HITL approval or `ask_user` input does
+        not misleadingly display "Running...". Resume with `set_running`, which
+        restarts the elapsed timer from the moment execution actually begins.
+        """
+        if self._status != "running":
+            return
+        self._stop_animation()
+        self._status = "pending"
+        self._start_time = None
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.display = False
 
     def _stop_animation(self) -> None:
         """Stop the running animation."""
@@ -1127,7 +1198,10 @@ class ToolCallMessage(Vertical):
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
             return
-        if not self._expanded and not self._has_expandable_output():
+        # No-op in both directions when nothing is hidden: the collapsed and
+        # expanded forms are identical, so toggling only flickers the hint.
+        # This also covers force-expanded errors (see `set_error`).
+        if not self._has_expandable_output():
             return
         self._expanded = not self._expanded
         self._update_output_display()
@@ -1140,14 +1214,12 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion, or show timestamp if nothing expands."""
+        """Toggle output/argument expansion."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
-        else:
-            _show_timestamp_toast(self)
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -1161,7 +1233,13 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with content and optional truncation info.
         """
-        output = output.strip()
+        # Trim surrounding blank lines and trailing whitespace, but preserve the
+        # command's own leading indentation on the first content line. A bare
+        # `strip()` would lstrip the first line only — continuation lines keep
+        # their indent — so output that indents every row (e.g. `git branch -r`,
+        # which prefixes each branch with two spaces) renders with line 0 flush
+        # and the rest indented beside the fixed glyph gutter.
+        output = output.rstrip().lstrip("\n")
         if not output:
             return FormattedOutput(content=Content(""))
 
@@ -1205,32 +1283,20 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
-        lines = output.split("\n")
-        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
-            return True
-
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None
 
+        lines = output.split("\n")
+        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
+            # The outer size threshold is necessary but not sufficient: only
+            # treat output as expandable if the formatter actually hides
+            # content. Some formatters cap by line count alone (task and the
+            # web fallback, via `_format_task_output` / `_format_lines_output`),
+            # so a long single line crosses the char threshold yet renders in
+            # full with nothing hidden.
+            return self._format_output(output, is_preview=True).truncation is not None
+
         return False
-
-    def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
-        """Prefix output with output marker and indent continuation lines.
-
-        Args:
-            content: The styled output content to prefix and indent.
-
-        Returns:
-            `Content` with output prefix on first line and indented
-                continuation.
-        """
-        if not content.plain:
-            return Content("")
-        output_prefix = get_glyphs().output_prefix
-        lines = content.split("\n")
-        prefixed = [Content.assemble(f"{output_prefix} ", lines[0])]
-        prefixed.extend(Content.assemble("  ", line) for line in lines[1:])
-        return Content("\n").join(prefixed)
 
     def _format_todos_output(
         self, output: str, *, is_preview: bool = False
@@ -1351,13 +1417,10 @@ class ToolCallMessage(Vertical):
             except NoActiveAppError:
                 display_width = _DEFAULT_TODO_WRAP_WIDTH
 
-        output_prefix_width = len(get_glyphs().output_prefix) + 1
-        available = (
-            display_width
-            - output_prefix_width
-            - indent_width
-            - _TODO_WRAP_GUARD_COLUMNS
-        )
+        # The content widgets measured above live inside the gutter row, so
+        # their width already excludes the output glyph column; the guard
+        # columns absorb the gutter offset for the self/app fallback width.
+        available = display_width - indent_width - _TODO_WRAP_GUARD_COLUMNS
         return max(20, available)
 
     def _format_todo_line(
@@ -1478,27 +1541,166 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return FormattedOutput(content=Content(output))
 
-    def _format_file_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    @staticmethod
+    def _compact_line_gutter(output: str) -> str:
+        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+
+        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — so even single-digit line numbers carry five
+        leading spaces and the tab pushes content to a distant tab stop. The
+        model needs that raw format for edits, but the TUI renders a compact
+        gutter instead: numbers right-justified to the widest number actually
+        present, then two spaces, mirroring how grep/glob results sit flush
+        left. Source indentation after the gutter is preserved untouched.
+
+        Lines that don't match the cat -n shape (e.g. test fixtures or
+        non-numbered output) are passed through unchanged.
+
+        Returns:
+            The output with compacted gutters, or the original string if no
+                line-numbered content was found.
+        """
+        lines = output.split("\n")
+        # Split each line on its gutter tab into (number, source). The gutter
+        # tab is always the first one; any tabs in `text` are real source
+        # indentation and stay put. The head must be a bare `N` or `N.M` (the
+        # latter is a wrapped-line continuation marker) — both sides of the dot
+        # are required, so a stray `.5` head marks a non-gutter line.
+        parsed: list[tuple[str, str] | None] = []
+        width = 0
+        for line in lines:
+            head, tab, text = line.partition("\t")
+            num = head.strip()
+            whole, dot, frac = num.partition(".")
+            if tab and whole.isdigit() and (not dot or frac.isdigit()):
+                parsed.append((num, text))
+                width = max(width, len(num))
+            else:
+                parsed.append(None)
+
+        if width == 0:
+            return output
+
+        return "\n".join(
+            f"{row[0]:>{width}}  {row[1]}" if row else line
+            for line, row in zip(lines, parsed, strict=True)
+        )
+
+    def _format_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format file read/write output.
 
+        Preview mode caps both line count and total characters so that files
+        with very long lines (minified HTML/JS/CSS) don't wrap and overflow
+        the widget.
+
         Returns:
             FormattedOutput with file content and optional truncation info.
         """
+        output = self._compact_line_gutter(output)
         lines = output.split("\n")
+        # Files conventionally end in "\n"; the trailing empty element isn't a
+        # real line and would inflate truncation counts.
+        had_trailing_newline = bool(lines) and not lines[-1]
+        if had_trailing_newline:
+            lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
 
-        parts = [Content(line) for line in lines[:max_lines]]
-        content = Content("\n").join(parts)
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        parts = [Content(line) for line in shown]
+        content = Content("\n").join(parts) if parts else Content("")
 
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
+        truncation = self._build_truncation_hint(
+            output=output,
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=had_trailing_newline,
+            is_preview=is_preview,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    @staticmethod
+    def _truncate_to_budget(
+        lines: list[str], *, max_lines: int, char_budget: int | None
+    ) -> tuple[list[str], int, bool]:
+        """Apply line- and character-count caps to a list of display lines.
+
+        Shared by the file, shell, and search formatters so preview truncation
+        stays identical across tool outputs. When `char_budget` is `None` (the
+        expanded, non-preview view) only the line cap applies.
+
+        Args:
+            lines: Candidate display lines, already cleaned by the caller.
+            max_lines: Maximum number of lines to emit.
+            char_budget: Maximum characters to emit across all lines, counting
+                the newline separators between them, or `None` for no cap.
+
+        Returns:
+            The lines to show, the characters consumed (including separators),
+            and whether the character budget forced truncation.
+        """
+        shown: list[str] = []
+        chars_used = 0
+        char_truncated = False
+        for line in lines[:max_lines]:
+            display_line = line
+            if char_budget is not None:
+                separator_cost = 1 if shown else 0
+                remaining = char_budget - chars_used - separator_cost
+                if remaining <= 0:
+                    char_truncated = True
+                    break
+                if len(line) > remaining:
+                    display_line = line[:remaining]
+                    char_truncated = True
+                chars_used += separator_cost + len(display_line)
+            shown.append(display_line)
+            if char_truncated:
+                break
+        return shown, chars_used, char_truncated
+
+    @staticmethod
+    def _build_truncation_hint(
+        *,
+        output: str,
+        lines: list[str],
+        parts_count: int,
+        chars_used: int,
+        char_truncated: bool,
+        had_trailing_newline: bool,
+        is_preview: bool,
+        line_unit: Literal["files", "lines"] = "lines",
+    ) -> str | None:
+        """Compose the truncation hint, preferring line counts over char counts.
+
+        When both the line cap and the char cap were hit, hidden-line count is
+        the more useful signal for the user — char counts dominate the hint
+        for big files where what they really want to know is "how many more
+        lines am I missing?". `line_unit` names the hidden-row noun ("lines"
+        for text output, "files" for glob path lists).
+
+        Returns:
+            Hint string for the UI, or `None` if nothing was truncated.
+        """
+        if not is_preview:
+            return None
+        hidden_lines = len(lines) - parts_count
+        if hidden_lines > 0:
+            return f"{hidden_lines} more {line_unit}"
+        if char_truncated:
+            effective_output_len = len(output) - (1 if had_trailing_newline else 0)
+            hidden_chars = effective_output_len - chars_used
+            return f"{hidden_chars} more chars"
+        return None
+
+    def _format_search_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format grep/glob search output.
@@ -1506,49 +1708,77 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with search results and optional truncation info.
         """
-        # Try to parse as a Python list (glob returns list of paths)
+        # Try to parse as a Python list (glob returns list of paths). The
+        # except is scoped to detection only — formatting runs outside it so a
+        # bug in `_format_search_lines` can't silently reroute to the fallback.
         try:
             items = ast.literal_eval(output.strip())
-            if isinstance(items, list):
-                parts: list[Content] = []
-                max_items = 5 if is_preview else len(items)
-                for item in items[:max_items]:
-                    path = Path(str(item))
-                    try:
-                        rel = path.relative_to(Path.cwd())
-                        display = str(rel)
-                    except ValueError:
-                        display = path.name
-                    parts.append(Content(f"    {display}"))
-
-                truncation = None
-                if is_preview and len(items) > max_items:
-                    truncation = f"{len(items) - max_items} more files"
-
-                return FormattedOutput(
-                    content=Content("\n").join(parts), truncation=truncation
-                )
         except (ValueError, SyntaxError):
-            pass
+            items = None
+
+        if isinstance(items, list):
+            paths: list[str] = []
+            for item in items:
+                path = Path(str(item))
+                try:
+                    display = str(path.relative_to(Path.cwd()))
+                except ValueError:
+                    display = path.name
+                paths.append(display)
+            return self._format_search_lines(
+                paths, is_preview=is_preview, line_unit="files"
+            )
 
         # Fallback: line-based output (grep results)
-        lines = output.split("\n")
-        max_lines = 5 if is_preview else len(lines)
-
-        parts = [
-            Content(f"    {raw_line.strip()}")
-            for raw_line in lines[:max_lines]
-            if raw_line.strip()
+        lines = [
+            raw_line.strip() for raw_line in output.split("\n") if raw_line.strip()
         ]
+        return self._format_search_lines(
+            lines, is_preview=is_preview, line_unit="lines"
+        )
 
+    def _format_search_lines(
+        self,
+        lines: list[str],
+        *,
+        is_preview: bool,
+        line_unit: Literal["files", "lines"],
+    ) -> FormattedOutput:
+        """Format search result rows with line and character preview caps.
+
+        `line_unit` names the hidden-row noun for the hint — "files" for glob
+        path lists, "lines" for grep matches.
+
+        Returns:
+            FormattedOutput with search rows and optional truncation info.
+        """
+        # Search rows are denser than file/shell output, so the preview shows
+        # one extra row (5) before truncating.
+        max_lines = 5 if is_preview else len(lines)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
+
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        parts = [Content(line) for line in shown]
         content = Content("\n").join(parts) if parts else Content("")
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more"
+
+        # The cleaned `lines` carry no trailing-newline element, so the joined
+        # length is the full preview-able content length.
+        truncation = self._build_truncation_hint(
+            output="\n".join(lines),
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=False,
+            is_preview=is_preview,
+            line_unit=line_unit,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_shell_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_shell_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format shell command output.
@@ -1557,20 +1787,33 @@ class ToolCallMessage(Vertical):
             FormattedOutput with shell output and optional truncation info.
         """
         lines = output.split("\n")
+        had_trailing_newline = bool(lines) and not lines[-1]
+        if had_trailing_newline:
+            lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
 
-        parts: list[Content] = []
-        for i, line in enumerate(lines[:max_lines]):
-            if i == 0 and line.startswith("$ "):
-                parts.append(Content.styled(line, "dim"))
-            else:
-                parts.append(Content(line))
-
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        # Dim the leading `$ command` echo; only the first row can carry it.
+        parts = [
+            Content.styled(line, "dim")
+            if index == 0 and line.startswith("$ ")
+            else Content(line)
+            for index, line in enumerate(shown)
+        ]
         content = Content("\n").join(parts) if parts else Content("")
 
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more lines"
+        truncation = self._build_truncation_hint(
+            output=output,
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=had_trailing_newline,
+            is_preview=is_preview,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
 
@@ -1704,7 +1947,9 @@ class ToolCallMessage(Vertical):
         if (
             not self._output
             or not self._preview_widget
+            or not self._preview_row
             or not self._full_widget
+            or not self._full_row
             or not self._hint_widget
         ):
             return
@@ -1721,58 +1966,55 @@ class ToolCallMessage(Vertical):
 
         if self._expanded:
             # Show full output with formatting
-            self._preview_widget.display = False
+            self._preview_row.display = False
             result = self._format_output(self._output, is_preview=False)
-            prefixed = self._prefix_output(result.content)
-            self._full_widget.update(prefixed)
-            self._full_widget.display = True
-            # Show collapse hint underneath
-            self._hint_widget.update(
-                Content.styled("click or Ctrl+O to collapse", "dim italic")
-            )
-            self._hint_widget.display = True
-        else:
-            # Show preview
-            self._full_widget.display = False
-            if needs_truncation:
-                result = self._format_output(self._output, is_preview=True)
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-
-                # Build hint with truncation info if available
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
-                        "dim",
-                    )
-                else:
-                    hint = Content.styled("click or Ctrl+O to expand", "dim italic")
-                self._hint_widget.update(hint)
-                self._hint_widget.display = True
-            elif output_stripped:
-                # Output fits in preview, show formatted
-                is_tool_preview = self._tool_name == "write_todos"
-                result = self._format_output(
-                    output_stripped,
-                    is_preview=is_tool_preview,
+            self._full_widget.update(result.content)
+            self._full_row.display = True
+            # Only offer a collapse affordance when collapsing would actually
+            # hide something. Errors are force-expanded (see `set_error`), so a
+            # short single-line error has no smaller collapsed form — showing
+            # "click to collapse" there is misleading.
+            if self._has_expandable_output():
+                self._hint_widget.update(
+                    Content.styled("click or Ctrl+O to collapse", "dim italic")
                 )
-                prefixed = self._prefix_output(result.content)
-                self._preview_widget.update(prefixed)
-                self._preview_widget.display = True
-                if result.truncation:
-                    ellipsis = get_glyphs().ellipsis
-                    hint = Content.styled(
+                self._hint_widget.display = True
+            else:
+                self._hint_widget.display = False
+        else:
+            # Show collapsed preview
+            self._full_row.display = False
+            if not output_stripped:
+                self._preview_row.display = False
+                self._hint_widget.display = False
+                return
+
+            # Truncate the preview only when the output is large enough to
+            # warrant it; `write_todos` always uses its compact per-item preview
+            # regardless of size.
+            is_preview = needs_truncation or self._tool_name == "write_todos"
+            # Pass the raw output, not `output_stripped`: `_format_output`
+            # normalizes whitespace while preserving the first line's leading
+            # indentation. Pre-stripping here flattens that indent on line 0 only,
+            # misaligning uniformly indented output (e.g. `git branch -r`). The
+            # expanded branch above already passes raw `self._output`.
+            result = self._format_output(self._output, is_preview=is_preview)
+            self._preview_widget.update(result.content)
+            self._preview_row.display = True
+
+            # Offer expansion only when the formatter actually hid content.
+            # The raw size threshold can trip without anything being hidden, and
+            # promising an expansion that reveals nothing is misleading.
+            if result.truncation:
+                ellipsis = get_glyphs().ellipsis
+                self._hint_widget.update(
+                    Content.styled(
                         f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
                         "dim",
                     )
-                    self._hint_widget.update(hint)
-                    self._hint_widget.display = True
-                else:
-                    self._hint_widget.display = False
+                )
+                self._hint_widget.display = True
             else:
-                self._preview_widget.display = False
                 self._hint_widget.display = False
 
     @property
@@ -1861,7 +2103,7 @@ class ToolCallMessage(Vertical):
         return filtered
 
 
-class DiffMessage(_TimestampClickMixin, Static):
+class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting."""
 
     DEFAULT_CSS = """
@@ -1871,6 +2113,7 @@ class DiffMessage(_TimestampClickMixin, Static):
         margin: 0 0 1 0;
         background: $surface;
         border: solid $primary;
+        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -1933,7 +2176,7 @@ class DiffMessage(_TimestampClickMixin, Static):
             self.styles.border = ("ascii", colors.primary)
 
 
-class ErrorMessage(_TimestampClickMixin, Static):
+class ErrorMessage(Static):
     """Widget displaying an error message."""
 
     DEFAULT_CSS = """
@@ -1944,6 +2187,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
+        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -1977,12 +2221,10 @@ class ErrorMessage(_TimestampClickMixin, Static):
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
 
-    def on_click(self, event: Click) -> None:
-        """Open clicked URLs; otherwise show the timestamp toast."""
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
-            return
-        _show_timestamp_toast(self)
 
 
 class _MutedRichMarkdown:
@@ -2054,6 +2296,7 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
+        pointer: text;
     }
     """
 
@@ -2092,10 +2335,9 @@ class AppMessage(Static):
             rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
 
-    def on_click(self, event: Click) -> None:
-        """Open style-embedded hyperlinks on single click and show timestamp."""
+    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
+        """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
-        _show_timestamp_toast(self)
 
 
 class SummarizationMessage(AppMessage):
@@ -2110,6 +2352,7 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
+        pointer: text;
     }
     """
 

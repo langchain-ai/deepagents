@@ -3,20 +3,37 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import threading
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents.backends.state import StateBackend
+from deepagents.middleware.subagents import (
+    SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
+    SubAgentMiddleware,
+    _build_task_tool,
+)
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
-from langchain_core.messages import SystemMessage
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from langchain.agents.structured_output import AutoStrategy
+from langchain.tools import ToolRuntime
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
+from langchain_quickjs._subagent import _runtime_with_response_format
+
+if TYPE_CHECKING:
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -164,11 +181,142 @@ def test_system_prompt_injected_once() -> None:
     assert "7.0s per call" in sys_text
     assert "32 MB total" in sys_text
     assert "across multiple turns for this conversation thread" in sys_text
+    assert "### Dispatching Subagents with `task`" not in sys_text
+
+
+def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> None:
+    mw = CodeInterpreterMiddleware()
+    seen: list[ModelRequest] = []
+
+    def handler(req: ModelRequest):
+        seen.append(req)
+        from langchain.agents.middleware.types import ModelResponse
+        from langchain_core.messages import AIMessage
+
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    req = MagicMock(spec=ModelRequest)
+    req.system_message = SystemMessage(content="base")
+    req.tools = [
+        _task_tool_for_runnable(
+            RunnableLambda(
+                lambda _state, _config: {"messages": [AIMessage(content="ok")]}
+            )
+        )
+    ]
+
+    def _override(**kwargs):
+        new = MagicMock(spec=ModelRequest)
+        new.system_message = kwargs.get("system_message", req.system_message)
+        return new
+
+    req.override = _override
+
+    mw.wrap_model_call(req, handler)
+
+    assert len(seen) == 1
+    sys_text = "\n".join(
+        block["text"]
+        for block in seen[0].system_message.content_blocks
+        if block["type"] == "text"
+    )
+    assert "### Dispatching Subagents with `task`" in sys_text
+    assert "await task({" in sys_text
+
+
+def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
+    mw = CodeInterpreterMiddleware(subagents=False)
+    seen: list[ModelRequest] = []
+
+    def handler(req: ModelRequest):
+        seen.append(req)
+        from langchain.agents.middleware.types import ModelResponse
+        from langchain_core.messages import AIMessage
+
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    req = MagicMock(spec=ModelRequest)
+    req.system_message = SystemMessage(content="base")
+    req.tools = [
+        _task_tool_for_runnable(
+            RunnableLambda(
+                lambda _state, _config: {"messages": [AIMessage(content="ok")]}
+            )
+        )
+    ]
+
+    def _override(**kwargs):
+        new = MagicMock(spec=ModelRequest)
+        new.system_message = kwargs.get("system_message", req.system_message)
+        return new
+
+    req.override = _override
+
+    mw.wrap_model_call(req, handler)
+
+    assert len(seen) == 1
+    sys_text = "\n".join(
+        block["text"]
+        for block in seen[0].system_message.content_blocks
+        if block["type"] == "text"
+    )
+    assert "### Dispatching Subagents with `task`" not in sys_text
+    assert "await task({" not in sys_text
 
 
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
-    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert "DO NOT persist across multiple turns" in mw._base_system_prompt
+
+
+def test_system_prompt_mentions_mode_call() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert "fresh sandboxed REPL for each invocation" in mw._base_system_prompt
+    assert "does not persist across tool calls" in mw._base_system_prompt
+
+
+def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert mw._snapshot_between_turns is False
+
+
+def test_mode_turn_defaults_snapshot_between_turns_to_false() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
+    assert mw._snapshot_between_turns is False
+
+
+def test_snapshot_between_turns_false_resolves_to_mode_turn() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    assert mw._mode == "turn"
+
+
+def test_snapshot_between_turns_emits_deprecation_warning() -> None:
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        CodeInterpreterMiddleware(snapshot_between_turns=True)
+
+
+def test_mode_call_with_snapshot_between_turns_true_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="call",
+            snapshot_between_turns=True,
+        )
+
+
+def test_mode_thread_with_snapshot_between_turns_false_raises() -> None:
+    with (
+        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
+        pytest.raises(ValueError, match="incompatible"),
+    ):
+        CodeInterpreterMiddleware(
+            mode="thread",
+            snapshot_between_turns=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +351,27 @@ def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     outcome = b.eval_sync("typeof shared")
     # QuickJS returns "undefined" for missing globals — an isolated context
     # must not see A's binding.
+    assert outcome.result == "undefined"
+
+
+def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    try:
+        repl = reg.get("thread-a")
+        old_runtime = reg._slots["thread-a"].runtime
+        repl.eval_sync("globalThis.answer = 42")
+        reg.reset_repl("thread-a")
+        replaced = reg.get("thread-a")
+        outcome = replaced.eval_sync("typeof answer")
+        assert replaced is not repl
+        assert reg._slots["thread-a"].runtime is old_runtime
+    finally:
+        reg.close()
     assert outcome.result == "undefined"
 
 
@@ -349,6 +518,58 @@ def test_function_return_falls_back_to_handle_description(repl: _ThreadREPL) -> 
     assert "arity=2" in (outcome.result or "")
     formatted = format_outcome(outcome, max_result_chars=1000)
     assert '<result kind="handle">' in formatted
+
+
+# ---------------------------------------------------------------------------
+# Final-expression Promise unwrapping (issue #3424)
+# ---------------------------------------------------------------------------
+
+
+def test_async_iife_returning_promise_is_unwrapped(repl: _ThreadREPL) -> None:
+    """Issue #3424: a final expression that is a Promise (e.g. a bare async
+    IIFE) must surface its resolved value instead of the Promise object.
+    """
+    outcome = repl.eval_sync(
+        "(async () => { const v = await Promise.resolve(456); return v; })();"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result_kind is None
+    assert outcome.result == "456"
+
+
+def test_top_level_promise_expression_is_unwrapped(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("Promise.resolve(7)")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "7"
+
+
+def test_top_level_await_marshals_resolved_value(repl: _ThreadREPL) -> None:
+    """A `const x = await ...; x;` script must still marshal the resolved
+    value, not the Promise — the existing top-level-await path is unaffected
+    by the new handle-based eval flow.
+    """
+    outcome = repl.eval_sync("const v1 = await Promise.resolve(123); v1;")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "123"
+
+
+def test_rejected_promise_surfaces_as_jserror(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("(async () => { throw new Error('iife-rejection'); })();")
+    assert outcome.result is None
+    assert outcome.error_type == "Error"
+    assert "iife-rejection" in (outcome.error_message or "")
+
+
+def test_unwrapping_does_not_double_user_side_effects(repl: _ThreadREPL) -> None:
+    """The user program (and its console.log side effects) must run exactly
+    once even when the final expression is a Promise that needs unwrapping.
+    """
+    outcome = repl.eval_sync("(async () => { console.log('hit'); return 1; })();")
+    assert outcome.error_type is None
+    assert outcome.result == "1"
+    assert outcome.stdout.count("hit") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +885,8 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
 
 
 def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
+        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("globalThis.answer = 42")
@@ -678,6 +900,55 @@ def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
         )
         assert before_update is None
         assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+def test_mode_call_ignores_snapshot_payload() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        before_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b"ignored"},
+            runtime=MagicMock(),
+        )
+        assert before_update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+async def test_mode_call_resets_state_between_tool_calls() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    try:
+        tool = mw.tools[0]
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tools=[tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        assert tool.coroutine is not None
+        first_repl = mw._registry.get(mw._fallback_thread_id)
+        first_runtime = mw._registry._slots[mw._fallback_thread_id].runtime
+        first = await tool.coroutine(
+            runtime=runtime,
+            code="globalThis.answer = 42; answer",
+        )
+        assert "<result>42</result>" in first.content
+        after_first = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_first is not None
+        assert after_first is not first_repl
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
+
+        second = await tool.coroutine(runtime=runtime, code="typeof answer")
+        assert "<result>undefined</result>" in second.content
+        after_second = mw._registry.get_if_exists(mw._fallback_thread_id)
+        assert after_second is not None
+        assert after_second is not after_first
+        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
     finally:
         mw._registry.close()
 
@@ -706,6 +977,408 @@ async def test_async_top_level_await(repl: _ThreadREPL) -> None:
     outcome = await repl.eval_async("await new Promise(resolve => resolve(42))")
     assert outcome.error_type is None
     assert outcome.result == "42"
+
+
+def _task_tool_for_runnable(
+    runnable: Any,
+) -> BaseTool:
+    spec: dict[str, Any] = {
+        "name": "worker",
+        "description": "Does work.",
+        "runnable": runnable,
+    }
+    return _build_task_tool([spec])
+
+
+def _subagent_runtime_from_task_tool(task_tool: BaseTool) -> ToolRuntime:
+    return ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {}},
+        stream_writer=lambda _chunk: None,
+        tools=[task_tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+
+
+def _subagent_runtime(
+    runnable: Any,
+) -> ToolRuntime:
+    return _subagent_runtime_from_task_tool(_task_tool_for_runnable(runnable))
+
+
+def test_runtime_with_response_format_uses_configurable() -> None:
+    runtime = _subagent_runtime(
+        RunnableLambda(lambda _state, _config: {"messages": [AIMessage(content="ok")]})
+    )
+    schema = {
+        "type": "object",
+        "properties": {"label": {"type": "string"}},
+        "required": ["label"],
+    }
+
+    updated = _runtime_with_response_format(runtime, schema)
+
+    assert updated.context is runtime.context
+    assert SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY not in runtime.config["configurable"]
+    strategy = updated.config["configurable"][SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY]
+    assert isinstance(strategy, AutoStrategy)
+    assert strategy.schema == schema
+
+
+class _StructuredSubagentModel(GenericFakeChatModel):
+    """Fake subagent model that calls the currently bound response-format tool."""
+
+    messages: Any = Field(exclude=True)
+    tools: Any = ()
+
+    def bind_tools(
+        self,
+        tools: Any,
+        **_: Any,
+    ) -> _StructuredSubagentModel:
+        self.tools = tools
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        tool_name = getattr(self.tools[-1], "name", None)
+        if not isinstance(tool_name, str):
+            msg = "Expected a response-format tool to be bound"
+            raise TypeError(msg)
+        self.messages = iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": tool_name,
+                            "args": {"label": "positive", "score": 0.95},
+                            "id": "call_structured",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        )
+        return super()._generate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+
+
+def _declarative_subagent_runtime() -> ToolRuntime:
+    middleware = SubAgentMiddleware(
+        backend=StateBackend(),
+        subagents=[
+            {
+                "name": "worker",
+                "description": "Does work.",
+                "system_prompt": "Return structured data.",
+                "model": _StructuredSubagentModel(messages=iter(())),
+                "tools": [],
+            }
+        ],
+        system_prompt=None,
+    )
+    return _subagent_runtime_from_task_tool(middleware.tools[0])
+
+
+async def test_eval_tool_does_not_install_subagent_when_disabled() -> None:
+    mw = CodeInterpreterMiddleware(subagents=False)
+    try:
+        tool = mw.tools[0]
+        assert tool.coroutine is not None
+        runtime = _subagent_runtime(
+            RunnableLambda(
+                lambda _state, _config: {"messages": [AIMessage(content="ok")]}
+            )
+        )
+
+        result = await tool.coroutine(runtime=runtime, code="typeof task")
+
+        assert "<result>undefined</result>" in result.content
+    finally:
+        mw._registry.close()
+
+
+async def test_async_task_global_invokes_runner(repl: _ThreadREPL) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _sync(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"messages": [AIMessage(content="sync")]}
+
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        calls.append({"state": state, "config": config})
+        return {"messages": [AIMessage(content="ok")]}
+
+    runnable = RunnableLambda(_sync, afunc=_async)
+
+    outcome = await repl.eval_async(
+        "globalThis.task = null;"
+        "delete globalThis.task;"
+        "task.extra = 1;"
+        "if (!Object.isFrozen(task) || task.extra !== undefined) {"
+        "  throw new Error('task binding is mutable');"
+        "}"
+        "JSON.stringify(await task({"
+        "description: 'work', "
+        "subagent_type: 'worker'"
+        "}))",
+        outer_runtime=_subagent_runtime(runnable),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == '"ok"'
+    assert calls
+    assert calls[0]["state"]["messages"][0].content == "work"
+    assert calls[0]["config"]["configurable"]["ls_agent_type"] == "subagent"
+
+
+async def test_async_task_global_not_installed_when_disabled(
+    worker: ThreadWorker,
+    runtime: Runtime,
+) -> None:
+    disabled = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        subagents_enabled=False,
+    )
+
+    outcome = await disabled.eval_async("typeof task")
+
+    assert outcome.error_type is None
+    assert outcome.result == "undefined"
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            "await task({subagent_type: 'worker'})",
+            "task() requires non-empty string field `description`",
+        ),
+        (
+            "await task({description: 'work'})",
+            "task() requires non-empty string field `subagent_type`",
+        ),
+        (
+            "await task({"
+            "description: 'work', "
+            "subagent_type: 'worker', "
+            "response_schema: 'bad'"
+            "})",
+            "task() field `response_schema` must be an object when provided",
+        ),
+    ],
+)
+async def test_async_task_global_validation_errors_surface_as_eval_errors(
+    repl: _ThreadREPL, code: str, message: str
+) -> None:
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+    )
+
+    outcome = await repl.eval_async(code, outer_runtime=_subagent_runtime(runnable))
+
+    assert outcome.error_type == "ValueError"
+    assert message in outcome.error_message
+    formatted = format_outcome(outcome, max_result_chars=1000)
+    assert '<error type="ValueError">' in formatted
+    assert message in formatted
+
+
+async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
+    repl: _ThreadREPL,
+) -> None:
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {}},
+        stream_writer=lambda _chunk: None,
+        tools=[],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+
+    outcome = await repl.eval_async(
+        "await task({description: 'work', subagent_type: 'worker'})",
+        outer_runtime=runtime,
+    )
+
+    assert outcome.error_type == "RuntimeError"
+    assert "task tool not configured for this eval" in outcome.error_message
+
+
+async def test_async_task_global_returns_declarative_structured_response_object(
+    repl: _ThreadREPL,
+) -> None:
+    outcome = await repl.eval_async(
+        "const schema = {"
+        "type: 'object', "
+        "properties: {label: {type: 'string'}, score: {type: 'number'}}, "
+        "required: ['label', 'score']"
+        "};"
+        "const first = await task({"
+        "description: 'work', "
+        "subagent_type: 'worker', "
+        "response_schema: schema"
+        "});"
+        "const second = await task({"
+        "description: 'work again', "
+        "subagent_type: 'worker', "
+        "response_schema: schema"
+        "});"
+        "JSON.stringify({"
+        "label: first.label, "
+        "score: first.score, "
+        "type: typeof first, "
+        "secondLabel: second.label"
+        "})",
+        outer_runtime=_declarative_subagent_runtime(),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == (
+        '{"label":"positive","score":0.95,"type":"object","secondLabel":"positive"}'
+    )
+
+
+async def test_async_task_global_rejects_compiled_response_schema(
+    repl: _ThreadREPL,
+) -> None:
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+    )
+
+    outcome = await repl.eval_async(
+        "await task({"
+        "description: 'work', "
+        "subagent_type: 'worker', "
+        "response_schema: {"
+        "type: 'object', "
+        "properties: {ok: {type: 'boolean'}}, "
+        "required: ['ok']"
+        "}"
+        "})",
+        outer_runtime=_subagent_runtime(runnable),
+    )
+
+    assert outcome.error_type == "ValueError"
+    assert (
+        'response_schema cannot be used with compiled subagent "worker"'
+        in outcome.error_message
+    )
+
+
+async def test_async_task_global_uses_last_non_empty_ai_message(
+    repl: _ThreadREPL,
+) -> None:
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"messages": [AIMessage(content="final"), AIMessage(content="")]}
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_async,
+    )
+
+    outcome = await repl.eval_async(
+        "JSON.stringify(await task({description: 'work', subagent_type: 'worker'}))",
+        outer_runtime=_subagent_runtime(runnable),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == '"final"'
+
+
+async def test_async_task_global_rejects_state_without_messages(
+    repl: _ThreadREPL,
+) -> None:
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        return {"structured_response": {"ok": True}}
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_async,
+    )
+
+    outcome = await repl.eval_async(
+        "await task({description: 'work', subagent_type: 'worker'})",
+        outer_runtime=_subagent_runtime(runnable),
+    )
+
+    assert outcome.error_type == "ValueError"
+    assert "messages" in outcome.error_message
+
+
+async def test_async_task_global_limits_concurrency_per_repl(
+    repl: _ThreadREPL,
+) -> None:
+    class _CountingRunner:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        async def ainvoke(
+            self,
+            *,
+            description: str,
+            subagent_type: str,
+            response_schema: dict[str, Any] | None = None,
+            runtime: ToolRuntime | None = None,
+        ) -> str:
+            del subagent_type, response_schema, runtime
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            with self.lock:
+                self.active -= 1
+            return description
+
+    runner = _CountingRunner()
+
+    async def _counting_async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del config
+        content = await runner.ainvoke(
+            description=state["messages"][0].content,
+            subagent_type="worker",
+        )
+        return {"messages": [AIMessage(content=content)]}
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_counting_async,
+    )
+
+    outcome = await repl.eval_async(
+        "const calls = [];"
+        "for (let i = 0; i < 64; i++) {"
+        "  calls.push(task({description: String(i), subagent_type: 'worker'}));"
+        "}"
+        "(await Promise.all(calls)).length",
+        outer_runtime=_subagent_runtime(runnable),
+    )
+
+    assert outcome.error_type is None
+    assert outcome.result == "64"
+    assert runner.max_active <= 32
+    assert runner.max_active > 1
 
 
 async def test_async_promise_chain(repl: _ThreadREPL) -> None:

@@ -2,6 +2,8 @@
 
 import asyncio
 import inspect
+import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,12 +15,304 @@ import pytest
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
+    _auto_install_ripgrep_cli,
+    _is_managed_ripgrep_path,
+    _restart_current_process,
     _ripgrep_install_hint,
+    _run_startup_auto_update,
     build_missing_tool_notification,
     check_optional_tools,
+    cli_main,
     format_tool_warning_cli,
     run_textual_cli_async,
 )
+
+
+class TestStartupAutoUpdate:
+    """Tests for startup auto-update behavior."""
+
+    def test_successful_update_restarts_before_launch(self) -> None:
+        """A successful startup auto-update should exec a fresh process."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ) as restart,
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_called_once_with()
+
+    def test_disabled_update_does_not_check_pypi(self) -> None:
+        """Disabled auto-update should not perform network or install work."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+
+    def test_restart_uses_module_entrypoint(self) -> None:
+        """Restart should reload package code from the updated environment."""
+        with (
+            patch.object(sys, "executable", "/tool/bin/python"),
+            patch.object(sys, "argv", ["dcode", "--model", "openai:gpt-5.5"]),
+            patch("os.execv", side_effect=SystemExit(0)) as execv,
+            pytest.raises(SystemExit),
+        ):
+            _restart_current_process()
+
+        execv.assert_called_once_with(
+            "/tool/bin/python",
+            ["/tool/bin/python", "-m", "deepagents_code", "--model", "openai:gpt-5.5"],
+        )
+
+    def test_failed_update_does_not_restart_and_continues(self) -> None:
+        """A failed upgrade must not restart; it surfaces the error and returns."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            # Must not raise: a failed upgrade falls through to launch.
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Auto-update failed" in printed
+
+    def test_editable_install_skips_update(self) -> None:
+        """Editable installs must short-circuit before any PyPI/install work."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+
+    def test_no_update_available_returns_early(self) -> None:
+        """When already current, nothing is announced, installed, or restarted."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, None),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        console.print.assert_not_called()
+
+    def test_debug_update_skips_install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """DEBUG_UPDATE announces the update but skips the actual install."""
+        console = MagicMock()
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "debug mode" in printed
+
+    def test_unexpected_error_does_not_block_startup(self) -> None:
+        """An error in the update machinery must never block launch."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            # Must swallow the error rather than propagate it.
+            _run_startup_auto_update(console)
+
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Auto-update failed before startup" in printed
+
+    def test_restart_loop_guard_skips_repeat_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A re-exec that did not change the version must not re-upgrade."""
+        console = MagicMock()
+        # Simulate the sentinel set by the prior generation before its restart.
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        # Sentinel is consumed so a genuine future update is not suppressed.
+        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "restart loop" in printed
+
+    def test_restart_failure_after_successful_install_continues(self) -> None:
+        """A successful install with a failed re-exec reports an accurate message."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=OSError("exec failed"),
+            ) as restart,
+        ):
+            # Install succeeded; a failed re-exec must not raise or claim the
+            # update failed.
+            _run_startup_auto_update(console)
+
+        restart.assert_called_once_with()
+        # Sentinel is dropped since the restart did not happen.
+        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "automatic restart failed" in printed
+        assert "Auto-update failed" not in printed
+
+    def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
+        """`cli_main` must invoke the startup auto-update on interactive launch.
+
+        Without this guard the feature could be dropped from `cli_main` and
+        every other unit test would still pass, silently regressing it to a
+        no-op.
+        """
+        source = inspect.getsource(cli_main)
+        assert "_run_startup_auto_update(console)" in source
 
 
 class TestResumeHintLogic:
@@ -124,7 +418,7 @@ class TestAppResult:
 
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
-            result.return_code = 1  # type: ignore[misc]
+            result.return_code = 1  # ty: ignore
 
 
 class TestRunTextualAppReturnType:
@@ -266,7 +560,7 @@ class TestServerCleanupLifecycle:
             "run_async",
             new_callable=AsyncMock,
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 
@@ -283,7 +577,7 @@ class TestServerCleanupLifecycle:
             ),
             pytest.raises(RuntimeError, match="boom"),
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 
@@ -333,6 +627,21 @@ class TestCheckOptionalTools:
             missing = check_optional_tools()
 
         assert missing == []
+
+    def test_managed_rg_still_requires_validation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Treat the managed binary as missing so `ensure_ripgrep` validates it."""
+        managed = tmp_path / "bin" / "rg"
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path",
+            lambda: managed,
+        )
+
+        with patch("deepagents_code.main.shutil.which", return_value=str(managed)):
+            missing = check_optional_tools()
+
+        assert missing == ["ripgrep"]
 
     def test_warning_suppressed_via_config(self, tmp_path: Path) -> None:
         """Returns empty list when ripgrep warning is suppressed in config."""
@@ -409,6 +718,106 @@ class TestCheckOptionalTools:
             missing = check_optional_tools(config_path=config_path)
 
         assert missing == []
+
+
+class TestIsManagedRipgrepPath:
+    """Tests for `_is_managed_ripgrep_path`."""
+
+    def test_none_is_not_managed(self) -> None:
+        """A missing `rg` (path `None`) is not the managed binary."""
+        assert _is_managed_ripgrep_path(None) is False
+
+    def test_managed_path_matches(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The resolved managed path is recognized as managed."""
+        managed = tmp_path / "bin" / "rg"
+        managed.parent.mkdir(parents=True)
+        managed.write_bytes(b"x")
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
+        )
+
+        assert _is_managed_ripgrep_path(str(managed)) is True
+
+    def test_system_path_is_not_managed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A system `rg` elsewhere on `PATH` is not the managed binary."""
+        managed = tmp_path / "bin" / "rg"
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
+        )
+
+        assert _is_managed_ripgrep_path(str(tmp_path / "usr" / "bin" / "rg")) is False
+
+
+class TestAutoInstallRipgrepCli:
+    """Tests for the headless `_auto_install_ripgrep_cli` helper."""
+
+    def test_success_drops_ripgrep_and_prepends(self) -> None:
+        """A successful install prepends `PATH` and drops `ripgrep`."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=Path("/managed/rg")),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep", "tavily"])
+
+        assert result == ["tavily"]
+        prepend.assert_called_once()
+
+    def test_install_returns_none_keeps_ripgrep(self) -> None:
+        """A skipped/failed install leaves `ripgrep` in the missing list."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        prepend.assert_not_called()
+
+    def test_checksum_mismatch_keeps_ripgrep_and_reports(self) -> None:
+        """A checksum mismatch is reported loudly and is not swallowed silently."""
+        from deepagents_code.managed_tools import ChecksumMismatchError
+
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=ChecksumMismatchError("bad")),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "SHA-256" in printed
+
+    def test_unexpected_failure_keeps_ripgrep(self) -> None:
+        """An unexpected error degrades gracefully to the missing-tool path."""
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
 
 
 class TestRipgrepInstallHint:
@@ -1038,6 +1447,59 @@ class TestCheckMcpProjectTrustPrompt:
             "mcp-tools#project-level-trust" in flattened
         )
         assert "Learn more:" in captured.err
+
+    def test_warns_when_trust_cannot_be_saved(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """A failed persist still allows this session but warns it wasn't saved."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("fs", "stdio", "node server.js")],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.mcp_trust.trust_project_mcp",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        assert "could not be saved" in capsys.readouterr().err
 
 
 class TestCheckMcpProjectTrustDedupe:

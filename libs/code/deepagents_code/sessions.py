@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -56,9 +57,38 @@ def _patch_aiosqlite() -> None:
         # Dynamically adding a method to aiosqlite.Connection at runtime.
         # Type checkers can't understand this monkey-patch, so we suppress the
         # "attr-defined" error that would otherwise be raised.
-        _aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
+        _aiosqlite.Connection.is_alive = _is_alive  # ty: ignore[unresolved-attribute]
 
     _aiosqlite_patched = True
+
+
+async def _drain_aiosqlite_worker(conn: aiosqlite.Connection) -> None:
+    """Join the aiosqlite worker thread after its connection is closed.
+
+    `aiosqlite.Connection` wraps a daemon `Thread` (`conn._thread`) that
+    drains its tx queue independently of the caller's event loop. The
+    library's `close()` puts a stop sentinel on the queue and awaits the
+    sentinel's future, but does not explicitly join the worker thread.
+
+    If the connection is leaked (no explicit close) and the surrounding
+    event loop has already shut down, the worker can still pop a queued
+    item (typically from `Connection.__del__` calling `stop()`) and call
+    `future.get_loop().call_soon_threadsafe(...)` on the closed loop. That
+    raises `RuntimeError: Event loop is closed`, which pytest surfaces as
+    `PytestUnhandledThreadExceptionWarning` (and GitHub Actions then
+    surfaces as a workflow annotation).
+
+    Explicitly joining the worker thread after close guarantees it has
+    exited before this coroutine returns, eliminating the race for any
+    connection routed through `_connect` / `get_checkpointer`.
+    """
+    worker = getattr(conn, "_thread", None)
+    if worker is None or not worker.is_alive():
+        return
+    # `RuntimeError` covers the "thread was never started" case; treat as
+    # already drained.
+    with contextlib.suppress(RuntimeError):
+        await asyncio.to_thread(worker.join, 5.0)
 
 
 @asynccontextmanager
@@ -75,8 +105,14 @@ async def _connect() -> AsyncIterator[aiosqlite.Connection]:
 
     _patch_aiosqlite()
 
-    async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as conn:
-        yield conn
+    conn: aiosqlite.Connection | None = None
+    try:
+        async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as opened:
+            conn = opened
+            yield opened
+    finally:
+        if conn is not None:
+            await _drain_aiosqlite_worker(conn)
 
 
 class ThreadInfo(TypedDict):
@@ -113,8 +149,16 @@ class ThreadInfo(TypedDict):
 class _CheckpointSummary(NamedTuple):
     """Structured data extracted from a thread's latest checkpoint."""
 
-    message_count: int
-    """Number of messages in the latest checkpoint."""
+    message_count: int | None
+    """Number of messages inlined in the latest checkpoint, or `None`.
+
+    `None` means the latest checkpoint did not inline the `messages` channel
+    value, so the count is unknown and must be reconstructed from the `writes`
+    table. This happens when `messages` uses a `DeltaChannel` (a LangGraph
+    channel the deepagents SDK applies to `messages` as of v0.6) and the latest
+    checkpoint falls between periodic snapshots. An `int` (including `0`) is a
+    trustworthy count.
+    """
 
     initial_prompt: str | None
     """First human prompt recovered from the latest checkpoint."""
@@ -596,7 +640,23 @@ def _cache_initial_prompt(
 
 
 def _thread_freshness(thread: ThreadInfo) -> str | None:
-    """Return a cache freshness token for a thread row."""
+    """Return a cache freshness token for a thread row.
+
+    The token is checkpoint-granular (`latest_checkpoint_id`). The
+    writes-reconstructed `message_count` includes pending writes on the latest
+    checkpoint, which in principle can change without a new checkpoint ID — so
+    this token does not capture intra-checkpoint write churn. In practice that
+    is benign: dcode only mutates `messages` through the agent graph, and every
+    batch of message writes culminates in a new checkpoint (each superstep,
+    `aupdate_state`, interrupt, and cancellation all advance
+    `latest_checkpoint_id`). The only window where a cached count can lag is
+    opening the `/threads` selector mid-superstep against an actively streaming
+    thread; the selector does not live-refresh, so that count stays put until
+    the modal is reopened (by then a new checkpoint exists and the cache
+    refreshes). Making the key write-sensitive would require probing the
+    `writes` table for every row on every `list_threads`, which is not worth it
+    for a cosmetic count.
+    """
     return thread.get("latest_checkpoint_id") or thread.get("updated_at")
 
 
@@ -617,28 +677,6 @@ def _cache_recent_threads(
 def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
     """Return shallow-copied thread rows."""
     return [ThreadInfo(**thread) for thread in threads]
-
-
-async def _count_messages_from_checkpoint(
-    conn: aiosqlite.Connection,
-    thread_id: str,
-    serde: JsonPlusSerializer,
-) -> int:
-    """Count messages from the most recent checkpoint blob.
-
-    With `durability='exit'`, messages are stored in the checkpoint blob, not in
-    the writes table. This function deserializes the checkpoint and counts the
-    messages in channel_values.
-
-    Args:
-        conn: Database connection.
-        thread_id: The thread ID to count messages for.
-        serde: Serializer for decoding checkpoint data.
-
-    Returns:
-        Number of messages in the checkpoint, or 0 if not found.
-    """
-    return (await _load_latest_checkpoint_summary(conn, thread_id, serde)).message_count
 
 
 async def _extract_initial_prompt(
@@ -718,22 +756,62 @@ async def _populate_checkpoint_fields(
 
     # Phase 2: batch-fetch all uncached threads.
     uncached_ids = [t["thread_id"] for t in uncached]
-    batch_results = await _load_latest_checkpoint_summaries_batch(
-        conn, uncached_ids, serde
-    )
+    batch_results: dict[str, _CheckpointSummary] = {}
+    if include_message_count or include_initial_prompt:
+        batch_results = await _load_latest_checkpoint_summaries_batch(
+            conn, uncached_ids, serde
+        )
+    # `initial_prompt` cannot be recovered from the latest checkpoint alone:
+    # `after_model` middleware (e.g., `ResumeStateMiddleware`) writes partial
+    # checkpoints whose `channel_values` omit `messages`. Read the very first
+    # write to the `messages` channel from the `writes` table instead — that
+    # row holds the user's original input.
+    prompt_results: dict[str, str | None] = {}
+    if include_initial_prompt:
+        prompt_results = await _load_initial_prompts_from_writes_batch(
+            conn, uncached_ids, serde
+        )
 
-    # Phase 3: apply results and update caches.
+    # Phase 3: apply inline results, deferring threads whose latest checkpoint
+    # does not inline the `messages` channel value. When `messages` uses a
+    # `DeltaChannel` (LangGraph channel applied by the deepagents SDK as of
+    # v0.6) the full list is only snapshotted into `channel_values` periodically,
+    # so the latest checkpoint usually omits it; the count must then be
+    # reconstructed from the `writes` table.
+    needs_writes_count: list[str] = []
     for thread in uncached:
         thread_id = thread["thread_id"]
         freshness = _thread_freshness(thread)
-        summary = batch_results.get(thread_id, _CheckpointSummary(0, None))
 
         if include_message_count and "message_count" not in thread:
-            thread["message_count"] = summary.message_count
-            _cache_message_count(thread_id, freshness, summary.message_count)
+            summary = batch_results.get(thread_id)
+            if summary is not None and summary.message_count is not None:
+                thread["message_count"] = summary.message_count
+                _cache_message_count(thread_id, freshness, summary.message_count)
+            else:
+                needs_writes_count.append(thread_id)
         if include_initial_prompt and "initial_prompt" not in thread:
-            thread["initial_prompt"] = summary.initial_prompt
-            _cache_initial_prompt(thread_id, freshness, summary.initial_prompt)
+            if thread_id in prompt_results:
+                prompt = prompt_results[thread_id]
+            else:
+                prompt = batch_results.get(
+                    thread_id, _CheckpointSummary(None, None)
+                ).initial_prompt
+            thread["initial_prompt"] = prompt
+            _cache_initial_prompt(thread_id, freshness, prompt)
+
+    # Phase 4: reconstruct counts for delta-channel threads from the `writes`
+    # table by replaying the `messages` writes through the canonical reducer.
+    if needs_writes_count:
+        writes_counts = await _load_message_counts_from_writes_batch(
+            conn, needs_writes_count, serde
+        )
+        uncached_by_id = {t["thread_id"]: t for t in uncached}
+        for thread_id in needs_writes_count:
+            count = writes_counts.get(thread_id, 0)
+            thread = uncached_by_id[thread_id]
+            thread["message_count"] = count
+            _cache_message_count(thread_id, _thread_freshness(thread), count)
 
 
 _SQLITE_MAX_VARIABLE_NUMBER = 500
@@ -789,7 +867,9 @@ async def _load_latest_checkpoint_summaries_batch(
         for row in rows:
             tid, type_str, checkpoint_blob = row
             if not type_str or not checkpoint_blob:
-                results[tid] = _CheckpointSummary(message_count=0, initial_prompt=None)
+                results[tid] = _CheckpointSummary(
+                    message_count=None, initial_prompt=None
+                )
                 continue
             try:
                 data = await loop.run_in_executor(
@@ -803,9 +883,175 @@ async def _load_latest_checkpoint_summaries_batch(
                     tid,
                     exc_info=True,
                 )
-                results[tid] = _CheckpointSummary(message_count=0, initial_prompt=None)
+                results[tid] = _CheckpointSummary(
+                    message_count=None, initial_prompt=None
+                )
 
     return results
+
+
+async def _load_initial_prompts_from_writes_batch(
+    conn: aiosqlite.Connection,
+    thread_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, str | None]:
+    """Batch-load initial prompts from the LangGraph `writes` table.
+
+    For each thread, returns the first human/user message extracted from the
+    earliest write to the `messages` channel (ordered by `checkpoint_id` ASC,
+    then `idx` ASC).
+
+    Args:
+        conn: Database connection.
+        thread_ids: Thread IDs to look up.
+        serde: Serializer for decoding write blobs.
+
+    Returns:
+        Dict mapping thread IDs to their initial prompt text. Threads with no
+        write to the `messages` channel are absent from the result; threads
+        whose first such write decoded but contained no human/user entry map
+        to `None`.
+    """
+    if not thread_ids:
+        return {}
+
+    results: dict[str, str | None] = {}
+    loop = asyncio.get_running_loop()
+    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
+        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
+        placeholders = ",".join("?" * len(chunk))
+        query = f"""
+            SELECT thread_id, type, value FROM (
+                SELECT thread_id, type, value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY thread_id
+                           ORDER BY checkpoint_id ASC, idx ASC
+                       ) AS rn
+                FROM writes
+                WHERE thread_id IN ({placeholders}) AND channel = 'messages'
+            ) WHERE rn = 1
+        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
+        async with conn.execute(query, chunk) as cursor:
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            tid, type_str, value_blob = row
+            if not type_str or not value_blob:
+                continue
+            try:
+                messages = await loop.run_in_executor(
+                    None, serde.loads_typed, (type_str, value_blob)
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to deserialize initial messages write for thread %s",
+                    tid,
+                    exc_info=True,
+                )
+                continue
+            if not isinstance(messages, list):
+                continue
+            results[tid] = _initial_prompt_from_messages(cast("list[object]", messages))
+
+    return results
+
+
+async def _load_message_counts_from_writes_batch(
+    conn: aiosqlite.Connection,
+    thread_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, int]:
+    """Reconstruct message counts from the LangGraph `writes` table.
+
+    For threads whose latest checkpoint does not inline the `messages` channel
+    value — a `DeltaChannel` between snapshots, where the deepagents SDK (>= 0.6)
+    applies LangGraph's `DeltaChannel` to `messages` — the full list is rebuilt
+    by replaying every `messages` write, then counted. We replay through
+    `add_messages` as a count-equivalent stand-in for the channel's actual
+    reducer (`_messages_delta_reducer`): both dedup by ID and honor
+    `RemoveMessage` / `REMOVE_ALL_MESSAGES`, so they produce the same final
+    message set. The reducer is batching-invariant, so folding the write history
+    from empty yields the same value LangGraph reconstructs from the latest
+    snapshot plus subsequent deltas. An `Overwrite` write resets the accumulator
+    to its value, matching the net effect of `DeltaChannel.replay_writes` (where
+    the last `Overwrite` is the reset point).
+
+    Only the root namespace (`checkpoint_ns = ''`) is counted, matching both the
+    inline path and the conversation the `/threads` selector cares about;
+    subgraph (subagent) writes under the same `thread_id` are excluded.
+
+    Folding the *entire* write history (rather than walking the head
+    checkpoint's parent chain) is intentional and matches what dcode shows when
+    a thread is opened: it reads state via `aget_state` without a
+    `checkpoint_id`, which applies pending writes (`apply_pending_writes=True`),
+    so the latest checkpoint's not-yet-committed `messages` writes are part of
+    the user-visible list and must be counted. dcode only ever appends to the
+    latest checkpoint (no time travel, no `checkpoint_id`-targeted
+    `aupdate_state`), so histories are linear and the full fold equals the
+    head-of-chain reconstruction. A forked/abandoned branch (which dcode does
+    not create) is the only case where this could over-count.
+
+    Args:
+        conn: Database connection.
+        thread_ids: Thread IDs to look up.
+        serde: Serializer for decoding write blobs.
+
+    Returns:
+        Dict mapping each thread ID with at least one decodable `messages`
+            write to its reconstructed message count. Threads with no such
+            writes are absent from the result.
+    """
+    if not thread_ids:
+        return {}
+
+    from langgraph.graph.message import add_messages
+    from langgraph.types import Overwrite
+
+    loop = asyncio.get_running_loop()
+    # Accumulate one reduced message list per thread across chunks. Ordering by
+    # (checkpoint_id, task_id, idx) replays deltas oldest-to-newest, matching
+    # how LangGraph applies them on load.
+    reduced: dict[str, list[Any]] = {}
+    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
+        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
+        placeholders = ",".join("?" * len(chunk))
+        query = f"""
+            SELECT thread_id, type, value
+            FROM writes
+            WHERE thread_id IN ({placeholders})
+              AND checkpoint_ns = ''
+              AND channel = 'messages'
+            ORDER BY thread_id, checkpoint_id ASC, task_id ASC, idx ASC
+        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
+        async with conn.execute(query, chunk) as cursor:
+            rows = await cursor.fetchall()
+
+        for tid, type_str, value_blob in rows:
+            if not type_str or not value_blob:
+                continue
+            try:
+                delta = await loop.run_in_executor(
+                    None, serde.loads_typed, (type_str, value_blob)
+                )
+                if isinstance(delta, Overwrite):
+                    # Overwrite resets the channel; its value becomes the base.
+                    value = delta.value
+                    reduced[tid] = list(value) if isinstance(value, list) else []
+                else:
+                    # `add_messages` with a list left arg returns a list.
+                    reduced[tid] = cast(
+                        "list[Any]", add_messages(reduced.get(tid, []), delta)
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to replay messages write for thread %s; "
+                    "message count may be inaccurate",
+                    tid,
+                    exc_info=True,
+                )
+                continue
+
+    return {tid: len(messages) for tid, messages in reduced.items()}
 
 
 async def _load_latest_checkpoint_summary(
@@ -828,7 +1074,7 @@ async def _load_latest_checkpoint_summary(
     async with conn.execute(query, (thread_id,)) as cursor:
         row = await cursor.fetchone()
         if not row or not row[0] or not row[1]:
-            return _CheckpointSummary(message_count=0, initial_prompt=None)
+            return _CheckpointSummary(message_count=None, initial_prompt=None)
 
         type_str, checkpoint_blob = row
         try:
@@ -840,7 +1086,7 @@ async def _load_latest_checkpoint_summary(
                 thread_id,
                 exc_info=True,
             )
-            return _CheckpointSummary(message_count=0, initial_prompt=None)
+            return _CheckpointSummary(message_count=None, initial_prompt=None)
 
     return _summarize_checkpoint(data)
 
@@ -853,34 +1099,54 @@ def _summarize_checkpoint(data: object) -> _CheckpointSummary:
     """
     messages = _checkpoint_messages(data)
     return _CheckpointSummary(
-        message_count=len(messages),
-        initial_prompt=_initial_prompt_from_messages(messages),
+        message_count=len(messages) if messages is not None else None,
+        initial_prompt=_initial_prompt_from_messages(messages or []),
     )
 
 
-def _checkpoint_messages(data: object) -> list[object]:
-    """Return checkpoint messages when the decoded payload has the expected shape."""
+def _checkpoint_messages(data: object) -> list[object] | None:
+    """Return inlined checkpoint messages, or `None` when not inlined.
+
+    A `None` return distinguishes a checkpoint that omits the `messages`
+    channel entirely (a `DeltaChannel` between snapshots, where the deepagents
+    SDK applies LangGraph's `DeltaChannel` to `messages` as of v0.6) from one
+    that inlines an empty list. The former requires reconstructing the count
+    from the `writes` table; the latter is a genuine zero.
+    """
     if not isinstance(data, dict):
-        return []
+        return None
 
     payload = cast("dict[str, object]", data)
     channel_values = payload.get("channel_values")
     if not isinstance(channel_values, dict):
-        return []
+        return None
 
     channel_values_dict = cast("dict[str, object]", channel_values)
     messages = channel_values_dict.get("messages")
     if not isinstance(messages, list):
-        return []
+        return None
 
     return cast("list[object]", messages)
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a checkpoint message list."""
+    """Return the first human message content from a message list.
+
+    Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
+    plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
+    first write to the `messages` channel is the raw user input passed to the
+    agent, which is preserved verbatim as a dict; subsequent writes are
+    serialized `BaseMessage` instances produced after the model runs.
+    """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
             return _coerce_prompt_text(getattr(msg, "content", None))
+        if isinstance(msg, dict):
+            msg_dict = cast("dict[str, object]", msg)
+            role = msg_dict.get("role")
+            type_ = msg_dict.get("type")
+            if role in {"user", "human"} or type_ == "human":
+                return _coerce_prompt_text(msg_dict.get("content"))
     return None
 
 
@@ -956,6 +1222,32 @@ async def get_thread_agent(thread_id: str) -> str | None:
         async with conn.execute(query, (thread_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
+
+
+async def get_thread_cwd(thread_id: str) -> str | None:
+    """Get the most recently stored cwd for a thread.
+
+    Args:
+        thread_id: The thread whose stored cwd to look up.
+
+    Returns:
+        Most recent cwd for the thread, or None if not found.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+
+        query = """
+            SELECT json_extract(metadata, '$.cwd')
+            FROM checkpoints
+            WHERE thread_id = ? AND json_extract(metadata, '$.cwd') IS NOT NULL
+            ORDER BY checkpoint_id DESC
+            LIMIT 1
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            value = row[0] if row else None
+            return value if isinstance(value, str) and value else None
 
 
 async def thread_exists(thread_id: str) -> bool:
@@ -1037,8 +1329,18 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
 
     _patch_aiosqlite()
 
-    async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
-        yield checkpointer
+    saver: AsyncSqliteSaver | None = None
+    try:
+        async with AsyncSqliteSaver.from_conn_string(
+            str(get_db_path())
+        ) as checkpointer:
+            saver = checkpointer
+            yield checkpointer
+    finally:
+        if saver is not None:
+            conn = getattr(saver, "conn", None)
+            if conn is not None:
+                await _drain_aiosqlite_worker(conn)
 
 
 _DEFAULT_THREAD_LIMIT = 20

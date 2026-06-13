@@ -1,9 +1,11 @@
 """Unit tests for textual_adapter functions."""
 
 import asyncio
+import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Generator
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_code import config as config_module
+from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 from deepagents_code.config import build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
@@ -203,7 +206,7 @@ class TestInterruptCleanup:
             await _handle_interrupt_cleanup(
                 adapter=adapter,
                 agent=agent,
-                config=config,  # type: ignore[arg-type]
+                config=config,  # ty: ignore
                 pending_text_by_namespace={},
                 captured_input_tokens=0,
                 captured_output_tokens=0,
@@ -223,6 +226,42 @@ class TestInterruptCleanup:
         interrupted_msg = interrupted_payload["messages"][0]
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
+
+    async def test_interrupt_stops_active_assistant_streams(self) -> None:
+        """Interrupted streaming messages should not leave flush timers running."""
+        sync_message_content = MagicMock()
+        assistant_msg = SimpleNamespace(
+            id="asst-1",
+            _content="partial response",
+            stop_stream=AsyncMock(),
+        )
+        assistant_messages = {(): assistant_msg}
+
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+            sync_message_content=sync_message_content,
+        )
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial response"},
+            assistant_message_by_namespace=assistant_messages,
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assistant_msg.stop_stream.assert_awaited_once_with()
+        sync_message_content.assert_called_once_with("asst-1", "partial response")
+        assert assistant_messages == {}
 
     async def test_disables_tracing_during_state_save(self) -> None:
         """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
@@ -489,10 +528,11 @@ class TestBuildStreamConfig:
         """Clear the git-branch cache between tests."""
         config_module._git_branch_cache.clear()
 
-    def test_assistant_fields_present(self) -> None:
-        """Assistant-specific metadata should be present when `assistant_id` is set."""
+    def test_dcode_agent_fields_present(self) -> None:
+        """Selected dcode agent metadata should be present."""
         config = build_stream_config("t-456", assistant_id="my-agent")
-        assert config["metadata"]["assistant_id"] == "my-agent"
+        assert "assistant_id" not in config["metadata"]
+        assert config["metadata"]["dcode_agent_name"] == "my-agent"
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
         assert "cwd" in config["metadata"]
@@ -505,20 +545,22 @@ class TestBuildStreamConfig:
         parsed = datetime.fromisoformat(raw)
         assert parsed.tzinfo is not None
 
-    def test_no_assistant_fields_when_none(self) -> None:
-        """Assistant-specific fields should be absent when `assistant_id` is `None`."""
+    def test_no_dcode_agent_fields_when_none(self) -> None:
+        """Selected dcode agent fields should be absent when unset."""
         config = build_stream_config("t-789", assistant_id=None)
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
+        assert "dcode_agent_name" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
         assert "cwd" in metadata
 
-    def test_no_assistant_fields_when_empty_string(self) -> None:
+    def test_no_dcode_agent_fields_when_empty_string(self) -> None:
         """Empty-string `assistant_id` should be treated as absent."""
         config = build_stream_config("t-000", assistant_id="")
         metadata = config["metadata"]
         assert "assistant_id" not in metadata
+        assert "dcode_agent_name" not in metadata
         assert "agent_name" not in metadata
         assert "updated_at" not in metadata
         assert "cwd" in metadata
@@ -568,34 +610,47 @@ class TestBuildStreamConfig:
         assert "model_params" not in config["configurable"]
 
     def test_versions_contains_cli_version(self) -> None:
-        """CLI version should always be present in metadata.versions."""
+        """CLI version should always be present in metadata.lc_versions."""
         from deepagents_code._version import __version__
 
         config = build_stream_config("t-ver", assistant_id=None)
-        assert config["metadata"]["versions"]["deepagents-code"] == __version__
+        assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
 
-    def test_versions_contains_sdk_version_when_installed(self) -> None:
-        """SDK version should be in versions when deepagents is installed."""
-        with patch(
-            "importlib.metadata.version",
-            return_value="0.5.0",
-        ):
+    def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
+        """Client-side SDK version should not be reported as graph instrumentation."""
+        with patch("deepagents_code.config.version", return_value="1.2.3"):
             config = build_stream_config("t-sdk", assistant_id=None)
-        assert config["metadata"]["versions"]["deepagents"] == "0.5.0"
+        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
+        assert "deepagents" not in config["metadata"]["lc_versions"]
 
-    def test_versions_omits_sdk_when_not_installed(self) -> None:
-        """SDK version key should be absent when deepagents is not installed."""
-        from importlib.metadata import PackageNotFoundError
-
+    def test_dcode_client_deepagents_version_absent_when_metadata_missing(
+        self,
+    ) -> None:
+        """Missing SDK metadata should not prevent stream config construction."""
         with patch(
-            "importlib.metadata.version",
+            "deepagents_code.config.version",
             side_effect=PackageNotFoundError("deepagents"),
         ):
-            config = build_stream_config("t-nosdk", assistant_id=None)
-        assert "deepagents" not in config["metadata"]["versions"]
-        from deepagents_code._version import __version__
+            config = build_stream_config("t-missing-sdk", assistant_id=None)
 
-        assert config["metadata"]["versions"]["deepagents-code"] == __version__
+        assert "dcode_client_deepagents_version" not in config["metadata"]
+
+    def test_dcode_client_deepagents_version_does_not_import_sdk(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SDK version metadata lookup should not import the SDK package."""
+        for module in list(sys.modules):
+            if module == "deepagents" or module.startswith("deepagents."):
+                monkeypatch.delitem(sys.modules, module, raising=False)
+
+        with patch("deepagents_code.config.version", return_value="1.2.3"):
+            build_stream_config("t-no-sdk-import", assistant_id=None)
+
+        assert not any(
+            module == "deepagents" or module.startswith("deepagents.")
+            for module in sys.modules
+        )
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
@@ -740,6 +795,215 @@ def _hitl_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
     """Build an updates-stream chunk containing one HITL interrupt."""
     interrupt = SimpleNamespace(id="interrupt-1", value=payload)
     return ((), "updates", {"__interrupt__": [interrupt]})
+
+
+def _tool_chunk(
+    *,
+    name: str | None,
+    args: str,
+    chunk_id: str | None,
+    index: int = 0,
+) -> tuple[Any, ...]:
+    """Build a `messages`-stream chunk carrying one streamed tool-call fragment."""
+    from langchain_core.messages import AIMessageChunk
+
+    message = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "name": name,
+                "args": args,
+                "id": chunk_id,
+                "index": index,
+                "type": "tool_call_chunk",
+            }
+        ],
+    )
+    return ((), "messages", (message, {}))
+
+
+class TestExecuteTaskTextualToolCallStreaming:
+    """Tests for incremental tool-call argument accumulation."""
+
+    async def test_fragmented_args_mount_once_when_json_completes(self) -> None:
+        """Args streamed across many fragments parse once the JSON is whole.
+
+        The tool row mounts a single time with fully accumulated args, even
+        though the JSON arrives split across several chunks.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Split a JSON object across fragments; only the last one closes it.
+        chunks = [
+            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
+            _tool_chunk(name=None, args='"a.py", ', chunk_id=None),
+            _tool_chunk(name=None, args='"content": "x"}', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]._tool_name == "edit_file"
+        assert tool_msgs[0]._args == {"path": "a.py", "content": "x"}
+
+    async def test_incomplete_args_do_not_mount(self) -> None:
+        """A tool row stays unmounted while its JSON args are still partial."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # JSON never closes — the row must not mount with partial args.
+        chunks = [
+            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
+            _tool_chunk(name=None, args='"a.py"', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert not [m for m in mounted if isinstance(m, ToolCallMessage)]
+
+    async def test_scalar_args_mount_eagerly_when_complete(self) -> None:
+        """Non-object JSON args parse as soon as the scalar is whole.
+
+        Scalars never close with `}`/`]`, so the bracket heuristic that defers
+        large objects never fires for them; they must still mount (wrapped as
+        `{"value": ...}`) once the accumulated fragment is valid JSON.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # A JSON string split so the first fragment is not yet valid JSON.
+        chunks = [
+            _tool_chunk(name="echo", args='"hel', chunk_id="t1"),
+            _tool_chunk(name=None, args='lo"', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]._args == {"value": "hello"}
+
+    async def test_dict_args_resolve_without_reparsing(self) -> None:
+        """A complete `tool_call` block mounts with its dict args verbatim."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "a.py"}, "t1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]._args == {"path": "a.py"}
+
+    async def test_interleaved_fragments_accumulate_per_tool(self) -> None:
+        """Fragments for two concurrent tool calls accumulate independently.
+
+        Each tool call carries a distinct stream index, so interleaved argument
+        fragments must not bleed across buffers.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Two tools (index 0 and 1) with interleaved argument fragments.
+        chunks = [
+            _tool_chunk(name="read_file", args='{"path": ', chunk_id="t0", index=0),
+            _tool_chunk(name="grep", args='{"pattern": ', chunk_id="t1", index=1),
+            _tool_chunk(name=None, args='"a.py"}', chunk_id=None, index=0),
+            _tool_chunk(name=None, args='"x"}', chunk_id=None, index=1),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        by_name = {m._tool_name: m._args for m in tool_msgs}
+        assert by_name == {
+            "read_file": {"path": "a.py"},
+            "grep": {"pattern": "x"},
+        }
 
 
 class TestExecuteTaskTextualSummarizationFeedback:
@@ -1101,6 +1365,82 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert statuses[:2] == ["Thinking", "Thinking"]
         assert None not in statuses
 
+    async def test_auto_executed_tool_shows_running_at_mount(self) -> None:
+        """Auto-executed tools (no approval) spin immediately when mounted.
+
+        Regression guard: read-only tools such as `grep`/`glob` previously sat
+        visually idle from mount until their result arrived. The stream here
+        ends right after the tool call (no result), so the row is observed in
+        its mount-time state.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("grep", {"pattern": "foo"}, "tool-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="search",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status == "running"
+
+    async def test_edit_file_does_not_get_per_tool_spinner_at_mount(self) -> None:
+        """`edit_file` relies on the global Thinking spinner, not a per-tool one.
+
+        Negative counterpart to the auto-executed case: tools in
+        `_TOOL_CALLS_KEEP_THINKING_SPINNER` must NOT be flipped to "running" at
+        mount, or they would show a duplicate spinner alongside "Thinking".
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": "example.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="edit",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        tool_msg = adapter._current_tool_messages["tool-1"]
+        assert tool_msg._status != "running"
+
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Three parallel tools completed out of order; Thinking after all."""
         statuses: list[str | None] = []
@@ -1411,16 +1751,18 @@ class TestExecuteTaskTextualHITLShellSuppression:
     ) -> tuple[
         TextualUIAdapter,
         list[object],
-        dict[str, tuple[bool, bool]],
+        dict[str, tuple[bool, bool, str]],
     ]:
         """Drive a HITL flow and snapshot widget visibility during the await.
 
         Returns the adapter, the mounted widgets, and a mapping of
-        `tool_call_id -> (display, _awaiting_approval)` captured while the
-        approval future is pending.
+        `tool_call_id -> (display, _awaiting_approval, _status)` captured while
+        the approval future is pending. The status entry locks in the pause
+        behavior: tools start their spinner at mount but are reverted to
+        `pending` while blocked on the approval decision.
         """
         mounted: list[object] = []
-        snapshots: dict[str, tuple[bool, bool]] = {}
+        snapshots: dict[str, tuple[bool, bool, str]] = {}
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -1437,6 +1779,7 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 snapshots[tid] = (
                     bool(tool_msg.display),
                     tool_msg._awaiting_approval,
+                    tool_msg._status,
                 )
             future.set_result(approval_decision)
             return future
@@ -1506,11 +1849,14 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # While the future was pending, the widget was hidden.
-        assert snapshots["tool-shell"] == (False, True)
-        # After the finally block, it was restored.
+        # While the future was pending, the widget was hidden and its spinner
+        # paused (reverted from the mount-time "running" to "pending").
+        assert snapshots["tool-shell"] == (False, True, "pending")
+        # After the finally block, it was restored and the spinner resumed
+        # (the resumed stream is empty, so the row never reaches a result).
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        assert tool_rows[0]._status == "running"
 
     async def test_non_shell_tool_widget_not_suppressed(self) -> None:
         """`read_file` widget should stay visible — only shell tools are hidden."""
@@ -1521,10 +1867,13 @@ class TestExecuteTaskTextualHITLShellSuppression:
         )
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
-        # Visible the whole time, never marked as awaiting approval.
-        assert snapshots["tool-read"] == (True, False)
+        # Visible the whole time, never marked as awaiting approval, but the
+        # spinner is paused to "pending" while the decision is outstanding.
+        assert snapshots["tool-read"] == (True, False, "pending")
         assert tool_rows[0].display is True
         assert tool_rows[0]._awaiting_approval is False
+        # Resumed to "running" after approval (resumed stream yields no result).
+        assert tool_rows[0]._status == "running"
 
     async def test_batch_approval_keeps_all_widgets_visible(self) -> None:
         """Batched approvals (>1 request) must not hide any tool widget.
@@ -1540,8 +1889,8 @@ class TestExecuteTaskTextualHITLShellSuppression:
             approval_decision={"type": "approve"},
             extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
         )
-        assert snapshots["tool-shell"] == (True, False)
-        assert snapshots["tool-read"] == (True, False)
+        assert snapshots["tool-shell"] == (True, False, "pending")
+        assert snapshots["tool-read"] == (True, False, "pending")
 
     async def test_batch_of_shell_tools_keeps_all_widgets_visible(self) -> None:
         """Multiple parallel `execute` calls: all rows stay visible.
@@ -1558,8 +1907,8 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 ("execute", {"command": "echo bye"}, "tool-shell-2"),
             ],
         )
-        assert snapshots["tool-shell-1"] == (True, False)
-        assert snapshots["tool-shell-2"] == (True, False)
+        assert snapshots["tool-shell-1"] == (True, False, "pending")
+        assert snapshots["tool-shell-2"] == (True, False, "pending")
 
     async def test_shell_widget_restored_when_approval_raises(self) -> None:
         """`finally` must restore the widget even if approval raises."""
@@ -1634,7 +1983,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_interrupt_mounts_tool_call_row(self) -> None:
         """ask_user interrupts should mount the tool row before the prompt."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1642,8 +1991,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1694,12 +2043,12 @@ class TestExecuteTaskTextualAskUser:
             msg = "mount failed"
             raise RuntimeError(msg)
 
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1739,7 +2088,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_duplicate_interrupt_only_mounts_once(self) -> None:
         """Re-emitting the same `tool_call_id` should not double-mount."""
         mounted: list[object] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": ["Alice"]})
 
         async def mount_message(widget: object) -> None:
@@ -1747,8 +2096,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1788,7 +2137,7 @@ class TestExecuteTaskTextualAskUser:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
-        future: asyncio.Future[object] = asyncio.Future()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
         async def mount_message(widget: object) -> None:
@@ -1796,8 +2145,8 @@ class TestExecuteTaskTextualAskUser:
             mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return future
 
@@ -1979,11 +2328,11 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         async def request_ask_user(
-            _questions: list[Any],
+            _questions: list[Question],
         ) -> asyncio.Future[object] | None:
             await asyncio.sleep(0)
             return future
@@ -2006,7 +2355,8 @@ class TestExecuteTaskTextualAskUser:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
+            # This test intentionally returns a malformed widget payload.
+            request_ask_user=cast("Any", request_ask_user),
         )
 
         await execute_task_textual(
@@ -2042,7 +2392,7 @@ class TestExecuteTaskTextualAskUser:
                     error_calls.append(error)
                     original(error)
 
-                widget.set_error = _capture  # type: ignore[method-assign]
+                widget.set_error = _capture  # ty: ignore
                 mounted.append(widget)
 
         agent = _SequencedAgent(
@@ -2082,8 +2432,8 @@ class TestExecuteTaskTextualAskUser:
         """A `None` callback result should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2129,8 +2479,8 @@ class TestExecuteTaskTextualAskUser:
         """UI mount failures should resume with explicit error status."""
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             msg = "boom"
             raise RuntimeError(msg)
@@ -2224,8 +2574,8 @@ class TestExecuteTaskTextualAskUser:
             statuses.append(status)
 
         async def request_ask_user(
-            _questions: list[Any],
-        ) -> asyncio.Future[object] | None:
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
             await asyncio.sleep(0)
             return None
 
@@ -2328,7 +2678,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # type: ignore[override]
+    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -2347,7 +2697,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # type: ignore[override]
+    def values(self) -> Generator[Any, None, None]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)

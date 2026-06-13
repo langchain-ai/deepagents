@@ -50,9 +50,11 @@ log of all evicted messages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 import warnings
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
@@ -67,15 +69,16 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
+from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
@@ -119,6 +122,19 @@ class SummarizationEvent(TypedDict):
     cutoff_index: int
     summary_message: HumanMessage
     file_path: str | None
+
+
+class TriggerClause(TypedDict, total=False):
+    """Dictionary-based summarization trigger with AND semantics."""
+
+    tokens: int
+    """Trigger when token count reaches or exceeds this value."""
+
+    messages: int
+    """Trigger when message count reaches or exceeds this value."""
+
+    fraction: float
+    """Trigger when token count reaches this fraction of the model context window."""
 
 
 class TruncateArgsSettings(TypedDict, total=False):
@@ -167,6 +183,41 @@ class SummarizationDefaults(TypedDict):
     trigger: ContextSize
     keep: ContextSize
     truncate_args_settings: TruncateArgsSettings
+
+
+def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
+    """Determine whether `counter` accepts a `tools` keyword argument.
+
+    The `TokenCounter` contract only requires accepting messages, but the
+    default counter (and most modern ones) also accept `tools=` so tool schemas
+    contribute to the count. Rather than probe by calling and catching
+    `TypeError` — which cannot distinguish a signature that rejects `tools`
+    from a genuine `TypeError` raised inside the counter's body — the signature
+    is inspected directly.
+
+    Args:
+        counter: The token-counting callable to inspect.
+
+    Returns:
+        `True` if the signature declares a `tools` parameter or accepts
+        arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
+        not, or `None` when the signature cannot be introspected (some C-level
+        callables expose no signature), signaling that callers should fall back
+        to probing.
+    """
+    try:
+        parameters = inspect.signature(counter).parameters
+    except (TypeError, ValueError):
+        return None
+    for param in parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == "tools" and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
 
 
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
@@ -235,7 +286,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         model: str | BaseChatModel,
         *,
         backend: BACKEND_TYPES,
-        trigger: ContextSize | list[ContextSize] | None = None,
+        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
@@ -248,7 +299,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         Args:
             model: The language model to use for generating summaries.
             backend: Backend instance or factory for persisting conversation history.
-            trigger: Threshold(s) that trigger summarization.
+            trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
+                a dict combines thresholds with AND semantics, and a list combines items
+                with OR semantics.
             keep: Context retention policy after summarization.
 
                 Defaults to keeping last 20 messages.
@@ -309,6 +362,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
+
+        # Whether the configured token counter accepts a `tools` kwarg. Resolved
+        # once here (the counter is fixed after construction) so the per-call
+        # token count never pays signature-introspection cost. `None` means the
+        # signature could not be introspected, so `_count_tokens` probes instead.
+        self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -401,7 +460,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+            return _resolve_backend(self._backend, tool_runtime)
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -666,7 +725,7 @@ A condensed summary follows:
 
         return len(messages)
 
-    def _truncate_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+    def _truncate_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """Truncate large arguments in a single tool call.
 
         Args:
@@ -694,28 +753,64 @@ A condensed summary follows:
             }
         return tool_call
 
-    def _truncate_args(
+    def _count_tokens(
         self,
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> int:
+        """Count tokens for messages plus optional system message and tools.
+
+        Args:
+            messages: Messages to count.
+            system_message: Optional system message prepended before counting.
+            tools: Optional tools whose schemas contribute to the count.
+
+        Returns:
+            Total token count. Counts without `tools` when the configured
+                `token_counter` does not accept a `tools` keyword. When the
+                counter's signature is introspectable, a `TypeError` raised
+                inside the counter's own body is never masked — it propagates so
+                a broken counter is not hidden behind a silently wrong count.
+                Counters whose signature cannot be introspected are probed
+                instead, and only there does a `TypeError` fall back to counting
+                without `tools`.
+        """
+        counted_messages = [system_message, *messages] if system_message is not None else messages
+        if self._counter_accepts_tools is True:
+            # `tools=` is absent from the `TokenCounter` protocol but accepted
+            # here: the signature check above confirmed the counter takes it.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        if self._counter_accepts_tools is False:
+            return self.token_counter(counted_messages)
+        # Signature could not be introspected; probe defensively. This is the
+        # only path that swallows a `TypeError`, and only for counters whose
+        # signature is opaque (some C-level callables expose no signature).
+        try:
+            # `tools=` is outside the `TokenCounter` protocol; the probe verifies
+            # acceptance at runtime, falling back below if it is rejected.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        except TypeError:
+            return self.token_counter(counted_messages)
+
+    def _truncate_args(
+        self,
+        messages: list[AnyMessage],
+        total_tokens: int,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
         Args:
             messages: Messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
+            total_tokens: Precomputed token count for `messages` (plus system
+                message and tools). Counting tools is expensive (schema
+                conversion per tool), so the caller counts once and shares the
+                result across the truncation and summarization checks.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        counted_messages = [system_message, *messages] if system_message is not None else messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
@@ -735,7 +830,7 @@ A condensed summary follows:
 
                 for tool_call in msg.tool_calls:
                     if tool_call["name"] in {"write_file", "edit_file"}:
-                        truncated_call = self._truncate_tool_call(tool_call)  # ty: ignore[invalid-argument-type]
+                        truncated_call = self._truncate_tool_call(tool_call)
                         if truncated_call != tool_call:
                             msg_modified = True
                         truncated_tool_calls.append(truncated_call)
@@ -943,19 +1038,19 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1016,15 +1111,9 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1070,19 +1159,19 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1143,15 +1232,9 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
-        # Persist the clipped tail into state via Overwrite. Match the
-        # pattern from filesystem.py: atomically replace the messages channel
-        # so the clipped TMs survive DeltaChannel replay (append + reducer
-        # id-matching is broken until langchain-core auto-assigns ids upstream).
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
-            state_messages = list(request.state.get("messages", []))
-            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
-            update["messages"] = Overwrite(new_state_messages)
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
@@ -1170,6 +1253,10 @@ This is the name external callers should import and reference.
 def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
+    trim_tokens_to_summarize: int | None = None,
+    token_counter: TokenCounter = count_tokens_approximately,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1211,6 +1298,9 @@ def create_summarization_middleware(
 
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance or factory for persisting conversation history.
+        summary_prompt: Prompt template for generating summaries.
+        trim_tokens_to_summarize: Max tokens to include when generating summary.
+        token_counter: Function to count tokens in messages.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1230,7 +1320,9 @@ def create_summarization_middleware(
         backend=backend,
         trigger=defaults["trigger"],
         keep=defaults["keep"],
-        trim_tokens_to_summarize=None,
+        token_counter=token_counter,
+        summary_prompt=summary_prompt,
+        trim_tokens_to_summarize=trim_tokens_to_summarize,
         truncate_args_settings=defaults["truncate_args_settings"],
     )
 
@@ -1238,6 +1330,8 @@ def create_summarization_middleware(
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
     backend: BACKEND_TYPES,
+    *,
+    system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1269,6 +1363,8 @@ def create_summarization_tool_middleware(
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
+        system_prompt: System-prompt fragment nudging the model to call
+            `compact_conversation`. Pass `None` to skip appending the nudge.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1319,7 +1415,7 @@ def create_summarization_tool_middleware(
     if isinstance(model, str):
         model = resolve_model(model)
     summarization = create_summarization_middleware(model, backend)
-    return SummarizationToolMiddleware(summarization)
+    return SummarizationToolMiddleware(summarization, system_prompt=system_prompt)
 
 
 class SummarizationToolMiddleware(AgentMiddleware):
@@ -1397,7 +1493,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         backend = self._summarization._backend
         if callable(backend):
-            return backend(runtime)  # ty: ignore[call-top-callable]
+            return _resolve_backend(backend, runtime)
         return backend
 
     def _create_compact_tool(self) -> BaseTool:
@@ -1526,6 +1622,38 @@ class SummarizationToolMiddleware(AgentMiddleware):
             }
         )
 
+    @staticmethod
+    def _compact_threshold(value: float) -> int:
+        """Return the half-trigger threshold used by the compact tool."""
+        return max(1, int(value * 0.5))
+
+    @staticmethod
+    def _compact_trigger_clause(condition: object) -> Mapping[str, float]:
+        """Normalize old tuple and new dict trigger conditions for compact gating."""
+        if isinstance(condition, Mapping):
+            return cast("Mapping[str, float]", condition)
+        kind, value = cast("tuple[str, float]", condition)
+        return {kind: value}
+
+    def _is_compaction_clause_met(self, clause: Mapping[str, float], messages: list[AnyMessage]) -> bool:
+        """Check whether a normalized compact eligibility clause is met."""
+        lc = self._summarization._lc_helper
+        for kind, value in clause.items():
+            if kind == "messages" and len(messages) < self._compact_threshold(value):
+                return False
+            if kind == "tokens" and not lc._should_summarize_based_on_reported_tokens(messages, self._compact_threshold(value)):
+                return False
+            if kind == "fraction":
+                max_input_tokens = lc._get_profile_limits()
+                if max_input_tokens is None:
+                    return False
+                threshold = self._compact_threshold(max_input_tokens * value)
+                if not lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                    return False
+            if kind not in {"messages", "tokens", "fraction"}:
+                return False
+        return True
+
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
         """Check if manual compaction is currently allowed.
 
@@ -1534,33 +1662,17 @@ class SummarizationToolMiddleware(AgentMiddleware):
         the configured auto-summarization trigger:
 
         - For `("tokens", N)`, eligibility starts at `0.5 * N`.
+        - For `("messages", N)`, eligibility starts at `0.5 * N` messages.
         - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
             input tokens.
+        - For dict clauses, all specified thresholds must be met.
 
         Uses reported usage metadata when available.
         """
-        lc = self._summarization._lc_helper
-        trigger_conditions = lc._trigger_conditions
+        trigger_conditions = self._summarization._lc_helper._trigger_clauses
         if not trigger_conditions:
             return False
-
-        for kind, value in trigger_conditions:
-            if kind == "tokens":
-                threshold = int(value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-            elif kind == "fraction":
-                max_input_tokens = lc._get_profile_limits()
-                if max_input_tokens is None:
-                    continue
-                threshold = int(max_input_tokens * value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-        return False
+        return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)
 
     def _run_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.

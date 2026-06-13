@@ -33,7 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     **kwargs,
                 )
 
-            def __call__(  # ty: ignore[invalid-method-override]
+            def __call__(  # ty: ignore
                 self,
                 parser: argparse.ArgumentParser,
                 _namespace: argparse.Namespace,
@@ -243,7 +243,7 @@ class TestRunMCPLogin:
         assert exit_code == 1
         mock_login.assert_not_awaited()
         assert "Skipping untrusted project MCP config" in err
-        assert "pass --config <path> to use it explicitly" in err
+        assert "pass --mcp-config <path> to use it explicitly" in err
 
     async def test_user_level_config_is_trusted_without_approval(
         self,

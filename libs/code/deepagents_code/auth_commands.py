@@ -8,8 +8,8 @@ launching the Textual app:
 - `auth set <provider>` — store an API key read from stdin (preferred) or,
     with `--from-env VAR`, copied from a process environment variable.
 - `auth remove <provider>` — delete a stored credential (aliases `rm`/`delete`).
-- `auth status [<provider>]` — print the resolution source (`stored`,
-    `env: VAR`, `missing`, ...) for one or all providers.
+- `auth status <provider>` — print the resolution source (`stored`,
+    `env: VAR`, `missing`, ...) for one provider.
 - `auth path` — print the resolved `auth.json` path.
 
 Security notes:
@@ -125,14 +125,15 @@ def setup_auth_parser(
 
     status_parser = auth_sub.add_parser(
         "status",
-        help="Show the credential resolution source for one or all providers",
+        help="Show the credential resolution source for one provider",
         add_help=False,
     )
     status_parser.add_argument(
         "provider",
         nargs="?",
         default=None,
-        help="Provider name; omit to show every provider",
+        metavar="provider",
+        help="Provider name (e.g. anthropic)",
     )
     status_parser.add_argument(
         "-h",
@@ -294,17 +295,20 @@ def _run_list() -> int:
 
 
 def _run_status(provider: str | None) -> int:
-    """Print the resolution source for one provider or all of them.
+    """Print the resolution source for one provider.
 
     Returns:
-        Process exit code (`0`).
+        Process exit code (`0` on success, `1` when the provider is omitted).
     """
+    if provider is None:
+        print(  # noqa: T201
+            "Error: auth status requires a provider. "
+            "Use `dcode auth list` to show all providers.",
+            file=sys.stderr,
+        )
+        return 1
     _warn_if_store_unreadable()
-    providers = [provider] if provider else _known_providers()
-    if not providers:
-        print("No providers found.")  # noqa: T201
-        return 0
-    _print_rows(providers)
+    _print_rows([provider])
     return 0
 
 

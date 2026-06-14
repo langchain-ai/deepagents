@@ -344,6 +344,14 @@ class TestStatus:
         assert code == 0
         assert "missing" in capsys.readouterr().out
 
+    def test_status_requires_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """`status` without a provider points users at `list` instead."""
+        code = run_auth_command(_ns(auth_command="status", provider=None))
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "requires a provider" in err
+        assert "dcode auth list" in err
+
     def test_status_unknown_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
         """An unrecognized provider is not an error: defer auth to the SDK.
 

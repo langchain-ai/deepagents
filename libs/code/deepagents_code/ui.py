@@ -591,7 +591,7 @@ def show_auth_help() -> None:
     console.print("  list|ls               List providers and their status")
     console.print("  set <provider>        Store an API key (read from stdin)")
     console.print("  remove <provider>     Remove a stored credential (rm|delete)")
-    console.print("  status [<provider>]   Show resolution source for one or all")
+    console.print("  status <provider>     Show resolution source for one provider")
     console.print("  path                  Print the resolved auth.json path")
     console.print()
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)

@@ -50,6 +50,7 @@ log of all evicted messages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 import warnings
@@ -182,6 +183,41 @@ class SummarizationDefaults(TypedDict):
     trigger: ContextSize
     keep: ContextSize
     truncate_args_settings: TruncateArgsSettings
+
+
+def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
+    """Determine whether `counter` accepts a `tools` keyword argument.
+
+    The `TokenCounter` contract only requires accepting messages, but the
+    default counter (and most modern ones) also accept `tools=` so tool schemas
+    contribute to the count. Rather than probe by calling and catching
+    `TypeError` — which cannot distinguish a signature that rejects `tools`
+    from a genuine `TypeError` raised inside the counter's body — the signature
+    is inspected directly.
+
+    Args:
+        counter: The token-counting callable to inspect.
+
+    Returns:
+        `True` if the signature declares a `tools` parameter or accepts
+        arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
+        not, or `None` when the signature cannot be introspected (some C-level
+        callables expose no signature), signaling that callers should fall back
+        to probing.
+    """
+    try:
+        parameters = inspect.signature(counter).parameters
+    except (TypeError, ValueError):
+        return None
+    for param in parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == "tools" and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
 
 
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
@@ -326,6 +362,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
+
+        # Whether the configured token counter accepts a `tools` kwarg. Resolved
+        # once here (the counter is fixed after construction) so the per-call
+        # token count never pays signature-introspection cost. `None` means the
+        # signature could not be introspected, so `_count_tokens` probes instead.
+        self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -711,28 +753,64 @@ A condensed summary follows:
             }
         return tool_call
 
-    def _truncate_args(
+    def _count_tokens(
         self,
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> int:
+        """Count tokens for messages plus optional system message and tools.
+
+        Args:
+            messages: Messages to count.
+            system_message: Optional system message prepended before counting.
+            tools: Optional tools whose schemas contribute to the count.
+
+        Returns:
+            Total token count. Counts without `tools` when the configured
+                `token_counter` does not accept a `tools` keyword. When the
+                counter's signature is introspectable, a `TypeError` raised
+                inside the counter's own body is never masked — it propagates so
+                a broken counter is not hidden behind a silently wrong count.
+                Counters whose signature cannot be introspected are probed
+                instead, and only there does a `TypeError` fall back to counting
+                without `tools`.
+        """
+        counted_messages = [system_message, *messages] if system_message is not None else messages
+        if self._counter_accepts_tools is True:
+            # `tools=` is absent from the `TokenCounter` protocol but accepted
+            # here: the signature check above confirmed the counter takes it.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        if self._counter_accepts_tools is False:
+            return self.token_counter(counted_messages)
+        # Signature could not be introspected; probe defensively. This is the
+        # only path that swallows a `TypeError`, and only for counters whose
+        # signature is opaque (some C-level callables expose no signature).
+        try:
+            # `tools=` is outside the `TokenCounter` protocol; the probe verifies
+            # acceptance at runtime, falling back below if it is rejected.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        except TypeError:
+            return self.token_counter(counted_messages)
+
+    def _truncate_args(
+        self,
+        messages: list[AnyMessage],
+        total_tokens: int,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
         Args:
             messages: Messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
+            total_tokens: Precomputed token count for `messages` (plus system
+                message and tools). Counting tools is expensive (schema
+                conversion per tool), so the caller counts once and shares the
+                result across the truncation and summarization checks.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        counted_messages = [system_message, *messages] if system_message is not None else messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
@@ -960,19 +1038,19 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -1081,19 +1159,19 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages

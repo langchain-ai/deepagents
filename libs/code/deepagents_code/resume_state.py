@@ -33,6 +33,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+from deepagents_code._cli_context import CLIContextSchema
+
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
@@ -72,9 +74,12 @@ def _extract_model_spec(runtime: Runtime[ContextT]) -> str | None:
     callers) or the field is unset/blank.
     """
     ctx = getattr(runtime, "context", None)
-    if not isinstance(ctx, dict):
+    if isinstance(ctx, CLIContextSchema):
+        spec = ctx.effective_model
+    elif isinstance(ctx, dict):
+        spec = ctx.get("effective_model")
+    else:
         return None
-    spec = ctx.get("effective_model")
     if isinstance(spec, str) and spec:
         return spec
     return None

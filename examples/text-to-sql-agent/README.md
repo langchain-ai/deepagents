@@ -45,7 +45,7 @@ curl -L -o chinook.db https://github.com/lerocha/chinook-database/raw/master/Chi
 # Using uv (recommended)
 uv venv --python 3.11
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
+uv sync
 ```
 
 1. Set up your environment variables:
@@ -221,20 +221,6 @@ text-to-sql-agent/
 └── README.md                     # This file
 ```
 
-## Requirements
-
-All dependencies are specified in `pyproject.toml`:
-
-- deepagents >= 0.3.5
-- langchain >= 1.2.3
-- langchain-anthropic >= 1.3.1
-- langchain-community >= 0.3.0
-- langgraph >= 1.0.6
-- sqlalchemy >= 2.0.0
-- python-dotenv >= 1.0.0
-- tavily-python >= 0.5.0
-- rich >= 13.0.0
-
 ## LangSmith Integration
 
 ### Setup
@@ -273,6 +259,8 @@ View your traces at: <https://smith.langchain.com/>
 - [LangChain](https://www.langchain.com/)
 - [Claude Sonnet 4.5](https://www.anthropic.com/claude)
 - [Chinook Database](https://github.com/lerocha/chinook-database)
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ## License
 

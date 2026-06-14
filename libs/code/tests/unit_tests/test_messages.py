@@ -2229,7 +2229,6 @@ class TestUserMessageCancelled:
 
     async def test_set_cancelled_adds_dim_class(self) -> None:
         """`set_cancelled` adds the `-cancelled` class that dims the prompt."""
-        from textual.app import App, ComposeResult
 
         class _Harness(App[None]):
             def compose(self) -> ComposeResult:

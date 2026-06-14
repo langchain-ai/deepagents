@@ -217,6 +217,13 @@ def _known_providers() -> list[str]:
     package is installed, plus any provider with a stored credential or an
     `api_key_env` declared in `config.toml` (always shown so stale keys can be
     cleaned up and explicit declarations stay visible).
+
+    Callers must invoke `_warn_if_store_unreadable` first: a corrupt store
+    collapses the stored-credential arm to the empty set below (so a
+    stored-only provider silently drops out of the listing), and only that
+    warning tells the user the rows may be incomplete. The `logger.warning`
+    here is invisible at the default CLI log level, so it is a debugging
+    breadcrumb, not the user-facing signal.
     """
     from deepagents_code import auth_store
     from deepagents_code.model_config import (
@@ -329,6 +336,16 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
             )
             return 1
         key = sys.stdin.read()
+        if not key.strip():
+            # Mirror the `--from-env` empty-var message so an empty pipe gives a
+            # specific, actionable error here rather than the generic
+            # "API key cannot be empty" `ValueError` raised later by
+            # `set_stored_key`. The key value is never echoed.
+            print(  # noqa: T201
+                "Error: no API key received on stdin.",
+                file=sys.stderr,
+            )
+            return 1
 
     try:
         outcome = auth_store.set_stored_key(

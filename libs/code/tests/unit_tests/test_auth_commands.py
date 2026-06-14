@@ -90,6 +90,44 @@ class TestSet:
         assert code == 0
         assert auth_store.get_stored_key("openai") == "sk-openai-abc"
 
+    def test_set_from_env_takes_precedence_over_stdin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--from-env` wins over a piped key and never consumes stdin."""
+        monkeypatch.setenv("MY_KEY", "sk-from-env")
+        stdin = io.StringIO("sk-from-stdin\n")
+        monkeypatch.setattr(sys, "stdin", stdin)
+        code = run_auth_command(
+            _ns(auth_command="set", provider="openai", from_env="MY_KEY")
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("openai") == "sk-from-env"
+        # stdin was not read: an unread StringIO is still at position 0.
+        assert stdin.tell() == 0
+
+    def test_set_from_env_strips_surrounding_whitespace(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A key copied from an env var is stored stripped of surrounding space."""
+        monkeypatch.setenv("MY_KEY", "  sk-padded-key  \n")
+        code = run_auth_command(
+            _ns(auth_command="set", provider="openai", from_env="MY_KEY")
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("openai") == "sk-padded-key"
+
+    def test_set_from_whitespace_only_env_fails(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A whitespace-only env var is rejected, exercising the `strip()` arm."""
+        monkeypatch.setenv("MY_KEY", "   \n")
+        code = run_auth_command(
+            _ns(auth_command="set", provider="groq", from_env="MY_KEY")
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("groq") is None
+        assert "MY_KEY is not set or is empty" in capsys.readouterr().err
+
     def test_set_from_stdin_preserves_existing_base_url(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -305,6 +343,22 @@ class TestStatus:
         code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
         assert code == 0
         assert "missing" in capsys.readouterr().out
+
+    def test_status_unknown_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """An unrecognized provider is not an error: defer auth to the SDK.
+
+        `status` accepts an explicit provider without validating it against the
+        known set, so a name that is neither stored, installed, nor declared in
+        `config.toml` reports `credentials unknown` and exits `0` rather than
+        failing.
+        """
+        code = run_auth_command(
+            _ns(auth_command="status", provider="zzz-nonexistent-provider")
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "zzz-nonexistent-provider" in out
+        assert "credentials unknown" in out
 
     def test_status_single_provider_warns_when_store_corrupt(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

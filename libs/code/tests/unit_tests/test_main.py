@@ -178,6 +178,38 @@ class TestStartupAutoUpdate:
         restart.assert_not_called()
         console.print.assert_not_called()
 
+    def test_in_session_update_already_installed_skips(self) -> None:
+        """An in-session `/update` already on disk must not re-upgrade.
+
+        The cache reports a newer version than the baked-in `__version__`,
+        but the on-disk install already satisfies it, so the upgrade and
+        restart are skipped silently.
+        """
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        console.print.assert_not_called()
+
     def test_debug_update_skips_install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """DEBUG_UPDATE announces the update but skips the actual install."""
         console = MagicMock()

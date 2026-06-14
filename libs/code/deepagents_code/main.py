@@ -151,6 +151,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         format_release_age_parenthetical,
         get_cached_update_available,
         is_auto_update_enabled,
+        is_installed_version_at_least,
         perform_upgrade,
         upgrade_command,
     )
@@ -162,6 +163,12 @@ def _run_startup_auto_update(console: "Console") -> None:
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
         available, latest = get_cached_update_available()
         if not available or latest is None:
+            return
+        if is_installed_version_at_least(latest):
+            # The on-disk install already satisfies `latest` (e.g. the user ran
+            # `/update` in-session). `get_cached_update_available` compares the
+            # baked-in `__version__`, which lags an in-session upgrade, so
+            # re-running the upgrade here would be a redundant no-op and restart.
             return
         if restarted_for == latest:
             # Already restarted after upgrading to this version, yet it still
@@ -1204,7 +1211,7 @@ def parse_args() -> argparse.Namespace:
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution (default: none - local only). "
-            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop, vercel. "
             "Third-party and config-declared providers are also accepted. "
             "Pass --sandbox with no value to use [sandboxes].default from "
             "config (keep the bare form last on the command line so a "
@@ -1216,7 +1223,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-id",
         metavar="ID",
-        help="Existing sandbox ID to reuse (skips creation and cleanup)",
+        help="Existing sandbox ID to attach to",
     )
 
     parser.add_argument(

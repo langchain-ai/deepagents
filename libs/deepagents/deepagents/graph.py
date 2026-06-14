@@ -859,7 +859,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             "recursion_limit": 9_999,
             "metadata": {
                 "ls_integration": "deepagents",
-                "versions": {"deepagents": __version__},
+                "lc_versions": {"deepagents": __version__},
                 "lc_agent_name": name,
             },
         }

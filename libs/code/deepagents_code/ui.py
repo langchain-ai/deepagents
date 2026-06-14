@@ -136,12 +136,10 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Agentcore/Modal/Daytona/Runloop/Vercel"
         " require downloading extras"
     )
-    console.print(
-        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
-    )
+    console.print("  --sandbox-id ID            Attach to existing sandbox")
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
         "                             Snapshot (langsmith) or blueprint (runloop)"

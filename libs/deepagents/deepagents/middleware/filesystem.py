@@ -958,7 +958,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(
+        def _handle_read_result(  # noqa: PLR0911  # explicit returns keep each read-result shape isolated
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
@@ -990,6 +990,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="error",
+                )
+
+            if read_result.content_blocks is not None:
+                media_type = next(
+                    (block.get("mime_type") for block in read_result.content_blocks if block.get("mime_type")),
+                    None,
+                )
+                return ToolMessage(
+                    content_blocks=read_result.content_blocks,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs={
+                        "read_file_path": validated_path,
+                        "read_file_media_type": media_type,
+                    },
+                    status="success",
                 )
 
             if read_result.file_data is None:

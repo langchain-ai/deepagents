@@ -1500,6 +1500,46 @@ class TestFilesystemMiddleware:
         expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
         assert result.content[0]["mime_type"] == expected_mime
 
+    def test_read_file_uses_backend_supplied_content_blocks(self):
+        """Provider upload backends can return native file refs without inline bytes (#2630)."""
+
+        class UploadedFileBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    content_blocks=[
+                        {
+                            "type": "file",
+                            "file_id": "file-abc123",
+                            "mime_type": "application/pdf",
+                        }
+                    ]
+                )
+
+        middleware = FilesystemMiddleware(backend=UploadedFileBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="uploaded-pdf-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.tool_call_id == "uploaded-pdf-1"
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "file"
+        assert result.content[0]["file_id"] == "file-abc123"
+        assert result.content[0]["mime_type"] == "application/pdf"
+        assert "base64" not in result.content[0]
+        assert result.additional_kwargs["read_file_path"] == "/docs/report.pdf"
+        assert result.additional_kwargs["read_file_media_type"] == "application/pdf"
+
     def test_read_file_empty_mapped_binary_returns_empty_content_warning(self):
         """Empty reads of mapped binary extensions (e.g. .pdf) return the empty-file warning (#3664)."""
 

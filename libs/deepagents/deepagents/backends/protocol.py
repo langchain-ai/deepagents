@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages.content import ContentBlock
 from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
@@ -187,10 +188,13 @@ class ReadResult:
     Attributes:
         error: Error message on failure, None on success.
         file_data: FileData dict on success, None on failure.
+        content_blocks: Provider-ready content blocks on success, None when the
+            middleware should derive blocks from `file_data`.
     """
 
     error: str | None = None
     file_data: FileData | None = None
+    content_blocks: list[ContentBlock] | None = None
 
 
 class _Unset:
@@ -383,7 +387,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content.
 
         Args:
             file_path: Absolute path to the file to read. Must start with '/'.
@@ -391,10 +395,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read. Default: 2000.
 
         Returns:
-            String containing file content formatted with line numbers (cat -n format),
-            starting at line 1. Lines longer than 2000 characters are truncated.
-
-            Returns an error string if the file doesn't exist or can't be read.
+            `ReadResult` containing file data, provider-ready content blocks,
+            or an error if the file doesn't exist or can't be read.
         """
         raise NotImplementedError
 

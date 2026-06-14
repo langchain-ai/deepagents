@@ -8008,6 +8008,10 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
+        # Drop the tracked in-flight prompt: its widget is about to leave the
+        # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
+        # nothing to dim" invariant self-enforcing regardless of caller timing.
+        self._active_user_message = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()

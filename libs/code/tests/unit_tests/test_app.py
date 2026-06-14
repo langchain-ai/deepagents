@@ -5222,6 +5222,27 @@ class TestShellCommandInterrupt:
 
         assert app._pending_shell_messages == []
 
+    async def test_clear_messages_drops_active_user_message(self) -> None:
+        """`_clear_messages` must drop the tracked in-flight prompt reference.
+
+        The widget is removed from the DOM during clear, so the pointer must
+        not outlive it — otherwise a later interrupt would dim a detached
+        widget the user can no longer see.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            user_message = UserMessage("running prompt")
+            messages = app.query_one("#messages", Container)
+            await messages.mount(user_message)
+            app._active_user_message = user_message
+            await pilot.pause()
+
+            await app._clear_messages()
+
+            assert app._active_user_message is None
+
     async def test_pending_shell_flush_failure_drops_buffer(self) -> None:
         """A checkpoint-write failure must not raise and must clear the buffer."""
         from langchain_core.messages import AIMessage, HumanMessage

@@ -8225,6 +8225,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return

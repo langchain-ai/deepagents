@@ -94,6 +94,20 @@ upgraded with a different package manager, because that can update a separate
 environment from the one currently providing `dcode`.
 """
 
+_UV_PRERELEASE_UPGRADE_COMMAND = "uv tool upgrade deepagents-code --prerelease allow"
+"""uv upgrade command that opts into alpha/beta/rc release resolution."""
+
+_PRERELEASE_UNSUPPORTED_MESSAGE = (
+    "Pre-release updates aren't supported for this install. Reinstall with "
+    "pre-releases enabled:\n"
+    '  curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash'
+)
+"""User-facing reason a pre-release upgrade is refused on non-uv installs.
+
+Points at the install script (uv under the hood) rather than raw uv commands,
+since that one-liner is the path we promote.
+"""
+
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
@@ -650,16 +664,23 @@ def clear_update_notified() -> None:
     _write_update_state({}, remove_keys=("notified_at", "notified_version"))
 
 
-def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
+def is_update_available(
+    *,
+    bypass_cache: bool = False,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str | None]:
     """Check whether a newer version of deepagents-code is available.
 
     When the installed version is a pre-release (e.g. `0.0.35a1`),
     pre-release versions on PyPI are included in the comparison so alpha
     testers are notified of newer alphas and the eventual stable release.
-    Stable installs only compare against stable PyPI releases.
+    Stable installs only compare against stable PyPI releases unless
+    `include_prereleases` is explicitly set.
 
     Args:
         bypass_cache: Skip the cache and always hit PyPI.
+        include_prereleases: Override whether alpha/beta/rc releases are
+            considered. When `None`, this follows the installed version.
 
     Returns:
         A `(available, latest)` tuple.
@@ -682,7 +703,10 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
         )
         return False, None
 
-    include_prereleases = installed.is_prerelease
+    include_prereleases = _resolve_include_prereleases(
+        include_prereleases,
+        installed=installed,
+    )
     latest = get_latest_version(
         bypass_cache=bypass_cache,
         include_prereleases=include_prereleases,
@@ -700,6 +724,37 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
 # ---------------------------------------------------------------------------
 # Install method detection
 # ---------------------------------------------------------------------------
+
+
+def _resolve_include_prereleases(
+    include_prereleases: bool | None,
+    *,
+    installed: Version | None = None,
+) -> bool:
+    """Resolve update channel preference from the requested or installed channel.
+
+    Args:
+        include_prereleases: Explicit channel preference, or `None` to infer
+            from the installed version.
+        installed: Parsed installed version to reuse when the caller already
+            has one.
+
+    Returns:
+        `True` when pre-release versions should be considered.
+    """
+    if include_prereleases is not None:
+        return include_prereleases
+    if installed is None:
+        try:
+            installed = _parse_version(__version__)
+        except InvalidVersion:
+            logger.warning(
+                "Installed version %r is not PEP 440 compliant; "
+                "defaulting to stable-only upgrades",
+                __version__,
+            )
+            return False
+    return installed.is_prerelease
 
 
 def detect_install_method() -> InstallMethod:
@@ -729,7 +784,11 @@ def detect_install_method() -> InstallMethod:
     return "other"
 
 
-def upgrade_command(method: InstallMethod | None = None) -> str:
+def upgrade_command(
+    method: InstallMethod | None = None,
+    *,
+    include_prereleases: bool | None = None,
+) -> str:
     """Return the shell command to upgrade `deepagents-code`.
 
     Falls back to the documented uv command for display-only guidance.
@@ -738,10 +797,43 @@ def upgrade_command(method: InstallMethod | None = None) -> str:
         method: Install method override.
 
             Auto-detected if `None`.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel. When `True`,
+            returns the uv pre-release command regardless of `method`, since
+            only uv can be steered onto the pre-release channel.
     """
+    include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if include_prereleases:
+        return _UV_PRERELEASE_UPGRADE_COMMAND
     if method is None:
         method = detect_install_method()
     return _UPGRADE_COMMANDS.get(method, FALLBACK_UPGRADE_COMMAND)
+
+
+def prerelease_upgrade_supported(
+    method: InstallMethod | None = None,
+) -> tuple[bool, str | None]:
+    """Return whether pre-release upgrades are supported for the install method.
+
+    Pre-release channel switching is only safe for `uv tool` installs, where
+    `uv tool upgrade --prerelease allow` re-resolves against the pre-release
+    feed. Other package managers can't be steered onto that channel, so callers
+    should refuse before promising an upgrade.
+
+    Args:
+        method: Install method override.
+
+            Auto-detected if `None`.
+
+    Returns:
+        A `(supported, reason)` tuple. `reason` is `None` when supported, else a
+        user-facing explanation of why the pre-release upgrade is refused.
+    """
+    if method is None:
+        method = detect_install_method()
+    if method != "uv":
+        return False, _PRERELEASE_UNSUPPORTED_MESSAGE
+    return True, None
 
 
 def cleanup_update_logs(
@@ -921,6 +1013,7 @@ async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
+    include_prereleases: bool | None = None,
 ) -> tuple[bool, str]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -930,6 +1023,9 @@ async def perform_upgrade(
     Args:
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel. Pre-release
+            upgrades require the uv install method; returns failure otherwise.
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
@@ -944,10 +1040,13 @@ async def perform_upgrade(
             "`uv tool install -U deepagents-code` or upgrade with the package "
             "manager originally used for this install."
         )
+    resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if resolved_include_prereleases:
+        supported, reason = prerelease_upgrade_supported(method)
+        if not supported:
+            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
 
-    cmd = _UPGRADE_COMMANDS.get(method)
-    if cmd is None:
-        return False, f"No upgrade command for install method: {method}"
+    cmd = upgrade_command(method, include_prereleases=resolved_include_prereleases)
 
     # Skip brew if binary not on PATH
     if method == "brew" and not shutil.which("brew"):

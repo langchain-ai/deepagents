@@ -1877,6 +1877,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._active_user_message: UserMessage | None = None
+        """The `UserMessage` widget that started the in-flight turn, tracked so
+        it can be dimmed if the turn is interrupted."""
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -3759,19 +3763,44 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Failed to persist seen-version marker", exc_info=True)
 
-    async def _handle_update_command(self) -> None:
-        """Handle the `/update` slash command — check for and install updates."""
-        await self._mount_message(UserMessage("/update"))
+    async def _handle_update_command(self, command: str = "/update") -> None:
+        """Handle the `/update` slash command — check for and install updates.
+
+        Parses an optional `--prerelease` flag from the raw command line; any
+        other option is rejected with a usage message.
+
+        Args:
+            command: The raw slash-command line as typed, including any options.
+        """
+        parts = command.split()
+        await self._mount_message(UserMessage(command))
+        # Reject typo'd/miscased options (e.g. `--prereleases`, `--PRERELEASE`)
+        # loudly instead of silently downgrading to a stable update — mirroring
+        # the headless path, which also refuses unknown options rather than
+        # silently ignoring them.
+        unknown = [opt for opt in parts[1:] if opt != "--prerelease"]
+        if unknown:
+            await self._mount_message(
+                AppMessage(
+                    f"Unknown option(s) for /update: {' '.join(unknown)}. "
+                    "Usage: /update [--prerelease]",
+                ),
+            )
+            return
+        prerelease_requested = "--prerelease" in parts[1:]
+        include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._env_vars import DEBUG_UPDATE
             from deepagents_code._version import __version__ as cli_version
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                _PRERELEASE_UNSUPPORTED_MESSAGE,
                 format_age_suffix,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
+                prerelease_upgrade_supported,
                 upgrade_command,
             )
 
@@ -3785,10 +3814,23 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            # Refuse pre-release upgrades the install method can't honor before
+            # promising an upgrade or hitting PyPI.
+            if prerelease_requested:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available,
                 bypass_cache=True,
+                include_prereleases=include_prereleases,
             )
             if latest is None:
                 await self._mount_message(
@@ -3827,7 +3869,9 @@ class DeepAgentsApp(App):
                     AppMessage("Skipped update install (debug mode)."),
                 )
                 return
-            success, output = await perform_upgrade()
+            success, output = await perform_upgrade(
+                include_prereleases=include_prereleases,
+            )
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
@@ -3836,7 +3880,7 @@ class DeepAgentsApp(App):
                     ),
                 )
             else:
-                cmd = upgrade_command()
+                cmd = upgrade_command(include_prereleases=include_prereleases)
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
@@ -5617,15 +5661,6 @@ class DeepAgentsApp(App):
 
         return LaunchDependenciesScreen(continue_screen=continue_screen)
 
-    async def _prompt_launch_dependencies(self) -> bool | None:
-        """Show the onboarding dependency summary and wait for a choice.
-
-        Returns:
-            `True` when the user continues, or `None` when setup is skipped.
-        """
-        result = await self._push_screen_wait(self._build_launch_dependencies_screen())
-        return result if result is None or isinstance(result, bool) else None
-
     async def _prompt_launch_dependencies_then_model(
         self,
     ) -> tuple[bool, tuple[str, str] | None]:
@@ -6500,8 +6535,8 @@ class DeepAgentsApp(App):
             await self._show_thread_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)
-        elif cmd == "/update":
-            await self._handle_update_command()
+        elif cmd == "/update" or cmd.startswith("/update "):
+            await self._handle_update_command(command)
         elif cmd == "/auto-update":
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
@@ -6951,41 +6986,6 @@ class DeepAgentsApp(App):
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
-    def _resolve_offload_budget_str(self) -> str | None:
-        """Resolve the offload retention budget as a human-readable string.
-
-        Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor. Call only from a worker thread; cold imports
-        and model construction run under the process-wide import lock.
-
-        Returns:
-            A string like `"20.0K (10% of 200.0K)"` or
-            `"last 6 messages"`, or `None` if the budget cannot be determined.
-        """
-        from deepagents_code.config import settings
-
-        try:
-            with _DEEPAGENTS_IMPORT_LOCK:
-                from deepagents.middleware.summarization import (
-                    compute_summarization_defaults,
-                )
-
-                model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = _create_model_with_deepagents_import_lock(
-                    model_spec,
-                    profile_overrides=self._profile_override,
-                )
-                defaults = compute_summarization_defaults(result.model)
-                from deepagents_code.offload import format_offload_limit
-
-                return format_offload_limit(
-                    defaults["keep"],
-                    settings.model_context_limit,
-                )
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to compute offload budget string", exc_info=True)
-            return None
-
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
         from deepagents_code.config import settings
@@ -7124,8 +7124,10 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
-        # Mount the user message
-        await self._mount_message(UserMessage(message))
+        # Mount the user message, tracking it so it can be dimmed on interrupt.
+        user_message = UserMessage(message)
+        await self._mount_message(user_message)
+        self._active_user_message = user_message
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -7342,6 +7344,7 @@ class DeepAgentsApp(App):
         """Clean up after agent task completes or is cancelled."""
         self._agent_running = False
         self._agent_worker = None
+        self._active_user_message = None
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -8001,6 +8004,10 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
+        # Drop the tracked in-flight prompt: its widget is about to leave the
+        # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
+        # nothing to dim" invariant self-enforcing regardless of caller timing.
+        self._active_user_message = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -8218,6 +8225,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
@@ -8348,6 +8357,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
 
@@ -8749,23 +8760,6 @@ class DeepAgentsApp(App):
             ),
             result_callback=result_callback,
         )
-
-    async def _prompt_model_selector(
-        self,
-        *,
-        curated: bool = False,
-    ) -> tuple[str, str] | None:
-        """Show the model selector and wait for a choice.
-
-        Args:
-            curated: Whether to use the shorter onboarding model list.
-
-        Returns:
-            `(model_spec, provider)` on selection, or `None` on cancel.
-        """
-        screen = self._build_model_selector_screen(curated=curated)
-        result = await self._push_screen_wait(screen)
-        return result if result is None or isinstance(result, tuple) else None
 
     async def _show_model_selector(
         self,

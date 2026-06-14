@@ -323,6 +323,16 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
     Returns:
         Process exit code (`0` on success, `1` on a recoverable input error).
     """
+    from deepagents_code.model_config import CODEX_PROVIDER
+
+    if provider == CODEX_PROVIDER:
+        print(  # noqa: T201
+            "Error: openai_codex uses ChatGPT OAuth, not API keys. "
+            "Run `/auth` and select openai_codex to sign in.",
+            file=sys.stderr,
+        )
+        return 1
+
     import os
 
     from deepagents_code import auth_store
@@ -379,6 +389,25 @@ def _run_remove(provider: str) -> int:
     Returns:
         Process exit code (`0`).
     """
+    from deepagents_code.model_config import CODEX_PROVIDER
+
+    if provider == CODEX_PROVIDER:
+        from deepagents_code.integrations import openai_codex
+
+        try:
+            removed = openai_codex.logout()
+        except OSError as exc:
+            print(  # noqa: T201
+                f"Error: failed to remove stored credential for {provider}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if removed:
+            print(f"Removed stored credential for {provider}.")  # noqa: T201
+        else:
+            print(f"No stored credential for {provider}.")  # noqa: T201
+        return 0
+
     from deepagents_code import auth_store
 
     try:

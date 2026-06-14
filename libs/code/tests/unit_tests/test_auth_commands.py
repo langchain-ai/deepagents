@@ -270,6 +270,45 @@ class TestSet:
         assert "world-readable" in captured.err
         assert "sk-ant-secret" not in captured.err
 
+    def test_set_rejects_openai_codex_without_reading_key(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`openai_codex` is OAuth-only, so CLI API-key storage is rejected."""
+        from deepagents_code.model_config import CODEX_PROVIDER
+
+        stdin = io.StringIO("sk-ignored\n")
+        monkeypatch.setattr(sys, "stdin", stdin)
+
+        code = run_auth_command(
+            _ns(auth_command="set", provider=CODEX_PROVIDER, from_env=None)
+        )
+
+        assert code == 1
+        assert stdin.tell() == 0
+        assert auth_store.get_stored_key(CODEX_PROVIDER) is None
+        err = capsys.readouterr().err
+        assert "ChatGPT OAuth" in err
+        assert "openai_codex" in err
+        assert "sk-ignored" not in err
+
+    def test_set_from_env_rejects_openai_codex(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--from-env` cannot create ignored API keys for `openai_codex`."""
+        from deepagents_code.model_config import CODEX_PROVIDER
+
+        monkeypatch.setenv("MY_KEY", "sk-ignored")
+
+        code = run_auth_command(
+            _ns(auth_command="set", provider=CODEX_PROVIDER, from_env="MY_KEY")
+        )
+
+        assert code == 1
+        assert auth_store.get_stored_key(CODEX_PROVIDER) is None
+        err = capsys.readouterr().err
+        assert "ChatGPT OAuth" in err
+        assert "sk-ignored" not in err
+
 
 @pytest.mark.usefixtures("fake_home")
 class TestRemove:
@@ -303,6 +342,65 @@ class TestRemove:
         code = run_auth_command(_ns(auth_command="remove", provider="anthropic"))
         assert code == 1
         assert "Error:" in capsys.readouterr().err
+
+    def test_remove_openai_codex_deletes_oauth_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`openai_codex` removal targets the ChatGPT OAuth token store."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import CODEX_PROVIDER
+
+        token = tmp_path / "chatgpt-auth.json"
+        token.write_text("token", encoding="utf-8")
+        monkeypatch.setattr(openai_codex, "default_store_path", lambda: token)
+
+        code = run_auth_command(_ns(auth_command="remove", provider=CODEX_PROVIDER))
+
+        assert code == 0
+        assert not token.exists()
+        assert auth_store.get_stored_key(CODEX_PROVIDER) is None
+        assert "Removed stored credential for openai_codex." in capsys.readouterr().out
+
+    def test_remove_openai_codex_absent_is_noop(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Missing ChatGPT OAuth tokens are treated like absent API keys."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import CODEX_PROVIDER
+
+        token = tmp_path / "missing-chatgpt-auth.json"
+        monkeypatch.setattr(openai_codex, "default_store_path", lambda: token)
+
+        code = run_auth_command(_ns(auth_command="remove", provider=CODEX_PROVIDER))
+
+        assert code == 0
+        assert "No stored credential for openai_codex." in capsys.readouterr().out
+
+    def test_remove_openai_codex_reports_delete_error(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """OAuth token deletion failures return a clean CLI error."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import CODEX_PROVIDER
+
+        def _raise() -> bool:
+            msg = "permission denied"
+            raise OSError(msg)
+
+        monkeypatch.setattr(openai_codex, "logout", _raise)
+
+        code = run_auth_command(_ns(auth_command="remove", provider=CODEX_PROVIDER))
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "failed to remove stored credential for openai_codex" in err
+        assert "permission denied" in err
 
 
 @pytest.mark.usefixtures("fake_home")

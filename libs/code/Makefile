@@ -95,19 +95,19 @@ commands-catalog-check: ## Verify COMMANDS.md matches the slash-command registry
 
 bootstrap: ## Install dev dependencies and git hooks for local development
 	uv sync --group test
-	cd $(REPO_ROOT) && uvx pre-commit install --install-hooks
+	cd "$(REPO_ROOT)" && uvx pre-commit install --install-hooks
 	@echo "✅ Dev environment ready: deps synced and git hooks installed."
 
 check: ## Run the full local CI gauntlet (lint, types, imports, tests, repo gates)
 check: lint check_imports test
 	@echo "🔍 Verifying extras stay in sync with required deps..."
-	uv run --all-groups python $(REPO_ROOT)/.github/scripts/check_extras_sync.py pyproject.toml
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_extras_sync.py" pyproject.toml
 	@echo "🔍 Verifying pyproject.toml and _version.py agree..."
-	uv run --all-groups python $(REPO_ROOT)/.github/scripts/check_version_equality.py
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_version_equality.py"
 	@echo "🔒 Verifying uv.lock is up-to-date..."
 	uv lock --check
 	@echo "🔗 Checking SDK pin against workspace SDK (advisory)..."
-	-uv run --all-groups python $(REPO_ROOT)/.github/scripts/check_sdk_pin.py
+	-uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_sdk_pin.py"
 	@echo "✅ All local CI checks passed!"
 
 ######################

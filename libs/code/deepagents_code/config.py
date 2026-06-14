@@ -1759,11 +1759,6 @@ class Settings:
         return self._format_reload_changes(previous, refreshed)
 
     @property
-    def has_openai(self) -> bool:
-        """Check if OpenAI API key is configured."""
-        return self.openai_api_key is not None
-
-    @property
     def has_anthropic(self) -> bool:
         """Check if Anthropic API key is configured."""
         return self.anthropic_api_key is not None
@@ -1772,11 +1767,6 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
-
-    @property
-    def has_nvidia(self) -> bool:
-        """Check if NVIDIA API key is configured."""
-        return self.nvidia_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -2035,50 +2025,6 @@ class Settings:
             List of extra skill directory paths, or empty list if not configured.
         """
         return self.extra_skills_dirs or []
-
-
-class SessionState:
-    """Mutable session state shared across the app, adapter, and agent.
-
-    Tracks runtime flags like auto-approve that can be toggled during a
-    session via keybindings or the HITL approval menu's "Auto-approve all"
-    option.
-
-    The `auto_approve` flag controls whether tool calls (shell execution, file
-    writes/edits, web search, URL fetch) require user confirmation before running.
-    """
-
-    def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
-        """Initialize session state with optional flags.
-
-        Args:
-            auto_approve: Whether to auto-approve tool calls without
-                prompting.
-
-                Can be toggled at runtime via Shift+Tab or the HITL
-                approval menu.
-            no_splash: Whether to skip displaying the splash screen on startup.
-        """
-        self.auto_approve = auto_approve
-        self.no_splash = no_splash
-        self.exit_hint_until: float | None = None
-        self.exit_hint_handle = None
-        from deepagents_code.sessions import generate_thread_id
-
-        self.thread_id = generate_thread_id()
-
-    def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return the new state.
-
-        Called by the Shift+Tab keybinding in the Textual app.
-
-        When auto-approve is on, all tool calls execute without prompting.
-
-        Returns:
-            The new `auto_approve` state after toggling.
-        """
-        self.auto_approve = not self.auto_approve
-        return self.auto_approve
 
 
 DANGEROUS_SHELL_PATTERNS = (

@@ -184,14 +184,18 @@ def _resolution_label(status: ProviderAuthStatus) -> str:
     Returns:
         A short, terminal-safe label describing where credentials resolve from.
     """
-    from deepagents_code.model_config import ProviderAuthSource, ProviderAuthState
+    from deepagents_code.model_config import (
+        ProviderAuthSource,
+        ProviderAuthState,
+        resolved_env_var_name,
+    )
 
     state = status.state
     if state is ProviderAuthState.CONFIGURED:
         if status.source is ProviderAuthSource.STORED:
             return "stored"
         if status.source is ProviderAuthSource.ENV and status.env_var:
-            return f"env: {status.env_var}"
+            return f"env: {resolved_env_var_name(status.env_var)}"
         return "configured"
     if state is ProviderAuthState.MISSING:
         return "missing"

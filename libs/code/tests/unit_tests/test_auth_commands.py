@@ -133,14 +133,25 @@ class TestStatus:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
         code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
         assert code == 0
         assert "env: ANTHROPIC_API_KEY" in capsys.readouterr().out
+
+    def test_status_env_uses_prefixed_override(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-env")
+        code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
+        assert code == 0
+        assert "env: DEEPAGENTS_CODE_ANTHROPIC_API_KEY" in capsys.readouterr().out
 
     def test_status_missing(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
         code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
         assert code == 0
         assert "missing" in capsys.readouterr().out

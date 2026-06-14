@@ -228,6 +228,7 @@ def _known_providers() -> list[str]:
     """
     from deepagents_code import auth_store
     from deepagents_code.model_config import (
+        CODEX_PROVIDER,
         PROVIDER_API_KEY_ENV,
         ModelConfig,
         get_available_models,
@@ -244,7 +245,11 @@ def _known_providers() -> list[str]:
     }
     installed = set(get_available_models().keys())
     well_known_installed = set(PROVIDER_API_KEY_ENV) & installed
-    return sorted(well_known_installed | stored | config_providers)
+    # `openai_codex` uses ChatGPT OAuth through `langchain-openai`, so it has
+    # no API-key env var entry. Mirror the TUI auth manager by showing it when
+    # the OpenAI integration was discovered.
+    codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
+    return sorted(well_known_installed | codex_installed | stored | config_providers)
 
 
 def _warn_if_store_unreadable() -> None:

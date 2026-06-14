@@ -441,6 +441,29 @@ class TestList:
         assert "zzz-config-provider" in capsys.readouterr().out
 
     @pytest.mark.usefixtures("clean_model_caches")
+    def test_list_includes_codex_when_openai_is_installed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`openai_codex` appears with `langchain-openai` despite no API key env."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_available_models",
+            lambda: {"openai": ["gpt-5.3-codex"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+
+        assert _known_providers() == ["openai", "openai_codex"]
+        code = run_auth_command(_ns(auth_command="list"))
+
+        assert code == 0
+        assert "openai_codex" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("clean_model_caches")
     def test_list_empty_when_no_providers(
         self,
         tmp_path: Path,

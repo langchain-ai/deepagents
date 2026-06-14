@@ -315,7 +315,10 @@ class TestSafety:
             return original_open(path, flags, mode, dir_fd=dir_fd)
 
         monkeypatch.setattr(os, "open", boom)
-        with pytest.raises(OSError, match="simulated failure"):
+        # The write `OSError` is wrapped as the documented `RuntimeError` with a
+        # remediation hint; the original message survives in the chained cause
+        # and the failing match here.
+        with pytest.raises(RuntimeError, match="simulated failure"):
             auth_store.set_stored_key("openai", "second")
         # Restore so load_credentials can read.
         monkeypatch.setattr(os, "open", original_open)

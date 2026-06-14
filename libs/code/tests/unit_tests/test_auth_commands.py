@@ -9,12 +9,19 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 from deepagents_code import auth_store
-from deepagents_code.auth_commands import run_auth_command
+from deepagents_code.auth_commands import (
+    _known_providers,
+    _resolution_label,
+    run_auth_command,
+)
 
 
 @pytest.fixture
@@ -28,6 +35,28 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         fake / ".deepagents" / ".state",
     )
     return fake
+
+
+@pytest.fixture
+def clean_model_caches() -> Generator[None]:
+    """Clear `model_config`'s module-level caches around a test.
+
+    `ModelConfig.load()` memoizes the default-path result in a module global,
+    so tests that redirect `DEFAULT_CONFIG_PATH` must clear it before reading
+    and after, lest a warm or freshly-populated cache leak across tests.
+    """
+    from deepagents_code import model_config
+
+    model_config.clear_caches()
+    yield
+    model_config.clear_caches()
+
+
+def _write_corrupt_store() -> None:
+    """Write an unparseable `auth.json` at the resolved store path."""
+    path = auth_store.auth_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not valid json", encoding="utf-8")
 
 
 def _ns(**kwargs: object) -> argparse.Namespace:
@@ -133,6 +162,76 @@ class TestSet:
         assert code == 1
         assert auth_store.get_stored_key("anthropic") is None
 
+    def test_set_whitespace_only_stdin_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A whitespace-only piped key is stripped and rejected, not stored."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("   \n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="anthropic", from_env=None)
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("anthropic") is None
+
+    def test_set_corrupt_store_errors(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A corrupt store fails loudly without echoing the key being stored."""
+        _write_corrupt_store()
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-ant-secret\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="anthropic", from_env=None)
+        )
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "Error:" in err
+        assert "sk-ant-secret" not in err
+
+    def test_set_write_failure_is_clean_error(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An `OSError` on write surfaces as a clean error, not a traceback."""
+
+        def _raise(_data: dict) -> tuple[str, ...]:
+            msg = "No space left on device"
+            raise OSError(msg)
+
+        monkeypatch.setattr(auth_store, "_write_raw", _raise)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-ant-secret\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="anthropic", from_env=None)
+        )
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "Failed to write credential file" in err
+        assert "disk space" in err
+        assert "sk-ant-secret" not in err
+        assert auth_store.get_stored_key("anthropic") is None
+
+    def test_set_surfaces_chmod_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A chmod that cannot lock the file down is surfaced on stderr."""
+        original_chmod = Path.chmod
+
+        def _deny_chmod(self: Path, mode: int) -> None:
+            if self.name == "auth.json":
+                msg = "simulated chmod denial"
+                raise OSError(msg)
+            original_chmod(self, mode)
+
+        monkeypatch.setattr(Path, "chmod", _deny_chmod)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-ant-secret\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="anthropic", from_env=None)
+        )
+        assert code == 0
+        captured = capsys.readouterr()
+        assert auth_store.get_stored_key("anthropic") == "sk-ant-secret"
+        assert "Warning:" in captured.err
+        assert "world-readable" in captured.err
+        assert "sk-ant-secret" not in captured.err
+
 
 @pytest.mark.usefixtures("fake_home")
 class TestRemove:
@@ -145,10 +244,27 @@ class TestRemove:
         assert auth_store.get_stored_key("anthropic") is None
         assert "Removed stored credential for anthropic." in capsys.readouterr().out
 
+    def test_remove_rm_alias(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The `rm` alias removes a stored credential like `remove`/`delete`."""
+        auth_store.set_stored_key("anthropic", "sk-ant")
+        code = run_auth_command(_ns(auth_command="rm", provider="anthropic"))
+        assert code == 0
+        assert auth_store.get_stored_key("anthropic") is None
+        assert "Removed stored credential for anthropic." in capsys.readouterr().out
+
     def test_remove_absent_is_noop(self, capsys: pytest.CaptureFixture[str]) -> None:
         code = run_auth_command(_ns(auth_command="delete", provider="anthropic"))
         assert code == 0
         assert "No stored credential for anthropic." in capsys.readouterr().out
+
+    def test_remove_corrupt_store_errors(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A corrupt store makes `remove` exit non-zero with a clear error."""
+        _write_corrupt_store()
+        code = run_auth_command(_ns(auth_command="remove", provider="anthropic"))
+        assert code == 1
+        assert "Error:" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -189,6 +305,158 @@ class TestStatus:
         code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
         assert code == 0
         assert "missing" in capsys.readouterr().out
+
+    def test_status_single_provider_warns_when_store_corrupt(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A corrupt store is surfaced on stderr instead of a silent `missing`.
+
+        `get_provider_auth_status` swallows the corrupt-store error and would
+        report `missing`; the explicit warning keeps the row from being read as
+        authoritative.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        _write_corrupt_store()
+        code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
+        assert code == 0
+        assert "Warning:" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestList:
+    """`auth list` prints a row per known provider, unioning every source."""
+
+    def test_list_shows_stored_providers(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Stored providers appear, including one with no installed package.
+
+        A stored well-known provider resolves to `stored`; a stored provider
+        the SDK doesn't recognize still appears (proving the `| stored` arm of
+        the union), even though its resolution label is `credentials unknown`.
+        """
+        auth_store.set_stored_key("anthropic", "sk-ant")
+        auth_store.set_stored_key("zzz-custom-provider", "sk-custom")
+        code = run_auth_command(_ns(auth_command="list"))
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "zzz-custom-provider" in out
+        anthropic_row = next(
+            line for line in out.splitlines() if line.startswith("anthropic")
+        )
+        assert "stored" in anthropic_row
+
+    def test_list_ls_alias(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The `ls` alias renders the same listing as `list`."""
+        auth_store.set_stored_key("zzz-custom-provider", "sk-custom")
+        code = run_auth_command(_ns(auth_command="ls"))
+        assert code == 0
+        assert "zzz-custom-provider" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("clean_model_caches")
+    def test_list_includes_config_declared_provider(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A provider declared in `config.toml` with `api_key_env` is listed.
+
+        Exercises the `config_providers` arm of the `_known_providers` union;
+        `DEFAULT_CONFIG_PATH` is not redirected by `fake_home`, so point it at a
+        temp config here.
+        """
+        cfg = tmp_path / "config.toml"
+        cfg.write_text(
+            "[models.providers.zzz-config-provider]\n"
+            'api_key_env = "ZZZ_CONFIG_API_KEY"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", cfg)
+        code = run_auth_command(_ns(auth_command="list"))
+        assert code == 0
+        assert "zzz-config-provider" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("clean_model_caches")
+    def test_list_empty_when_no_providers(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With no installed, stored, or configured providers, say so plainly."""
+        monkeypatch.setattr("deepagents_code.model_config.get_available_models", dict)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+        assert _known_providers() == []
+        code = run_auth_command(_ns(auth_command="list"))
+        assert code == 0
+        assert "No providers found." in capsys.readouterr().out
+
+    def test_list_warns_when_store_corrupt(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A corrupt store is surfaced on stderr while listing continues."""
+        _write_corrupt_store()
+        code = run_auth_command(_ns(auth_command="list"))
+        assert code == 0
+        assert "Warning:" in capsys.readouterr().err
+
+
+class TestResolutionLabel:
+    """`_resolution_label` maps each `ProviderAuthState` to a plain-text source."""
+
+    def test_not_required_uses_detail_then_default(self) -> None:
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+
+        with_detail = ProviderAuthStatus(
+            state=ProviderAuthState.NOT_REQUIRED,
+            provider="ollama",
+            detail="local endpoint",
+        )
+        without_detail = ProviderAuthStatus(
+            state=ProviderAuthState.NOT_REQUIRED, provider="ollama"
+        )
+        assert _resolution_label(with_detail) == "local endpoint"
+        assert _resolution_label(without_detail) == "no API key required"
+
+    def test_implicit_default(self) -> None:
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.IMPLICIT, provider="google_vertexai"
+        )
+        assert _resolution_label(status) == "implicit auth"
+
+    def test_managed_default(self) -> None:
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+
+        status = ProviderAuthStatus(state=ProviderAuthState.MANAGED, provider="custom")
+        assert _resolution_label(status) == "custom auth"
+
+    def test_unknown_falls_through_to_default(self) -> None:
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+
+        status = ProviderAuthStatus(state=ProviderAuthState.UNKNOWN, provider="mystery")
+        assert _resolution_label(status) == "credentials unknown"
+
+    def test_configured_without_env_var_falls_back(self) -> None:
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider="anthropic",
+            source=ProviderAuthSource.ENV,
+            env_var=None,
+        )
+        assert _resolution_label(status) == "configured"
 
 
 @pytest.mark.usefixtures("fake_home")

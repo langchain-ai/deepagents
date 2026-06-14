@@ -205,6 +205,8 @@ def _resolution_label(status: ProviderAuthStatus) -> str:
         return status.detail or "implicit auth"
     if state is ProviderAuthState.MANAGED:
         return status.detail or "custom auth"
+    # Catch-all for `ProviderAuthState.UNKNOWN` and any state added later, so a
+    # new enum member degrades to a readable label rather than raising here.
     return status.detail or "credentials unknown"
 
 
@@ -237,6 +239,25 @@ def _known_providers() -> list[str]:
     return sorted(well_known_installed | stored | config_providers)
 
 
+def _warn_if_store_unreadable() -> None:
+    """Print a stderr warning when the credential store is present but corrupt.
+
+    `get_provider_auth_status` (via `model_config._has_stored_credential`)
+    swallows a corrupt-store `RuntimeError` and reports `missing`/env-only,
+    which would otherwise make `list`/`status` silently misreport a provider
+    whose stored key cannot be read. The TUI surfaces this with a banner in the
+    `/auth` modal; this is the CLI equivalent so the printed rows are not taken
+    as authoritative when the store is broken.
+    """
+    from deepagents_code import auth_store
+
+    try:
+        auth_store.list_configured_providers()
+    except RuntimeError as exc:
+        # Plain stderr diagnostic (not Rich-styled console output).
+        print(f"Warning: {exc}", file=sys.stderr)  # noqa: T201
+
+
 def _print_rows(providers: list[str]) -> None:
     """Print one `<provider>  <status>` row per provider, column-aligned."""
     from deepagents_code.model_config import get_provider_auth_status
@@ -246,6 +267,7 @@ def _print_rows(providers: list[str]) -> None:
     width = max(len(name) for name in providers)
     for provider in providers:
         label = _resolution_label(get_provider_auth_status(provider))
+        # Plain stdout so rows stay greppable/pipeable, not Rich-styled.
         print(f"{provider.ljust(width)}  {label}")  # noqa: T201
 
 
@@ -255,6 +277,7 @@ def _run_list() -> int:
     Returns:
         Process exit code (`0`).
     """
+    _warn_if_store_unreadable()
     providers = _known_providers()
     if not providers:
         print("No providers found.")  # noqa: T201
@@ -269,6 +292,7 @@ def _run_status(provider: str | None) -> int:
     Returns:
         Process exit code (`0`).
     """
+    _warn_if_store_unreadable()
     providers = [provider] if provider else _known_providers()
     if not providers:
         print("No providers found.")  # noqa: T201
@@ -310,10 +334,10 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
         outcome = auth_store.set_stored_key(
             provider, key, base_url=auth_store.get_stored_base_url(provider)
         )
-    except ValueError as exc:
-        print(f"Error: {exc}.", file=sys.stderr)  # noqa: T201
-        return 1
-    except RuntimeError as exc:
+    except (ValueError, RuntimeError) as exc:
+        # `auth_store` messages never include the secret value. `ValueError`
+        # carries a short fragment, `RuntimeError` a full sentence with a hint;
+        # print verbatim so the two stay consistent and free of double periods.
         print(f"Error: {exc}", file=sys.stderr)  # noqa: T201
         return 1
 

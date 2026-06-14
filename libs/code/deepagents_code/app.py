@@ -5661,15 +5661,6 @@ class DeepAgentsApp(App):
 
         return LaunchDependenciesScreen(continue_screen=continue_screen)
 
-    async def _prompt_launch_dependencies(self) -> bool | None:
-        """Show the onboarding dependency summary and wait for a choice.
-
-        Returns:
-            `True` when the user continues, or `None` when setup is skipped.
-        """
-        result = await self._push_screen_wait(self._build_launch_dependencies_screen())
-        return result if result is None or isinstance(result, bool) else None
-
     async def _prompt_launch_dependencies_then_model(
         self,
     ) -> tuple[bool, tuple[str, str] | None]:
@@ -6993,41 +6984,6 @@ class DeepAgentsApp(App):
             return count_tokens_approximately(messages)
         except Exception:  # best-effort for /tokens display
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
-            return None
-
-    def _resolve_offload_budget_str(self) -> str | None:
-        """Resolve the offload retention budget as a human-readable string.
-
-        Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor. Call only from a worker thread; cold imports
-        and model construction run under the process-wide import lock.
-
-        Returns:
-            A string like `"20.0K (10% of 200.0K)"` or
-            `"last 6 messages"`, or `None` if the budget cannot be determined.
-        """
-        from deepagents_code.config import settings
-
-        try:
-            with _DEEPAGENTS_IMPORT_LOCK:
-                from deepagents.middleware.summarization import (
-                    compute_summarization_defaults,
-                )
-
-                model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = _create_model_with_deepagents_import_lock(
-                    model_spec,
-                    profile_overrides=self._profile_override,
-                )
-                defaults = compute_summarization_defaults(result.model)
-                from deepagents_code.offload import format_offload_limit
-
-                return format_offload_limit(
-                    defaults["keep"],
-                    settings.model_context_limit,
-                )
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to compute offload budget string", exc_info=True)
             return None
 
     async def _handle_offload(self) -> None:
@@ -8804,23 +8760,6 @@ class DeepAgentsApp(App):
             ),
             result_callback=result_callback,
         )
-
-    async def _prompt_model_selector(
-        self,
-        *,
-        curated: bool = False,
-    ) -> tuple[str, str] | None:
-        """Show the model selector and wait for a choice.
-
-        Args:
-            curated: Whether to use the shorter onboarding model list.
-
-        Returns:
-            `(model_spec, provider)` on selection, or `None` on cancel.
-        """
-        screen = self._build_model_selector_screen(curated=curated)
-        result = await self._push_screen_wait(screen)
-        return result if result is None or isinstance(result, tuple) else None
 
     async def _show_model_selector(
         self,

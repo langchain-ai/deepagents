@@ -96,7 +96,7 @@ uv run --group test pytest tests/unit_tests/test_specific.py
 
 ### Repo-wide commands
 
-Run these from the `libs/` directory to fan out across packages:
+Run these from the repository root to fan out across packages:
 
 | Command | What it does |
 | --- | --- |

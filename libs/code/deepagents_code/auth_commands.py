@@ -307,7 +307,9 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
         key = sys.stdin.read()
 
     try:
-        outcome = auth_store.set_stored_key(provider, key)
+        outcome = auth_store.set_stored_key(
+            provider, key, base_url=auth_store.get_stored_base_url(provider)
+        )
     except ValueError as exc:
         print(f"Error: {exc}.", file=sys.stderr)  # noqa: T201
         return 1

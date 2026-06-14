@@ -61,6 +61,40 @@ class TestSet:
         assert code == 0
         assert auth_store.get_stored_key("openai") == "sk-openai-abc"
 
+    def test_set_from_stdin_preserves_existing_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotating a key from stdin keeps the stored endpoint."""
+        auth_store.set_stored_key(
+            "openai", "sk-old", base_url="https://gateway.example/v1"
+        )
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-new\n"))
+
+        code = run_auth_command(
+            _ns(auth_command="set", provider="openai", from_env=None)
+        )
+
+        assert code == 0
+        assert auth_store.get_stored_key("openai") == "sk-new"
+        assert auth_store.get_stored_base_url("openai") == "https://gateway.example/v1"
+
+    def test_set_from_env_preserves_existing_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotating a key from an env var keeps the stored endpoint."""
+        auth_store.set_stored_key(
+            "openai", "sk-old", base_url="https://gateway.example/v1"
+        )
+        monkeypatch.setenv("MY_KEY", "sk-new")
+
+        code = run_auth_command(
+            _ns(auth_command="set", provider="openai", from_env="MY_KEY")
+        )
+
+        assert code == 0
+        assert auth_store.get_stored_key("openai") == "sk-new"
+        assert auth_store.get_stored_base_url("openai") == "https://gateway.example/v1"
+
     def test_set_from_unset_env_fails(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

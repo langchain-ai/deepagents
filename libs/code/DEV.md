@@ -1,5 +1,18 @@
 # Deep Agents Code Development Guide
 
+## First-time setup and local CI parity
+
+Run `make bootstrap` once after cloning. It syncs the `test` dependency group
+and installs the repo's git hooks (`pre-commit` + `commit-msg`), so the same
+checks CI runs locally fire before you push.
+
+Before opening a PR, run `make check` from `libs/code`. It runs the full local
+gauntlet that CI gates on for this package — lint, types, import checks, unit
+tests — plus the cross-cutting repo gates (extras sync, version equality,
+lockfile freshness) and an advisory `deepagents` SDK-pin check. This avoids the
+"green locally, red in CI" round-trips. Use `make lint_diff` for a faster pass
+that only lints files changed against `main`.
+
 ## Live CSS development with Textual devtools
 
 Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.

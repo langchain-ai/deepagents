@@ -114,5 +114,9 @@ def main(pyproject_path: Path) -> int:
 
 
 if __name__ == "__main__":
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("pyproject.toml")
-    raise SystemExit(main(path))
+    paths = [Path(p) for p in sys.argv[1:]] or [Path("pyproject.toml")]
+    exit_code = 0
+    for path in paths:
+        if main(path) != 0:
+            exit_code = 1
+    raise SystemExit(exit_code)

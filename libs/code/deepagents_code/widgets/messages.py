@@ -137,7 +137,12 @@ class UserMessage(Static):
         border-left: wide $primary;
         pointer: text;
     }
+
+    UserMessage.-cancelled {
+        opacity: 0.6;
+    }
     """
+    """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a user message.
@@ -148,6 +153,10 @@ class UserMessage(Static):
         """
         super().__init__(**kwargs)
         self._content = content
+
+    def set_cancelled(self) -> None:
+        """Dim the message to mark its turn as interrupted by the user."""
+        self.add_class("-cancelled")
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""

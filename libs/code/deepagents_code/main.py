@@ -1033,6 +1033,12 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(_lazy_help("show_update_help")),
     )
+    update_parser.add_argument(
+        "--prerelease",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Include alpha/beta/rc releases when checking for updates",
+    )
     add_json_output_arg(update_parser)
 
     # Default interactive mode — argument order here determines the
@@ -1281,6 +1287,11 @@ def parse_args() -> argparse.Namespace:
         "--update",
         action="store_true",
         help="Check for and install updates, then exit",
+    )
+    parser.add_argument(
+        "--prerelease",
+        action="store_true",
+        help="With --update, include alpha/beta/rc releases",
     )
     parser.add_argument(
         "--auto-update",
@@ -2276,6 +2287,15 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        if args.prerelease and not (args.update or args.command == "update"):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --prerelease requires --update "
+                "or the update subcommand"
+            )
+            sys.exit(2)
+
         # Handle --update flag or `update` subcommand (headless, no session)
         if args.update or args.command == "update":
             try:
@@ -2285,12 +2305,14 @@ def cli_main() -> None:
                 from deepagents_code._version import __version__ as cli_version
                 from deepagents_code.config import _is_editable_install
                 from deepagents_code.update_check import (
+                    _PRERELEASE_UNSUPPORTED_MESSAGE,
                     create_update_log_path,
                     format_age_suffix,
                     format_installed_age_suffix,
                     format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
+                    prerelease_upgrade_supported,
                     upgrade_command,
                 )
 
@@ -2303,8 +2325,24 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                include_prereleases = True if args.prerelease else None
+
+                # Refuse pre-release upgrades the install method can't honor
+                # before promising an upgrade or hitting PyPI.
+                if args.prerelease:
+                    supported, reason = prerelease_upgrade_supported()
+                    if not supported:
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            f"{reason or _PRERELEASE_UNSUPPORTED_MESSAGE}"
+                        )
+                        sys.exit(1)
+
                 console.print("Checking for updates...", style="dim")
-                available, latest = is_update_available(bypass_cache=True)
+                available, latest = is_update_available(
+                    bypass_cache=True,
+                    include_prereleases=include_prereleases,
+                )
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "
@@ -2336,11 +2374,16 @@ def cli_main() -> None:
                     highlight=False,
                     markup=False,
                 )
-                success, output = asyncio.run(perform_upgrade(log_path=log_path))
+                success, output = asyncio.run(
+                    perform_upgrade(
+                        log_path=log_path,
+                        include_prereleases=include_prereleases,
+                    )
+                )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
-                    cmd = upgrade_command()
+                    cmd = upgrade_command(include_prereleases=include_prereleases)
                     detail = f": {escape(output[:200])}" if output else ""
                     console.print(
                         f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -2350,10 +2393,24 @@ def cli_main() -> None:
                 sys.exit(0)
             except Exception:
                 logger.warning("--update failed", exc_info=True)
+                # Preserve the user's pre-release intent in the manual fallback:
+                # a `--prerelease` request that crashes unexpectedly must not
+                # suggest a stable-only command, which would silently downgrade
+                # the channel. Both are module-level string constants, so this
+                # import can't fail inside the last-resort handler.
+                from deepagents_code.update_check import (
+                    _UV_PRERELEASE_UPGRADE_COMMAND,
+                    FALLBACK_UPGRADE_COMMAND,
+                )
+
+                manual_cmd = (
+                    _UV_PRERELEASE_UPGRADE_COMMAND
+                    if args.prerelease
+                    else FALLBACK_UPGRADE_COMMAND
+                )
                 console.print(
                     "[bold red]Error:[/bold red] Update failed.\n"
-                    "Run manually: [cyan]uv tool upgrade "
-                    "deepagents-code[/cyan]"
+                    f"Run manually: [cyan]{manual_cmd}[/cyan]"
                 )
                 sys.exit(1)
 

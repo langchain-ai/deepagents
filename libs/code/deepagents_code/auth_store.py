@@ -101,8 +101,8 @@ class WriteOutcome:
     """User-visible warning strings (e.g., chmod failures). Empty on success."""
 
 
-def _auth_path() -> Path:
-    """Return `~/.deepagents/.state/auth.json`.
+def auth_path() -> Path:
+    """Return the resolved path to the credential store (`auth.json`).
 
     Resolved at call time (not import time) so tests can redirect storage by
     monkeypatching `deepagents_code.model_config.DEFAULT_STATE_DIR` — same
@@ -111,16 +111,6 @@ def _auth_path() -> Path:
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
     return DEFAULT_STATE_DIR / "auth.json"
-
-
-def auth_path() -> Path:
-    """Return the resolved path to the credential store (`auth.json`).
-
-    Public wrapper over `_auth_path` so callers outside this module (e.g. the
-    `dcode auth path` command) can report where credentials live without
-    reaching into a private helper.
-    """
-    return _auth_path()
 
 
 def _read_raw() -> dict | None:
@@ -133,7 +123,7 @@ def _read_raw() -> dict | None:
         RuntimeError: If the file exists but cannot be parsed or has an
             unsupported schema version.
     """
-    path = _auth_path()
+    path = auth_path()
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -183,7 +173,7 @@ def _write_raw(data: dict) -> tuple[str, ...]:
         surface to the user. Empty when permissions were locked down
         successfully (or on Windows where POSIX modes don't apply).
     """
-    path = _auth_path()
+    path = auth_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
     if hasattr(os, "chmod"):
@@ -255,7 +245,7 @@ def _write_raw_or_raise(data: dict) -> tuple[str, ...]:
         return _write_raw(data)
     except OSError as exc:
         msg = (
-            f"Failed to write credential file {_auth_path()}: {exc}. "
+            f"Failed to write credential file {auth_path()}: {exc}. "
             "Check available disk space and the permissions on the parent "
             "directory."
         )

@@ -190,6 +190,9 @@ def show_help() -> None:
         "  --update                   Check for and install updates, then exit"
     )
     console.print(
+        "  --prerelease               With --update, include alpha/beta/rc releases"
+    )
+    console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
@@ -435,10 +438,13 @@ def show_update_help() -> None:
         "Check for and install updates from PyPI.",
     )
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  --prerelease            Include alpha/beta/rc releases",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode update")
+    console.print("  dcode update --prerelease")
     console.print("  dcode update --json")
     console.print()
 

@@ -1425,19 +1425,38 @@ class TestUpdateSubcommand:
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
         log_path: str = "/tmp/deepagents-update.log",
+        prerelease: bool = False,
+        flag_style: bool = False,
+        prerelease_before_command: bool = False,
+        install_method: str = "uv",
     ) -> tuple[int, MagicMock, MagicMock]:
-        """Invoke `cli_main()` with `update` subcommand; return exit code + mocks."""
+        """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
+        if prerelease_before_command:
+            argv = ["deepagents", "--prerelease", "update"]
+        elif flag_style:
+            argv = ["deepagents", "--update"]
+        else:
+            argv = ["deepagents", "update"]
+        if prerelease:
+            argv.append("--prerelease")
         with (
             patch.dict(os.environ, {DEBUG_UPDATE: "1" if debug else ""}),
-            patch.object(sys, "argv", ["deepagents", "update"]),
+            patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.config._is_editable_install", return_value=editable),
+            # `--prerelease` is only honored on uv installs; pin the detected
+            # method so the precheck's outcome is driven by the test rather than
+            # the test runner's own environment.
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value=install_method,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
@@ -1510,12 +1529,153 @@ class TestUpdateSubcommand:
 
     def test_update_available_runs_upgrade(self) -> None:
         """`(True, "x.y.z")` triggers `perform_upgrade` and exits 0 on success."""
-        code, _, perform_upgrade_mock = self._run_update(
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
             editable=False,
             is_update_available_return=(True, "99.0.0"),
         )
         assert code == 0
-        perform_upgrade_mock.assert_awaited_once()
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=None,
+        )
+
+    def test_prerelease_update_includes_prereleases(self) -> None:
+        """`dcode update --prerelease` opts into alpha/beta/rc releases."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_update_flag_includes_prereleases(self) -> None:
+        """`dcode --update --prerelease` uses the same prerelease path."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            flag_style=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_before_update_includes_prereleases(self) -> None:
+        """`dcode --prerelease update` preserves the top-level prerelease flag."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease_before_command=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_unsupported_install_refuses_before_pypi(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` on a non-uv install refuses before hitting PyPI.
+
+        A regression that dropped the guard would let a brew/other install fall
+        through to a stable update (or an unsupported upgrade attempt), so the
+        refusal must short-circuit before `is_update_available`/`perform_upgrade`.
+        """
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            install_method="brew",
+        )
+
+        assert code == 1
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_called()
+        captured = capsys.readouterr()
+        assert "aren't supported for this install" in (captured.out + captured.err)
+
+    def test_unexpected_error_manual_command_keeps_prerelease(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An unexpected crash during `--prerelease` keeps the pre-release hint.
+
+        The last-resort handler prints a manual upgrade command. A regression
+        that hardcoded the stable command would nudge a user who requested a
+        pre-release onto the stable channel — the exact silent downgrade this
+        flag guards against, via an error side-door.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "update", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            # Crash after the pre-release support check passes but before the
+            # upgrade completes, exercising the catch-all fallback path.
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "--prerelease allow" in (captured.out + captured.err)
+
+    def test_prerelease_without_update_exits_usage_error(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` only applies to the update command."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--prerelease requires --update or the update subcommand" in (
+            capsys.readouterr().err
+        )
 
 
 class TestInstallExtraSubcommand:

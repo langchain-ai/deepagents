@@ -9,7 +9,7 @@ import time
 import tomllib
 from collections.abc import Mapping, Sequence  # noqa: TC003
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 from packaging.version import InvalidVersion, Version
@@ -21,6 +21,7 @@ from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
+    InstallMethod,
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
@@ -54,8 +55,10 @@ from deepagents_code.update_check import (
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
+    prerelease_upgrade_supported,
     set_auto_update,
     should_notify_update,
+    upgrade_command,
 )
 
 
@@ -568,6 +571,32 @@ class TestIsUpdateAvailable:
 
         mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
 
+    def test_explicit_include_prereleases_overrides_stable_install(self) -> None:
+        """Explicit `include_prereleases=True` beats a stable installed version."""
+        with (
+            patch(
+                "deepagents_code.update_check.get_latest_version",
+                return_value=None,
+            ) as mock_get,
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+        ):
+            is_update_available(include_prereleases=True)
+
+        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=True)
+
+    def test_explicit_exclude_prereleases_overrides_prerelease_install(self) -> None:
+        """Explicit `include_prereleases=False` beats a pre-release install."""
+        with (
+            patch(
+                "deepagents_code.update_check.get_latest_version",
+                return_value=None,
+            ) as mock_get,
+            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
+        ):
+            is_update_available(include_prereleases=False)
+
+        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
+
     def test_invalid_installed_version(self) -> None:
         """Non-PEP 440 installed version disables update check gracefully."""
         with patch("deepagents_code.update_check.__version__", "not-a-version"):
@@ -973,6 +1002,125 @@ class TestUpdateLogs:
 
         assert success is False
         assert "Unsupported install method" in output
+
+    async def test_perform_upgrade_uses_uv_prerelease_command(self) -> None:
+        """Pre-release upgrades pass uv's explicit pre-release strategy."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade(include_prereleases=True)
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    async def test_perform_upgrade_follows_installed_prerelease_channel(self) -> None:
+        """Omitted pre-release preference follows an installed pre-release."""
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0rc1"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    async def test_perform_upgrade_uses_plain_uv_command_by_default(self) -> None:
+        """Stable upgrades shell out to uv without the pre-release strategy.
+
+        `perform_upgrade` routes through `upgrade_command(method, ...)`, so a
+        regression that always opted into the pre-release channel would slip
+        past the default-path tests that override `_UPGRADE_COMMANDS`.
+        """
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == "uv tool upgrade deepagents-code"
+
+    async def test_perform_upgrade_refuses_prerelease_for_brew(self) -> None:
+        """Pre-release channel switching is only safe for uv tool installs."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_upgrade(include_prereleases=True)
+
+        assert success is False
+        assert "Pre-release updates aren't supported for this install" in output
+        # The refusal must short-circuit before shelling out to `brew`.
+        run_mock.assert_not_awaited()
+
+    def test_upgrade_command_prerelease(self) -> None:
+        """Manual fallback command includes uv's pre-release strategy."""
+        assert (
+            upgrade_command(include_prereleases=True)
+            == "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    def test_prerelease_upgrade_supported_for_uv(self) -> None:
+        """The uv install method can be steered onto the pre-release channel."""
+        supported, reason = prerelease_upgrade_supported("uv")
+
+        assert supported is True
+        assert reason is None
+
+    @pytest.mark.parametrize("method", ["brew", "other", "unknown"])
+    def test_prerelease_upgrade_unsupported_for_non_uv(
+        self,
+        method: InstallMethod,
+    ) -> None:
+        """Non-uv installs are refused with a user-facing reason."""
+        supported, reason = prerelease_upgrade_supported(method)
+
+        assert supported is False
+        assert reason is not None
+        assert "aren't supported for this install" in reason
 
 
 class TestInstallExtraCommand:

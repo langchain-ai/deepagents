@@ -3759,19 +3759,44 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Failed to persist seen-version marker", exc_info=True)
 
-    async def _handle_update_command(self) -> None:
-        """Handle the `/update` slash command — check for and install updates."""
-        await self._mount_message(UserMessage("/update"))
+    async def _handle_update_command(self, command: str = "/update") -> None:
+        """Handle the `/update` slash command — check for and install updates.
+
+        Parses an optional `--prerelease` flag from the raw command line; any
+        other option is rejected with a usage message.
+
+        Args:
+            command: The raw slash-command line as typed, including any options.
+        """
+        parts = command.split()
+        await self._mount_message(UserMessage(command))
+        # Reject typo'd/miscased options (e.g. `--prereleases`, `--PRERELEASE`)
+        # loudly instead of silently downgrading to a stable update — mirroring
+        # the headless path, which also refuses unknown options rather than
+        # silently ignoring them.
+        unknown = [opt for opt in parts[1:] if opt != "--prerelease"]
+        if unknown:
+            await self._mount_message(
+                AppMessage(
+                    f"Unknown option(s) for /update: {' '.join(unknown)}. "
+                    "Usage: /update [--prerelease]",
+                ),
+            )
+            return
+        prerelease_requested = "--prerelease" in parts[1:]
+        include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._env_vars import DEBUG_UPDATE
             from deepagents_code._version import __version__ as cli_version
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                _PRERELEASE_UNSUPPORTED_MESSAGE,
                 format_age_suffix,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
+                prerelease_upgrade_supported,
                 upgrade_command,
             )
 
@@ -3785,10 +3810,23 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            # Refuse pre-release upgrades the install method can't honor before
+            # promising an upgrade or hitting PyPI.
+            if prerelease_requested:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available,
                 bypass_cache=True,
+                include_prereleases=include_prereleases,
             )
             if latest is None:
                 await self._mount_message(
@@ -3827,7 +3865,9 @@ class DeepAgentsApp(App):
                     AppMessage("Skipped update install (debug mode)."),
                 )
                 return
-            success, output = await perform_upgrade()
+            success, output = await perform_upgrade(
+                include_prereleases=include_prereleases,
+            )
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
@@ -3836,7 +3876,7 @@ class DeepAgentsApp(App):
                     ),
                 )
             else:
-                cmd = upgrade_command()
+                cmd = upgrade_command(include_prereleases=include_prereleases)
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
@@ -6500,8 +6540,8 @@ class DeepAgentsApp(App):
             await self._show_thread_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)
-        elif cmd == "/update":
-            await self._handle_update_command()
+        elif cmd == "/update" or cmd.startswith("/update "):
+            await self._handle_update_command(command)
         elif cmd == "/auto-update":
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):

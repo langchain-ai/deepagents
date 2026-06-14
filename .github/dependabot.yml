@@ -27,6 +27,7 @@ updates:
       - "/libs/partners/modal"
       - "/libs/partners/quickjs"
       - "/libs/partners/runloop"
+      - "/libs/partners/vercel"
       - "/examples/content-builder-agent"
       - "/examples/deep_research"
       - "/examples/nvidia_deep_agent"

@@ -350,7 +350,7 @@ When adding a new partner package, update these files:
 - `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
 - `.github/workflows/release-please.yml` – Add release detection output and trigger job
 - `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add initial version entry
+- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
 - `.github/RELEASING.md` – Add to Managed Packages table
 - `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
 

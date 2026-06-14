@@ -139,12 +139,10 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Agentcore/Modal/Daytona/Runloop/Vercel"
         " require downloading extras"
     )
-    console.print(
-        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
-    )
+    console.print("  --sandbox-id ID            Attach to existing sandbox")
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
         "                             Snapshot (langsmith) or blueprint (runloop)"
@@ -193,6 +191,9 @@ def show_help() -> None:
     console.print("  --clear-default-model      Clear the default model")
     console.print(
         "  --update                   Check for and install updates, then exit"
+    )
+    console.print(
+        "  --prerelease               With --update, include alpha/beta/rc releases"
     )
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
@@ -440,10 +441,13 @@ def show_update_help() -> None:
         "Check for and install updates from PyPI.",
     )
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  --prerelease            Include alpha/beta/rc releases",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode update")
+    console.print("  dcode update --prerelease")
     console.print("  dcode update --json")
     console.print()
 

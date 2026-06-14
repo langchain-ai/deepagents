@@ -137,10 +137,6 @@ class MCPServerInfo:
                 )
                 raise ValueError(msg)
 
-    def is_loaded(self) -> bool:
-        """Return whether this server has successfully loaded tools."""
-        return self.status == "ok"
-
     def needs_attention(self) -> bool:
         """Return whether this server is blocked on user login."""
         return self.status == "unauthenticated"

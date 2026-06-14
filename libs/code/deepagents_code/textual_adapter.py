@@ -52,6 +52,7 @@ from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
+    TurnSpinnerStatus as TurnSpinnerStatus,
     format_token_count as format_token_count,
 )
 from deepagents_code.config import build_stream_config
@@ -222,6 +223,9 @@ class TextualUIAdapter:
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
+        set_turn_spinner_status: (
+            Callable[[TurnSpinnerStatus, int], Awaitable[None]] | None
+        ) = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         request_ask_user: (
@@ -253,6 +257,13 @@ class TextualUIAdapter:
 
         self._set_spinner = set_spinner
         """Callback to show/hide loading spinner."""
+
+        self._set_turn_spinner_status = set_turn_spinner_status
+        """Async callback to update the live turn spinner's phase.
+
+        Unlike `_set_spinner`, this never hides the spinner: the app owns
+        spinner lifecycle. Passed the current `turn_id` so the app can drop
+        stale phase updates from a previous turn."""
 
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -380,6 +391,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     turn_stats: SessionStats | None = None,
+    turn_id: int = 0,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -407,6 +419,10 @@ async def execute_task_textual(
             available even if this coroutine is cancelled before it can return.
 
             If `None`, a new instance is created internally.
+
+        turn_id: Identifies the agent turn that owns the top-level spinner.
+            Forwarded with each phase update so the app can ignore stale
+            updates issued after the turn ended.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -524,13 +540,13 @@ async def execute_task_textual(
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
 
-            # Show the Thinking spinner before each astream iteration so
-            # both the first turn and HITL/ask_user resumes surface feedback
-            # while the model processes input. Skip when
-            # `_current_tool_messages` is non-empty so running-tool
-            # indicators remain the dominant signal.
-            if adapter._set_spinner and not adapter._current_tool_messages:
-                await adapter._set_spinner("Thinking")
+            # Keep the top-level turn spinner on "Thinking" at the start of
+            # each astream iteration (first turn and HITL/ask_user resumes).
+            # The app mounts the spinner once for the whole turn; this only
+            # refreshes its phase and re-anchors it. It never hides the
+            # spinner and is independent of per-tool running indicators.
+            if adapter._set_turn_spinner_status:
+                await adapter._set_turn_spinner_status("Thinking", turn_id)
 
             async for chunk in agent.astream(
                 stream_input,
@@ -578,8 +594,6 @@ async def execute_task_textual(
                                         )
                                         tool_id = validated_ask_user["tool_call_id"]
                                         if tool_id not in displayed_tool_ids:
-                                            if adapter._set_spinner:
-                                                await adapter._set_spinner(None)
                                             tool_msg = ToolCallMessage(
                                                 "ask_user",
                                                 {
@@ -660,8 +674,10 @@ async def execute_task_textual(
                     if _is_summarization_chunk(metadata):
                         if not summarization_in_progress:
                             summarization_in_progress = True
-                            if adapter._set_spinner:
-                                await adapter._set_spinner("Offloading")
+                            if adapter._set_turn_spinner_status:
+                                await adapter._set_turn_spinner_status(
+                                    "Offloading", turn_id
+                                )
                         continue
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -675,8 +691,8 @@ async def execute_task_textual(
                                 "Failed to mount summarization notification",
                                 exc_info=True,
                             )
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
+                        if adapter._set_turn_spinner_status:
+                            await adapter._set_turn_spinner_status("Thinking", turn_id)
 
                     if isinstance(message, HumanMessage):
                         content = message.text
@@ -737,13 +753,12 @@ async def execute_task_textual(
                                     DiffMessage(record.diff, record.display_path)
                                 )
 
-                        # Reshow spinner only when all in-flight tools have
-                        # completed (avoids premature "Thinking..." when
-                        # parallel tool calls are active). Must happen after
-                        # the diff is mounted so the spinner stays at the
-                        # bottom of the messages container.
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
+                        # Re-anchor the persistent turn spinner below any diff
+                        # mounted above so it stays at the bottom of the
+                        # messages container. Tool widget state is tracked
+                        # separately and no longer gates the top-level spinner.
+                        if adapter._set_turn_spinner_status:
+                            await adapter._set_turn_spinner_status("Thinking", turn_id)
 
                         if adapter._on_tool_complete is not None:
                             try:
@@ -824,19 +839,15 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Keep the Thinking spinner visible after
-                                    # the streaming message so the user still
-                                    # sees activity if the model pauses between
-                                    # finishing text and emitting its next
-                                    # action (e.g. a tool call). The mount
-                                    # above placed the new message at the end
-                                    # of the container; this re-anchors the
-                                    # spinner after it.
-                                    if (
-                                        adapter._set_spinner
-                                        and not adapter._current_tool_messages
-                                    ):
-                                        await adapter._set_spinner("Thinking")
+                                    # Re-anchor the persistent turn spinner
+                                    # below the newly-mounted assistant message
+                                    # so it stays at the bottom while the model
+                                    # streams. This only refreshes the
+                                    # spinner's phase/position; never hides it.
+                                    if adapter._set_turn_spinner_status:
+                                        await adapter._set_turn_spinner_status(
+                                            "Thinking", turn_id
+                                        )
 
                                 # Append just the new text chunk for smoother
                                 # streaming (uses MarkdownStream internally for
@@ -959,15 +970,9 @@ async def execute_task_textual(
                                     buffer_name in _TOOL_CALLS_KEEP_THINKING_SPINNER
                                 )
 
-                                # Hide spinner before showing most tool calls.
-                                # `edit_file` can spend noticeable time between
-                                # argument streaming, HITL interrupt delivery, and
-                                # approval handling, so re-anchor Thinking below
-                                # the row instead of leaving the UI visually idle.
-                                if adapter._set_spinner and not keep_thinking_spinner:
-                                    await adapter._set_spinner(None)
-
-                                # Mount tool call message
+                                # Mount tool call message. The top-level turn
+                                # spinner stays mounted for the whole turn; only
+                                # per-tool running indicators are toggled here.
                                 logger.debug(
                                     "Mounting ToolCallMessage: %s(%s)",
                                     buffer_name,
@@ -976,20 +981,20 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                if keep_thinking_spinner:
-                                    # The argument/approval phase uses the global
-                                    # "Thinking" spinner instead of a per-tool one.
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner("Thinking")
-                                else:
+                                if not keep_thinking_spinner:
                                     # Show a per-tool running spinner immediately so
                                     # auto-executed tools such as grep, glob,
                                     # read_file, and ls display activity instead of
-                                    # sitting idle until their result arrives. Every
-                                    # tool outside the frozenset hits this branch;
-                                    # those that go on to interrupt for approval are
-                                    # paused again below.
+                                    # sitting idle until their result arrives. Tools
+                                    # in `_TOOL_CALLS_KEEP_THINKING_SPINNER` rely on
+                                    # the top-level spinner and get no per-tool one.
                                     tool_msg.set_running()
+                                # Re-anchor the persistent turn spinner below the
+                                # newly-mounted tool row.
+                                if adapter._set_turn_spinner_status:
+                                    await adapter._set_turn_spinner_status(
+                                        "Thinking", turn_id
+                                    )
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -1016,8 +1021,8 @@ async def execute_task_textual(
                         "Failed to mount summarization notification",
                         exc_info=True,
                     )
-                if adapter._set_spinner and not adapter._current_tool_messages:
-                    await adapter._set_spinner("Thinking")
+                if adapter._set_turn_spinner_status:
+                    await adapter._set_turn_spinner_status("Thinking", turn_id)
 
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):
@@ -1054,8 +1059,6 @@ async def execute_task_textual(
                     questions = ask_req["questions"]
 
                     if adapter._request_ask_user:
-                        if adapter._set_spinner:
-                            await adapter._set_spinner(None)
                         result: AskUserWidgetResult | dict[str, str] = {
                             "type": "error",
                             "error": "ask_user callback returned no response",

@@ -432,7 +432,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
     log_warn "Could not reach PyPI to check for updates — continuing with an upgrade attempt."
-  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+  elif [ -z "$EXTRAS" ] && [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
     log_success "deepagents-code ${PRE_VERSION} is already up to date."
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then

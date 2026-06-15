@@ -315,6 +315,21 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     assert "already up to date" in proc.stdout
 
 
+def test_install_script_latest_version_with_extras_installs_requested_extra(
+    tmp_path: Path,
+) -> None:
+    """An extras request still runs uv when the base package is up to date."""
+    args = _run_install_script(
+        tmp_path,
+        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
+        installed_version="0.1.0",
+        latest_version="0.1.0",
+    )
+
+    assert args[:3] == ["tool", "install", "-U"]
+    assert args[-1] == "deepagents-code[ollama]"
+
+
 def test_install_script_out_of_date_auto_updates_without_tty(tmp_path: Path) -> None:
     """Out of date with no TTY to prompt: upgrade automatically (legacy path)."""
     args = _run_install_script(

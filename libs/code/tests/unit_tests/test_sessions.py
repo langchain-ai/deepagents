@@ -2655,3 +2655,37 @@ class TestInitialPromptFromMessages:
             [{"role": "assistant", "content": "ack"}]
         )
         assert result is None
+
+    def test_skips_system_prefixed_human_message(self) -> None:
+        """Synthetic `[SYSTEM]` interrupt notices are not used as the prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(
+                    content="[SYSTEM] Task interrupted by user. "
+                    "Previous operation was cancelled."
+                ),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_skips_system_prefixed_dict_message(self) -> None:
+        """`[SYSTEM]`-prefixed OpenAI-shape dicts are skipped too."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_returns_none_when_only_system_message(self) -> None:
+        """A lone `[SYSTEM]` message yields no displayable prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [HumanMessage(content="[SYSTEM] Task interrupted by user.")]
+        )
+        assert result is None

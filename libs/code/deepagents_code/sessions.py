@@ -30,6 +30,9 @@ _initial_prompt_cache: dict[str, tuple[str | None, str | None]] = {}
 _MAX_INITIAL_PROMPT_CACHE = 4096
 _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
+_SYSTEM_MESSAGE_PREFIX = "[SYSTEM]"
+"""Prefix for synthetic human messages (e.g. interrupt cancellation notices)
+that should never be displayed as a thread's initial prompt."""
 
 
 def _patch_aiosqlite() -> None:
@@ -1130,23 +1133,32 @@ def _checkpoint_messages(data: object) -> list[object] | None:
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a message list.
+    """Return the first non-system human message content from a message list.
 
     Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
     plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
     first write to the `messages` channel is the raw user input passed to the
     agent, which is preserved verbatim as a dict; subsequent writes are
     serialized `BaseMessage` instances produced after the model runs.
+
+    Synthetic `[SYSTEM]`-prefixed human messages (e.g. the interrupt
+    cancellation notice) are skipped so they never surface as a thread's prompt.
     """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
-            return _coerce_prompt_text(getattr(msg, "content", None))
-        if isinstance(msg, dict):
+            prompt = _coerce_prompt_text(getattr(msg, "content", None))
+        elif isinstance(msg, dict):
             msg_dict = cast("dict[str, object]", msg)
             role = msg_dict.get("role")
             type_ = msg_dict.get("type")
-            if role in {"user", "human"} or type_ == "human":
-                return _coerce_prompt_text(msg_dict.get("content"))
+            if role not in {"user", "human"} and type_ != "human":
+                continue
+            prompt = _coerce_prompt_text(msg_dict.get("content"))
+        else:
+            continue
+        if prompt is not None and prompt.startswith(_SYSTEM_MESSAGE_PREFIX):
+            continue
+        return prompt
     return None
 
 

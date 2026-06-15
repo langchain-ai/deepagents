@@ -108,11 +108,14 @@ _COLUMN_TOGGLE_LABELS = {
 # Reserved for future right-aligned columns (e.g., message counts).
 _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
-_SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _SCOPE_SELECT_ID = "thread-scope-select"
 _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
+_SORT_SELECT_ID = "thread-sort-select"
+_SORT_VALUE_CREATED = "created_at"
+_SORT_VALUE_UPDATED = "updated_at"
+_OPTION_SELECT_IDS = (_SCOPE_SELECT_ID, _SORT_SELECT_ID)
 _CONTROLS_SCROLL_ID = "thread-controls-scroll"
 _CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
@@ -515,13 +518,13 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-_SCOPE_OVERLAY_CONSUMED_KEYS = frozenset(
+_OPTION_OVERLAY_CONSUMED_KEYS = frozenset(
     {"tab", "shift+tab", "up", "down", "pageup", "pagedown", "home", "end"}
 )
 
 
-class ThreadScopeSelectOverlay(SelectOverlay):
-    """Scope dropdown overlay that consumes option navigation while focused."""
+class ContainedSelectOverlay(SelectOverlay):
+    """Options dropdown overlay that consumes option navigation while focused."""
 
     def key_tab(self, event: Key) -> None:
         """Move to the next option without leaving the dropdown."""
@@ -545,22 +548,22 @@ class ThreadScopeSelectOverlay(SelectOverlay):
         Returns:
             `True` when the overlay consumes the key.
         """
-        if key in _SCOPE_OVERLAY_CONSUMED_KEYS:
+        if key in _OPTION_OVERLAY_CONSUMED_KEYS:
             return True
         return super().check_consume_key(key, character)
 
 
-class ThreadScopeSelect(Select[str]):
-    """Scope dropdown that keeps focus contained while its menu is open."""
+class ContainedSelect(Select[str]):
+    """Options dropdown that keeps focus contained while its menu is open."""
 
     def compose(self) -> ComposeResult:
-        """Compose the select with a scope-specific overlay.
+        """Compose the select with a containment-aware overlay.
 
         Yields:
             Current value display and dropdown overlay widgets.
         """
         yield SelectCurrent(self.prompt)
-        yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
+        yield ContainedSelectOverlay(type_to_search=self._type_to_search).data_bind(
             compact=Select.compact
         )
 
@@ -700,7 +703,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-top: 0;
     }
 
-    ThreadSelectorScreen .thread-scope-select {
+    ThreadSelectorScreen .thread-option-select {
         width: 1fr;
         height: auto;
         margin-bottom: 1;
@@ -979,11 +982,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         return get_thread_limit()
 
-    def _format_sort_toggle_label(self) -> str:
-        """Return the control-panel sort label for the toggle switch."""
-        label = "Updated At" if self._sort_by_updated else "Created At"
-        return f"Sort by {label}"
-
     def _get_filter_input(self) -> Input:
         """Return the cached search input widget."""
         if self._filter_input is None:
@@ -995,7 +993,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
             scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
-            sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
+            sort_select = self.query_one(f"#{_SORT_SELECT_ID}", Select)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
             column_switches = [
                 self.query_one(f"#{self._switch_id(key)}", Checkbox)
@@ -1004,36 +1002,42 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filter_controls = [
                 filter_input,
                 scope_select,
-                sort_switch,
+                sort_select,
                 relative_switch,
                 *column_switches,
             ]
         return self._filter_controls
 
-    def _get_scope_select(self) -> Select[str]:
-        """Return the scope dropdown widget."""
-        return self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+    def _option_selects(self) -> list[Select[str]]:
+        """Return the dropdown selects in the Options panel."""
+        selects: list[Select[str]] = []
+        for select_id in _OPTION_SELECT_IDS:
+            with contextlib.suppress(NoMatches):
+                selects.append(self.query_one(f"#{select_id}", Select))
+        return selects
 
-    def _is_scope_select_expanded(self) -> bool:
-        """Return whether the scope dropdown menu is currently open."""
-        try:
-            return self._get_scope_select().expanded
-        except NoMatches:
-            return False
+    def _expanded_select(self) -> Select[str] | None:
+        """Return the open Options dropdown, or `None` when all are closed."""
+        for select in self._option_selects():
+            if select.expanded:
+                return select
+        return None
 
-    def _close_scope_select(self) -> None:
-        """Close the scope dropdown and restore focus to the select control."""
-        scope_select = self._get_scope_select()
-        scope_select.expanded = False
-        scope_select.focus()
+    def _close_expanded_select(self) -> None:
+        """Close the open Options dropdown and restore focus to it."""
+        select = self._expanded_select()
+        if select is None:
+            return
+        select.expanded = False
+        select.focus()
 
-    def _select_scope_highlight(self) -> None:
-        """Select the currently highlighted option in the open scope dropdown."""
+    def _select_expanded_highlight(self) -> None:
+        """Select the highlighted option in the open Options dropdown."""
         action_select = getattr(self.focused, "action_select", None)
         if callable(action_select):
             action_select()
             return
-        self._close_scope_select()
+        self._close_expanded_select()
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -1081,7 +1085,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     yield Static("Options", classes="thread-controls-title")
                     yield Static(
                         (
-                            "Tab through sort and column toggles. "
+                            "Tab through scope, sort, and column options. "
                             "Column visibility persists between sessions."
                         ),
                         classes="thread-controls-help",
@@ -1092,7 +1096,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-label",
                         markup=False,
                     )
-                    yield ThreadScopeSelect(
+                    yield ContainedSelect(
                         [
                             ("Current directory", _SCOPE_VALUE_CWD),
                             ("All directories", _SCOPE_VALUE_ALL),
@@ -1105,18 +1109,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         allow_blank=False,
                         compact=True,
                         id=_SCOPE_SELECT_ID,
-                        classes="thread-scope-select",
+                        classes="thread-option-select",
+                    )
+                    yield Static(
+                        "Sort threads by:",
+                        classes="thread-controls-label",
+                        markup=False,
+                    )
+                    yield ContainedSelect(
+                        [
+                            ("Created At", _SORT_VALUE_CREATED),
+                            ("Updated At", _SORT_VALUE_UPDATED),
+                        ],
+                        value=(
+                            _SORT_VALUE_UPDATED
+                            if self._sort_by_updated
+                            else _SORT_VALUE_CREATED
+                        ),
+                        allow_blank=False,
+                        compact=True,
+                        id=_SORT_SELECT_ID,
+                        classes="thread-option-select",
                     )
                     with ThreadControlsScroll(
                         id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
                     ):
-                        yield Checkbox(
-                            self._format_sort_toggle_label(),
-                            self._sort_by_updated,
-                            id=_SORT_SWITCH_ID,
-                            classes="thread-column-toggle",
-                            compact=True,
-                        )
                         yield Checkbox(
                             "Relative Timestamps",
                             self._relative_time,
@@ -1220,7 +1237,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
 
-        if event.key in {"tab", "shift+tab"} and self._is_scope_select_expanded():
+        if event.key in {"tab", "shift+tab"} and self._expanded_select() is not None:
             event.prevent_default()
             event.stop()
             return
@@ -1246,23 +1263,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Route sort, relative-time, and column-visibility checkbox changes.
+        """Route relative-time and column-visibility checkbox changes.
 
         Args:
             event: The checkbox change event.
         """
-        if event.checkbox.id == _SORT_SWITCH_ID:
-            if self._sort_by_updated == event.value:
-                return
-            self._sort_by_updated = event.value
-            self._apply_sort()
-            self._sync_selected_index()
-            self._update_help_widgets()
-            self._schedule_list_rebuild()
-
-            self._persist_sort_order("updated_at" if event.value else "created_at")
-            return
-
         if event.checkbox.id == _RELATIVE_TIME_SWITCH_ID:
             if self._relative_time == event.value:
                 return
@@ -1907,10 +1912,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             logger.debug("Help widget #thread-help not found during update")
 
         with contextlib.suppress(NoMatches):
-            sort_checkbox = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
-            sort_checkbox.label = self._format_sort_toggle_label()
-            if sort_checkbox.value != self._sort_by_updated:
-                sort_checkbox.value = self._sort_by_updated
+            sort_select = self.query_one(f"#{_SORT_SELECT_ID}", Select)
+            value = (
+                _SORT_VALUE_UPDATED if self._sort_by_updated else _SORT_VALUE_CREATED
+            )
+            if sort_select.value != value:
+                sort_select.value = value
 
     def _update_controls_overflow_hint(self) -> None:
         """Show an ellipsis when the options pane has hidden rows below."""
@@ -2040,12 +2047,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Confirm the highlighted thread and dismiss the selector."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
-            self._select_scope_highlight()
+        if self._expanded_select() is not None:
+            self._select_expanded_highlight()
             return
-        scope_select = self._get_scope_select()
-        if self.focused is scope_select:
-            scope_select.action_show_overlay()
+        focused = self.focused
+        if isinstance(focused, Select) and focused in self._option_selects():
+            focused.action_show_overlay()
             return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
@@ -2055,7 +2062,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._expanded_select() is not None:
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2070,7 +2077,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus backward through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._expanded_select() is not None:
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2081,30 +2088,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index - 1) % len(controls)].focus()
 
-    def action_toggle_sort(self) -> None:
-        """Toggle sort between updated_at and created_at."""
-        if self._confirming_delete:
-            return
-        self._sort_by_updated = not self._sort_by_updated
-        self._apply_sort()
-        self._sync_selected_index()
-        self._update_help_widgets()
-        self._schedule_list_rebuild()
-
-        self._persist_sort_order(
-            "updated_at" if self._sort_by_updated else "created_at"
-        )
-
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle the scope `Select` dropdown in the Options panel.
+        """Route the scope and sort `Select` dropdowns in the Options panel.
 
         Mirrors Claude Code's `/resume`: the picker is scoped to the current
         working directory by default; choosing "All directories" widens the
         view to threads from every cwd.
         """
-        if event.select.id != _SCOPE_SELECT_ID:
-            return
         if self._confirming_delete:
+            return
+        if event.select.id == _SORT_SELECT_ID:
+            self._apply_sort_selection(event.value == _SORT_VALUE_UPDATED)
+            return
+        if event.select.id != _SCOPE_SELECT_ID:
             return
 
         if event.value == _SCOPE_VALUE_CWD:
@@ -2129,6 +2125,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._update_help_widgets()
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
+        )
+
+    def _apply_sort_selection(self, sort_by_updated: bool) -> None:
+        """Re-sort the picker when the sort dropdown selection changes.
+
+        Args:
+            sort_by_updated: Sort by `updated_at` when `True`, else `created_at`.
+        """
+        if self._sort_by_updated == sort_by_updated:
+            return
+        self._sort_by_updated = sort_by_updated
+        self._apply_sort()
+        self._sync_selected_index()
+        self._update_help_widgets()
+        self._schedule_list_rebuild()
+        self._persist_sort_order(
+            _SORT_VALUE_UPDATED if sort_by_updated else _SORT_VALUE_CREATED
         )
 
     def _persist_scope(self, scope: str) -> None:
@@ -2260,7 +2273,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
-        if self._is_scope_select_expanded():
-            self._close_scope_select()
+        if self._expanded_select() is not None:
+            self._close_expanded_select()
             return
         self.dismiss(None)

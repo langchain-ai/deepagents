@@ -49,23 +49,23 @@ HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
 run-hello-world: ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 4 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env modal
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 4 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env modal
 
 run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 40 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env daytona
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 40 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env daytona
 
 run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env docker
 
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 10 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env runloop
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 10 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env runloop
 
 run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)

@@ -14,7 +14,7 @@ def test_evals_uses_harbor_langsmith_fork_source() -> None:
 
     assert pyproject["tool"]["uv"]["sources"]["harbor"] == {
         "git": "https://github.com/nick-hollon-lc/harbor.git",
-        "branch": "nh/integration",
+        "rev": "471a89751d3af0e8719dc897ed39848dd140fcdb",
     }
 
 
@@ -46,6 +46,16 @@ def test_makefile_no_longer_uses_custom_harbor_wrapper() -> None:
     assert "AGENT_MODE" not in makefile
     assert "HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world" in makefile
     assert "HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench" in makefile
+    for target_name in [
+        "run-hello-world",
+        "run-terminal-bench-modal",
+        "run-terminal-bench-daytona",
+        "run-terminal-bench-docker",
+        "run-terminal-bench-runloop",
+    ]:
+        _, target = makefile.split(f"{target_name}:", maxsplit=1)
+        target = target.split("\n\n", maxsplit=1)[0]
+        assert "$(HARBOR_AGENT_ENV_ARGS)" in target
 
 
 def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> None:
@@ -60,6 +70,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "agent_env_args=(" in workflow
     assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
+    assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow
     assert "--plugin langsmith" in workflow
     assert "--jobs-dir harbor-jobs/terminal-bench" in workflow

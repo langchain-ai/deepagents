@@ -388,6 +388,126 @@ description: "{description}"
 """
 
 
+def _resolve_install_dir(agent: str, *, project: bool) -> Path:
+    """Resolve the target skills directory for `skills install`.
+
+    Args:
+        agent: Agent identifier for user-level skills.
+        project: Install into the project skills directory instead of the user one.
+
+    Returns:
+        The skills directory to install into.
+
+    Raises:
+        SystemExit: If a project install is requested outside a project.
+    """
+    from deepagents_code.config import Settings, console
+
+    settings = Settings.from_environment()
+    if project:
+        if not settings.project_root:
+            console.print("[bold red]Error:[/bold red] Not in a project directory.")
+            console.print(
+                "[dim]Project skills require a .git directory "
+                "in the project root.[/dim]",
+                style=theme.MUTED,
+            )
+            raise SystemExit(1)
+        skills_dir = settings.ensure_project_skills_dir()
+        if skills_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Could not create project skills directory."
+            )
+            raise SystemExit(1)
+        return skills_dir
+    return settings.ensure_user_skills_dir(agent)
+
+
+def _install(
+    collections: list[str],
+    *,
+    agent: str = "agent",
+    project: bool = False,
+    force: bool = False,
+    output_format: OutputFormat = "text",
+) -> None:
+    """Install prebuilt LangChain/LangSmith skill collections.
+
+    Args:
+        collections: Collection keys to install (`langchain`, `langsmith`, `all`).
+        agent: Agent identifier for user-level skills.
+        project: Install into the project skills directory instead of the user one.
+        force: Overwrite skills that already exist.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: If an unknown collection is requested or a download fails.
+    """
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.skills.prebuilt import (
+        PrebuiltSkillsError,
+        install_collection,
+        resolve_collections,
+    )
+
+    try:
+        targets = resolve_collections(collections)
+    except PrebuiltSkillsError as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise SystemExit(1) from exc
+
+    skills_dir = _resolve_install_dir(agent, project=project)
+
+    results = []
+    for collection in targets:
+        if output_format != "json":
+            source = f"{collection.owner}/{collection.repo}"
+            console.print(
+                f"Fetching {collection.name} from {source}…",
+                style=theme.MUTED,
+            )
+        try:
+            results.append(install_collection(collection, skills_dir, force=force))
+        except PrebuiltSkillsError as exc:
+            console.print(f"[bold red]Error:[/bold red] {exc}")
+            raise SystemExit(1) from exc
+
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json(
+            "skills install",
+            {
+                "path": str(skills_dir),
+                "project": project,
+                "collections": [
+                    {
+                        "key": r.collection.key,
+                        "installed": r.installed,
+                        "skipped": r.skipped,
+                    }
+                    for r in results
+                ],
+            },
+        )
+        return
+
+    checkmark = get_glyphs().checkmark
+    for result in results:
+        console.print(
+            f"\n[bold]{checkmark} {result.collection.name}[/bold]",
+            style=theme.PRIMARY,
+        )
+        for name in result.installed:
+            console.print(f"  {checkmark} {name}", style=theme.PRIMARY)
+        for name in result.skipped:
+            console.print(
+                f"  - {name} (already exists, use --force to overwrite)",
+                style=theme.MUTED,
+            )
+    console.print(f"\nLocation: {skills_dir}\n", style=theme.MUTED)
+
+
 def _create(
     skill_name: str,
     agent: str,
@@ -958,6 +1078,42 @@ def setup_skills_parser(
         help="Create skill in project directory instead of user directory",
     )
 
+    # Skills install
+    install_parser = skills_subparsers.add_parser(
+        "install",
+        help="Install prebuilt LangChain/LangSmith skill collections",
+        description=(
+            "Download and install curated skill collections from "
+            "langchain-ai/langchain-skills and langchain-ai/langsmith-skills."
+        ),
+        add_help=False,
+        parents=help_parent(_lazy_help("show_skills_install_help")),
+    )
+    if add_output_args is not None:
+        add_output_args(install_parser)
+    install_parser.add_argument(
+        "collections",
+        nargs="*",
+        default=["all"],
+        help="Collections to install: langchain, langsmith, or all (default: all)",
+    )
+    install_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    install_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Install into the project skills directory instead of the user one",
+    )
+    install_parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Overwrite skills that already exist",
+    )
+
     # Skills info
     info_parser = skills_subparsers.add_parser(
         "info",
@@ -1051,6 +1207,14 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             args.name,
             agent=args.agent,
             project=args.project,
+            output_format=output_format,
+        )
+    elif args.skills_command == "install":
+        _install(
+            args.collections,
+            agent=args.agent,
+            project=args.project,
+            force=args.force,
             output_format=output_format,
         )
     elif args.skills_command == "info":

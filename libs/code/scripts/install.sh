@@ -36,6 +36,11 @@
 #                                if-necessary-or-explicit
 #                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_SKILLS  — prebuilt skill collections to install
+#                             non-interactively: "all", "langchain",
+#                             "langsmith", "langchain,langsmith", or "none"
+#                             to skip. When unset, you are prompted (and the
+#                             prompt is skipped on non-interactive installs).
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
 #                             lines, unfiltered package diff) and the
@@ -222,6 +227,13 @@ PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
+SKILLS="${DEEPAGENTS_CODE_SKILLS:-}"
+
+# Validate prebuilt-skills selection: comma-separated collection names or "none".
+if [[ -n "$SKILLS" ]] && [[ ! "$SKILLS" =~ ^[a-z]+(,[a-z]+)*$ ]]; then
+  log_error "DEEPAGENTS_CODE_SKILLS must be comma-separated collection names (e.g. 'langchain,langsmith'), 'all', or 'none'"
+  exit 1
+fi
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -662,6 +674,32 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       fi
     else
       ripgrep_manual_hint
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Prebuilt skills — offer the curated LangChain/LangSmith skill collections.
+# Controlled by DEEPAGENTS_CODE_SKILLS (non-interactive) or a prompt otherwise.
+# ---------------------------------------------------------------------------
+if [ -n "$DCODE_BIN" ] && [ "$VERIFY_OK" = true ]; then
+  skills_to_install=""
+  if [ -n "$SKILLS" ]; then
+    [ "$SKILLS" != "none" ] && skills_to_install="$SKILLS"
+  elif prompt_yn "  Install prebuilt LangChain & LangSmith skills?"; then
+    skills_to_install="all"
+  fi
+
+  if [ -n "$skills_to_install" ]; then
+    echo ""
+    log_info "Installing prebuilt skills (${skills_to_install})..."
+    # shellcheck disable=SC2086
+    if "$DCODE_BIN" skills install ${skills_to_install//,/ }; then
+      [ -d "${HOME}/.deepagents" ] && fix_owner "${HOME}/.deepagents"
+      log_success "Prebuilt skills installed."
+    else
+      log_warn "Could not install prebuilt skills."
+      log_warn "  Install later with: dcode skills install"
     fi
   fi
 fi

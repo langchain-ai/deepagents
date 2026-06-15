@@ -324,6 +324,7 @@ def show_skills_help() -> None:
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all available skills")
     console.print("  create <name>     Create a new skill")
+    console.print("  install <names>   Install prebuilt LangChain/LangSmith skills")
     console.print("  info <name>       Show detailed information about a skill")
     console.print("  delete <name>     Delete a skill")
     console.print()
@@ -390,6 +391,36 @@ def show_skills_create_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode skills create web-research")
     console.print("  dcode skills create my-skill --project")
+    console.print()
+
+
+def show_skills_install_help() -> None:
+    """Show help information for the `skills install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills install [collections] [options]")
+    console.print()
+    console.print(
+        "Download curated skill collections from langchain-ai/langchain-skills\n"
+        "and langchain-ai/langsmith-skills and install them locally.",
+    )
+    console.print()
+    console.print("[bold]Collections:[/bold]", style=theme.PRIMARY)
+    console.print("  langchain   Build agents with LangChain, LangGraph, Deep Agents")
+    console.print("  langsmith   Observe and evaluate LLM apps with LangSmith")
+    console.print("  all         Both collections (default)")
+    console.print()
+    _print_option_section(
+        "  --agent NAME            Agent identifier (default: agent)",
+        "  --project               Install into project skills instead of user skills",
+        "  -f, --force             Overwrite skills that already exist",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills install")
+    console.print("  dcode skills install langchain")
+    console.print("  dcode skills install langchain langsmith --force")
+    console.print("  dcode skills install all --project")
     console.print()
 
 

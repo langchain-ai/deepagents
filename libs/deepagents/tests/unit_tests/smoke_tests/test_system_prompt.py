@@ -155,6 +155,11 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
     assert len(system_messages) >= 1
 
     text = _system_message_as_text(system_messages[0])
+    # `FilesystemBackend.cwd` resolves `root_dir` to an OS-native absolute path,
+    # so on Windows `/work/app` becomes e.g. `C:\work\app`. Redact it back to the
+    # canonical POSIX form recorded in the snapshot to keep the golden file
+    # portable (no-op on POSIX, where the resolved path already matches).
+    text = text.replace(str(route.cwd), "/work/app")
 
     snapshot_path = snapshots_dir / "system_prompt_with_routed_backend.md"
     _assert_snapshot(snapshot_path, text, update_snapshots=update_snapshots)

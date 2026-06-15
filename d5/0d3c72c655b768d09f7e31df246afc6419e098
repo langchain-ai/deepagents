@@ -1,0 +1,23 @@
+.github/RELEASING.md
+  s_18e3926ec56243::t_f31bbbcdd11729 332
+  s_18e3926ec56243::t_1a82833e98b92c 306-308
+.github/workflows/release.yml
+  s_18e3926ec56243::t_14f10233226d0e 655-665
+  s_18e3926ec56243::t_e6f6134a6b6f1c 471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d50d3c72c655b768d09f7e31df246afc6419e098",
+  "prompts": {},
+  "sessions": {
+    "s_18e3926ec56243": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "db1ebdaf-ba0a-463c-b0e3-aff22424395c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

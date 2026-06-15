@@ -330,6 +330,59 @@ def test_install_script_latest_version_with_extras_installs_requested_extra(
     assert args[-1] == "deepagents-code[ollama]"
 
 
+def test_install_script_latest_version_with_extras_skips_prompt(
+    tmp_path: Path,
+) -> None:
+    """An up-to-date extras request is not gated behind the update prompt."""
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
+        answer="n",
+        installed_version="0.1.0",
+        latest_version="0.1.0",
+    )
+
+    assert code == 0
+    assert "0.1.0 → 0.1.0" not in output
+    args = args_path.read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+    assert args[-1] == "deepagents-code[ollama]"
+
+
+def test_install_script_out_of_date_with_extras_skips_prompt(
+    tmp_path: Path,
+) -> None:
+    """An extras request is explicit intent to reinstall, even across updates."""
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
+        answer="n",
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "Keeping deepagents-code 0.1.0" not in output
+    args = args_path.read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+    assert args[-1] == "deepagents-code[ollama]"
+
+
+def test_install_script_latest_version_with_python_rebuilds_tool_env(
+    tmp_path: Path,
+) -> None:
+    """An explicit Python request rebuilds even when the package is current."""
+    args = _run_install_script(
+        tmp_path,
+        {"DEEPAGENTS_CODE_PYTHON": "3.12"},
+        installed_version="0.1.0",
+        latest_version="0.1.0",
+    )
+
+    assert args[:5] == ["tool", "install", "-U", "--python", "3.12"]
+    assert args[-1] == "deepagents-code"
+
+
 def test_install_script_out_of_date_auto_updates_without_tty(tmp_path: Path) -> None:
     """Out of date with no TTY to prompt: upgrade automatically (legacy path)."""
     args = _run_install_script(

@@ -19,7 +19,9 @@
 #   shell is prompted before upgrading; a piped/non-interactive run (no TTY)
 #   upgrades automatically. Setting DEEPAGENTS_CODE_VERSION or
 #   DEEPAGENTS_CODE_PRERELEASE skips the prompt and installs that selection
-#   directly. Set DEEPAGENTS_CODE_YES=1 to accept the update without prompting.
+#   directly. Setting DEEPAGENTS_CODE_EXTRAS or DEEPAGENTS_CODE_PYTHON also
+#   skips the prompt and rebuilds the tool environment with those requested
+#   options. Set DEEPAGENTS_CODE_YES=1 to accept an update without prompting.
 #
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
@@ -249,6 +251,10 @@ can_prompt() {
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
 PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PYTHON_REQUESTED=false
+if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
+  PYTHON_REQUESTED=true
+fi
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
@@ -432,7 +438,13 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
     log_warn "Could not reach PyPI to check for updates — continuing with an upgrade attempt."
-  elif [ -z "$EXTRAS" ] && [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+  elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
+    if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
+    else
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
+    fi
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
     log_success "deepagents-code ${PRE_VERSION} is already up to date."
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then

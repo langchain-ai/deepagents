@@ -195,16 +195,30 @@ def _run_startup_auto_update(console: "Console") -> None:
             # First-run consent/migration: auto-update is on only because of the
             # opt-out default, not an explicit choice. Announce it once and skip
             # this install so the user can opt out before anything runs.
-            mark_auto_update_default_acknowledged()
-            console.print(
+            #
+            # Mark *before* printing so a `console.print` failure cannot leave
+            # the notice un-acknowledged and re-firing forever. The inverse risk
+            # (mark succeeds, print fails, user never sees it) requires a broken
+            # console and is the lesser evil versus an unbounded re-nag.
+            acknowledged = mark_auto_update_default_acknowledged()
+            message = (
                 "[bold]dcode now updates automatically by default.[/bold] "
                 f"v{latest} will be installed on the next launch.\n"
-                "To opt out, run [cyan]dcode --auto-update[/cyan], set "
-                "[cyan][update].auto_update = false[/cyan] in config.toml, or set "
-                "[cyan]DEEPAGENTS_CODE_AUTO_UPDATE=0[/cyan].\n"
-                f"Continuing with v{cli_version} for now.",
-                highlight=False,
+                "To opt out, set [cyan][update].auto_update = false[/cyan] in "
+                "config.toml or [cyan]DEEPAGENTS_CODE_AUTO_UPDATE=0[/cyan] "
+                "(or run [cyan]dcode --auto-update[/cyan] to toggle it off now).\n"
+                f"Continuing with v{cli_version} for now."
             )
+            if not acknowledged:
+                # The acknowledgement could not be persisted (e.g. a read-only
+                # state dir). Without this note the identical notice would
+                # reappear every launch with no explanation.
+                message += (
+                    "\n[yellow]Note:[/yellow] this acknowledgement could not be "
+                    "saved, so this message may appear again until you opt out "
+                    "or the state directory becomes writable."
+                )
+            console.print(message, highlight=False)
             return
         release_age = format_release_age_parenthetical(latest)
         console.print(

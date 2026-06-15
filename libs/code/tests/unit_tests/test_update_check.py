@@ -2076,6 +2076,26 @@ class TestIsAutoUpdateEnabled:
         with patch("deepagents_code.config._is_editable_install", return_value=True):
             assert is_auto_update_enabled() is False
 
+    def test_corrupt_config_fails_closed(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A present-but-corrupt config disables auto-update despite the default.
+
+        The opt-out default is `True`, but a corrupt `config.toml` may hold an
+        explicit `auto_update = false`. Silently re-enabling auto-update (which
+        upgrades and re-execs) over an unreadable opt-out would be worse than
+        skipping, so a parse error must fail closed rather than fall through to
+        the default.
+        """
+        config_path.write_text("this = is not [valid toml", encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is False
+        assert "disabling auto-update" in caplog.text
+
 
 class TestAutoUpdateDefaultMigration:
     @pytest.fixture
@@ -2125,6 +2145,48 @@ class TestAutoUpdateDefaultMigration:
         with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "ture"}):
             assert is_auto_update_explicitly_set() is False
             assert should_announce_auto_update_default() is True
+
+    def test_corrupt_state_refires_notice(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A corrupt state file fails open: the one-time notice fires again.
+
+        `_read_update_state` returns `{}` on unreadable JSON, so the
+        acknowledgement reads as absent. Re-showing the notice is the safe
+        direction (versus silently auto-updating as if it had been seen).
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        state_file.write_text("{ not valid json", encoding="utf-8")
+        assert should_announce_auto_update_default() is True
+
+    def test_corrupt_config_is_not_explicit(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A corrupt config reads as 'no explicit choice' for the notice gate.
+
+        `is_auto_update_enabled` fails closed on a corrupt config, so the notice
+        gate never re-enables an unreadable opt-out; this documents that
+        `is_auto_update_explicitly_set` itself treats an unparseable file as
+        absent rather than raising.
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        config_path.write_text("not [ valid toml", encoding="utf-8")
+        assert is_auto_update_explicitly_set() is False
+
+    def test_mark_tolerates_write_failure(self, config_path, tmp_path) -> None:  # noqa: ARG002
+        """A failed acknowledgement write returns `False` without raising.
+
+        The notice will re-fire next launch (surfaced to the user), but startup
+        must not crash because the state directory is unwritable.
+        """
+        # Point the state file beneath an existing *file* so the parent
+        # `mkdir`/write raises `OSError`, simulating an unwritable state dir.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with patch(
+            "deepagents_code.update_check.UPDATE_STATE_FILE", blocker / "state.json"
+        ):
+            assert mark_auto_update_default_acknowledged() is False
 
 
 class TestShouldNotifyUpdate:

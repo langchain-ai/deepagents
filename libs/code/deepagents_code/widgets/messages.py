@@ -1973,6 +1973,19 @@ class ToolCallMessage(Vertical):
             total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
         )
 
+        # Some tools serialize an empty successful result as a non-empty literal
+        # (e.g. glob/grep/ls "[]") that formats to no visible content. The raw
+        # `_output` is truthy, so the guard above doesn't catch it, but rendering
+        # it would show an empty box with a misleading expand affordance. Treat it
+        # like empty output and render nothing.
+        if not self._format_output(
+            self._output, is_preview=False
+        ).content.plain.strip():
+            self._preview_row.display = False
+            self._full_row.display = False
+            self._hint_widget.display = False
+            return
+
         if self._expanded:
             # Show full output with formatting
             self._preview_row.display = False

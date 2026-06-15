@@ -26,8 +26,17 @@
 #
 # Environment variables:
 #   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona"
-#                             (see pyproject.toml for available extras)
+#                             "ollama,groq", or "daytona". Valid extras
+#                             (see pyproject.toml for the authoritative list):
+#                               Model providers: anthropic, baseten, bedrock,
+#                                 cohere, deepseek, fireworks, google-genai,
+#                                 groq, huggingface, ibm, litellm, mistralai,
+#                                 nvidia, ollama, openai, openrouter,
+#                                 perplexity, together, vertex, xai,
+#                                 all-providers
+#                               Sandbox providers: agentcore, daytona, modal,
+#                                 runloop, vercel, all-sandboxes
+#                               Standalone integrations: quickjs
 #   DEEPAGENTS_CODE_VERSION — exact package version to install, e.g. "0.1.0rc1"
 #                             (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
 #   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when resolving

@@ -1,7 +1,7 @@
 # Harbor evaluation workflow for Deep Agents
 #
 # Runs terminal-bench evaluations via Harbor with configurable sandbox
-# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# environments (Docker, Daytona, LangSmith, Modal, Runloop, Vercel).
 # Models are selected via dropdown or comma-separated override.
 #
 # Required secrets (vary by sandbox + model provider):
@@ -22,6 +22,7 @@
 #   MODAL_TOKEN_ID             — needed for Modal sandbox
 #   MODAL_TOKEN_SECRET         — needed for Modal sandbox
 #   RUNLOOP_API_KEY            — needed for Runloop sandbox
+#   VERCEL_TOKEN               — needed for Vercel sandbox
 
 name: "📊 Evals - Harbor"
 run-name: >-
@@ -126,6 +127,7 @@ on:
           - langsmith
           - modal
           - runloop
+          - vercel
       n_tasks:
         description: "Maximum number of tasks to run (0 = all tasks in dataset)"
         required: true
@@ -193,7 +195,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
@@ -252,6 +254,9 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -277,6 +282,11 @@ jobs:
               ;;
             runloop)
               [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
+              ;;
+            vercel)
+              [ -z "$VERCEL_TOKEN" ] && missing+=("VERCEL_TOKEN")
+              [ -z "$VERCEL_PROJECT_ID" ] && missing+=("VERCEL_PROJECT_ID")
+              [ -z "$VERCEL_TEAM_ID" ] && missing+=("VERCEL_TEAM_ID")
               ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
@@ -309,7 +319,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"

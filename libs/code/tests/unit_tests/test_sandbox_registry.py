@@ -106,6 +106,7 @@ def test_builtins_are_available() -> None:
         "langsmith",
         "modal",
         "runloop",
+        "vercel",
     ]
     assert registry.is_available("daytona")
     assert not registry.is_available("acme")
@@ -116,6 +117,13 @@ def test_builtin_metadata_working_dir() -> None:
     assert _metadata(registry, "modal").working_dir == "/workspace"
     assert _metadata(registry, "langsmith").supports_snapshot_name is True
     assert _metadata(registry, "daytona").supports_snapshot_name is False
+    vercel = _metadata(registry, "vercel")
+    assert vercel.working_dir == "/vercel/sandbox"
+    assert vercel.backend_module == "langchain_vercel_sandbox"
+    assert vercel.supports_sandbox_id is True
+    assert vercel.supports_snapshot_name is False
+    assert vercel.install is not None
+    assert vercel.install.command(in_app=False) == "dcode --install vercel"
 
 
 def test_unknown_provider_metadata_is_none() -> None:

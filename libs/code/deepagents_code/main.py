@@ -151,6 +151,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         format_release_age_parenthetical,
         get_cached_update_available,
         is_auto_update_enabled,
+        is_installed_version_at_least,
         perform_upgrade,
         upgrade_command,
     )
@@ -162,6 +163,12 @@ def _run_startup_auto_update(console: "Console") -> None:
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
         available, latest = get_cached_update_available()
         if not available or latest is None:
+            return
+        if is_installed_version_at_least(latest):
+            # The on-disk install already satisfies `latest` (e.g. the user ran
+            # `/update` in-session). `get_cached_update_available` compares the
+            # baked-in `__version__`, which lags an in-session upgrade, so
+            # re-running the upgrade here would be a redundant no-op and restart.
             return
         if restarted_for == latest:
             # Already restarted after upgrading to this version, yet it still
@@ -746,6 +753,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
+    "auth": ("auth_command", "show_auth_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -769,8 +777,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
-    subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
+    when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -807,6 +815,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.auth_commands import setup_auth_parser
     from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
@@ -944,6 +953,11 @@ def parse_args() -> argparse.Namespace:
         add_output_args=add_json_output_arg,
     )
 
+    setup_auth_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
+
     threads_parser = subparsers.add_parser(
         "threads",
         help="Manage conversation threads",
@@ -1025,6 +1039,12 @@ def parse_args() -> argparse.Namespace:
         help="Check for and install updates",
         add_help=False,
         parents=help_parent(_lazy_help("show_update_help")),
+    )
+    update_parser.add_argument(
+        "--prerelease",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Include alpha/beta/rc releases when checking for updates",
     )
     add_json_output_arg(update_parser)
 
@@ -1204,7 +1224,7 @@ def parse_args() -> argparse.Namespace:
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution (default: none - local only). "
-            "Built-ins: agentcore, daytona, langsmith, modal, runloop. "
+            "Built-ins: agentcore, daytona, langsmith, modal, runloop, vercel. "
             "Third-party and config-declared providers are also accepted. "
             "Pass --sandbox with no value to use [sandboxes].default from "
             "config (keep the bare form last on the command line so a "
@@ -1216,7 +1236,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-id",
         metavar="ID",
-        help="Existing sandbox ID to reuse (skips creation and cleanup)",
+        help="Existing sandbox ID to attach to",
     )
 
     parser.add_argument(
@@ -1274,6 +1294,11 @@ def parse_args() -> argparse.Namespace:
         "--update",
         action="store_true",
         help="Check for and install updates, then exit",
+    )
+    parser.add_argument(
+        "--prerelease",
+        action="store_true",
+        help="With --update, include alpha/beta/rc releases",
     )
     parser.add_argument(
         "--auto-update",
@@ -2193,6 +2218,11 @@ def cli_main() -> None:
 
             sys.exit(run_config_command(args))
 
+        if args.command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
             from deepagents_code.config import parse_shell_allow_list
@@ -2269,6 +2299,15 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        if args.prerelease and not (args.update or args.command == "update"):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --prerelease requires --update "
+                "or the update subcommand"
+            )
+            sys.exit(2)
+
         # Handle --update flag or `update` subcommand (headless, no session)
         if args.update or args.command == "update":
             try:
@@ -2278,12 +2317,14 @@ def cli_main() -> None:
                 from deepagents_code._version import __version__ as cli_version
                 from deepagents_code.config import _is_editable_install
                 from deepagents_code.update_check import (
+                    _PRERELEASE_UNSUPPORTED_MESSAGE,
                     create_update_log_path,
                     format_age_suffix,
                     format_installed_age_suffix,
                     format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
+                    prerelease_upgrade_supported,
                     upgrade_command,
                 )
 
@@ -2296,8 +2337,24 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                include_prereleases = True if args.prerelease else None
+
+                # Refuse pre-release upgrades the install method can't honor
+                # before promising an upgrade or hitting PyPI.
+                if args.prerelease:
+                    supported, reason = prerelease_upgrade_supported()
+                    if not supported:
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            f"{reason or _PRERELEASE_UNSUPPORTED_MESSAGE}"
+                        )
+                        sys.exit(1)
+
                 console.print("Checking for updates...", style="dim")
-                available, latest = is_update_available(bypass_cache=True)
+                available, latest = is_update_available(
+                    bypass_cache=True,
+                    include_prereleases=include_prereleases,
+                )
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "
@@ -2329,11 +2386,16 @@ def cli_main() -> None:
                     highlight=False,
                     markup=False,
                 )
-                success, output = asyncio.run(perform_upgrade(log_path=log_path))
+                success, output = asyncio.run(
+                    perform_upgrade(
+                        log_path=log_path,
+                        include_prereleases=include_prereleases,
+                    )
+                )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
-                    cmd = upgrade_command()
+                    cmd = upgrade_command(include_prereleases=include_prereleases)
                     detail = f": {escape(output[:200])}" if output else ""
                     console.print(
                         f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -2343,10 +2405,24 @@ def cli_main() -> None:
                 sys.exit(0)
             except Exception:
                 logger.warning("--update failed", exc_info=True)
+                # Preserve the user's pre-release intent in the manual fallback:
+                # a `--prerelease` request that crashes unexpectedly must not
+                # suggest a stable-only command, which would silently downgrade
+                # the channel. Both are module-level string constants, so this
+                # import can't fail inside the last-resort handler.
+                from deepagents_code.update_check import (
+                    _UV_PRERELEASE_UPGRADE_COMMAND,
+                    FALLBACK_UPGRADE_COMMAND,
+                )
+
+                manual_cmd = (
+                    _UV_PRERELEASE_UPGRADE_COMMAND
+                    if args.prerelease
+                    else FALLBACK_UPGRADE_COMMAND
+                )
                 console.print(
                     "[bold red]Error:[/bold red] Update failed.\n"
-                    "Run manually: [cyan]uv tool upgrade "
-                    "deepagents-code[/cyan]"
+                    f"Run manually: [cyan]{manual_cmd}[/cyan]"
                 )
                 sys.exit(1)
 

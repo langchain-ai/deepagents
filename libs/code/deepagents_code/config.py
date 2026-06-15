@@ -13,7 +13,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
@@ -568,6 +568,23 @@ Kept short so tracing metadata can never stall app flows.
 """
 
 
+def _get_deepagents_version() -> str | None:
+    """Read the installed Deep Agents SDK version from package metadata.
+
+    Returns:
+        The installed Deep Agents SDK version, or `None` when package metadata
+        is unavailable.
+    """
+    try:
+        return version("deepagents")
+    except PackageNotFoundError:
+        logger.debug(
+            "Failed to read deepagents version from package metadata",
+            exc_info=True,
+        )
+        return None
+
+
 def _resolve_editable_info() -> tuple[bool, str | None]:
     """Parse PEP 610 `direct_url.json` once and cache both results.
 
@@ -831,6 +848,10 @@ def build_stream_config(
     SDK version through the compiled graph config, and LangChain merges nested
     metadata dictionaries so both versions survive at stream time.
 
+    Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
+    This describes the Deep Agents package installed alongside the TUI, which
+    can differ from a remote graph's Deep Agents runtime version.
+
     Includes `ls_integration` metadata so LangSmith traces originating from
     the app are distinguishable from bare SDK usage.
 
@@ -857,6 +878,10 @@ def build_stream_config(
         "lc_versions": {"deepagents-code": __version__},
         "ls_integration": "deepagents-code",
     }
+    deepagents_version = _get_deepagents_version()
+    if deepagents_version is not None:
+        metadata["dcode_client_deepagents_version"] = deepagents_version
+
     from deepagents_code._env_vars import USER_ID
 
     user_id = os.environ.get(USER_ID)
@@ -1734,11 +1759,6 @@ class Settings:
         return self._format_reload_changes(previous, refreshed)
 
     @property
-    def has_openai(self) -> bool:
-        """Check if OpenAI API key is configured."""
-        return self.openai_api_key is not None
-
-    @property
     def has_anthropic(self) -> bool:
         """Check if Anthropic API key is configured."""
         return self.anthropic_api_key is not None
@@ -1747,11 +1767,6 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
-
-    @property
-    def has_nvidia(self) -> bool:
-        """Check if NVIDIA API key is configured."""
-        return self.nvidia_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -2010,50 +2025,6 @@ class Settings:
             List of extra skill directory paths, or empty list if not configured.
         """
         return self.extra_skills_dirs or []
-
-
-class SessionState:
-    """Mutable session state shared across the app, adapter, and agent.
-
-    Tracks runtime flags like auto-approve that can be toggled during a
-    session via keybindings or the HITL approval menu's "Auto-approve all"
-    option.
-
-    The `auto_approve` flag controls whether tool calls (shell execution, file
-    writes/edits, web search, URL fetch) require user confirmation before running.
-    """
-
-    def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
-        """Initialize session state with optional flags.
-
-        Args:
-            auto_approve: Whether to auto-approve tool calls without
-                prompting.
-
-                Can be toggled at runtime via Shift+Tab or the HITL
-                approval menu.
-            no_splash: Whether to skip displaying the splash screen on startup.
-        """
-        self.auto_approve = auto_approve
-        self.no_splash = no_splash
-        self.exit_hint_until: float | None = None
-        self.exit_hint_handle = None
-        from deepagents_code.sessions import generate_thread_id
-
-        self.thread_id = generate_thread_id()
-
-    def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return the new state.
-
-        Called by the Shift+Tab keybinding in the Textual app.
-
-        When auto-approve is on, all tool calls execute without prompting.
-
-        Returns:
-            The new `auto_approve` state after toggling.
-        """
-        self.auto_approve = not self.auto_approve
-        return self.auto_approve
 
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -3045,6 +3016,8 @@ def create_model(
         warn_on_split_credential_source(provider)
         apply_stored_credentials(provider)
 
+    from deepagents_code.model_config import CODEX_PROVIDER
+
     # Early credential check — fail fast with an actionable message instead of
     # letting the provider SDK raise an opaque auth error on first invocation.
     # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
@@ -3054,6 +3027,13 @@ def create_model(
         if cred_status is False:
             from deepagents_code.model_config import MissingCredentialsError
 
+            if provider == CODEX_PROVIDER:
+                # No env var to set; point the user at `/auth` instead.
+                msg = (
+                    "Not signed in to ChatGPT. Run `/auth` and select "
+                    "openai_codex to sign in with your ChatGPT account."
+                )
+                raise MissingCredentialsError(msg, provider=provider, env_var=None)
             env_var = get_credential_env_var(provider)
             display_env = env_var or f"<{provider} API key>"
             msg = (
@@ -3117,7 +3097,45 @@ def create_model(
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
-    if class_path:
+    if provider == CODEX_PROVIDER:
+        # Codex models are constructed directly via `_ChatOpenAICodex` so the
+        # `token_provider=` kwarg is wired to the on-disk OAuth token store
+        # before any request goes out. `init_chat_model` does not know about
+        # this class and would route through API-key `ChatOpenAI` instead.
+        from deepagents_code.integrations import openai_codex as _codex
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            ModelConfigError,
+        )
+
+        # Drop any `api_key` left in kwargs (e.g. from a config-level
+        # `api_key_env` set on the codex provider, or a `--model-params
+        # api_key=...`) so the bearer always comes from the OAuth
+        # `token_provider` rather than a static key.
+        kwargs.pop("api_key", None)
+        try:
+            model = _codex.build_chat_model(model_name, **kwargs)
+        except FileNotFoundError as exc:
+            msg = (
+                "Not signed in to ChatGPT. Run `/auth` and select "
+                "openai_codex to sign in with your ChatGPT account."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except _codex.CodexAuthExpiredError as exc:
+            # A token exists but its refresh token is dead. Route through the
+            # same `MissingCredentialsError` recovery path as a missing token
+            # (which the retry flow re-attempts after `/auth`) instead of the
+            # generic `ModelConfigError` below, which would not offer sign-in.
+            msg = (
+                "ChatGPT session expired. Run `/auth` and select openai_codex "
+                "to sign in again."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=None) from exc
+        except Exception as exc:
+            spec = f"{provider}:{model_name}"
+            msg = f"Failed to initialize Codex model '{spec}': {exc}"
+            raise ModelConfigError(msg) from exc
+    elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)

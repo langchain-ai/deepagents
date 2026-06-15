@@ -11,8 +11,9 @@ import shlex
 import string
 import time
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
@@ -88,8 +89,9 @@ def create_sandbox(
 
     Args:
         provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
-            `'langsmith'`, `'modal'`, `'runloop'`), entry-point providers, and
-            config-declared providers are all resolved through the registry.
+            `'langsmith'`, `'modal'`, `'runloop'`, `'vercel'`), entry-point
+            providers, and config-declared providers are all resolved through
+            the registry.
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by providers whose metadata sets `supports_snapshot_name`
@@ -183,15 +185,6 @@ def _get_registry() -> SandboxRegistry:
     from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
     return SandboxRegistry.load()
-
-
-def _get_available_sandbox_types() -> list[str]:
-    """Get list of available sandbox provider types (internal).
-
-    Returns:
-        List of available sandbox provider type names
-    """
-    return _get_registry().available_providers()
 
 
 def get_default_working_dir(provider: str) -> str:
@@ -843,6 +836,222 @@ class _AgentCoreProvider(SandboxProvider):
                 "AgentCore session %s not tracked (may have already expired)",
                 sandbox_id,
             )
+
+
+_VercelStatus = Literal[
+    "pending",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+    "aborted",
+    "snapshotting",
+]
+"""Vercel sandbox lifecycle statuses (mirrors the SDK's `SandboxStatus` enum)."""
+
+_VERCEL_TERMINAL_STATUSES: frozenset[_VercelStatus] = frozenset(
+    {"aborted", "failed", "stopped"}
+)
+"""Vercel sandbox statuses that cannot become ready without a new sandbox.
+
+Typing the members as `_VercelStatus` turns a typo into a type error rather than
+a silently-never-matching string.
+"""
+
+_VERCEL_DEFAULT_RUNTIME = "python3.13"
+"""Runtime used when creating a fresh Vercel sandbox."""
+
+_VERCEL_SANDBOX_TIMEOUT = timedelta(minutes=30)
+"""Lifetime used for freshly created Vercel sandboxes."""
+
+
+class _VercelSandboxHandle(Protocol):
+    """Minimal Vercel SDK sandbox surface used by the built-in provider."""
+
+    sandbox_id: str
+    status: str
+
+    def wait_for_status(self, status: str, *, timeout: int) -> None:
+        """Wait for the sandbox to reach the requested status."""
+
+    def stop(self) -> None:
+        """Stop the sandbox."""
+
+
+class _VercelProvider(SandboxProvider):
+    """Vercel Sandbox provider implementation."""
+
+    _CREDENTIAL_ENV_NAMES = (
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+    )
+
+    def __init__(self) -> None:
+        self._sdk_kwargs = self._resolve_sdk_kwargs()
+
+    @classmethod
+    def _resolve_sdk_kwargs(cls) -> dict[str, str]:
+        """Resolve explicit Vercel credentials when a prefixed override is set.
+
+        Credentials stay SDK-managed (canonical `VERCEL_*` variables or OIDC)
+        unless at least one of the prefixed overrides
+        `DEEPAGENTS_CODE_VERCEL_TOKEN`, `DEEPAGENTS_CODE_VERCEL_PROJECT_ID`, or
+        `DEEPAGENTS_CODE_VERCEL_TEAM_ID` is present. When triggered, each value
+        still resolves prefixed-first then canonical via `resolve_env_var`.
+
+        Returns:
+            Explicit SDK credential arguments, or an empty mapping to delegate
+            credential resolution to the Vercel SDK.
+        """
+        prefix = "DEEPAGENTS_CODE_"
+        has_override = any(
+            f"{prefix}{name}" in os.environ for name in cls._CREDENTIAL_ENV_NAMES
+        )
+        if not has_override:
+            return {}
+
+        from deepagents_code.model_config import resolve_env_var
+
+        values = {
+            "token": resolve_env_var("VERCEL_TOKEN"),
+            "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
+            "team_id": resolve_env_var("VERCEL_TEAM_ID"),
+        }
+        missing = sorted(key for key, value in values.items() if not value)
+        if missing:
+            logger.warning(
+                "Incomplete explicit Vercel credentials; VERCEL_TOKEN, "
+                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are all required. "
+                "Falling back to default Vercel authentication. Missing: %s",
+                ", ".join(missing),
+            )
+            return {}
+        return {key: value for key, value in values.items() if value}
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get or create a Vercel sandbox.
+
+        Args:
+            sandbox_id: Existing sandbox ID, or None to create.
+            timeout: Seconds to wait for startup.
+            **kwargs: Rejected; passing any keyword argument raises `TypeError`.
+
+        Returns:
+            `VercelSandbox` instance.
+
+        Raises:
+            RuntimeError: If the sandbox fails to start.
+            TypeError: If unsupported keyword arguments are provided.
+        """
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
+
+        vercel_backend = _import_provider_module(
+            "langchain_vercel_sandbox",
+            provider="vercel",
+            package="langchain-vercel-sandbox",
+        )
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+
+        # The SDK is imported dynamically, so `Sandbox.get`/`create` are typed
+        # `Any`. Annotating pins the result to the Protocol so the type checker
+        # verifies the `.status`/`.wait_for_status`/`.stop` calls below.
+        sandbox: _VercelSandboxHandle
+        try:
+            if sandbox_id:
+                sandbox = vercel_sandbox.Sandbox.get(
+                    sandbox_id=sandbox_id,
+                    **self._sdk_kwargs,
+                )
+            else:
+                sandbox = vercel_sandbox.Sandbox.create(
+                    runtime=_VERCEL_DEFAULT_RUNTIME,
+                    timeout=_VERCEL_SANDBOX_TIMEOUT,
+                    **self._sdk_kwargs,
+                )
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Keep the message generic so SDK errors cannot leak credentials,
+            # but chain the original exception so tracebacks retain root cause.
+            action = "connect to existing" if sandbox_id else "create"
+            msg = f"Failed to {action} Vercel sandbox."
+            raise RuntimeError(msg) from exc
+
+        try:
+            self._wait_until_running(sandbox, timeout=timeout)
+        except Exception:
+            if sandbox_id is None:
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
+            raise
+
+        return vercel_backend.VercelSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # **kwargs required by SandboxProvider interface
+        """Stop a Vercel sandbox by id.
+
+        Raises:
+            RuntimeError: If the Vercel SDK cannot find or stop the sandbox.
+        """
+        vercel_sandbox = _import_provider_module(
+            "vercel.sandbox",
+            provider="vercel",
+            package="vercel",
+        )
+        try:
+            sandbox = vercel_sandbox.Sandbox.get(
+                sandbox_id=sandbox_id,
+                **self._sdk_kwargs,
+            )
+            sandbox.stop()
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
+            msg = "Failed to stop Vercel sandbox."
+            raise RuntimeError(msg) from exc
+
+    @staticmethod
+    def _wait_until_running(
+        sandbox: _VercelSandboxHandle,
+        *,
+        timeout: int,
+    ) -> None:
+        """Wait for a Vercel sandbox to become ready.
+
+        Raises:
+            RuntimeError: If the sandbox reaches a terminal state or does not
+                become ready before the timeout.
+        """
+        status = str(sandbox.status)
+        if status == "running":
+            return
+        if status in _VERCEL_TERMINAL_STATUSES:
+            msg = f"Vercel sandbox {sandbox.sandbox_id} is in terminal state {status!r}"
+            raise RuntimeError(msg)
+
+        try:
+            sandbox.wait_for_status("running", timeout=timeout)
+        except TimeoutError as exc:
+            status = str(sandbox.status)
+            msg = (
+                f"Vercel sandbox {sandbox.sandbox_id} failed to start within "
+                f"{timeout} seconds; current status is {status!r}"
+            )
+            raise RuntimeError(msg) from exc
+        except Exception as exc:  # Vercel SDK exception types vary by version
+            # Generic message avoids leaking credentials; chain preserves cause.
+            msg = "Failed while waiting for Vercel sandbox startup."
+            raise RuntimeError(msg) from exc
 
 
 def _get_provider(

@@ -160,6 +160,16 @@ class TestSandboxSnapshotNameArg:
         assert args.sandbox_snapshot_name == "custom-bp"
 
 
+class TestSandboxArg:
+    """Tests for `--sandbox` provider choices."""
+
+    def test_vercel_choice(self) -> None:
+        """Verify `--sandbox vercel` parses."""
+        with patch.object(sys, "argv", ["deepagents", "--sandbox", "vercel"]):
+            args = parse_args()
+        assert args.sandbox == "vercel"
+
+
 class TestStartupCmdArg:
     """Tests for `--startup-cmd` pre-prompt shell command argument."""
 

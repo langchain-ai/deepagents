@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -3723,3 +3724,151 @@ ptc = ["all", "task"]
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.interpreter_ptc is False
+
+
+class TestCreateModelCodex:
+    """`create_model` dispatch for the ChatGPT-OAuth `openai_codex` provider.
+
+    Covers the runtime path that turns a stored token into a working model —
+    untested before this suite. All cases isolate the token store to a temp
+    path and never touch the network.
+    """
+
+    def _plant_token(self, path: Path) -> None:
+        """Write a valid (unexpired) token bundle at `path` with 0600 perms."""
+        import json as _json
+        from datetime import UTC, datetime, timedelta
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps(
+                {
+                    "access_token": "fake_access",
+                    "refresh_token": "fake_refresh",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct_abc",
+                    "plan_type": "pro",
+                    "user_id": "user_xyz",
+                    "id_token": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+
+    def test_missing_token_raises_missing_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No stored token → `MissingCredentialsError` pointing at `/auth`."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import MissingCredentialsError
+
+        monkeypatch.setattr(
+            openai_codex, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        # No env var to set; the recovery hint must route through `/auth`.
+        assert exc_info.value.env_var is None
+        assert "ChatGPT" in str(exc_info.value)
+
+    def test_success_builds_codex_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored token → a `_ChatOpenAICodex` under the codex provider."""
+        from langchain_openai.chat_models.codex import _ChatOpenAICodex
+
+        from deepagents_code.integrations import openai_codex
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(openai_codex, "default_store_path", lambda: path)
+        clear_caches()
+        result = create_model("openai_codex:gpt-5.2-codex")
+        assert isinstance(result.model, _ChatOpenAICodex)
+        assert result.provider == "openai_codex"
+        assert result.model_name == "gpt-5.2-codex"
+
+    def test_api_key_kwarg_is_stripped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A passed `api_key` must not reach the model; bearer is OAuth-only.
+
+        `_ChatOpenAICodex` wires the OAuth token into `openai_api_key` as a
+        callable, so the cleanest check is that the codex branch drops the
+        `api_key` kwarg before it reaches `build_chat_model`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        captured: dict[str, Any] = {}
+        real_build = codex_mod.build_chat_model
+
+        def _capture(model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401  # passthrough capture
+            captured.update(kwargs)
+            return real_build(model_name, **kwargs)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        create_model(
+            "openai_codex:gpt-5.2-codex",
+            extra_kwargs={"api_key": "sk-should-be-stripped"},
+        )
+        assert "api_key" not in captured
+
+    def test_expired_session_routes_to_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A revoked refresh token → `MissingCredentialsError`, not generic.
+
+        The codex branch must route `CodexAuthExpiredError` to the same
+        sign-in recovery path as a missing token so the retry flow offers
+        `/auth`, rather than wrapping it in a generic `ModelConfigError`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import MissingCredentialsError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _raise_expired(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "session expired"
+            raise codex_mod.CodexAuthExpiredError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _raise_expired)
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert exc_info.value.env_var is None
+        assert "expired" in str(exc_info.value).lower()
+
+    def test_unexpected_build_error_wraps_as_model_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuinely unexpected build failure → `ModelConfigError` with spec.
+
+        The broad catch-all is the last resort for construction failures that
+        are neither missing nor expired credentials; it must name the spec
+        rather than leak a raw traceback.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import ModelConfigError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _boom(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "unexpected constructor failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _boom)
+        clear_caches()
+        with pytest.raises(ModelConfigError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert "openai_codex:gpt-5.2-codex" in str(exc_info.value)

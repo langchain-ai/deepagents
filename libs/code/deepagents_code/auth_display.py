@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, assert_never
 from textual.content import Content
 
 from deepagents_code.model_config import (
+    CODEX_PROVIDER,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
@@ -29,6 +30,13 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     Returns:
         A styled badge `Content` for the auth manager surface.
     """
+    # The ChatGPT-OAuth codex provider has no API key, so its credential is a
+    # file-backed OAuth token rather than a stored key. Give it distinctive
+    # badges (`[chatgpt]` / `[sign in to chatgpt]`) so users don't read the
+    # generic `[stored]`/`[missing]` as a literal API key on disk.
+    if status.provider == CODEX_PROVIDER:
+        return _format_codex_badge(status)
+
     state = status.state
     match state:
         case ProviderAuthState.CONFIGURED:
@@ -101,6 +109,48 @@ def _auth_badge(detail: str, *, prefix: str = "") -> Content:
         Content.styled(detail, "$text-muted"),
         ("]", "$text-muted"),
     )
+
+
+def _format_codex_badge(status: ProviderAuthStatus) -> Content:
+    """Format the auth manager badge for the ChatGPT-OAuth codex provider.
+
+    Codex signs in through ChatGPT OAuth rather than an API key, so a
+    `CONFIGURED` status renders as `[chatgpt]` (carrying the plan name when the
+    status detail includes one) and any other state renders as a
+    `[sign in to chatgpt]` prompt.
+
+    Args:
+        status: The codex provider's auth status.
+
+    Returns:
+        A styled badge reflecting ChatGPT sign-in state.
+    """
+    if status.state is ProviderAuthState.CONFIGURED:
+        badge_text = "[chatgpt]"
+        # `_get_codex_auth_status` encodes the plan as a trailing "(plan)" in
+        # the detail string (e.g. "signed in to ChatGPT (pro)").
+        if status.detail and (plan := _codex_plan_from_detail(status.detail)):
+            badge_text = f"[chatgpt: {plan}]"
+        return Content.styled(badge_text, "bold $success")
+    return Content.styled("[sign in to chatgpt]", "bold $warning")
+
+
+def _codex_plan_from_detail(detail: str) -> str | None:
+    """Extract the ChatGPT plan from a codex auth detail string.
+
+    Args:
+        detail: Human-readable codex auth status detail.
+
+    Returns:
+        The ChatGPT plan text, or `None` when no bounded plan is present.
+    """
+    _, marker, plan_tail = detail.partition("(")
+    if not marker:
+        return None
+    plan, marker, _ = plan_tail.partition(")")
+    if not marker or not plan:
+        return None
+    return plan
 
 
 def _format_configured_badge(status: ProviderAuthStatus) -> Content:

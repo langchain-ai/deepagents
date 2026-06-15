@@ -192,6 +192,8 @@ def _resolution_label(status: ProviderAuthStatus) -> str:
     if state is ProviderAuthState.CONFIGURED:
         if status.source is ProviderAuthSource.STORED:
             return "stored"
+        if status.source is ProviderAuthSource.GATEWAY:
+            return "gateway"
         if status.source is ProviderAuthSource.ENV and status.env_var:
             return f"env: {resolved_env_var_name(status.env_var)}"
         return "configured"

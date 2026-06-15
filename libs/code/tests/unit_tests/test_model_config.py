@@ -3389,6 +3389,111 @@ models = ["llama3"]
         assert status.env_var == "OLLAMA_API_KEY"
 
 
+class TestProviderAuthStatusGateway:
+    """Gateway-provisioned providers are configured, not missing."""
+
+    _GATEWAY_URL = "https://gateway.smith.langchain.com/anthropic"
+
+    def test_gateway_endpoint_and_key_reports_configured(self) -> None:
+        """A gateway endpoint + LangSmith key authenticates without a provider key."""
+        with patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_BASE_URL": self._GATEWAY_URL,
+                "LANGSMITH_API_KEY": "lsv2_test",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("anthropic")
+            legacy = has_provider_credentials("anthropic")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.GATEWAY
+        assert status.blocks_start is False
+        assert legacy is True
+
+    def test_gateway_accepts_langchain_api_key(self) -> None:
+        """`LANGCHAIN_API_KEY` is honored as the gateway key alias."""
+        with patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_BASE_URL": self._GATEWAY_URL,
+                "LANGCHAIN_API_KEY": "lsv2_test",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.GATEWAY
+
+    def test_gateway_endpoint_without_key_reports_missing(self) -> None:
+        """A gateway endpoint with no LangSmith key stays MISSING."""
+        with patch.dict(
+            "os.environ",
+            {"ANTHROPIC_BASE_URL": self._GATEWAY_URL},
+            clear=True,
+        ):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "ANTHROPIC_API_KEY"
+
+    def test_langsmith_key_without_gateway_endpoint_reports_missing(self) -> None:
+        """A LangSmith key alone (no gateway endpoint) does not satisfy auth."""
+        with patch.dict(
+            "os.environ",
+            {"LANGSMITH_API_KEY": "lsv2_test"},
+            clear=True,
+        ):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "ANTHROPIC_API_KEY"
+
+    def test_provider_key_beats_gateway_source(self) -> None:
+        """A provider-native key wins, reporting an ENV source over GATEWAY."""
+        with patch.dict(
+            "os.environ",
+            {
+                "ANTHROPIC_BASE_URL": self._GATEWAY_URL,
+                "LANGSMITH_API_KEY": "lsv2_test",
+                "ANTHROPIC_API_KEY": "sk-ant-test",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+
+    def test_config_provider_gateway_reports_configured(
+        self, tmp_path: Path
+    ) -> None:
+        """A config-file provider with an unset key still resolves via the gateway."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai]
+models = ["gpt-5.5"]
+api_key_env = "OPENAI_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "OPENAI_BASE_URL": "https://gateway.smith.langchain.com/openai/v1",
+                    "LANGSMITH_API_KEY": "lsv2_test",
+                },
+                clear=True,
+            ),
+        ):
+            status = get_provider_auth_status("openai")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.GATEWAY
+
+
 class TestProviderAuthStatusMissingDetail:
     """Tests for ProviderAuthStatus.missing_detail() rendering."""
 

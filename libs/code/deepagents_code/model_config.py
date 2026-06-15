@@ -244,6 +244,14 @@ class ProviderAuthSource(StrEnum):
     ENV = "env"
     """Resolved from an environment variable."""
 
+    GATEWAY = "gateway"
+    """Authenticated through a managed gateway (e.g. the LangSmith gateway).
+
+    The provider's own API-key env var is unset, but its endpoint is the
+    gateway and a gateway key is present, so requests authenticate via the
+    gateway rather than a provider-native key.
+    """
+
 
 @dataclass(frozen=True)
 class ProviderAuthStatus:
@@ -696,6 +704,17 @@ NO_AUTH_REQUIRED_PROVIDERS: frozenset[str] = frozenset({"ollama"})
 
 OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 """Optional env vars that enable authenticated provider modes when present."""
+
+LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host substring identifying a LangSmith gateway endpoint.
+
+When a provider's resolved base URL points here, requests are routed through
+the LangSmith gateway, which authenticates with a LangSmith key rather than the
+provider's own API key.
+"""
+
+LANGSMITH_GATEWAY_KEY_ENVS: tuple[str, ...] = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+"""Env vars that may hold the LangSmith key used to authenticate the gateway."""
 
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
@@ -1705,6 +1724,51 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
     return None
 
 
+def _resolve_langsmith_gateway_key() -> str | None:
+    """Return the LangSmith key authenticating the gateway, if any.
+
+    Checks `LANGSMITH_API_KEY` then `LANGCHAIN_API_KEY` via `resolve_env_var`
+    (so `DEEPAGENTS_CODE_` prefixes apply). The secret value is never logged.
+    """
+    for name in LANGSMITH_GATEWAY_KEY_ENVS:
+        key = resolve_env_var(name)
+        if key:
+            return key
+    return None
+
+
+def _resolve_gateway_auth(
+    provider: str, config: ModelConfig
+) -> ProviderAuthStatus | None:
+    """Return a `CONFIGURED` status when `provider` authenticates via a gateway.
+
+    A machine provisioned with the LangSmith gateway exports the provider's
+    endpoint variable (e.g. `ANTHROPIC_BASE_URL`) and a gateway key together,
+    leaving the provider's own API-key env var unset. In that case the provider
+    is authenticated through the gateway, so it must not be reported as missing
+    credentials.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`).
+        config: Loaded model configuration used to resolve the endpoint.
+
+    Returns:
+        A `CONFIGURED` / `GATEWAY` status when the provider's endpoint is the
+            LangSmith gateway and a LangSmith key is set, else `None`.
+    """
+    endpoint = _get_provider_endpoint(provider, config)
+    if not endpoint or LANGSMITH_GATEWAY_HOST not in endpoint:
+        return None
+    if not _resolve_langsmith_gateway_key():
+        return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=provider,
+        source=ProviderAuthSource.GATEWAY,
+        detail="via LangSmith gateway",
+    )
+
+
 def _get_codex_auth_status() -> ProviderAuthStatus:
     """Translate the ChatGPT OAuth on-disk state into a `ProviderAuthStatus`.
 
@@ -1771,6 +1835,11 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         via `resolve_env_var()`.
     3. **Implicit auth providers** (e.g., Vertex AI ADC): a missing env var is
         not treated as missing credentials.
+
+    Before reporting a missing key, providers whose endpoint resolves to the
+    LangSmith gateway are treated as configured when a LangSmith gateway key is
+    set: the gateway authenticates the request, so the provider's own key env
+    var is not required (see `_resolve_gateway_auth`).
     4. **Optional auth env vars** (`OPTIONAL_AUTH_ENV`): when present, mark
         the provider as configured for hosted/cloud use.
     5. **No-auth-required providers** (`NO_AUTH_REQUIRED_PROVIDERS`): default
@@ -1806,6 +1875,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
             configured = _resolve_configured(provider, env_var)
             if configured:
                 return configured
+            gateway = _resolve_gateway_auth(provider, config)
+            if gateway:
+                return gateway
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,
@@ -1836,6 +1908,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
                 env_var=env_var,
                 detail="implicit auth",
             )
+        gateway = _resolve_gateway_auth(provider, config)
+        if gateway:
+            return gateway
         return ProviderAuthStatus(
             state=ProviderAuthState.MISSING,
             provider=provider,

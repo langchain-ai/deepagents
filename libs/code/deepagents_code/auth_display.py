@@ -160,7 +160,8 @@ def _format_configured_badge(status: ProviderAuthStatus) -> Content:
         status: A `CONFIGURED` provider auth status.
 
     Returns:
-        A styled badge naming the credential source (`[stored]` or `[env: …]`).
+        A styled badge naming the credential source (`[stored]`, `[gateway]`,
+            or `[env: …]`).
 
     Raises:
         ValueError: If the status carries no source. `ProviderAuthStatus`
@@ -170,6 +171,8 @@ def _format_configured_badge(status: ProviderAuthStatus) -> Content:
     match status.source:
         case ProviderAuthSource.STORED:
             return Content.styled("[stored]", "bold $success")
+        case ProviderAuthSource.GATEWAY:
+            return Content.styled("[gateway]", "bold $success")
         case ProviderAuthSource.ENV:
             if status.env_var:
                 return Content.assemble(

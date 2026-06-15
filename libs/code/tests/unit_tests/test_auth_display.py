@@ -51,6 +51,16 @@ _AUTH_STATUS_CASES = [
     ),
     (
         ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider="anthropic",
+            source=ProviderAuthSource.GATEWAY,
+            detail="via LangSmith gateway",
+        ),
+        "[gateway]",
+        "",
+    ),
+    (
+        ProviderAuthStatus(
             state=ProviderAuthState.MISSING,
             provider="anthropic",
             env_var="ANTHROPIC_API_KEY",

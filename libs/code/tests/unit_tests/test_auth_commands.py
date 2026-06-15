@@ -442,6 +442,20 @@ class TestStatus:
         assert code == 0
         assert "missing" in capsys.readouterr().out
 
+    def test_status_gateway(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A gateway-provisioned provider reports `gateway`, not `missing`."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://gateway.smith.langchain.com/anthropic"
+        )
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        code = run_auth_command(_ns(auth_command="status", provider="anthropic"))
+        assert code == 0
+        assert "gateway" in capsys.readouterr().out
+
     def test_status_requires_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
         """`status` without a provider points users at `list` instead."""
         code = run_auth_command(_ns(auth_command="status", provider=None))

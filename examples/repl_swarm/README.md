@@ -71,3 +71,8 @@ actually runs.
 - **Hundreds of tasks.** The default `concurrency=5` cap (hard-max 10)
   is intentional — subagent invocations aren't free. For mass fan-out
   at thousands of tasks, batch them in a job queue, not a REPL call.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -1,9 +1,11 @@
 """Unit tests for textual_adapter functions."""
 
 import asyncio
+import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Generator
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -612,7 +614,43 @@ class TestBuildStreamConfig:
         from deepagents_code._version import __version__
 
         config = build_stream_config("t-ver", assistant_id=None)
-        assert config["metadata"]["lc_versions"]["deepagents-code"] == __version__
+        assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
+
+    def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
+        """Client-side SDK version should not be reported as graph instrumentation."""
+        with patch("deepagents_code.config.version", return_value="1.2.3"):
+            config = build_stream_config("t-sdk", assistant_id=None)
+        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
+        assert "deepagents" not in config["metadata"]["lc_versions"]
+
+    def test_dcode_client_deepagents_version_absent_when_metadata_missing(
+        self,
+    ) -> None:
+        """Missing SDK metadata should not prevent stream config construction."""
+        with patch(
+            "deepagents_code.config.version",
+            side_effect=PackageNotFoundError("deepagents"),
+        ):
+            config = build_stream_config("t-missing-sdk", assistant_id=None)
+
+        assert "dcode_client_deepagents_version" not in config["metadata"]
+
+    def test_dcode_client_deepagents_version_does_not_import_sdk(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SDK version metadata lookup should not import the SDK package."""
+        for module in list(sys.modules):
+            if module == "deepagents" or module.startswith("deepagents."):
+                monkeypatch.delitem(sys.modules, module, raising=False)
+
+        with patch("deepagents_code.config.version", return_value="1.2.3"):
+            build_stream_config("t-no-sdk-import", assistant_id=None)
+
+        assert not any(
+            module == "deepagents" or module.startswith("deepagents.")
+            for module in sys.modules
+        )
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""

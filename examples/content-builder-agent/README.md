@@ -144,3 +144,8 @@ This agent has filesystem access and can read, write, and delete files on your m
 - `ANTHROPIC_API_KEY` - For the main agent
 - `GOOGLE_API_KEY` - For image generation (uses Gemini's [Imagen / "nano banana"](https://ai.google.dev/gemini-api/docs/image-generation) via `gemini-2.5-flash-image`)
 - `TAVILY_API_KEY` - For web search (optional, research still works without it)
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

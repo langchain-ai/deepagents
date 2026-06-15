@@ -14,6 +14,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
+| `langchain-vercel-sandbox` | `libs/partners/vercel` | `langchain-vercel-sandbox` | [`langchain-vercel-sandbox`](https://pypi.org/project/langchain-vercel-sandbox/) |
 | `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
 
 ## Overview
@@ -146,7 +147,7 @@ Defines release-please behavior for each package.
 
 ### `.release-please-manifest.json`
 
-Tracks the current version of each package. Automatically updated by release-please — **do not edit manually**. Example (versions shown are illustrative; check the actual file for current values):
+Tracks the current version of each package. Automatically updated by release-please — **do not edit manually** except when adding a new release-please-managed package. Example (versions shown are illustrative; check the actual file for current values):
 
 ```json
 {
@@ -157,9 +158,18 @@ Tracks the current version of each package. Automatically updated by release-ple
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
+  "libs/partners/vercel": "0.0.1",
   "libs/partners/quickjs": "0.0.1"
 }
 ```
+
+### Adding a release-please-managed package
+
+When adding a new managed package, add it to both `release-please-config.json` and `.release-please-manifest.json`. The manifest entry is the **latest released version baseline**, not the package's current source version.
+
+User story: you are adding a first-party integration package, such as a new sandbox provider under `libs/partners/<provider>`, and the PR title is release-worthy (`feat(<scope>): ...`). The package source starts at `0.0.1`, and you want the first release PR for that package to publish `0.0.1`, not immediately bump to `0.0.2` before the package has ever shipped. In this case, set the new `.release-please-manifest.json` entry to `0.0.0` while keeping the package's own `pyproject.toml` and `_version.py` at `0.0.1`.
+
+Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` has already been released outside release-please. If the new manifest baseline is `0.0.1`, release-please treats that as already released and opens the initial release PR for `0.0.2`. The `Release-please initial baseline check` workflow blocks PRs that add a new `0.0.1` managed package baseline.
 
 ## Release Workflow
 

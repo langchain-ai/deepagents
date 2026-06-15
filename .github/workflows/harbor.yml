@@ -345,7 +345,7 @@ jobs:
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
             "${agent_env_args[@]}" \
-            --jobs-dir ../harbor-jobs/terminal-bench \
+            --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
@@ -358,7 +358,7 @@ jobs:
           latest_job=$(python - <<'PY'
           from pathlib import Path
 
-          jobs_dir = Path("../harbor-jobs/terminal-bench")
+          jobs_dir = Path("harbor-jobs/terminal-bench")
           job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
           if not job_dirs:
               raise SystemExit("No Harbor job directory found")
@@ -401,5 +401,5 @@ jobs:
         with:
           name: harbor-${{ strategy.job-index }}
           path: |
-            libs/harbor-jobs/terminal-bench
+            libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn

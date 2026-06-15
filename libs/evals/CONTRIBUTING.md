@@ -402,7 +402,6 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # Required: For Claude model
 export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING=true          # Required: Enable LangSmith tracing
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
-# export DAYTONA_API_KEY="..."  # Optional: Only if using --env daytona
 ```
 
 ### Running benchmarks
@@ -418,21 +417,26 @@ uv run harbor run \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \
   -n 1 \
-  --jobs-dir ../harbor-jobs/terminal-bench \
+  --jobs-dir harbor-jobs/terminal-bench \
   --env docker
 
-# Run via Daytona (10 concurrent trials)
+# Run via LangSmith sandboxes with tracing
 uv run harbor run \
   --agent langgraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \
-  -n 10 \
-  --jobs-dir ../harbor-jobs/terminal-bench \
-  --env daytona
+  -n 1 \
+  --jobs-dir harbor-jobs/terminal-bench \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=terminal-bench@2.0 \
+  --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 
 ### Available environments
@@ -440,6 +444,7 @@ uv run harbor run \
 Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 
 - `docker` - Local Docker containers (good for testing)
+- `langsmith` - LangSmith sandboxes with hosted tracing
 - `daytona` - Daytona cloud sandboxes (requires `DAYTONA_API_KEY`)
 - `modal` - Modal cloud compute
 - `runloop` - Runloop sandboxes
@@ -447,6 +452,7 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 Makefile shortcuts are available for common workflows:
 
 - `make run-terminal-bench-docker` - Run on Docker (sequential)
+- `make run-terminal-bench-langsmith` - Run on LangSmith sandboxes with tracing (sequential)
 - `make run-terminal-bench-daytona` - Run on Daytona (40 concurrent)
 - `make run-terminal-bench-modal` - Run on Modal (4 concurrent)
 - `make run-terminal-bench-runloop` - Run on Runloop (10 concurrent)
@@ -477,7 +483,7 @@ uv run harbor run \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \
   -n 10 \
-  --jobs-dir ../harbor-jobs/terminal-bench \
+  --jobs-dir harbor-jobs/terminal-bench \
   --env langsmith \
   --plugin langsmith \
   --plugin-kwarg dataset_name=terminal-bench@2.0 \

@@ -44,7 +44,8 @@ def test_makefile_no_longer_uses_custom_harbor_wrapper() -> None:
 
     assert "--agent-import-path deepagents_harbor:DeepAgentsWrapper" not in makefile
     assert "AGENT_MODE" not in makefile
-    assert "HARBOR_TERMINAL_BENCH_JOBS_DIR ?= ../harbor-jobs/terminal-bench" in makefile
+    assert "HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world" in makefile
+    assert "HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench" in makefile
 
 
 def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> None:
@@ -61,7 +62,18 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow
     assert "--plugin langsmith" in workflow
-    assert "--jobs-dir ../harbor-jobs/terminal-bench" in workflow
-    assert 'Path("../harbor-jobs/terminal-bench")' in workflow
+    assert "--jobs-dir harbor-jobs/terminal-bench" in workflow
+    assert 'Path("harbor-jobs/terminal-bench")' in workflow
+    assert "libs/evals/harbor-jobs/terminal-bench" in workflow
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in workflow
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
+
+
+def test_contributing_docs_use_langsmith_sandbox_example() -> None:
+    contributing = (EVALS / "CONTRIBUTING.md").read_text()
+
+    assert "# Run via Daytona" not in contributing
+    assert "# Run via LangSmith sandboxes" in contributing
+    assert "--jobs-dir harbor-jobs/terminal-bench" in contributing
+    assert "--env langsmith" in contributing
+    assert "--plugin langsmith" in contributing

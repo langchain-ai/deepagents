@@ -1,0 +1,45 @@
+libs/evals/deepagents_harbor/langgraph.json
+  s_0d650ca1e6949f::t_633ff6ede21654 1-6
+.github/workflows/harbor.yml
+  s_0d650ca1e6949f::t_dc3a68b66e2e9d 28,194,311-318,321-324,331-333,354-355,370-372
+  s_0d650ca1e6949f::t_cb1a2a67226822 328,341,384
+libs/evals/deepagents_harbor/langgraph_agent.py
+  s_0d650ca1e6949f::t_633ff6ede21654 1,6-7,10-11,13,15,17-19,21-23,25-27,30-39,43-49,52-57,60-67,70-71,73-75,78-80,83,85-103,105
+  s_0d650ca1e6949f::t_c99ebbc7fc4909 8,42
+libs/evals/tests/evals/conftest.py
+  s_0d650ca1e6949f::t_62943eeebccd3e 20-21
+libs/evals/Makefile
+  s_0d650ca1e6949f::t_26c05ce4f48c21 44,47
+  s_0d650ca1e6949f::t_cb1a2a67226822 45-46,50-51,54-55,58-59,62-63,66-67,70-71
+libs/evals/CONTRIBUTING.md
+  s_0d650ca1e6949f::t_62943eeebccd3e 412-419,421,424-431,433,460,463-464,466,468-474,476-479,482-484,488
+  s_0d650ca1e6949f::t_070788bf61b7fa 420,432,475
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_0d650ca1e6949f::t_3d9f3e67ea0352 18
+  s_0d650ca1e6949f::t_d816437190b4f8 23,27-28,31,35,46,56,75,78,91
+  s_0d650ca1e6949f::t_949d7a2d270344 1,5-6,11-12,14,16-17,19,22,24-25,29,32-33,36-37,39-41,43-45,47-49,51,53-55,57,59-74,76-77,79-90,92,94,96-97
+libs/evals/deepagents_harbor/__init__.py
+  s_0d650ca1e6949f::t_633ff6ede21654 1
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_0d650ca1e6949f::t_7199fc0482c9ad 21,33,46-47
+  s_0d650ca1e6949f::t_9290ec406a9790 28-32,34-35
+  s_0d650ca1e6949f::t_3d9f3e67ea0352 42-43
+  s_0d650ca1e6949f::t_7a40ad6faff896 16-20
+  s_0d650ca1e6949f::t_949d7a2d270344 1-15,22-27,36-41,44-45,48-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "f8434332694752319260e5ff2c72685f5dc0bead",
+  "prompts": {},
+  "sessions": {
+    "s_0d650ca1e6949f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecca5-97dc-7843-8de7-19d44b52cd43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

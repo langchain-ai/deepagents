@@ -17,7 +17,11 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg config=langgraph.json" in makefile
     assert "--agent-kwarg graph=deepagent" in makefile
+    assert "HARBOR_AGENT_ENV_ARGS ?=" in makefile
+    assert "--agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'" in makefile
+    assert "--agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}'" in makefile
     assert "$(HARBOR_AGENT_ARGS)" in target
+    assert "$(HARBOR_AGENT_ENV_ARGS)" in target
     assert "--jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR)" in target
     assert "--plugin langsmith" in target
     assert "--plugin-kwarg dataset_name=terminal-bench@2.0" in target
@@ -42,6 +46,10 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in workflow
     assert "--agent-kwarg config=langgraph.json" in workflow
     assert "--agent-kwarg graph=deepagent" in workflow
+    assert "agent_env_args=(" in workflow
+    assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
+    assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
+    assert '"${agent_env_args[@]}"' in workflow
     assert "--plugin langsmith" in workflow
     assert "--jobs-dir ../harbor-jobs/terminal-bench" in workflow
     assert 'Path("../harbor-jobs/terminal-bench")' in workflow

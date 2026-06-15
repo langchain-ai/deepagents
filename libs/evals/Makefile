@@ -42,6 +42,7 @@ test_watch: ## Run tests in watch mode
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
 HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=deepagents_harbor/langgraph_project --agent-kwarg config=langgraph.json --agent-kwarg graph=deepagent
+HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= ../harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= ../harbor-jobs/terminal-bench
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
@@ -68,7 +69,7 @@ run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
 
 run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=terminal-bench@2.0 --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=terminal-bench@2.0 --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
 
 ######################
 # CHARTS

@@ -37,7 +37,7 @@ from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -543,6 +543,97 @@ You have access to an `execute` tool for running shell commands in a sandboxed e
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
+
+
+def _route_host_path_prompt(backend: BackendProtocol) -> str:
+    """Build a prompt section mapping virtual route paths to host shell paths.
+
+    `execute` runs on the default backend's shell, so virtual paths (e.g.
+    `/common/`) may not exist there. Instead of rewriting shell commands, provide
+    the model with prefix-substitution mappings so it can generate correct commands
+    directly.
+
+    A route exposes a usable host path only when its files live on the same
+    filesystem the default's shell runs in, which requires the default to be a
+    `LocalShellBackend` (its shell runs on the local host). For such a default, a
+    `FilesystemBackend` route maps to a host path based on its mode:
+
+    - virtual mode: the prefix maps to the backend's host root, `route.cwd`
+      (e.g. `/common/` -> `/data/`, so `/common/x` is `/data/x` on the host).
+    - non-virtual mode: the prefix is stripped and the remaining absolute path is
+      used as-is (`root_dir` is ignored), i.e. the prefix maps to the filesystem
+      root `/` (e.g. `/legacy/x` is `/x`).
+
+    A remote/sandbox default runs its shell in a separate filesystem, so a local
+    `FilesystemBackend` route is not reachable from it. Those routes, along with
+    store-backed routes, have no host path mapping and must be accessed through the
+    file tools instead.
+
+    Returns an empty string if there are no routes to describe.
+    """
+    if not isinstance(backend, CompositeBackend):
+        return ""
+
+    # Host mappings are only valid when the default's shell shares the local
+    # filesystem with the routes (LocalShellBackend). For a remote/sandbox
+    # default, no local filesystem route is reachable from the shell.
+    default_uses_local_shell = isinstance(backend.default, LocalShellBackend)
+
+    # (virtual_prefix, host_prefix) pairs. A host_prefix of "/" means the virtual
+    # prefix is stripped down to the filesystem root.
+    host_mappings: list[tuple[str, str]] = []
+    no_host_routes: list[str] = []
+    for route_prefix, route_backend in backend.sorted_routes:
+        if not (default_uses_local_shell and isinstance(route_backend, FilesystemBackend)):
+            no_host_routes.append(route_prefix)
+        elif route_backend.virtual_mode:
+            # Virtual mode: prefix maps to the backend's host root directory.
+            host_mappings.append((route_prefix, str(route_backend.cwd)))
+        else:
+            # Non-virtual mode: prefix is stripped, remaining absolute path used
+            # as-is -> the prefix maps to the filesystem root.
+            host_mappings.append((route_prefix, "/"))
+
+    if not host_mappings and not no_host_routes:
+        return ""
+
+    def _norm(prefix: str) -> str:
+        """Ensure a trailing slash so prefix substitution composes for subpaths."""
+        return prefix if prefix.endswith("/") else f"{prefix}/"
+
+    def _mapping_line(virtual_prefix: str, host_prefix: str) -> str:
+        # Normalize both sides to end with "/" so replacing the virtual prefix with
+        # the host prefix yields a correct host path for nested paths.
+        virtual = _norm(virtual_prefix)
+        host = _norm(host_prefix)
+        example = f"`{virtual}dir/x.py` -> `{host}dir/x.py`"
+        return f"- `{virtual}` -> `{host}` (e.g. {example})"
+
+    lines = [
+        "## Shell paths vs. virtual paths",
+        "",
+        "The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.",
+        "",
+        "Some paths returned by the file tools are virtual mounts:",
+        "",
+        "- If a virtual mount has a host path mapping, replace its virtual prefix with the host prefix when running shell commands.",
+        "- If a virtual mount does not have a host path mapping, it is not accessible "
+        "from the shell. Use the file tools listed above to interact with those files.",
+        "",
+        "Do not assume that a path returned by a file tool can be used directly in a shell command.",
+    ]
+
+    if host_mappings:
+        lines.append("")
+        lines.append("Host path mappings:")
+        lines.extend(_mapping_line(virtual_prefix, host_prefix) for virtual_prefix, host_prefix in host_mappings)
+
+    if no_host_routes:
+        lines.append("")
+        lines.append("Virtual mounts without a host path mapping (not accessible from the shell):")
+        lines.extend(f"- `{prefix}`" for prefix in no_host_routes)
+
+    return "\n".join(lines)
 
 
 def supports_execution(backend: BackendProtocol) -> bool:
@@ -1800,9 +1891,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            system_prompt = self._build_dynamic_system_prompt(
-                include_execution=has_execute_tool and backend_supports_execution,
-            )
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)
@@ -1856,9 +1959,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            system_prompt = self._build_dynamic_system_prompt(
-                include_execution=has_execute_tool and backend_supports_execution,
-            )
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
             new_system_message = append_to_system_message(request.system_message, system_prompt)

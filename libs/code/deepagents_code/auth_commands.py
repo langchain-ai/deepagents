@@ -29,7 +29,6 @@ path (`parse_args` imports this module only for its light top-level imports).
 
 from __future__ import annotations
 
-import logging
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -38,8 +37,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from deepagents_code.model_config import ProviderAuthStatus
-
-logger = logging.getLogger(__name__)
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -211,20 +208,26 @@ def _resolution_label(status: ProviderAuthStatus) -> str:
     return status.detail or "credentials unknown"
 
 
-def _known_providers() -> list[str]:
-    """Return the providers shown by `list`/`status`, sorted.
+def _known_providers() -> tuple[list[str], str | None]:
+    """Return the providers shown by `list`/`status` plus a store-warning.
 
     Matches the `/auth` manager's set: well-known providers whose integration
     package is installed, plus any provider with a stored credential or an
     `api_key_env` declared in `config.toml` (always shown so stale keys can be
     cleaned up and explicit declarations stay visible).
 
-    Callers must invoke `_warn_if_store_unreadable` first: a corrupt store
-    collapses the stored-credential arm to the empty set below (so a
-    stored-only provider silently drops out of the listing), and only that
-    warning tells the user the rows may be incomplete. The `logger.warning`
-    here is invisible at the default CLI log level, so it is a debugging
-    breadcrumb, not the user-facing signal.
+    A corrupt store collapses the stored-credential arm to the empty set (so a
+    stored-only provider silently drops out of the listing). When that happens
+    the corruption message is returned as the second tuple element so the
+    caller can surface it on stderr; the provider list alone is not authoritative
+    when this is non-`None`. Returning the message as data (rather than relying
+    on a sibling `_warn_if_store_unreadable` re-read) reads `auth.json` once,
+    removing the double-read and the TOCTOU window between the two reads.
+
+    Returns:
+        A `(providers, warning)` tuple: the sorted provider names, and the
+            corrupt-store message when the store is present but unreadable, else
+            `None`.
     """
     from deepagents_code import auth_store
     from deepagents_code.model_config import (
@@ -234,10 +237,11 @@ def _known_providers() -> list[str]:
         get_available_models,
     )
 
+    warning: str | None = None
     try:
         stored = set(auth_store.list_configured_providers())
     except RuntimeError as exc:
-        logger.warning("Failed to list stored credentials: %s", exc)
+        warning = str(exc)
         stored = set()
     config = ModelConfig.load()
     config_providers = {
@@ -249,17 +253,29 @@ def _known_providers() -> list[str]:
     # no API-key env var entry. Mirror the TUI auth manager by showing it when
     # the OpenAI integration was discovered.
     codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
-    return sorted(well_known_installed | codex_installed | stored | config_providers)
+    providers = sorted(
+        well_known_installed | codex_installed | stored | config_providers
+    )
+    return providers, warning
+
+
+def _print_store_warning(message: str) -> None:
+    """Print a corrupt-store diagnostic to stderr."""
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
 
 
 def _warn_if_store_unreadable() -> None:
     """Print a stderr warning when the credential store is present but corrupt.
 
+    Used by `status`, which prints a single requested row and so does not go
+    through `_known_providers` (whose return value already carries the
+    corruption message for the `list` path).
+
     `get_provider_auth_status` (via `model_config._has_stored_credential`)
     swallows a corrupt-store `RuntimeError` and reports `missing`/env-only,
-    which would otherwise make `list`/`status` silently misreport a provider
-    whose stored key cannot be read. The TUI surfaces this with a banner in the
-    `/auth` modal; this is the CLI equivalent so the printed rows are not taken
+    which would otherwise make `status` silently misreport a provider whose
+    stored key cannot be read. The TUI surfaces this with a banner in the
+    `/auth` modal; this is the CLI equivalent so the printed row is not taken
     as authoritative when the store is broken.
     """
     from deepagents_code import auth_store
@@ -267,8 +283,7 @@ def _warn_if_store_unreadable() -> None:
     try:
         auth_store.list_configured_providers()
     except RuntimeError as exc:
-        # Plain stderr diagnostic (not Rich-styled console output).
-        print(f"Warning: {exc}", file=sys.stderr)  # noqa: T201
+        _print_store_warning(str(exc))
 
 
 def _print_rows(providers: list[str]) -> None:
@@ -290,8 +305,9 @@ def _run_list() -> int:
     Returns:
         Process exit code (`0`).
     """
-    _warn_if_store_unreadable()
-    providers = _known_providers()
+    providers, warning = _known_providers()
+    if warning is not None:
+        _print_store_warning(warning)
     if not providers:
         print("No providers found.")  # noqa: T201
         return 0

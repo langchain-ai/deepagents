@@ -555,7 +555,7 @@ class TestList:
             tmp_path / "missing.toml",
         )
 
-        assert _known_providers() == ["openai", "openai_codex"]
+        assert _known_providers() == (["openai", "openai_codex"], None)
         code = run_auth_command(_ns(auth_command="list"))
 
         assert code == 0
@@ -574,7 +574,7 @@ class TestList:
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "missing.toml",
         )
-        assert _known_providers() == []
+        assert _known_providers() == ([], None)
         code = run_auth_command(_ns(auth_command="list"))
         assert code == 0
         assert "No providers found." in capsys.readouterr().out
@@ -587,6 +587,17 @@ class TestList:
         code = run_auth_command(_ns(auth_command="list"))
         assert code == 0
         assert "Warning:" in capsys.readouterr().err
+
+    def test_known_providers_returns_corruption_message(self) -> None:
+        """A corrupt store is reported as the second tuple element, not raised.
+
+        Guards the data contract that lets `list` surface the warning from a
+        single store read instead of a sibling `_warn_if_store_unreadable`
+        re-read.
+        """
+        _write_corrupt_store()
+        _providers, warning = _known_providers()
+        assert warning is not None
 
 
 class TestResolutionLabel:

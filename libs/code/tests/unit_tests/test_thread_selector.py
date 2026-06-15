@@ -19,8 +19,8 @@ from textual.widgets import Checkbox, Input, Select, Static
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.widgets.thread_selector import (
+    ContainedSelectOverlay,
     DeleteThreadConfirmScreen,
-    ThreadScopeSelectOverlay,
     ThreadSelectorScreen,
 )
 
@@ -383,8 +383,8 @@ class TestThreadSelectorNavigateAndSelect:
 class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
 
-    async def test_sort_switch_toggles_sort(self) -> None:
-        """The sort switch should highlight the active header column."""
+    async def test_sort_select_toggles_sort(self) -> None:
+        """The sort select should highlight the active header column."""
         with _patch_list_threads(), _patch_columns():
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:
@@ -398,14 +398,13 @@ class TestThreadSelectorTabSort:
                 header = screen.query_one("#thread-header", Horizontal)
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
                 created_cell = header.query_one(".thread-cell-created_at", Static)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                sort_select = screen.query_one("#thread-sort-select", Select)
                 assert str(updated_cell._Static__content) == "Updated"
                 assert updated_cell.has_class("thread-cell-sorted")
                 assert not created_cell.has_class("thread-cell-sorted")
-                assert sort_switch.value is True
-                assert "Sort by Updated" in str(sort_switch.label)
+                assert sort_select.value == "updated_at"
 
-                sort_switch.toggle()
+                sort_select.value = "created_at"
                 await pilot.pause()
                 assert screen._sort_by_updated is False
                 assert screen._columns == original_columns
@@ -414,8 +413,7 @@ class TestThreadSelectorTabSort:
                 assert str(created_cell._Static__content) == "Created"
                 assert created_cell.has_class("thread-cell-sorted")
                 assert not updated_cell.has_class("thread-cell-sorted")
-                assert sort_switch.value is False
-                assert "Sort by Created" in str(sort_switch.label)
+                assert sort_select.value == "created_at"
 
     async def test_sorted_header_column_is_highlighted(self) -> None:
         """The active sort column should be highlighted without extra text."""
@@ -450,7 +448,7 @@ class TestThreadSelectorTabSort:
 
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                sort_select = screen.query_one("#thread-sort-select", Select)
                 thread_id_switch = screen.query_one(
                     f"#{ThreadSelectorScreen._switch_id('thread_id')}",
                     Checkbox,
@@ -472,7 +470,7 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
+                assert sort_select.has_focus
 
                 relative_time_switch = screen.query_one(
                     "#thread-relative-time", Checkbox
@@ -506,7 +504,7 @@ class TestThreadSelectorTabSort:
 
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                sort_select = screen.query_one("#thread-sort-select", Select)
                 assert filter_input.has_focus
 
                 await pilot.press("tab")
@@ -515,7 +513,7 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
+                assert sort_select.has_focus
 
                 await pilot.press("shift+tab")
                 await pilot.pause()
@@ -538,7 +536,7 @@ class TestThreadSelectorTabSort:
 
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                sort_select = screen.query_one("#thread-sort-select", Select)
                 controls = screen._filter_focus_order()
                 event = MagicMock()
                 event.character = "f"
@@ -557,7 +555,7 @@ class TestThreadSelectorTabSort:
                     assert screen._filter_focus_order() == controls
                     assert controls[0] is filter_input
                     assert controls[1] is scope_select
-                    assert controls[2] is sort_switch
+                    assert controls[2] is sort_select
 
                     screen.on_key(event)
 
@@ -576,18 +574,19 @@ class TestThreadSelectorTabSort:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
 
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
+                assert relative_switch.has_focus
 
-                sort_switch.toggle()
+                relative_switch.toggle()
                 await pilot.pause()
 
-                assert sort_switch.has_focus
+                assert relative_switch.has_focus
                 assert not filter_input.has_focus
 
     async def test_typing_letter_from_controls_refocuses_search(self) -> None:
@@ -602,12 +601,13 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
+                assert relative_switch.has_focus
 
                 await pilot.press("f")
                 await pilot.pause()
@@ -630,12 +630,13 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
+                assert relative_switch.has_focus
 
                 await pilot.press("f")
                 await pilot.pause()
@@ -660,21 +661,22 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                relative_switch = screen.query_one("#thread-relative-time", Checkbox)
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
-                assert sort_switch.has_focus
-                assert sort_switch.value is True
+                assert relative_switch.has_focus
+                assert relative_switch.value is True
 
                 await pilot.press("space")
                 await pilot.pause()
 
-                assert sort_switch.has_focus
+                assert relative_switch.has_focus
                 assert not filter_input.has_focus
                 assert filter_input.value == ""
-                assert sort_switch.value is False
+                assert relative_switch.value is False
 
 
 class TestThreadSelectorDownWrap:
@@ -843,13 +845,13 @@ class TestThreadSelectorScopeSelect:
                 assert isinstance(screen, ThreadSelectorScreen)
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
-                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                sort_select = screen.query_one("#thread-sort-select", Select)
 
                 await pilot.press("tab")
                 await pilot.press("enter")
                 await pilot.pause()
                 assert scope_select.expanded
-                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                overlay = scope_select.query_one(ContainedSelectOverlay)
                 assert overlay.highlighted == 1
 
                 await pilot.press("shift+tab")
@@ -863,7 +865,7 @@ class TestThreadSelectorScopeSelect:
                 await pilot.pause()
                 assert scope_select.expanded
                 assert overlay.highlighted == 1
-                assert not sort_switch.has_focus
+                assert not sort_select.has_focus
                 assert not app.dismissed
 
     async def test_arrow_keys_move_open_scope_select_not_thread_list(self) -> None:
@@ -883,7 +885,7 @@ class TestThreadSelectorScopeSelect:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert scope_select.expanded
-                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                overlay = scope_select.query_one(ContainedSelectOverlay)
                 assert overlay.highlighted == 1
 
                 await pilot.press("up")

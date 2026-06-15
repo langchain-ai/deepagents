@@ -2139,7 +2139,7 @@ class TestModalScreenShiftTabHandling:
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
             scope_select = screen.query_one("#thread-scope-select", Select)
-            sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+            sort_select = screen.query_one("#thread-sort-select", Select)
 
             await pilot.press("tab")
             await pilot.pause()
@@ -2147,7 +2147,7 @@ class TestModalScreenShiftTabHandling:
 
             await pilot.press("tab")
             await pilot.pause()
-            assert sort_switch.has_focus
+            assert sort_select.has_focus
 
             await pilot.press("shift+tab")
             await pilot.pause()

@@ -575,7 +575,7 @@ except PermissionError:
         Subclasses overriding `write()` (e.g., to use a native SDK transport)
         should call this first so they preserve the same "fail if file exists"
         and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
-        window between this check and the actual write — an inherent limitation
+        window between this check and the actual write, an inherent limitation
         of splitting the operation across two backend calls.
 
         Args:
@@ -719,7 +719,7 @@ except PermissionError:
         new_string: str,
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
-        """Server-side replace via `execute()` — single round-trip."""
+        """Server-side replace via `execute()` (single round-trip)."""
         result = self.execute(self._build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
         return self._parse_edit_output(result.output, file_path, old_string)
 

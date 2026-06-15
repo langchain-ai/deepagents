@@ -1978,8 +1978,8 @@ class TestIsAutoUpdateEnabled:
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
 
-    def test_default_is_false(self, config_path) -> None:  # noqa: ARG002
-        """Auto-update defaults to disabled."""
+    def test_default_is_true(self, config_path) -> None:  # noqa: ARG002
+        """Auto-update defaults to enabled (opt-out)."""
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch.dict("os.environ", {}, clear=False),
@@ -1987,7 +1987,7 @@ class TestIsAutoUpdateEnabled:
             import os
 
             os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-            assert is_auto_update_enabled() is False
+            assert is_auto_update_enabled() is True
 
     def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
         """DEEPAGENTS_CODE_AUTO_UPDATE=1 enables auto-update."""
@@ -1996,6 +1996,27 @@ class TestIsAutoUpdateEnabled:
             patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}),
         ):
             assert is_auto_update_enabled() is True
+
+    def test_env_var_disables(self, config_path) -> None:  # noqa: ARG002
+        """DEEPAGENTS_CODE_AUTO_UPDATE=0 opts out of auto-update."""
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "0"}),
+        ):
+            assert is_auto_update_enabled() is False
+
+    def test_config_disables(self, config_path) -> None:
+        """`[update].auto_update = false` opts out of auto-update."""
+        set_auto_update(False)
+        assert config_path.exists()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import os
+
+            os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+            assert is_auto_update_enabled() is False
 
     def test_editable_install_always_disabled(self, config_path) -> None:
         """Editable installs never auto-update, even with config set."""

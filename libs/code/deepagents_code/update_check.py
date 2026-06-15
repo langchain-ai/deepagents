@@ -1440,21 +1440,23 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-in via `DEEPAGENTS_CODE_AUTO_UPDATE=1` env var or
-    `[update].auto_update = true` in `config.toml`.
+    Opt-out via `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or
+    `[update].auto_update = false` in `config.toml`.
 
-    Defaults to `False`.
+    Defaults to `True`.
 
     Always disabled for editable installs.
     """
-    from deepagents_code._env_vars import AUTO_UPDATE
+    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install
 
     if _is_editable_install():
         return False
-    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
-        return True
-    return _read_update_config().get("auto_update", False)
+    if AUTO_UPDATE in os.environ:
+        classified = classify_env_bool(os.environ[AUTO_UPDATE])
+        if classified is not None:
+            return classified
+    return _read_update_config().get("auto_update", True)
 
 
 def set_auto_update(enabled: bool) -> None:

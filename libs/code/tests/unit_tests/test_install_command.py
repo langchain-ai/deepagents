@@ -6,6 +6,7 @@ this module focuses on the in-app slash dispatch in `DeepAgentsApp`.
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_code.app import DeepAgentsApp
@@ -782,3 +783,40 @@ async def test_install_restart_failure_omits_complete_message() -> None:
         ]
         assert any("Restarting server..." in m for m in app_msgs)
         assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
+    """A missing `restart_prompt` module must degrade, not crash the TUI.
+
+    `/install` runs `uv tool install -U 'deepagents-code[...]'`, which rewrites
+    deepagents-code's own on-disk tree mid-session. A first import of the
+    restart modal on the post-install path can then raise `ModuleNotFoundError`
+    (observed in the field). The handler must fall back to the already-mounted
+    manual `/restart` hint instead of letting the import crash the app.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        push = AsyncMock(return_value="restart")
+        with (
+            # `None` in sys.modules forces `import` to raise ImportError,
+            # reproducing the half-replaced on-disk tree after a self-upgrade.
+            patch.dict(
+                sys.modules,
+                {"deepagents_code.widgets.restart_prompt": None},
+            ),
+            patch.object(app, "_push_screen_wait", new=push),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            # Must not raise despite the unimportable modal.
+            await app._offer_restart_after_install("fireworks")
+            await pilot.pause()
+        # The modal was never mounted and no restart was attempted.
+        push.assert_not_awaited()
+        restart.assert_not_awaited()

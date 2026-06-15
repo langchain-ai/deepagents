@@ -205,6 +205,7 @@ if TYPE_CHECKING:
     from deepagents_code.widgets.notification_center import (
         NotificationSuppressRequested,
     )
+    from deepagents_code.widgets.restart_prompt import RestartChoice
     from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
@@ -4003,6 +4004,9 @@ class DeepAgentsApp(App):
             return
 
         log_path = create_update_log_path()
+        # Load the restart modal before the upgrade rewrites our own package
+        # tree; the post-install import then hits the in-memory cache.
+        self._ensure_restart_prompt_loaded()
         await self._mount_message(
             AppMessage(f"Installing extra '{extra}'..."),
         )
@@ -4114,6 +4118,9 @@ class DeepAgentsApp(App):
             return
 
         log_path = create_update_log_path()
+        # Load the restart modal before the upgrade rewrites our own package
+        # tree; the post-install import then hits the in-memory cache.
+        self._ensure_restart_prompt_loaded()
         await self._mount_message(
             AppMessage(f"Installing package '{package}'..."),
         )
@@ -10669,6 +10676,29 @@ class DeepAgentsApp(App):
             ),
         )
 
+    @staticmethod
+    def _ensure_restart_prompt_loaded() -> None:
+        """Load the restart-prompt modal before any in-place self-upgrade.
+
+        `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+        rewrites deepagents-code's own on-disk package tree while this process
+        is running. Modules already in `sys.modules` keep working from memory,
+        but a *first* import after the rewrite reads the mutated (or
+        partially-written) tree and can raise `ModuleNotFoundError`.
+        `restart_prompt` is imported only on the post-install path, so import
+        it now — before the mutation — so the later import in
+        `_offer_restart_after_install` is a cache hit served from memory. The
+        import is still defended there for the genuine upgrade case where the
+        on-disk module legitimately differs from what is resident.
+
+        Best-effort: a failure here just means the post-install import falls
+        back to its own guard, so swallow it rather than crash the install.
+        """
+        try:
+            from deepagents_code.widgets import restart_prompt  # noqa: F401
+        except ImportError:
+            logger.warning("Could not preload restart_prompt modal", exc_info=True)
+
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.
 
@@ -10690,10 +10720,21 @@ class DeepAgentsApp(App):
         if self._agent_running or self._connecting:
             return
 
-        from deepagents_code.widgets.restart_prompt import (
-            RestartChoice,
-            RestartPromptScreen,
-        )
+        try:
+            from deepagents_code.widgets.restart_prompt import RestartPromptScreen
+        except ImportError:
+            # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+            # can rewrite deepagents-code's own on-disk package tree mid-session
+            # (see `_ensure_restart_prompt_loaded`). A first import of the modal
+            # here may then fail. The manual `/restart` hint was already mounted
+            # by the caller, so degrade to that instead of crashing the TUI.
+            logger.warning(
+                "restart_prompt unavailable after installing %r; leaving the "
+                "manual /restart hint in place",
+                label,
+                exc_info=True,
+            )
+            return
 
         choice: RestartChoice | None
         try:

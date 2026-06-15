@@ -1453,7 +1453,11 @@ def is_auto_update_enabled() -> bool:
     Defaults to `True`.
 
     Unrecognized env values (neither truthy nor falsy) are ignored with a
-    warning and fall through to the config/default.
+    warning and fall through to the config read below.
+
+    If `config.toml` exists but cannot be parsed, returns `False` (fail-closed):
+    a corrupt file may hold an explicit opt-out, so it is not treated as the
+    permissive default. A genuinely absent config falls through to `True`.
 
     Always disabled for editable installs.
     """
@@ -1467,16 +1471,17 @@ def is_auto_update_enabled() -> bool:
         classified = classify_env_bool(raw)
         if classified is not None:
             return classified
-        # Unrecognized boolean token: warn and fall through to config/default,
-        # mirroring `config_manifest._coerce_env`. With the opt-out default this
-        # branch fails open (auto-update stays on), so an ignored disable attempt
+        # Unrecognized boolean token: warn and fall through to the config read
+        # below (which itself fails closed on a corrupt config), mirroring
+        # `config_manifest._coerce_env`. With the opt-out default an absent or
+        # default config leaves auto-update on, so an ignored disable attempt
         # (e.g. a typo like `ture`) must be surfaced rather than swallowed.
         logger.warning("Ignoring %s=%r (expected bool)", AUTO_UPDATE, raw)
     try:
         config = _read_update_config_strict()
     except _ConfigReadError:
         # The config exists but cannot be parsed. Fail *closed* here even though
-        # the default is opt-in: a corrupt file may hold an explicit
+        # the default is opt-out: a corrupt file may hold an explicit
         # `auto_update = false`, and silently re-enabling auto-update (which
         # upgrades and re-execs the process) against an unreadable opt-out is
         # worse than skipping the upgrade. A genuinely absent config still
@@ -1588,8 +1593,11 @@ def is_auto_update_explicitly_set() -> bool:
 def should_announce_auto_update_default() -> bool:
     """Return whether to show the one-time auto-update default migration notice.
 
-    `True` only when auto-update is active *implicitly* (the opt-out default,
-    not an explicit env/config choice) and the notice has not been shown yet.
+    `True` when no explicit env/config preference is set (so auto-update is on
+    only *implicitly*, via the opt-out default) and the notice has not been
+    acknowledged yet. This does not itself verify that auto-update is enabled;
+    callers must gate on `is_auto_update_enabled` first (e.g. an editable
+    install has no explicit preference but never auto-updates).
     """
     if is_auto_update_explicitly_set():
         return False

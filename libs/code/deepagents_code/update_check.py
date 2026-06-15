@@ -1445,6 +1445,9 @@ def is_auto_update_enabled() -> bool:
 
     Defaults to `True`.
 
+    Unrecognized env values (neither truthy nor falsy) are ignored with a
+    warning and fall through to the config/default.
+
     Always disabled for editable installs.
     """
     from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
@@ -1453,9 +1456,15 @@ def is_auto_update_enabled() -> bool:
     if _is_editable_install():
         return False
     if AUTO_UPDATE in os.environ:
-        classified = classify_env_bool(os.environ[AUTO_UPDATE])
+        raw = os.environ[AUTO_UPDATE]
+        classified = classify_env_bool(raw)
         if classified is not None:
             return classified
+        # Unrecognized boolean token: warn and fall through to config/default,
+        # mirroring `config_manifest._coerce_env`. With the opt-out default this
+        # branch fails open (auto-update stays on), so an ignored disable attempt
+        # (e.g. a typo like `ture`) must be surfaced rather than swallowed.
+        logger.warning("Ignoring %s=%r (expected bool)", AUTO_UPDATE, raw)
     return _read_update_config().get("auto_update", True)
 
 

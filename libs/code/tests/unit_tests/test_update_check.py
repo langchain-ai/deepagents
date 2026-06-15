@@ -2018,6 +2018,54 @@ class TestIsAutoUpdateEnabled:
             os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
             assert is_auto_update_enabled() is False
 
+    def test_empty_env_disables(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """An explicitly-empty env value is treated as falsy (opt-out)."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_unrecognized_env_falls_through_to_default(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A garbage env value is ignored (with a warning) and uses the default.
+
+        Guards the `classify_env_bool(...) is None` branch: a typo'd disable
+        attempt must not be mistaken for a real value. With no config written
+        it falls through to the opt-out default of `True`.
+        """
+        assert not config_path.exists()  # no config backs the result
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "ture")
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is True
+        assert "expected bool" in caplog.text
+
+    def test_unrecognized_env_falls_through_to_config(
+        self, config_path, monkeypatch
+    ) -> None:
+        """A garbage env value yields to `config.toml` rather than overriding it."""
+        set_auto_update(False)
+        assert config_path.exists()
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "maybe")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_env_overrides_config_to_disable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """A falsy env var wins over `[update].auto_update = true`."""
+        set_auto_update(True)
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "0")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_env_overrides_config_to_enable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """A truthy env var wins over `[update].auto_update = false`."""
+        set_auto_update(False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "1")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is True
+
     def test_editable_install_always_disabled(self, config_path) -> None:
         """Editable installs never auto-update, even with config set."""
         set_auto_update(True)

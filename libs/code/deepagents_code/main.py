@@ -152,12 +152,17 @@ def _run_startup_auto_update(console: "Console") -> None:
         get_cached_update_available,
         is_auto_update_enabled,
         is_installed_version_at_least,
+        is_update_check_enabled,
         perform_upgrade,
         upgrade_command,
     )
 
     try:
-        if _is_editable_install() or not is_auto_update_enabled():
+        if (
+            _is_editable_install()
+            or not is_update_check_enabled()
+            or not is_auto_update_enabled()
+        ):
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)

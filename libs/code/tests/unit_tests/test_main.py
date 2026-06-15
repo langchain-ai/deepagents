@@ -84,6 +84,30 @@ class TestStartupAutoUpdate:
         check.assert_not_called()
         upgrade.assert_not_called()
 
+    def test_disabled_update_check_skips_cached_auto_update(self) -> None:
+        """Disabled update checks should block cached startup auto-updates."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+
     def test_restart_uses_module_entrypoint(self) -> None:
         """Restart should reload package code from the updated environment."""
         with (

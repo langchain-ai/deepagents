@@ -34,10 +34,13 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
 
+    from deepagents_code.widgets.codex_auth import CodexSignedInAction
+
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
+    CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     ModelConfig,
@@ -70,6 +73,116 @@ class AuthResult(StrEnum):
 
     CANCELLED = "cancelled"
     """User dismissed the prompt without saving."""
+
+
+class AuthConfirmScreen(ModalScreen[bool]):
+    """Confirm before launching an authentication flow for a model.
+
+    A provider-agnostic gate shown when a selected model needs credentials
+    that aren't detected, and starting the auth flow is disruptive enough
+    that the user should opt in first (e.g. an OAuth flow that launches a
+    browser and a multi-minute loopback wait). The caller supplies all copy
+    so the screen carries no provider assumptions; currently only the
+    `openai_codex` model-switcher path uses it.
+
+    Dismissal values:
+
+    - `True`: proceed to the auth flow.
+    - `False`: go back without authenticating (also the outcome of Esc).
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Continue", show=False, priority=True),
+        Binding("escape", "cancel", "Back", show=False, priority=True),
+    ]
+
+    CSS = """
+    AuthConfirmScreen {
+        align: center middle;
+    }
+
+    AuthConfirmScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    AuthConfirmScreen .auth-confirm-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    AuthConfirmScreen .auth-confirm-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    AuthConfirmScreen .auth-confirm-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        body: str | Content,
+        help_text: str = "Enter to continue, Esc to go back",
+    ) -> None:
+        """Initialize the prompt.
+
+        Args:
+            title: Heading shown at the top of the dialog.
+            body: Explanatory copy. Pass a `Content` for inline styling, or a
+                plain string for unstyled text.
+            help_text: Key-hint line shown at the bottom.
+        """
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._help_text = help_text
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog.
+
+        Yields:
+            Title, body, and key-hint widgets parented inside a `Vertical`.
+        """
+        with Vertical():
+            yield Static(self._title, classes="auth-confirm-title", markup=False)
+            yield Static(self._body, classes="auth-confirm-body", markup=False)
+            yield Static(self._help_text, classes="auth-confirm-help", markup=False)
+
+    def on_mount(self) -> None:
+        """Apply ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def action_confirm(self) -> None:
+        """Dismiss with `True` to proceed to the auth flow."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Dismiss with `False` to go back without authenticating.
+
+        The method name must stay `cancel`: the app owns a priority `escape`
+        binding that, for an active `ModalScreen`, dispatches to
+        `action_cancel` if present and otherwise falls through to
+        `dismiss(None)`. Renaming this would silently regress Esc to a
+        `None` dismiss instead of an explicit "go back".
+        """
+        self.dismiss(False)
 
 
 class DeleteCredentialConfirmScreen(ModalScreen[bool]):
@@ -588,11 +701,70 @@ class AuthManagerScreen(ModalScreen[None]):
         provider = event.option.id
         if not provider:
             return
+        if provider == CODEX_PROVIDER:
+            # ChatGPT auth uses an OAuth browser flow, not an API key. The
+            # selector dispatches to a dedicated modal that already knows
+            # how to surface the authorize URL inline (so headless / SSH
+            # users can still paste it manually) and run the loopback
+            # callback wait on a worker.
+            self._open_codex_screen()
+            return
         env_var = get_credential_env_var(provider)
         self.app.push_screen(
             AuthPromptScreen(provider, env_var),
             self._on_prompt_closed,
         )
+
+    def _open_codex_screen(self) -> None:
+        """Push the ChatGPT OAuth flow modal and refresh on close.
+
+        When `openai_codex` is already signed in, give the user a chance to
+        sign out before launching a fresh sign-in flow. Otherwise just run
+        the sign-in worker.
+        """
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.widgets.codex_auth import (
+            CodexAuthScreen,
+            CodexSignedInScreen,
+        )
+
+        status = openai_codex.get_status()
+        if status.logged_in and not status.is_expired:
+            self.app.push_screen(
+                CodexSignedInScreen(),
+                self._on_codex_signed_in_closed,
+            )
+            return
+        self.app.push_screen(CodexAuthScreen(), self._on_codex_closed)
+
+    def _on_codex_closed(self, _result: bool | None) -> None:
+        """Refresh the option list once the codex flow dismisses."""
+        clear_caches()
+        self._refresh_options()
+
+    def _on_codex_signed_in_closed(self, action: CodexSignedInAction | None) -> None:
+        """Handle dismissal of the "already signed in" overlay.
+
+        Args:
+            action: `SIGN_OUT` to clear the token, `REAUTH` to run the
+                sign-in flow again, `None` to close cleanly.
+        """
+        from deepagents_code.widgets.codex_auth import CodexSignedInAction
+
+        if action is CodexSignedInAction.SIGN_OUT:
+            from deepagents_code.integrations import openai_codex
+
+            removed = openai_codex.logout()
+            if removed:
+                self.app.notify("Signed out of ChatGPT.", markup=False)
+            clear_caches()
+            self._refresh_options()
+        elif action is CodexSignedInAction.REAUTH:
+            from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+            self.app.push_screen(CodexAuthScreen(), self._on_codex_closed)
+        else:
+            self._refresh_options()
 
     def action_cancel(self) -> None:
         """Close the manager."""
@@ -655,8 +827,14 @@ class AuthManagerScreen(ModalScreen[None]):
         # visible.
         installed = set(get_available_models().keys())
         well_known_installed = set(PROVIDER_API_KEY_ENV) & installed
+        # `openai_codex` is gated on `langchain-openai` being installed (we
+        # surface it whenever `openai` was discovered) rather than on
+        # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
+        codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
 
-        providers = sorted(well_known_installed | stored | config_providers)
+        providers = sorted(
+            well_known_installed | codex_installed | stored | config_providers
+        )
         options = [
             Option(self._format_label(provider), id=provider) for provider in providers
         ]

@@ -205,6 +205,7 @@ if TYPE_CHECKING:
     from deepagents_code.widgets.notification_center import (
         NotificationSuppressRequested,
     )
+    from deepagents_code.widgets.restart_prompt import RestartChoice
     from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
@@ -1877,6 +1878,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._active_user_message: UserMessage | None = None
+        """The `UserMessage` widget that started the in-flight turn, tracked so
+        it can be dimmed if the turn is interrupted."""
+
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
 
@@ -2351,6 +2356,34 @@ class DeepAgentsApp(App):
             self._resolve_git_branch_and_continue(),
         )
         self._maybe_start_external_event_source()
+
+        # Non-essential advisory: defer past first paint so it never delays
+        # the initial frame.
+        self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
+
+    def _notify_interpreter_tools_without_interpreter(self) -> None:
+        """Toast when `--interpreter-tools` was set without `--interpreter`.
+
+        The PTC allowlist applies only when the interpreter middleware is
+        enabled, so the flag is a no-op on its own. This is the TUI counterpart
+        of the non-interactive stderr warning emitted in
+        `main._warn_if_interpreter_tools_without_interpreter`: a stderr line is
+        invisible behind the alternate screen, so the same advisory is surfaced
+        as a startup notification here.
+
+        Reads the values from `self._server_kwargs` (which already carries them
+        for server startup); no extra plumbing is required.
+        """
+        server_kwargs = self._server_kwargs or {}
+        if server_kwargs.get("interpreter_ptc") is None:
+            return
+        if server_kwargs.get("enable_interpreter"):
+            return
+        self.notify(
+            "--interpreter-tools has no effect unless --interpreter is set.",
+            severity="warning",
+            markup=False,
+        )
 
     def _maybe_start_external_event_source(self) -> None:
         """Start the external event listener when explicitly enabled."""
@@ -3759,19 +3792,44 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Failed to persist seen-version marker", exc_info=True)
 
-    async def _handle_update_command(self) -> None:
-        """Handle the `/update` slash command — check for and install updates."""
-        await self._mount_message(UserMessage("/update"))
+    async def _handle_update_command(self, command: str = "/update") -> None:
+        """Handle the `/update` slash command — check for and install updates.
+
+        Parses an optional `--prerelease` flag from the raw command line; any
+        other option is rejected with a usage message.
+
+        Args:
+            command: The raw slash-command line as typed, including any options.
+        """
+        parts = command.split()
+        await self._mount_message(UserMessage(command))
+        # Reject typo'd/miscased options (e.g. `--prereleases`, `--PRERELEASE`)
+        # loudly instead of silently downgrading to a stable update — mirroring
+        # the headless path, which also refuses unknown options rather than
+        # silently ignoring them.
+        unknown = [opt for opt in parts[1:] if opt != "--prerelease"]
+        if unknown:
+            await self._mount_message(
+                AppMessage(
+                    f"Unknown option(s) for /update: {' '.join(unknown)}. "
+                    "Usage: /update [--prerelease]",
+                ),
+            )
+            return
+        prerelease_requested = "--prerelease" in parts[1:]
+        include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._env_vars import DEBUG_UPDATE
             from deepagents_code._version import __version__ as cli_version
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                _PRERELEASE_UNSUPPORTED_MESSAGE,
                 format_age_suffix,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
+                prerelease_upgrade_supported,
                 upgrade_command,
             )
 
@@ -3785,10 +3843,23 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            # Refuse pre-release upgrades the install method can't honor before
+            # promising an upgrade or hitting PyPI.
+            if prerelease_requested:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available,
                 bypass_cache=True,
+                include_prereleases=include_prereleases,
             )
             if latest is None:
                 await self._mount_message(
@@ -3827,7 +3898,9 @@ class DeepAgentsApp(App):
                     AppMessage("Skipped update install (debug mode)."),
                 )
                 return
-            success, output = await perform_upgrade()
+            success, output = await perform_upgrade(
+                include_prereleases=include_prereleases,
+            )
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
@@ -3836,7 +3909,7 @@ class DeepAgentsApp(App):
                     ),
                 )
             else:
-                cmd = upgrade_command()
+                cmd = upgrade_command(include_prereleases=include_prereleases)
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
@@ -3959,6 +4032,9 @@ class DeepAgentsApp(App):
             return
 
         log_path = create_update_log_path()
+        # Load the restart modal before the upgrade rewrites our own package
+        # tree; the post-install import then hits the in-memory cache.
+        self._ensure_restart_prompt_loaded()
         await self._mount_message(
             AppMessage(f"Installing extra '{extra}'..."),
         )
@@ -4070,6 +4146,9 @@ class DeepAgentsApp(App):
             return
 
         log_path = create_update_log_path()
+        # Load the restart modal before the upgrade rewrites our own package
+        # tree; the post-install import then hits the in-memory cache.
+        self._ensure_restart_prompt_loaded()
         await self._mount_message(
             AppMessage(f"Installing package '{package}'..."),
         )
@@ -5617,15 +5696,6 @@ class DeepAgentsApp(App):
 
         return LaunchDependenciesScreen(continue_screen=continue_screen)
 
-    async def _prompt_launch_dependencies(self) -> bool | None:
-        """Show the onboarding dependency summary and wait for a choice.
-
-        Returns:
-            `True` when the user continues, or `None` when setup is skipped.
-        """
-        result = await self._push_screen_wait(self._build_launch_dependencies_screen())
-        return result if result is None or isinstance(result, bool) else None
-
     async def _prompt_launch_dependencies_then_model(
         self,
     ) -> tuple[bool, tuple[str, str] | None]:
@@ -6500,8 +6570,8 @@ class DeepAgentsApp(App):
             await self._show_thread_selector()
         elif cmd == "/trace":
             await self._handle_trace_command(command)
-        elif cmd == "/update":
-            await self._handle_update_command()
+        elif cmd == "/update" or cmd.startswith("/update "):
+            await self._handle_update_command(command)
         elif cmd == "/auto-update":
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
@@ -6951,41 +7021,6 @@ class DeepAgentsApp(App):
             logger.debug("Failed to retrieve conversation token count", exc_info=True)
             return None
 
-    def _resolve_offload_budget_str(self) -> str | None:
-        """Resolve the offload retention budget as a human-readable string.
-
-        Instantiates a model and computes summarization defaults, so this is
-        not a trivial accessor. Call only from a worker thread; cold imports
-        and model construction run under the process-wide import lock.
-
-        Returns:
-            A string like `"20.0K (10% of 200.0K)"` or
-            `"last 6 messages"`, or `None` if the budget cannot be determined.
-        """
-        from deepagents_code.config import settings
-
-        try:
-            with _DEEPAGENTS_IMPORT_LOCK:
-                from deepagents.middleware.summarization import (
-                    compute_summarization_defaults,
-                )
-
-                model_spec = f"{settings.model_provider}:{settings.model_name}"
-                result = _create_model_with_deepagents_import_lock(
-                    model_spec,
-                    profile_overrides=self._profile_override,
-                )
-                defaults = compute_summarization_defaults(result.model)
-                from deepagents_code.offload import format_offload_limit
-
-                return format_offload_limit(
-                    defaults["keep"],
-                    settings.model_context_limit,
-                )
-        except Exception:  # best-effort for /tokens display
-            logger.debug("Failed to compute offload budget string", exc_info=True)
-            return None
-
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space."""
         from deepagents_code.config import settings
@@ -7124,8 +7159,10 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
-        # Mount the user message
-        await self._mount_message(UserMessage(message))
+        # Mount the user message, tracking it so it can be dimmed on interrupt.
+        user_message = UserMessage(message)
+        await self._mount_message(user_message)
+        self._active_user_message = user_message
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -7342,6 +7379,7 @@ class DeepAgentsApp(App):
         """Clean up after agent task completes or is cancelled."""
         self._agent_running = False
         self._agent_worker = None
+        self._active_user_message = None
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -8001,6 +8039,10 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
+        # Drop the tracked in-flight prompt: its widget is about to leave the
+        # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
+        # nothing to dim" invariant self-enforcing regardless of caller timing.
+        self._active_user_message = None
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -8218,6 +8260,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             self._quit_pending = False
             return
@@ -8348,6 +8392,8 @@ class DeepAgentsApp(App):
 
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            if self._active_user_message is not None:
+                self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
 
@@ -8749,23 +8795,6 @@ class DeepAgentsApp(App):
             ),
             result_callback=result_callback,
         )
-
-    async def _prompt_model_selector(
-        self,
-        *,
-        curated: bool = False,
-    ) -> tuple[str, str] | None:
-        """Show the model selector and wait for a choice.
-
-        Args:
-            curated: Whether to use the shorter onboarding model list.
-
-        Returns:
-            `(model_spec, provider)` on selection, or `None` on cancel.
-        """
-        screen = self._build_model_selector_screen(curated=curated)
-        result = await self._push_screen_wait(screen)
-        return result if result is None or isinstance(result, tuple) else None
 
     async def _show_model_selector(
         self,
@@ -10675,6 +10704,34 @@ class DeepAgentsApp(App):
             ),
         )
 
+    @staticmethod
+    def _ensure_restart_prompt_loaded() -> None:
+        """Load the restart-prompt modal before any in-place self-upgrade.
+
+        `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+        rewrites deepagents-code's own on-disk package tree while this process
+        is running. Modules already in `sys.modules` keep working from memory,
+        but a *first* import after the rewrite reads the mutated (or
+        partially-written) tree and raises `ModuleNotFoundError`.
+        `restart_prompt` is imported only on the post-install path, so import
+        it now — before the mutation — so the later import in
+        `_offer_restart_after_install` resolves from `sys.modules` without
+        re-reading disk. That import is still defended there for the genuine
+        upgrade case where the on-disk module legitimately differs from what is
+        resident.
+
+        Catches only `ModuleNotFoundError` (the missing-tree failure), not the
+        broader `ImportError`, so a genuine name-binding bug in `restart_prompt`
+        still surfaces instead of being mistaken for an upgrade race.
+
+        Best-effort: a failure here just means the post-install import falls
+        back to its own guard, so swallow it rather than crash the install.
+        """
+        try:
+            import deepagents_code.widgets.restart_prompt  # noqa: F401
+        except ModuleNotFoundError:
+            logger.warning("Could not preload restart_prompt modal", exc_info=True)
+
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.
 
@@ -10696,10 +10753,24 @@ class DeepAgentsApp(App):
         if self._agent_running or self._connecting:
             return
 
-        from deepagents_code.widgets.restart_prompt import (
-            RestartChoice,
-            RestartPromptScreen,
-        )
+        try:
+            from deepagents_code.widgets.restart_prompt import RestartPromptScreen
+        except ModuleNotFoundError:
+            # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+            # can rewrite deepagents-code's own on-disk package tree mid-session
+            # (see `_ensure_restart_prompt_loaded`). A first import of the modal
+            # here may then fail with `ModuleNotFoundError`. The manual
+            # `/restart` hint was already mounted by the caller, so degrade to
+            # that instead of crashing the TUI. The catch is deliberately
+            # narrow — a genuine `ImportError` from a broken modal still
+            # propagates rather than being mistaken for an upgrade race.
+            logger.warning(
+                "restart_prompt unavailable after installing %r; leaving the "
+                "manual /restart hint in place",
+                label,
+                exc_info=True,
+            )
+            return
 
         choice: RestartChoice | None
         try:

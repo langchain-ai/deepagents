@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+from datetime import UTC
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from textual.app import App, ComposeResult
@@ -446,7 +448,12 @@ class TestAuthManagerScreen:
     async def test_only_installed_well_known_providers_listed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Hardcoded providers without an installed package are hidden."""
+        """Hardcoded providers without an installed package are hidden.
+
+        When `openai` is "installed", `openai_codex` rides along — it shares
+        the same `langchain-openai` package, so the manager surfaces the
+        OAuth-backed twin alongside the API-key entry.
+        """
         # Pretend only `openai` and `anthropic` are installed.
         monkeypatch.setattr(
             "deepagents_code.widgets.auth.get_available_models",
@@ -460,7 +467,7 @@ class TestAuthManagerScreen:
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        assert ids == {"openai", "anthropic"}
+        assert ids == {"openai", "openai_codex", "anthropic"}
 
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -524,3 +531,306 @@ class TestAuthManagerScreen:
             assert warnings, "expected a corruption warning banner to render"
             text = " ".join(str(w.render()) for w in warnings)
         assert "unreadable" in text
+
+
+class TestCodexAuthInManager:
+    """`/auth` -> `openai_codex` routes to the OAuth screen, not the API key prompt.
+
+    These tests cover the dispatch in `AuthManagerScreen` itself; the
+    behavior of the OAuth flow (PKCE, callback, token exchange) is covered
+    by `test_openai_codex_integration.py` so we don't repeat the network /
+    fake-`webbrowser` plumbing here.
+    """
+
+    async def test_codex_option_visible_when_openai_installed(self) -> None:
+        """`langchain-openai` is a hard dep, so `openai_codex` is always shown."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+        assert "openai_codex" in ids
+
+    async def test_codex_badge_reflects_signed_out_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing token store renders the "[sign in to chatgpt]" badge."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target = None
+            for i in range(options.option_count):
+                opt = options.get_option_at_index(i)
+                if opt.id == "openai_codex":
+                    target = opt
+                    break
+        assert target is not None
+        assert "sign in to chatgpt" in str(target.prompt).lower()
+
+    async def test_codex_selection_pushes_oauth_screen_when_signed_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Choosing `openai_codex` while signed out opens the OAuth modal."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        # Stub the OAuth flow so the modal does not try to bind a real
+        # loopback port or run a token exchange when it mounts.
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(
+                logged_in=False, store_path=tmp_path / "missing.json"
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+
+        monkeypatch.setattr(
+            codex_integration, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index: int | None = None
+            for i in range(options.option_count):
+                if options.get_option_at_index(i).id == "openai_codex":
+                    target_index = i
+                    break
+            assert target_index is not None
+            options.highlighted = target_index
+            # We just need to observe that the screen is pushed *before* the
+            # fake worker finishes; capture the screen class via the
+            # `screen_stack` instead of asserting on `app.screen` (which the
+            # fast fake worker may have already popped).
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexAuthScreen in pushed
+
+    async def test_codex_oauth_cancel_dismisses_modal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc after the OAuth worker starts dismisses the modal as cancelled."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        async def _fake_run(
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            await asyncio.Event().wait()
+            return codex_integration.CodexAuthStatus(
+                logged_in=True, store_path=tmp_path / "auth.json"
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+
+        results: list[bool | None] = []
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.push_screen(CodexAuthScreen(), results.append)
+            await pilot.pause()
+            await pilot.press("escape")
+            for _ in range(5):
+                await pilot.pause()
+                if results:
+                    break
+        assert results == [False]
+
+    async def test_codex_selection_when_signed_in_shows_signout_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A logged-in user sees the sign-out / re-auth overlay instead."""
+        import json
+        from datetime import datetime, timedelta
+
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import CodexSignedInScreen
+
+        path = tmp_path / "auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": "fake",
+                    "refresh_token": "fake",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct",
+                    "plan_type": "plus",
+                    "user_id": "u",
+                    "id_token": None,
+                }
+            )
+        )
+        path.chmod(0o600)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: path)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            target_index: int | None = None
+            for i in range(options.option_count):
+                if options.get_option_at_index(i).id == "openai_codex":
+                    target_index = i
+                    break
+            assert target_index is not None
+            options.highlighted = target_index
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            await pilot.press("enter")
+            await pilot.pause()
+        assert CodexSignedInScreen in pushed
+
+    @staticmethod
+    def _write_token(path: Path) -> None:
+        """Plant a valid (unexpired) token bundle at `path` with 0600 perms."""
+        import json
+        from datetime import datetime, timedelta
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": "fake",
+                    "refresh_token": "fake",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct",
+                    "plan_type": "plus",
+                    "user_id": "u",
+                    "id_token": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+
+    async def test_signout_dispatch_deletes_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`SIGN_OUT` from the overlay deletes the stored token on disk."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import CodexSignedInAction
+
+        path = tmp_path / "auth.json"
+        self._write_token(path)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: path)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            manager = cast("AuthManagerScreen", app.screen)
+            manager._on_codex_signed_in_closed(CodexSignedInAction.SIGN_OUT)
+            await pilot.pause()
+        assert not path.exists()
+
+    async def test_reauth_dispatch_pushes_oauth_screen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`REAUTH` from the overlay opens a fresh sign-in flow."""
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import (
+            CodexAuthScreen,
+            CodexSignedInAction,
+        )
+
+        store = tmp_path / "missing.json"
+
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(logged_in=False, store_path=store)
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+        monkeypatch.setattr(codex_integration, "default_store_path", lambda: store)
+        clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            manager = cast("AuthManagerScreen", app.screen)
+            pushed: list[type] = []
+            original = app.push_screen
+
+            def _capture(screen, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                pushed.append(type(screen))
+                return original(screen, *args, **kwargs)
+
+            monkeypatch.setattr(app, "push_screen", _capture)
+            manager._on_codex_signed_in_closed(CodexSignedInAction.REAUTH)
+            await pilot.pause()
+        assert CodexAuthScreen in pushed
+
+    async def test_codex_oauth_success_dismisses_true_with_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The worker SUCCESS path dismisses `True` and toasts the plan."""
+        from datetime import datetime, timedelta
+
+        from deepagents_code.integrations import openai_codex as codex_integration
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        async def _fake_run(  # noqa: RUF029  # async signature dictated by protocol
+            *_args: object, **_kwargs: object
+        ) -> codex_integration.CodexAuthStatus:
+            return codex_integration.CodexAuthStatus(
+                logged_in=True,
+                store_path=tmp_path / "auth.json",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                plan_type="plus",
+                account_id="acct",
+            )
+
+        monkeypatch.setattr(codex_integration, "run_browser_login", _fake_run)
+
+        results: list[bool | None] = []
+        notices: list[str] = []
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            original_notify = app.notify
+
+            def _capture_notify(message, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                notices.append(str(message))
+                return original_notify(message, *args, **kwargs)
+
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.push_screen(CodexAuthScreen(), results.append)
+            for _ in range(10):
+                await pilot.pause()
+                if results:
+                    break
+        assert results == [True]
+        assert any("plus" in note for note in notices)

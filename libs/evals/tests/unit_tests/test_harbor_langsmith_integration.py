@@ -23,10 +23,15 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     _, target = makefile.split("run-terminal-bench-langsmith:", maxsplit=1)
     target = target.split("\n\n", maxsplit=1)[0]
 
+    assert "HARBOR_AGENT_IMPL ?= cli" in makefile
+    assert (
+        "HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)"
+        in makefile
+    )
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg config=langgraph.json" in makefile
-    assert "--agent-kwarg graph=deepagent" in makefile
+    assert "--agent-kwarg graph=$(HARBOR_AGENT_GRAPH)" in makefile
     assert "HARBOR_AGENT_ENV_ARGS ?=" in makefile
     assert "--agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'" in makefile
     assert "--agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}'" in makefile
@@ -63,10 +68,14 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
 
     assert "create-experiment" not in workflow
     assert "add-feedback" not in workflow
+    assert "agent_impl:" in workflow
+    assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
+    assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
+    assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow
     assert "--agent langgraph" in workflow
     assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in workflow
     assert "--agent-kwarg config=langgraph.json" in workflow
-    assert "--agent-kwarg graph=deepagent" in workflow
+    assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in workflow
     assert "agent_env_args=(" in workflow
     assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow

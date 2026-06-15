@@ -37,6 +37,7 @@ on:
           - langchain-modal
           - langchain-quickjs
           - langchain-runloop
+          - langchain-vercel-sandbox
         default: deepagents
       package-override:
         required: false
@@ -139,9 +140,12 @@ jobs:
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
+            langchain-vercel-sandbox)
+              echo "working-dir=libs/partners/vercel" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac
@@ -150,7 +154,7 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
 
@@ -253,7 +257,7 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -367,7 +371,7 @@ jobs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -463,6 +467,9 @@ jobs:
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$RELEASE_COMMIT" ]; then
             echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
@@ -645,6 +652,19 @@ jobs:
             RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
           fi
 
+          # Annotate releases cut from a non-default branch (a vX.Y version line
+          # or an alpha/* throwaway branch) with the originating branch and the
+          # immutable release commit. Skipped for normal default-branch releases,
+          # where the branch carries no signal. The branch is rendered as plain
+          # text and the link targets the commit SHA, never tree/<branch>: alpha
+          # branches are deleted after release, so a branch link would 404, and
+          # the commit is the exact code that shipped even when release-sha points
+          # somewhere other than the branch tip.
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
+          fi
+
           # Append contributor shoutouts
           SEPARATOR_ADDED=false
           if [ -n "$CONTRIBUTOR_LIST" ]; then
@@ -684,7 +704,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -720,7 +740,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -843,6 +863,8 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           # langchain-runloop
           RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+          # langchain-vercel-sandbox
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
         # We skip test_sandbox_factory.py and test_sandbox_operations.py in CLI
         # releases — overlap with partner-level SandboxIntegrationTests.
@@ -883,7 +905,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -934,7 +956,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 

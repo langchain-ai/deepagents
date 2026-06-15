@@ -108,6 +108,9 @@ def show_help() -> None:
     console.print("  dcode mcp <login>                         Manage MCP servers")
     console.print("  dcode config <show|list|get|path>         Inspect configuration")
     console.print(
+        "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
+    )
+    console.print(
         "  dcode update                              Check for and install updates"
     )
     console.print()
@@ -136,12 +139,10 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Agentcore/Modal/Daytona/Runloop/Vercel"
         " require downloading extras"
     )
-    console.print(
-        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
-    )
+    console.print("  --sandbox-id ID            Attach to existing sandbox")
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
         "                             Snapshot (langsmith) or blueprint (runloop)"
@@ -190,6 +191,9 @@ def show_help() -> None:
     console.print("  --clear-default-model      Clear the default model")
     console.print(
         "  --update                   Check for and install updates, then exit"
+    )
+    console.print(
+        "  --prerelease               With --update, include alpha/beta/rc releases"
     )
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
@@ -437,10 +441,13 @@ def show_update_help() -> None:
         "Check for and install updates from PyPI.",
     )
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  --prerelease            Include alpha/beta/rc releases",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode update")
+    console.print("  dcode update --prerelease")
     console.print("  dcode update --json")
     console.print()
 
@@ -566,6 +573,45 @@ def show_config_help() -> None:
     console.print("  dcode config list --json")
     console.print("  dcode config get interpreter.memory_limit_mb")
     console.print("  dcode config path")
+    console.print()
+
+
+def show_auth_help() -> None:
+    """Show help information for the `auth` subcommand.
+
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_auth_command` when no auth subcommand is given. Kept import-light so
+    it stays on the startup fast path.
+    """
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls               List providers and their status")
+    console.print("  set <provider>        Store an API key (read from stdin)")
+    console.print("  remove <provider>     Remove a stored credential (rm|delete)")
+    console.print("  status <provider>     Show resolution source for one provider")
+    console.print("  path                  Print the resolved auth.json path")
+    console.print()
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
+    console.print("  -h, --help            Show this help message")
+    console.print()
+    console.print(
+        "  Keys are read from stdin by default so they never land in shell"
+        " history or argv. An interactive terminal is rejected; pipe the key"
+        " or use --from-env.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth list")
+    console.print("  echo $ANTHROPIC_API_KEY | dcode auth set anthropic")
+    console.print("  dcode auth set openai --from-env OPENAI_API_KEY")
+    console.print("  dcode auth status anthropic")
+    console.print("  dcode auth remove anthropic")
+    console.print("  dcode auth path")
     console.print()
 
 

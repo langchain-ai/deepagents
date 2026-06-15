@@ -1626,6 +1626,29 @@ class TestCtrlCCopySelection:
             exit_mock.assert_not_called()
             assert app._quit_pending is False
 
+    async def test_ctrl_c_interrupt_marks_active_user_message_cancelled(self) -> None:
+        """Ctrl+C dims the prompt for the interrupted turn."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            user_message = UserMessage("running prompt")
+            messages = app.query_one("#messages", Container)
+            await messages.mount(user_message)
+            await pilot.pause()
+
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+            app._active_user_message = user_message
+
+            app.action_quit_or_interrupt()
+            await pilot.pause()
+
+            assert user_message.has_class("-cancelled")
+            mock_worker.cancel.assert_called_once()
+            assert app._quit_pending is False
+
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""
         app = DeepAgentsApp()
@@ -5198,6 +5221,27 @@ class TestShellCommandInterrupt:
             await app._clear_messages()
 
         assert app._pending_shell_messages == []
+
+    async def test_clear_messages_drops_active_user_message(self) -> None:
+        """`_clear_messages` must drop the tracked in-flight prompt reference.
+
+        The widget is removed from the DOM during clear, so the pointer must
+        not outlive it — otherwise a later interrupt would dim a detached
+        widget the user can no longer see.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            user_message = UserMessage("running prompt")
+            messages = app.query_one("#messages", Container)
+            await messages.mount(user_message)
+            app._active_user_message = user_message
+            await pilot.pause()
+
+            await app._clear_messages()
+
+            assert app._active_user_message is None
 
     async def test_pending_shell_flush_failure_drops_buffer(self) -> None:
         """A checkpoint-write failure must not raise and must clear the buffer."""
@@ -14029,3 +14073,74 @@ class TestEnsureManagedRipgrep:
             await app._start_server_background()
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
+
+
+class TestNotifyInterpreterToolsWithoutInterpreter:
+    """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""
+
+    def test_toasts_when_tools_set_without_interpreter(self) -> None:
+        """`interpreter_ptc` set with the interpreter disabled warns once."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_called_once()
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in notify_mock.call_args.args[0]
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_interpreter_enabled(self) -> None:
+        """The allowlist takes effect with `--interpreter`, so no warning."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": True,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_without_interpreter_tools(self) -> None:
+        """Absent `interpreter_ptc` does not warn."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": None,
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_when_server_kwargs_absent(self) -> None:
+        """An agent-backed app with no `server_kwargs` does not warn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()

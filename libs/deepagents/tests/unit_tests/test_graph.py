@@ -61,11 +61,11 @@ class TestCreateDeepAgentMetadata:
     """Tests for metadata on the compiled graph."""
 
     def test_versions_metadata_contains_sdk_version(self) -> None:
-        """`create_deep_agent` should attach SDK version in metadata.versions."""
+        """`create_deep_agent` should attach SDK version in metadata.lc_versions."""
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         agent = create_deep_agent(model=model)
         assert agent.config is not None
-        versions = agent.config["metadata"]["versions"]
+        versions = agent.config["metadata"]["lc_versions"]
         assert versions["deepagents"] == __version__
 
     def test_ls_integration_metadata_preserved(self) -> None:

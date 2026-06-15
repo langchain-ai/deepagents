@@ -41,7 +41,9 @@ test_watch: ## Run tests in watch mode
 # Harbor jobs
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
-HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=deepagents_harbor/langgraph_project --agent-kwarg config=langgraph.json --agent-kwarg graph=deepagent
+HARBOR_AGENT_IMPL ?= cli
+HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=deepagents_harbor/langgraph_project --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
 HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench

@@ -5000,3 +5000,117 @@ max_input_tokens = 8192
         assert entry["profile"]["max_output_tokens"] == 2048
         assert "max_output_tokens" in entry["overridden_keys"]
         assert "max_input_tokens" in entry["overridden_keys"]
+
+
+class TestCodexProviderMirror:
+    """`openai_codex` mirrors the curated `CODEX_MODELS` subset of `openai`.
+
+    The Codex backend serves a narrower lineup than the full `openai` API, so
+    only models in the `CODEX_MODELS` allowlist are exposed under
+    `openai_codex`; other openai models are not mirrored.
+    """
+
+    def test_available_models_mirror_codex_allowlist(self) -> None:
+        model_config.clear_caches()
+        available = model_config.get_available_models()
+        openai_models = available.get("openai", [])
+        assert openai_models, "expected openai models to be discoverable"
+        codex_models = available.get(model_config.CODEX_PROVIDER, [])
+        # Only allowlisted openai models are mirrored under codex.
+        assert codex_models == [
+            name for name in openai_models if name in model_config.CODEX_MODELS
+        ]
+        # The curated flagship is present...
+        assert "gpt-5.5" in codex_models
+        # ...while a non-allowlisted openai model is excluded from codex even
+        # though openai itself offers it.
+        assert "gpt-5.4-pro" in openai_models
+        assert "gpt-5.4-pro" not in codex_models
+
+    def test_available_models_preserve_configured_codex_models(
+        self, tmp_path: Path
+    ) -> None:
+        """Config-only codex models are preserved when OpenAI models mirror."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+models = ["gpt-custom-codex", "gpt-5.5"]
+""")
+        fake_profiles = {
+            "gpt-5.2": {"tool_calling": True},
+            "gpt-5.5": {"tool_calling": True},
+        }
+
+        with (
+            patch(
+                "deepagents_code.model_config._get_provider_profile_modules",
+                return_value=[("openai", "langchain_openai.data._profiles")],
+            ),
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            available = model_config.get_available_models()
+
+        assert available[model_config.CODEX_PROVIDER] == [
+            "gpt-custom-codex",
+            "gpt-5.5",
+            "gpt-5.2",
+        ]
+
+    def test_profiles_mirror_codex_allowlist_under_codex(self) -> None:
+        model_config.clear_caches()
+        profiles = model_config.get_model_profiles()
+        openai_models = [
+            spec.split(":", 1)[1] for spec in profiles if spec.startswith("openai:")
+        ]
+        assert openai_models, "expected openai profiles to load"
+        for model_name in openai_models:
+            codex_spec = f"{model_config.CODEX_PROVIDER}:{model_name}"
+            if model_name in model_config.CODEX_MODELS:
+                assert codex_spec in profiles
+            else:
+                assert codex_spec not in profiles
+
+    def test_codex_positioned_immediately_after_openai(self) -> None:
+        """The switcher lists `openai_codex` right after `openai`.
+
+        Dict insertion order is the `/model` switcher's display order, so the
+        two OpenAI-backed providers must stay adjacent rather than codex
+        trailing at the end of the dict (after, e.g., `azure_openai`).
+        """
+        model_config.clear_caches()
+        keys = list(model_config.get_available_models())
+        assert "openai" in keys
+        assert "openai_codex" in keys
+        assert keys.index("openai_codex") == keys.index("openai") + 1
+
+    def test_disabled_codex_not_mirrored(self, tmp_path: Path) -> None:
+        """`enabled = false` for `openai_codex` suppresses the mirror entirely."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+enabled = false
+""")
+        fake_profiles = {"gpt-5.5": {"tool_calling": True}}
+        with (
+            patch(
+                "deepagents_code.model_config._get_provider_profile_modules",
+                return_value=[("openai", "langchain_openai.data._profiles")],
+            ),
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            available = model_config.get_available_models()
+            profiles = model_config.get_model_profiles()
+
+        assert "openai" in available
+        assert model_config.CODEX_PROVIDER not in available
+        assert not any(
+            spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
+        )

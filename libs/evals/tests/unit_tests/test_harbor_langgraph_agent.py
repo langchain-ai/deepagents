@@ -21,13 +21,14 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["dependencies"] == [
         "deepagents>=0.6.8",
         "deepagents-code>=0.1.11",
-        "langchain>=1.3.4,<2.0.0",
-        "langchain-anthropic>=1.4.4,<1.5.0",
+        "langchain>=1.3.9,<2.0.0",
+        "langchain-anthropic>=1.4.6,<1.5.0",
         "aiohttp>=3.14.0,<4.0.0",
         "toml>=0.10.2,<1.0.0",
     ]
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
+        "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 
@@ -104,3 +105,53 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert captured_create[0]["cwd"] == Path("/app")
     assert captured_create[0]["assistant_id"]
+
+
+def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_init: list[dict[str, object]] = []
+    captured_backend: list[dict[str, object]] = []
+    captured_create: list[dict[str, object]] = []
+    backend = object()
+    graph = object()
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        captured_init.append({"model": model, "kwargs": kwargs})
+        return "chat-model"
+
+    def fake_local_shell_backend(**kwargs: object) -> object:
+        captured_backend.append(kwargs)
+        return backend
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        captured_create.append(kwargs)
+        return graph
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", fake_local_shell_backend)
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
+
+    result = langgraph_agent.make_bare_graph(
+        {
+            "configurable": {
+                "model": "test-provider:test-model",
+                "cwd": str(tmp_path),
+                "model_kwargs": {"temperature": 0.0},
+            }
+        }
+    )
+
+    assert result is graph
+    assert captured_init == [
+        {
+            "model": "test-provider:test-model",
+            "kwargs": {"temperature": 0.0},
+        }
+    ]
+    assert captured_backend == [{"root_dir": tmp_path, "inherit_env": True}]
+    assert captured_create
+    assert captured_create[0]["model"] == "chat-model"
+    assert captured_create[0]["backend"] is backend
+    assert isinstance(captured_create[0]["system_prompt"], str)
+    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]

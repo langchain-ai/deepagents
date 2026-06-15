@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
 from langchain.chat_models import init_chat_model
 
@@ -68,7 +70,7 @@ def _workdir(configurable: dict[str, object]) -> Path:
 
 
 def make_graph(config: dict[str, object] | None = None) -> object:
-    """Create the Deep Agents graph Harbor should run.
+    """Create the Deep Agents Code CLI harness graph Harbor should run.
 
     Harbor's installed `langgraph` agent loads this factory from
     `langgraph.json` inside each benchmark sandbox. The returned value is the
@@ -103,3 +105,32 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         cwd=_workdir(configurable),
     )
     return graph
+
+
+def make_bare_graph(config: dict[str, object] | None = None) -> object:
+    """Create a Deep Agents SDK graph Harbor should run directly.
+
+    This path avoids the Deep Agents Code CLI harness while still attaching a
+    local shell backend rooted at Harbor's sandbox workdir so terminal-bench
+    tasks can use filesystem and command execution tools.
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the selected model in
+            `configurable.model` and optional provider kwargs in
+            `configurable.model_kwargs`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no model name is provided.
+    """
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=True)
+    return create_deep_agent(
+        model=model,
+        backend=backend,
+        system_prompt=_SYSTEM_PROMPT,
+    )

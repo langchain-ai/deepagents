@@ -1,7 +1,7 @@
 # Harbor evaluation workflow for Deep Agents
 #
 # Runs terminal-bench evaluations via Harbor with configurable sandbox
-# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# environments (Docker, Daytona, LangSmith, Modal, Runloop, Vercel).
 # Models are selected via dropdown or comma-separated override.
 #
 # Required secrets (vary by sandbox + model provider):
@@ -22,10 +22,11 @@
 #   MODAL_TOKEN_ID             — needed for Modal sandbox
 #   MODAL_TOKEN_SECRET         — needed for Modal sandbox
 #   RUNLOOP_API_KEY            — needed for Runloop sandbox
+#   VERCEL_TOKEN               — needed for Vercel sandbox
 
 name: "📊 Evals - Harbor"
 run-name: >-
-  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }}
+  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl || 'cli' }}
 
 on:
   workflow_dispatch:
@@ -126,6 +127,15 @@ on:
           - langsmith
           - modal
           - runloop
+          - vercel
+      agent_impl:
+        description: "Deep Agents implementation to run through Harbor's LangGraph agent"
+        required: true
+        default: "cli"
+        type: choice
+        options:
+          - cli
+          - bare
       n_tasks:
         description: "Maximum number of tasks to run (0 = all tasks in dataset)"
         required: true
@@ -160,6 +170,7 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          AGENT_IMPL: ${{ inputs.agent_impl }}
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
         run: |
@@ -173,6 +184,7 @@ jobs:
             echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`agent_impl\` | \`${AGENT_IMPL}\` |" >> "$GITHUB_STEP_SUMMARY"
           if [ "${N_TASKS}" = "0" ]; then
             echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
           else
@@ -182,7 +194,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
@@ -191,7 +203,7 @@ jobs:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
   harbor:
-    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }})"
+    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
     runs-on: ubuntu-latest
     environment: evals
@@ -207,6 +219,7 @@ jobs:
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+      HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
@@ -225,6 +238,9 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -250,6 +266,11 @@ jobs:
               ;;
             runloop)
               [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
+              ;;
+            vercel)
+              [ -z "$VERCEL_TOKEN" ] && missing+=("VERCEL_TOKEN")
+              [ -z "$VERCEL_PROJECT_ID" ] && missing+=("VERCEL_PROJECT_ID")
+              [ -z "$VERCEL_TEAM_ID" ] && missing+=("VERCEL_TEAM_ID")
               ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
@@ -282,7 +303,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -308,9 +329,26 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
+          case "$HARBOR_AGENT_IMPL" in
+            cli)
+              HARBOR_AGENT_GRAPH=deepagent
+              HARBOR_AGENT_LABEL="cli harness"
+              ;;
+            bare)
+              HARBOR_AGENT_GRAPH=bare_deepagent
+              HARBOR_AGENT_LABEL="bare create_deep_agent"
+              ;;
+            *)
+              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
+              exit 1
+              ;;
+          esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           HARBOR_LANGSMITH_DATASET="${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_model}"
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
+          echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
+          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
 
@@ -334,13 +372,14 @@ jobs:
           esac
 
           echo "LangSmith plugin experiment base: $HARBOR_LANGSMITH_EXPERIMENT"
+          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
           echo ""
 
           uv run harbor run \
             --agent langgraph \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
-            --agent-kwarg graph=deepagent \
+            --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
@@ -371,6 +410,8 @@ jobs:
         if: always()
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
+          HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
+          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
@@ -387,7 +428,7 @@ jobs:
             else
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
-            echo "- Agent: Harbor LangGraph (deepagents_harbor/langgraph_project/langgraph.json)"
+            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then

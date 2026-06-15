@@ -4,26 +4,37 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pytest
+from deepagents_harbor.langgraph_project import langgraph_agent
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_langgraph_config_points_to_deepagent_factory() -> None:
-    config_path = Path("deepagents_harbor/langgraph.json")
+    project_path = Path("deepagents_harbor/langgraph_project")
+    config_path = project_path / "langgraph.json"
 
     config = json.loads(config_path.read_text())
 
-    assert config["dependencies"] == ["."]
+    assert config["dependencies"] == [
+        "deepagents>=0.6.8",
+        "deepagents-code>=0.1.11",
+        "langchain>=1.3.4,<2.0.0",
+        "langchain-anthropic>=1.4.4,<1.5.0",
+        "aiohttp>=3.14.0,<4.0.0",
+        "toml>=0.10.2,<1.0.0",
+    ]
     assert config["graphs"] == {
-        "deepagent": "./deepagents_harbor/langgraph_agent.py:make_graph",
+        "deepagent": "./langgraph_agent.py:make_graph",
     }
+    assert not (project_path / "langsmith.py").exists()
 
 
 def test_make_graph_builds_headless_local_deepagent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from deepagents_harbor import langgraph_agent
-
     captured_init: list[dict[str, object]] = []
     captured_create: list[dict[str, object]] = []
     graph = object()
@@ -73,8 +84,6 @@ def test_make_graph_builds_headless_local_deepagent(
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
-    from deepagents_harbor import langgraph_agent
-
     captured_create: list[dict[str, object]] = []
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())

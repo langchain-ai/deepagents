@@ -41,7 +41,7 @@ test_watch: ## Run tests in watch mode
 # Harbor jobs
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
-HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=. --agent-kwarg config=deepagents_harbor/langgraph.json --agent-kwarg graph=deepagent
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=deepagents_harbor/langgraph_project --agent-kwarg config=langgraph.json --agent-kwarg graph=deepagent
 HARBOR_HELLO_WORLD_JOBS_DIR ?= ../harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= ../harbor-jobs/terminal-bench
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local

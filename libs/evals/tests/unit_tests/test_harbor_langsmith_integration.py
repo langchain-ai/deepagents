@@ -14,8 +14,8 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     target = target.split("\n\n", maxsplit=1)[0]
 
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
-    assert "--agent-kwarg project_path=." in makefile
-    assert "--agent-kwarg config=deepagents_harbor/langgraph.json" in makefile
+    assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in makefile
+    assert "--agent-kwarg config=langgraph.json" in makefile
     assert "--agent-kwarg graph=deepagent" in makefile
     assert "$(HARBOR_AGENT_ARGS)" in target
     assert "--jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR)" in target
@@ -39,8 +39,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "create-experiment" not in workflow
     assert "add-feedback" not in workflow
     assert "--agent langgraph" in workflow
-    assert "--agent-kwarg project_path=." in workflow
-    assert "--agent-kwarg config=deepagents_harbor/langgraph.json" in workflow
+    assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in workflow
+    assert "--agent-kwarg config=langgraph.json" in workflow
     assert "--agent-kwarg graph=deepagent" in workflow
     assert "--plugin langsmith" in workflow
     assert "--jobs-dir ../harbor-jobs/terminal-bench" in workflow

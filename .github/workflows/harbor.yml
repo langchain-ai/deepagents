@@ -319,8 +319,8 @@ jobs:
 
           uv run harbor run \
             --agent langgraph \
-            --agent-kwarg project_path=. \
-            --agent-kwarg config=deepagents_harbor/langgraph.json \
+            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+            --agent-kwarg config=langgraph.json \
             --agent-kwarg graph=deepagent \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
@@ -367,7 +367,7 @@ jobs:
             else
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
-            echo "- Agent: Harbor LangGraph (`deepagents_harbor/langgraph.json`)"
+            echo "- Agent: Harbor LangGraph (deepagents_harbor/langgraph_project/langgraph.json)"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then

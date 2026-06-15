@@ -411,8 +411,8 @@ export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default
 # Run via Docker (sequential, all tasks)
 uv run harbor run \
   --agent langgraph \
-  --agent-kwarg project_path=. \
-  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \
@@ -423,8 +423,8 @@ uv run harbor run \
 # Run via Daytona (10 concurrent trials)
 uv run harbor run \
   --agent langgraph \
-  --agent-kwarg project_path=. \
-  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \
@@ -466,8 +466,8 @@ MODEL="$MODEL" HARBOR_LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-termi
 # Run Harbor directly (-n = concurrency; add -l N to limit tasks)
 uv run harbor run \
   --agent langgraph \
-  --agent-kwarg project_path=. \
-  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --dataset terminal-bench@2.0 \
   --model "$MODEL" \

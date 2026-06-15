@@ -6,6 +6,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
+import re
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -84,6 +85,39 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "write_file": "write",
     "edit_file": "write",
 }
+
+
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bsk-proj-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\blsv2_pt_[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bsk-[A-Za-z0-9]{40,}\b"),
+)
+_SECRET_PLACEHOLDER = "<REDACTED_SECRET>"  # noqa: S105  # placeholder string, not a credential
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact known API-key shapes from a tool result string."""
+    if not isinstance(text, str) or not text:
+        return text
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(_SECRET_PLACEHOLDER, text)
+    return text
+
+
+def _scrub_tool_message(msg: ToolMessage | Command) -> ToolMessage | Command:
+    """Apply _scrub_secrets to a ToolMessage's string content, if applicable."""
+    try:
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            msg.content = _scrub_secrets(content)  # ty: ignore[invalid-assignment]
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    block["text"] = _scrub_secrets(block["text"])
+    except Exception:  # noqa: BLE001, S110  # defense-in-depth scrubber must never break tool flow
+        pass
+    return msg
 
 
 @dataclass
@@ -508,6 +542,18 @@ Examples:
     - execute(command="cat file.txt")  # Use read_file tool instead
     - execute(command="find . -name '*.py'")  # Use glob tool instead
     - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+
+## Security
+  - Never invoke `env`, `printenv`, or `set` without arguments, and never pipe the
+    environment into a shell (e.g. `env | grep ...`). Even when you intend to
+    redact, home-grown sed/awk redaction is fragile and the full value of
+    secret env vars will be captured into the tool result and persisted.
+  - Never read, echo, or include the value of an environment variable whose
+    name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` in a
+    shell command or script you run via `execute`.
+  - To check whether a secret env var is set, use only an existence check that
+    does NOT expand the value, e.g.
+    `execute(command="[ -n \"$OPENAI_API_KEY\" ] && echo set || echo unset")`.
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
@@ -2346,6 +2392,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         tool_result = handler(request)
 
+        if request.tool_call["name"] == "execute":
+            tool_result = _scrub_tool_message(tool_result)
+
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
 
@@ -2370,6 +2419,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             through this wrapper unhandled by design.
         """
         tool_result = await handler(request)
+
+        if request.tool_call["name"] == "execute":
+            tool_result = _scrub_tool_message(tool_result)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result

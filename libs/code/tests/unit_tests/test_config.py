@@ -1821,10 +1821,14 @@ class TestDisableOrphanedTracing:
         "LANGCHAIN_TRACING",
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",
+        "LANGSMITH_CONFIG_FILE",
+        "LANGSMITH_PROFILE",
     )
 
     def _clean_env(self) -> dict[str, str]:
-        return dict.fromkeys(self._ALL_TRACING_VARS, "")
+        env = dict.fromkeys(self._ALL_TRACING_VARS, "")
+        env["LANGSMITH_CONFIG_FILE"] = "/__deepagents_missing_langsmith_config__.json"
+        return env
 
     def test_disables_tracing_when_no_key(self) -> None:
         """Tracing flag on with empty key should be turned off."""
@@ -1857,6 +1861,43 @@ class TestDisableOrphanedTracing:
             import os
 
             assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_preserves_tracing_when_profile_api_key_present(
+        self, tmp_path: Path
+    ) -> None:
+        """LangSmith profile API keys count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_preserves_tracing_when_profile_oauth_present(self, tmp_path: Path) -> None:
+        """LangSmith profile OAuth credentials count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"oauth":{"refresh_token":"refresh"}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
 
     def test_noop_when_tracing_disabled(self) -> None:
         """Does nothing when no tracing flag is enabled."""

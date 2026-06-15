@@ -328,14 +328,31 @@ def _quiet_sdk_tracing_logging() -> None:
             sdk_logger.addHandler(logging.NullHandler())
 
 
+def _has_langsmith_profile_credentials() -> bool:
+    """Return whether the LangSmith profile config has usable auth material."""
+    try:
+        client_module = importlib.import_module("langsmith.client")
+    except ImportError:
+        return False
+
+    profiles = getattr(client_module, "_profiles", None)
+    if profiles is None:
+        return False
+
+    config = profiles.load_profile_client_config()
+    return bool(
+        config.api_key or config.oauth_access_token or config.oauth_refresh_token
+    )
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
     LangChain enables tracing whenever a tracing flag is truthy, regardless of
-    credentials. With no key the background tracer retries ingestion and floods
-    `langsmith.client` 401 errors into the TUI (most visibly at the atexit
-    flush). When a tracing flag is set but no API key is resolvable, unset the
-    flags so tracing never starts.
+    credentials. With no env or profile key the background tracer retries
+    ingestion and floods `langsmith.client` 401 errors into the TUI (most visibly
+    at the atexit flush). When a tracing flag is set but no credentials are
+    resolvable, unset the flags so tracing never starts.
     """
     from deepagents_code._env_vars import classify_env_bool
 
@@ -350,7 +367,7 @@ def _disable_orphaned_tracing() -> None:
     has_key = any(
         (os.environ.get(var) or "").strip() for var in _TRACING_API_KEY_ENV_VARS
     )
-    if has_key:
+    if has_key or _has_langsmith_profile_credentials():
         return
 
     disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]

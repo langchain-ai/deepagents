@@ -594,6 +594,44 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
 }
 """Provider integration import modules and the extras that install them."""
 
+
+def provider_install_extra(provider: str) -> str | None:
+    """Return the `deepagents-code` extra that installs `provider`, if known.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The extra name (e.g. `"baseten"`, `"google-genai"`), or `None` when the
+            provider has no curated extra (custom `class_path` providers,
+            ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[1] if dependency else None
+
+
+def is_provider_package_installed(provider: str) -> bool:
+    """Return whether `provider`'s integration package is importable.
+
+    Providers without a curated extra (no `_PROVIDER_DEPENDENCIES` entry) are
+    reported as installed — they manage their own dependencies, so the app
+    should never prompt to install an extra for them.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`).
+
+    Returns:
+        `True` when the integration package is importable or the provider has
+            no curated extra; `False` when the curated package is missing.
+    """
+    import importlib.util
+
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    if dependency is None:
+        return True
+    return importlib.util.find_spec(dependency[0]) is not None
+
+
 # Credentials that back a `Settings` field, keyed by canonical env var.
 _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
     "OPENAI_API_KEY": "openai_api_key",

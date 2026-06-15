@@ -1828,3 +1828,150 @@ class TestModelSelectorAuthGate:
         assert app.dismissed is True
         assert app.result is not None
         assert app.result[1] == "anthropic"
+
+
+class TestModelSelectorInstallRouting:
+    """Selecting a model whose provider is not installed prompts to install."""
+
+    async def test_load_model_data_surfaces_uninstalled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recommended models from uninstalled providers are surfaced."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert any(spec.startswith("baseten:") for spec in specs)
+        assert install_extras.get("baseten") == "baseten"
+
+    async def test_load_model_data_skips_uninstalled_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding (`include_uninstalled=False`) hides uninstalled providers."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=False)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert not any(spec.startswith("baseten:") for spec in specs)
+        assert install_extras == {}
+
+    async def test_select_uninstalled_provider_prompts_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting an uninstalled provider opens the install-confirm modal."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        from deepagents_code.widgets.install_confirm import (
+            InstallProviderConfirmScreen,
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._select_with_auth_check("baseten:moonshotai/Kimi-K2.6", "baseten")
+
+            assert len(pushed) == 1
+            assert isinstance(pushed[0][0], InstallProviderConfirmScreen)
+            assert app.dismissed is False
+
+    async def test_confirm_install_sets_pending_extra_and_dismisses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming install records the extra and dismisses with the model."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._prompt_install_provider(
+                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+            )
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(True)
+            await pilot.pause()
+
+        assert screen.pending_install_extra == "baseten"
+        assert app.dismissed is True
+        assert app.result == ("baseten:moonshotai/Kimi-K2.6", "baseten")
+
+    async def test_decline_install_stays_on_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declining install keeps the selector open and records no extra."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._prompt_install_provider(
+                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+            )
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(False)
+            await pilot.pause()
+
+            assert screen.pending_install_extra is None
+            assert app.dismissed is False

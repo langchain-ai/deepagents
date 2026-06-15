@@ -3937,7 +3937,22 @@ class DeepAgentsApp(App):
             return
 
         extra = names[0].lower()
+        await self._install_extra(extra, force=force)
 
+    async def _install_extra(self, extra: str, *, force: bool = False) -> bool:
+        """Install a `deepagents-code` extra, mounting progress and restart offer.
+
+        Shared by the `/install <extra>` command and the model selector's
+        install-on-select flow. Mounts its own status/error messages and offers
+        a one-keypress restart for restart-capable extras.
+
+        Args:
+            extra: The extra name to install (e.g. `"baseten"`, `"quickjs"`).
+            force: Skip the "unknown extra" guard for valid-but-unlisted names.
+
+        Returns:
+            `True` when the extra installed successfully; `False` otherwise.
+        """
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.extras_info import (
@@ -3958,7 +3973,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
             )
-            return
+            return False
 
         if not is_valid_extra_name(extra):
             await self._mount_message(
@@ -3967,7 +3982,7 @@ class DeepAgentsApp(App):
                     "alphanumeric with `-`, `_`, or `.` (PEP 508).",
                 ),
             )
-            return
+            return False
 
         if await asyncio.to_thread(_is_editable_install):
             await self._mount_message(
@@ -3976,7 +3991,7 @@ class DeepAgentsApp(App):
                     + editable_extra_hint(extra),
                 ),
             )
-            return
+            return False
 
         # KNOWN_EXTRAS is a curated "did you mean" list, not the authoritative
         # set (that's pyproject, resolved by uv): defer to --force rather than
@@ -3989,7 +4004,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
                 )
-                return
+                return False
             known = ", ".join(sorted(KNOWN_EXTRAS))
             await self._mount_message(
                 AppMessage(
@@ -4000,7 +4015,7 @@ class DeepAgentsApp(App):
                     f"`/install {extra} --force`",
                 ),
             )
-            return
+            return False
 
         log_path = create_update_log_path()
         await self._mount_message(
@@ -4015,7 +4030,7 @@ class DeepAgentsApp(App):
                     f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
                 ),
             )
-            return
+            return False
         try:
             success, output = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
@@ -4027,7 +4042,7 @@ class DeepAgentsApp(App):
                     f"Run manually: {manual_cmd}",
                 ),
             )
-            return
+            return False
 
         if not success:
             # Tail the last 200 chars — uv resolver prints the resolved
@@ -4040,7 +4055,7 @@ class DeepAgentsApp(App):
                     f"Run manually: {manual_cmd}",
                 ),
             )
-            return
+            return False
 
         # Model-provider and sandbox extras are imported by the langgraph
         # server subprocess; `/restart` respawns that subprocess and picks
@@ -4059,6 +4074,7 @@ class DeepAgentsApp(App):
         )
         if restart_capable:
             await self._offer_restart_after_install(extra)
+        return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
@@ -8777,35 +8793,81 @@ class DeepAgentsApp(App):
             """Handle the model selector result."""
             if result is not None:
                 model_spec, _ = result
-                if self._agent_running or self._shell_running or self._connecting:
-                    self._defer_action(
-                        DeferredAction(
-                            kind="model_switch",
-                            execute=partial(
-                                self._switch_model,
-                                model_spec,
-                                extra_kwargs=extra_kwargs,
-                            ),
-                        ),
-                    )
-                    self.notify(
-                        "Model will switch after current task completes.",
-                        timeout=3,
-                    )
-                else:
+                # When the selector confirmed installing a missing provider's
+                # extra, install it first (with restart offer) before switching.
+                extra = getattr(screen, "pending_install_extra", None)
+                if extra:
                     self.call_later(
                         partial(
-                            self._switch_model,
+                            self._install_extra_then_switch,
+                            extra,
                             model_spec,
                             extra_kwargs=extra_kwargs,
                         ),
                     )
+                else:
+                    self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
 
         screen = self._build_model_selector_screen()
         self.push_screen(screen, handle_result)
+
+    def _dispatch_model_switch(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Switch to `model_spec` now, or defer until in-flight work finishes.
+
+        Args:
+            model_spec: The `provider:model` spec to switch to.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
+
+        if self._agent_running or self._shell_running or self._connecting:
+            self._defer_action(
+                DeferredAction(
+                    kind="model_switch",
+                    execute=partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    ),
+                ),
+            )
+            self.notify(
+                "Model will switch after current task completes.",
+                timeout=3,
+            )
+        else:
+            self.call_later(
+                partial(
+                    self._switch_model,
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                ),
+            )
+
+    async def _install_extra_then_switch(
+        self,
+        extra: str,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Install a provider's extra, then switch to its model on success.
+
+        Args:
+            extra: The extra that installs the model's provider integration.
+            model_spec: The `provider:model` spec to switch to once installed.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        if await self._install_extra(extra):
+            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""

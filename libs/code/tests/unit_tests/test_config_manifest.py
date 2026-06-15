@@ -26,7 +26,9 @@ from deepagents_code.config_manifest import (
     OptionKind,
     get_config_options,
     get_option,
+    is_provider_package_installed,
     option_keys,
+    provider_install_extra,
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
@@ -71,6 +73,42 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+# --- Provider install helpers ----------------------------------------------
+
+
+def test_provider_install_extra_known_provider() -> None:
+    """Known providers resolve to their installing extra."""
+    assert provider_install_extra("baseten") == "baseten"
+    # Provider name uses underscores; the extra uses hyphens.
+    assert provider_install_extra("google_genai") == "google-genai"
+
+
+def test_provider_install_extra_unknown_provider() -> None:
+    """Providers without a curated extra resolve to `None`."""
+    assert provider_install_extra("ollama") is None
+    assert provider_install_extra("not-a-real-provider") is None
+
+
+def test_is_provider_package_installed_unknown_provider() -> None:
+    """Providers without a curated extra are reported as installed."""
+    assert is_provider_package_installed("ollama") is True
+    assert is_provider_package_installed("not-a-real-provider") is True
+
+
+def test_is_provider_package_installed_core_provider() -> None:
+    """Core providers ship as base dependencies and are always importable."""
+    assert is_provider_package_installed("openai") is True
+
+
+def test_is_provider_package_installed_missing_extra() -> None:
+    """A known provider whose package is absent is reported as not installed."""
+    import importlib.util
+
+    if importlib.util.find_spec("langchain_baseten") is not None:
+        pytest.skip("langchain_baseten is installed in this environment")
+    assert is_provider_package_installed("baseten") is False
 
 
 # --- Secrets ----------------------------------------------------------------

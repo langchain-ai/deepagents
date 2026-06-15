@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from importlib.metadata import requires
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 import langchain_daytona
 from langchain_daytona.sandbox import DaytonaSandbox
@@ -47,6 +51,21 @@ def test_execute_returns_stdout() -> None:
     assert result.truncated is False
     assert mock_sdk.process.create_session.call_count == 1
     assert mock_sdk.process.delete_session.call_count == 1
+
+
+def test_daytona_dependency_includes_session_heredoc_fix() -> None:
+    raw_dependencies = requires("langchain-daytona") or []
+    daytona_dependencies = [
+        dependency
+        for raw in raw_dependencies
+        if (dependency := Requirement(raw)).name == "daytona"
+    ]
+
+    assert len(daytona_dependencies) == 1
+    assert any(
+        specifier.operator == ">=" and Version(specifier.version) >= Version("0.185.0")
+        for specifier in daytona_dependencies[0].specifier
+    )
 
 
 def test_execute_polls_with_fixed_interval() -> None:

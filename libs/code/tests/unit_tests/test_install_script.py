@@ -188,6 +188,65 @@ def _invoke_interactive(
     return proc.returncode, clean, tmp_path / "uv-args.txt"
 
 
+def _extract_shell_function(name: str) -> str:
+    """Return the source text of a top-level `name() { ... }` block from the script.
+
+    Pulls the real implementation out of `install.sh` so helper-function tests
+    exercise the shipped code rather than a copy. Assumes the closing brace sits
+    at column 0 (the script's style), matching the first such block.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(
+        rf"^{re.escape(name)}\(\) \{{.*?^\}}", text, re.MULTILINE | re.DOTALL
+    )
+    if match is None:
+        msg = f"could not locate shell function {name!r} in {SCRIPT}"
+        raise AssertionError(msg)
+    return match.group(0)
+
+
+def _eval_can_prompt(
+    tmp_path: Path, *, is_interactive: bool, stdin_is_tty: bool
+) -> bool:
+    """Run the real `can_prompt` from `install.sh` in isolation.
+
+    Writes the extracted function to a temp script (macOS ships bash 3.2, where
+    `source <(...)` does not define the function), then reports its exit status
+    under a controlled `IS_INTERACTIVE` and stdin. With `stdin_is_tty=False` the
+    child is detached from any controlling terminal (`start_new_session`, stdin
+    from `/dev/null`), so the `/dev/tty` open fails — the case that distinguishes
+    the real open-probe from merely trusting `IS_INTERACTIVE`.
+    """
+    script = tmp_path / "can_prompt_harness.sh"
+    script.write_text(
+        f"{_extract_shell_function('can_prompt')}\n"
+        f"IS_INTERACTIVE={'true' if is_interactive else 'false'}\n"
+        "can_prompt\n",
+        encoding="utf-8",
+    )
+    if stdin_is_tty:
+        primary, secondary = pty.openpty()
+        proc = subprocess.run(
+            ["bash", str(script)],
+            stdin=secondary,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        os.close(secondary)
+        os.close(primary)
+        return proc.returncode == 0
+    proc = subprocess.run(
+        ["bash", str(script)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        start_new_session=True,
+    )
+    return proc.returncode == 0
+
+
 def _run_install_script(
     tmp_path: Path,
     extra_env: dict[str, str],
@@ -465,3 +524,39 @@ def test_install_script_pinned_version_skips_prompt_over_existing_install(
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code==0.2.0"
+
+
+def test_can_prompt_false_when_not_interactive(tmp_path: Path) -> None:
+    """`can_prompt` short-circuits to false when `IS_INTERACTIVE` is false."""
+    assert _eval_can_prompt(tmp_path, is_interactive=False, stdin_is_tty=True) is False
+
+
+def test_can_prompt_true_when_stdin_is_a_tty(tmp_path: Path) -> None:
+    """A real tty on stdin satisfies the `[ -t 0 ]` fast path."""
+    assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=True) is True
+
+
+def test_can_prompt_false_without_usable_tty(tmp_path: Path) -> None:
+    """No openable `/dev/tty` yields false even when `IS_INTERACTIVE` is true.
+
+    Guards the load-bearing line: `can_prompt` must actually open `/dev/tty`
+    rather than trusting `IS_INTERACTIVE` (which only access-checks the device).
+    A regression that returned 0 right after the `IS_INTERACTIVE` check would
+    wrongly report the unanswerable cron/systemd/CI case as promptable.
+    """
+    assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=False) is False
+
+
+def test_install_script_interactive_empty_answer_keeps_current(tmp_path: Path) -> None:
+    """An empty answer at the prompt declines rather than defaulting to upgrade.
+
+    Guards `prompt_yn`'s default: pressing Enter (or any reply that is not
+    `^[Yy]$`) must not be mistaken for consent, so uv is never invoked.
+    """
+    code, output, args_path = _invoke_interactive(
+        tmp_path, {}, answer="", installed_version="0.1.0", latest_version="0.2.0"
+    )
+
+    assert code == 0
+    assert not args_path.exists()
+    assert "Keeping deepagents-code 0.1.0" in output

@@ -367,6 +367,9 @@ fi
 # "info" object leads), so taking the first "version" match selects it without
 # depending on a JSON parser. The pattern tolerates whitespace around the colon
 # so a switch to pretty-printed JSON wouldn't silently break the probe.
+# This relies on PyPI's current (not contractually guaranteed) key ordering; if
+# it ever changed, the worst case is a wrong/empty match, which the caller
+# already treats as "unknown latest" and recovers from — never a bad install.
 fetch_latest_version() {
   local json="" ua="deepagents-code-install"
   if command -v curl >/dev/null 2>&1; then

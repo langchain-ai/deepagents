@@ -31,7 +31,7 @@ jobs:
     name: Block empty commits on main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 2
       - name: Reject empty commits
@@ -65,13 +65,15 @@ jobs:
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
+      talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 2
 
@@ -147,6 +149,13 @@ jobs:
             echo "code-release=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
+            echo "talon-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Talon release detected: $COMMIT_MSG"
+          else
+            echo "talon-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
             echo "daytona-release=true" >> "$GITHUB_OUTPUT"
             echo "Daytona release detected: $COMMIT_MSG"
@@ -166,6 +175,13 @@ jobs:
             echo "Runloop release detected: $COMMIT_MSG"
           else
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
+            echo "vercel-release=true" >> "$GITHUB_OUTPUT"
+            echo "Vercel release detected: $COMMIT_MSG"
+          else
+            echo "vercel-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
@@ -226,7 +242,7 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
       - name: Wait for in-flight releases
@@ -357,7 +373,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -409,7 +425,7 @@ jobs:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
@@ -524,9 +540,11 @@ jobs:
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
+      needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
+      needs.detect-release-commit.outputs.vercel-release == 'true' ||
       needs.detect-release-commit.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -541,9 +559,11 @@ jobs:
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
+      TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
+      VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
       QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
     steps:
       - name: Dispatch release workflows
@@ -563,6 +583,11 @@ jobs:
 
           DISPATCHED=()
           FAILED=()
+          # Maps package -> the URL of the release.yml run this job kicked off.
+          # Populated best-effort by the second-pass poll below; a package left
+          # unset just means we couldn't correlate its run in time (it still
+          # dispatched).
+          declare -A RUN_URLS=()
 
           # release.yml's `version` input is required and the API silently accepts
           # an empty string, so guard here. release-please.yml's extraction step
@@ -586,6 +611,32 @@ jobs:
             esac
           }
 
+          # Recover the URL of a dispatched run. The workflow_dispatch API does
+          # not return the created run's id, so we correlate on release.yml's
+          # `run-name`, which renders as "release(<package>): <version>". This
+          # string MUST stay in lock-step with release.yml's `run-name`: if that
+          # template changes, the jq $title below stops matching and correlation
+          # silently always-misses (the best-effort warning fires, nothing else
+          # breaks). The title is unique per package per *version* — re-dispatches
+          # of the same version share a title, so `--created ">=$started"`
+          # (backdated for clock skew) bounds the window and `sort_by | last`
+          # takes the most recent match. package/VERSION go to jq via --arg —
+          # never interpolated into the filter program — so they stay data, not
+          # code. Echoes the URL on stdout, or nothing on no match.
+          find_run_url() {
+            local package="$1" started="$2"
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release.yml \
+              --event workflow_dispatch \
+              --created ">=$started" \
+              --limit 50 \
+              --json displayTitle,url,createdAt 2>/dev/null \
+            | jq -r --arg title "release(${package}): ${VERSION}" \
+                'map(select(.displayTitle == $title)) | sort_by(.createdAt) | last | .url // empty' \
+              2>/dev/null || true
+          }
+
           dispatch() {
             local package="$1"
             echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
@@ -605,15 +656,39 @@ jobs:
             fi
           }
 
+          # Second pass, run AFTER every dispatch (see call site below): poll for
+          # a dispatched run's URL and record it in RUN_URLS. Kept separate from
+          # dispatch() on purpose — polling here can never delay, or (if the job
+          # hits its timeout mid-poll) starve, the dispatch of later packages.
+          # Best-effort and bounded: run creation is usually 1-5s; we wait up to
+          # max_poll before giving up. A miss leaves the package out of RUN_URLS
+          # (summary falls back to the workflow-page link) and never fails the job.
+          locate_run() {
+            local package="$1" poll_interval=5 max_poll=90 waited=0 url=""
+            while [ "$waited" -lt "$max_poll" ]; do
+              url=$(find_run_url "$package" "$DISPATCH_STARTED")
+              if [ -n "$url" ]; then
+                echo "Located run for $package: $url"
+                RUN_URLS["$package"]="$url"
+                return
+              fi
+              sleep "$poll_interval"
+              waited=$((waited + poll_interval))
+            done
+            echo "::warning::Dispatched $package but could not locate its release.yml run within ${max_poll}s; summary will link the workflow page instead."
+          }
+
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
           # surfaces a warning if the value is something other than "true"/"false".
           CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
+          TALON_RELEASE="${TALON_RELEASE:-false}";     assert_bool TALON_RELEASE   "$TALON_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
+          VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
 
           # Banner: log + step summary. The step summary renders at the top of the
@@ -635,20 +710,48 @@ jobs:
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # Backdate the correlation window by 60s to absorb runner/GitHub clock
+          # skew, so `--created` doesn't filter out runs we're about to create.
+          # Captured once before any dispatch, then shared by every locate_run
+          # call below — all dispatches happen within seconds of this point.
+          # `date -d` is GNU coreutils (ubuntu-latest); on a BSD/macOS runner it
+          # would fail and leave DISPATCH_STARTED empty, degrading every poll to
+          # a graceful miss (still best-effort — no job failure).
+          DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
+
           if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
+          if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
+          if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
+
+          # Now that every package has been dispatched, correlate each one to its
+          # run URL for the summary. Done as a second pass so a slow/missed
+          # correlation can't hold up any dispatch.
+          if [ "${#DISPATCHED[@]}" -gt 0 ]; then
+            for p in "${DISPATCHED[@]}"; do
+              locate_run "$p"
+            done
+          fi
+
           # Append per-package status to the step summary so operators see at a
           # glance which packages were queued vs. which need a manual retry.
           {
             echo "### Dispatched (${#DISPATCHED[@]})"
             if [ "${#DISPATCHED[@]}" -gt 0 ]; then
-              for p in "${DISPATCHED[@]}"; do echo "- \`$p\` @ \`$VERSION\`"; done
+              for p in "${DISPATCHED[@]}"; do
+                url="${RUN_URLS[$p]:-}"
+                if [ -n "$url" ]; then
+                  echo "- [\`$p\` @ \`$VERSION\`]($url)"
+                else
+                  echo "- \`$p\` @ \`$VERSION\` _(run link unavailable — see workflow page above)_"
+                fi
+              done
             else
               echo "_none_"
             fi

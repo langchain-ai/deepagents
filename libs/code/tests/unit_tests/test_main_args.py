@@ -58,6 +58,51 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
         assert parsed_args.shell_allow_list is None
 
 
+def test_parse_args_does_not_prepend_managed_bin(
+    monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
+) -> None:
+    """PATH is only changed after the managed ripgrep binary is validated."""
+    path = f"/usr/bin{os.pathsep}/bin"
+    monkeypatch.setenv("PATH", path)
+
+    with mock_argv():
+        parse_args()
+
+    assert os.environ["PATH"] == path
+
+
+def test_headless_installs_ripgrep_when_warning_is_suppressed() -> None:
+    """Suppressed warning state must not skip headless managed `rg` install."""
+    from deepagents_code.main import cli_main
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    ensure = AsyncMock(return_value=Path("/managed/rg"))
+    prepend = MagicMock()
+    with (
+        patch.object(sys, "argv", ["deepagents", "-n", "task"]),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=True,
+        ),
+        patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+        patch("deepagents_code.managed_tools.prepend_managed_bin_to_path", prepend),
+        patch(
+            "deepagents_code.non_interactive.run_non_interactive",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    ensure.assert_awaited_once()
+    prepend.assert_called_once()
+
+
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv(
@@ -126,6 +171,171 @@ class TestNonInteractiveArgument:
             assert parsed.non_interactive_message == "run task"
             assert parsed.sandbox == "modal"
             assert parsed.sandbox_setup == "/path/to/setup.sh"
+
+
+class TestSandboxArgument:
+    """Tests for `--sandbox` resolution and registry validation."""
+
+    def test_builtin_provider_accepted(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            parsed = parse_args()
+            assert parsed.sandbox == "daytona"
+
+    def test_default_when_omitted_is_none_string(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task"):
+            parsed = parse_args()
+            assert parsed.sandbox == "none"
+
+    def test_unknown_provider_errors(self, mock_argv: MockArgvType) -> None:
+        with (
+            mock_argv("-n", "task", "--sandbox", "acme"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_unknown_provider_error_includes_guidance(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The unknown-provider error explains how to install or configure."""
+        with (
+            mock_argv("-n", "task", "--sandbox", "acme"),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+        err = capsys.readouterr().err
+        assert "/install <package-name> --package" in err
+        assert "[sandboxes.providers.acme]" in err
+        # The error must not fabricate a specific package name.
+        assert "acme-dcode-sandbox" not in err
+
+    def test_config_provider_accepted(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            '[sandboxes.providers.acme]\nclass_path = "acme:Provider"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox", "acme"),
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "acme"
+
+    def test_bare_sandbox_resolves_config_default(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            '[sandboxes]\ndefault = "acme"\n\n'
+            '[sandboxes.providers.acme]\nclass_path = "acme:Provider"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "acme"
+
+    def test_bare_sandbox_without_default_errors(
+        self, mock_argv: MockArgvType, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "config.toml"
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_snapshot_name_rejected_for_unsupported_provider(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with (
+            mock_argv(
+                "-n", "task", "--sandbox", "modal", "--sandbox-snapshot-name", "snap"
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_snapshot_name_accepted_for_runloop(self, mock_argv: MockArgvType) -> None:
+        with mock_argv(
+            "-n", "task", "--sandbox", "runloop", "--sandbox-snapshot-name", "bp"
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "runloop"
+            assert parsed.sandbox_snapshot_name == "bp"
+
+    def test_sandbox_id_rejected_for_unsupported_provider(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Reject `--sandbox-id` for agentcore (supports_sandbox_id=False)."""
+        with (
+            mock_argv("-n", "task", "--sandbox", "agentcore", "--sandbox-id", "abc"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+        assert "--sandbox-id is not supported" in capsys.readouterr().err
+
+    def test_sandbox_id_accepted_for_supported_provider(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        with mock_argv("-n", "task", "--sandbox", "vercel", "--sandbox-id", "abc"):
+            parsed = parse_args()
+            assert parsed.sandbox == "vercel"
+            assert parsed.sandbox_id == "abc"
+
+    def test_snapshot_name_rejected_for_vercel(self, mock_argv: MockArgvType) -> None:
+        with (
+            mock_argv(
+                "-n",
+                "task",
+                "--sandbox",
+                "vercel",
+                "--sandbox-snapshot-name",
+                "snap",
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    def test_malformed_config_surfaces_note(
+        self,
+        mock_argv: MockArgvType,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A bare `--sandbox` against a malformed config explains the fault."""
+        config = tmp_path / "config.toml"
+        config.write_text("this is not = valid = toml", encoding="utf-8")
+        with (
+            patch(
+                "deepagents_code.integrations.sandbox_config.DEFAULT_CONFIG_PATH",
+                config,
+            ),
+            mock_argv("-n", "task", "--sandbox"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+        assert "could not be used" in capsys.readouterr().err
 
 
 class TestNoStreamArgument:
@@ -201,6 +411,10 @@ class TestSkillFlagValidation:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -209,7 +423,7 @@ class TestSkillFlagValidation:
         ):
             cli_main()
         assert exc_info.value.code == 0
-        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # ty: ignore
 
     def test_skill_with_quiet_without_non_interactive_exits_2(self) -> None:
         """`--skill` + `--quiet` without `-n` should exit with code 2."""
@@ -298,6 +512,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             # Skip the /dev/tty dance — os.open would fail in test sandboxes
             # and the real code path already tolerates that failure.
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
@@ -310,7 +528,7 @@ class TestMaxTurnsArgument:
         ):
             cli_main()
         assert exc_info.value.code == 0
-        assert mock_run.await_args.kwargs["max_turns"] == 5  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] == 5  # ty: ignore
 
     def test_forwarded_to_run_non_interactive(self) -> None:
         """--max-turns value is forwarded to run_non_interactive as max_turns."""
@@ -325,6 +543,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -332,7 +554,7 @@ class TestMaxTurnsArgument:
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert mock_run.await_args.kwargs["max_turns"] == 3  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] == 3  # ty: ignore
 
     def test_not_forwarded_as_none_when_omitted(self) -> None:
         """When --max-turns is omitted, max_turns=None is forwarded."""
@@ -345,6 +567,10 @@ class TestMaxTurnsArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -352,7 +578,7 @@ class TestMaxTurnsArgument:
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert mock_run.await_args.kwargs["max_turns"] is None  # type: ignore[union-attr]
+        assert mock_run.await_args.kwargs["max_turns"] is None  # ty: ignore
 
     @pytest.mark.parametrize("bad_value", ["0", "-1", "-50", "abc"])
     def test_rejects_non_positive_and_non_integer(
@@ -442,6 +668,10 @@ class TestTimeoutArgument:
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
@@ -470,6 +700,10 @@ class TestTimeoutArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
@@ -493,6 +727,10 @@ class TestTimeoutArgument:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
                 "asyncio.wait_for",
                 side_effect=asyncio.TimeoutError,
             ),
@@ -514,6 +752,10 @@ class TestTimeoutArgument:
             patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
             patch(
                 "deepagents_code.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
@@ -564,6 +806,78 @@ class TestModelParamsArgument:
             parsed = parse_args()
             assert parsed.model == "gpt-5.5"
             assert parsed.model_params == '{"temperature": 0.5, "max_tokens": 2048}'
+
+
+class TestMaxRetriesForwarding:
+    """`--max-retries` rides the forwarded model_params under an internal key.
+
+    The value is carried under `CLI_MAX_RETRIES_KEY` rather than a literal
+    `max_retries` so `create_model` can fold it under the resolved provider's
+    retry-param name; see `TestRetriesConfig` in `test_config.py` for the
+    folding/precedence behavior at the `create_model` layer.
+    """
+
+    def _run_model_params(self, argv: list[str]) -> dict[str, object] | None:
+        """Drive `cli_main` and return the `model_params` passed downstream."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        await_args = mock_run.await_args
+        assert await_args is not None
+        return await_args.kwargs["model_params"]  # ty: ignore
+
+    def test_folds_into_model_params(self) -> None:
+        """`--max-retries` creates model_params when no `--model-params` is given."""
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        argv = ["deepagents", "-n", "task", "--max-retries", "4"]
+        assert self._run_model_params(argv) == {CLI_MAX_RETRIES_KEY: 4}
+
+    def test_carried_alongside_model_params(self) -> None:
+        """`--max-retries` rides next to `--model-params` without clobbering it.
+
+        The flag value is stashed under the internal key, leaving any explicit
+        `--model-params` entries (including a literal `max_retries`) untouched in
+        the forwarded dict. Precedence is resolved later, in `create_model`.
+        """
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY
+
+        argv = [
+            "deepagents",
+            "-n",
+            "task",
+            "--model-params",
+            '{"max_retries": 1, "temperature": 0.5}',
+            "--max-retries",
+            "4",
+        ]
+        assert self._run_model_params(argv) == {
+            "max_retries": 1,
+            "temperature": 0.5,
+            CLI_MAX_RETRIES_KEY: 4,
+        }
+
+    def test_absent_leaves_model_params_untouched(self) -> None:
+        """Without `--max-retries`, model_params reflects only `--model-params`."""
+        argv = ["deepagents", "-n", "task", "--model-params", '{"temperature": 0.5}']
+        assert self._run_model_params(argv) == {"temperature": 0.5}
 
 
 class TestProfileOverrideArgument:
@@ -654,7 +968,7 @@ class TestApplyStdinPipe:
         """When piped stdin is empty/whitespace, args are not modified."""
         args = _make_args()
         fake_stdin = io.StringIO("   \n  ")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message is None
@@ -664,7 +978,7 @@ class TestApplyStdinPipe:
         """Piped stdin with no flags sets non_interactive_message."""
         args = _make_args()
         fake_stdin = io.StringIO("my prompt")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "my prompt"
@@ -674,7 +988,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended to an existing -n message."""
         args = _make_args(non_interactive_message="do something")
         fake_stdin = io.StringIO("context from pipe")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "context from pipe\n\ndo something"
@@ -683,7 +997,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended to an existing -m message."""
         args = _make_args(initial_prompt="explain this")
         fake_stdin = io.StringIO("error log contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "error log contents\n\nexplain this"
@@ -693,7 +1007,7 @@ class TestApplyStdinPipe:
         """Piped stdin becomes the startup request when `--skill` is set."""
         args = _make_args(initial_skill="code-review")
         fake_stdin = io.StringIO("diff contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "diff contents"
@@ -703,7 +1017,7 @@ class TestApplyStdinPipe:
         """Piped stdin is prepended when `--skill` and `-m` are combined."""
         args = _make_args(initial_prompt="review this", initial_skill="code-review")
         fake_stdin = io.StringIO("diff contents")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.initial_prompt == "diff contents\n\nreview this"
@@ -713,7 +1027,7 @@ class TestApplyStdinPipe:
         """When both -n and -m are set, stdin is prepended to -n."""
         args = _make_args(non_interactive_message="task", initial_prompt="ignored")
         fake_stdin = io.StringIO("piped")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "piped\n\ntask"
@@ -723,7 +1037,7 @@ class TestApplyStdinPipe:
         """Multiline piped input is preserved."""
         args = _make_args()
         fake_stdin = io.StringIO("line one\nline two\nline three")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with patch.object(sys, "stdin", fake_stdin):
             apply_stdin_pipe(args)
         assert args.non_interactive_message == "line one\nline two\nline three"
@@ -806,7 +1120,7 @@ class TestApplyStdinPipe:
         """After reading piped input, fd 0 is replaced with /dev/tty."""
         args = _make_args()
         fake_stdin = io.StringIO("hello")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with (
             patch.object(sys, "stdin", fake_stdin),
             patch("os.open", return_value=99) as mock_os_open,
@@ -824,7 +1138,7 @@ class TestApplyStdinPipe:
         """When /dev/tty cannot be opened, piped input is still captured."""
         args = _make_args()
         fake_stdin = io.StringIO("hello")
-        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        fake_stdin.isatty = lambda: False  # ty: ignore
         with (
             patch.object(sys, "stdin", fake_stdin),
             patch("os.open", side_effect=OSError("No controlling terminal")),
@@ -857,7 +1171,7 @@ class TestAgentResolutionScope:
             cli_main()
 
         mock_list.assert_awaited_once()
-        assert mock_list.await_args.kwargs["agent_name"] is None  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["agent_name"] is None  # ty: ignore
         load_recent.assert_not_called()
         valid_recent.assert_not_called()
 
@@ -893,7 +1207,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(Path.cwd())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(Path.cwd())  # ty: ignore
 
     def test_explicit_relative_cwd_is_normalized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -905,7 +1219,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd", ".")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # ty: ignore
 
     def test_explicit_home_cwd_is_expanded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -917,7 +1231,7 @@ class TestThreadsListCwdFilter:
 
         mock_list = self._run_threads_list("--cwd", "~/repo")
 
-        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # ty: ignore
 
 
 class TestResolveAgentArg:
@@ -1111,19 +1425,38 @@ class TestUpdateSubcommand:
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
         log_path: str = "/tmp/deepagents-update.log",
+        prerelease: bool = False,
+        flag_style: bool = False,
+        prerelease_before_command: bool = False,
+        install_method: str = "uv",
     ) -> tuple[int, MagicMock, MagicMock]:
-        """Invoke `cli_main()` with `update` subcommand; return exit code + mocks."""
+        """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
+        if prerelease_before_command:
+            argv = ["deepagents", "--prerelease", "update"]
+        elif flag_style:
+            argv = ["deepagents", "--update"]
+        else:
+            argv = ["deepagents", "update"]
+        if prerelease:
+            argv.append("--prerelease")
         with (
             patch.dict(os.environ, {DEBUG_UPDATE: "1" if debug else ""}),
-            patch.object(sys, "argv", ["deepagents", "update"]),
+            patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.config._is_editable_install", return_value=editable),
+            # `--prerelease` is only honored on uv installs; pin the detected
+            # method so the precheck's outcome is driven by the test rather than
+            # the test runner's own environment.
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value=install_method,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
@@ -1196,12 +1529,153 @@ class TestUpdateSubcommand:
 
     def test_update_available_runs_upgrade(self) -> None:
         """`(True, "x.y.z")` triggers `perform_upgrade` and exits 0 on success."""
-        code, _, perform_upgrade_mock = self._run_update(
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
             editable=False,
             is_update_available_return=(True, "99.0.0"),
         )
         assert code == 0
-        perform_upgrade_mock.assert_awaited_once()
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=None,
+        )
+
+    def test_prerelease_update_includes_prereleases(self) -> None:
+        """`dcode update --prerelease` opts into alpha/beta/rc releases."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_update_flag_includes_prereleases(self) -> None:
+        """`dcode --update --prerelease` uses the same prerelease path."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            flag_style=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_before_update_includes_prereleases(self) -> None:
+        """`dcode --prerelease update` preserves the top-level prerelease flag."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease_before_command=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+        )
+
+    def test_prerelease_unsupported_install_refuses_before_pypi(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` on a non-uv install refuses before hitting PyPI.
+
+        A regression that dropped the guard would let a brew/other install fall
+        through to a stable update (or an unsupported upgrade attempt), so the
+        refusal must short-circuit before `is_update_available`/`perform_upgrade`.
+        """
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            install_method="brew",
+        )
+
+        assert code == 1
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_called()
+        captured = capsys.readouterr()
+        assert "aren't supported for this install" in (captured.out + captured.err)
+
+    def test_unexpected_error_manual_command_keeps_prerelease(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An unexpected crash during `--prerelease` keeps the pre-release hint.
+
+        The last-resort handler prints a manual upgrade command. A regression
+        that hardcoded the stable command would nudge a user who requested a
+        pre-release onto the stable channel — the exact silent downgrade this
+        flag guards against, via an error side-door.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "update", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            # Crash after the pre-release support check passes but before the
+            # upgrade completes, exercising the catch-all fallback path.
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "--prerelease allow" in (captured.out + captured.err)
+
+    def test_prerelease_without_update_exits_usage_error(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` only applies to the update command."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--prerelease requires --update or the update subcommand" in (
+            capsys.readouterr().err
+        )
 
 
 class TestInstallExtraSubcommand:
@@ -1602,3 +2076,134 @@ class TestInstallPackageSubcommand:
         code, perform_mock, _console = self._run_install_package("-rreqs.txt", yes=True)
         assert code == 2
         perform_mock.assert_not_awaited()
+
+
+class TestParseInterpreterToolsFlag:
+    """Tests for `_parse_interpreter_tools_flag`."""
+
+    def test_none_returns_none(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag(None) is None
+
+    def test_safe_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe") == "safe"
+
+    def test_all_sentinel(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("all") == "all"
+
+    def test_explicit_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("read_file,glob,grep,task") == [
+            "read_file",
+            "glob",
+            "grep",
+            "task",
+        ]
+
+    def test_safe_inside_list(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        assert _parse_interpreter_tools_flag("safe,task") == ["safe", "task"]
+
+    def test_all_inside_list_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("all,task")
+        assert exc_info.value.code == 2
+
+    def test_empty_value_exits(self) -> None:
+        from deepagents_code.main import _parse_interpreter_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_interpreter_tools_flag("   ")
+        assert exc_info.value.code == 2
+
+
+class TestWarnInterpreterToolsWithoutInterpreter:
+    """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
+
+    def test_warns_without_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter-tools without --interpreter warns and does not exit."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )
+
+    def test_no_warning_with_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""
+
+    def test_no_warning_without_flag(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Absent --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_emits_warning_on_non_interactive_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --interpreter-tools` without `--interpreter` warns.
+
+        Guards the wiring (not just the helper): a dropped or misplaced call
+        site, or an earlier `sys.exit` swallowing the warning, fails here.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--interpreter-tools", "safe"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )

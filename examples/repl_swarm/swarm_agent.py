@@ -55,7 +55,6 @@ def _build_agent(model: str) -> object:
         middleware=[
             CodeInterpreterMiddleware(
                 ptc=["task"],
-                skills_backend=backend,
                 timeout=None,
             )
         ],

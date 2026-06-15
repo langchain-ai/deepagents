@@ -15,6 +15,8 @@ import pytest
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
+    _auto_install_ripgrep_cli,
+    _is_managed_ripgrep_path,
     _restart_current_process,
     _ripgrep_install_hint,
     _run_startup_auto_update,
@@ -166,6 +168,38 @@ class TestStartupAutoUpdate:
             patch(
                 "deepagents_code.update_check.get_cached_update_available",
                 return_value=(False, None),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        console.print.assert_not_called()
+
+    def test_in_session_update_already_installed_skips(self) -> None:
+        """An in-session `/update` already on disk must not re-upgrade.
+
+        The cache reports a newer version than the baked-in `__version__`,
+        but the on-disk install already satisfies it, so the upgrade and
+        restart are skipped silently.
+        """
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
             ),
             patch("deepagents_code.update_check.perform_upgrade") as upgrade,
             patch("deepagents_code.main._restart_current_process") as restart,
@@ -416,7 +450,7 @@ class TestAppResult:
 
         result = AppResult(return_code=0, thread_id="tid")
         with pytest.raises(FrozenInstanceError):
-            result.return_code = 1  # type: ignore[misc]
+            result.return_code = 1  # ty: ignore
 
 
 class TestRunTextualAppReturnType:
@@ -558,7 +592,7 @@ class TestServerCleanupLifecycle:
             "run_async",
             new_callable=AsyncMock,
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 
@@ -575,7 +609,7 @@ class TestServerCleanupLifecycle:
             ),
             pytest.raises(RuntimeError, match="boom"),
         ):
-            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # type: ignore[invalid-argument-type]
+            await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
 
@@ -625,6 +659,21 @@ class TestCheckOptionalTools:
             missing = check_optional_tools()
 
         assert missing == []
+
+    def test_managed_rg_still_requires_validation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Treat the managed binary as missing so `ensure_ripgrep` validates it."""
+        managed = tmp_path / "bin" / "rg"
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path",
+            lambda: managed,
+        )
+
+        with patch("deepagents_code.main.shutil.which", return_value=str(managed)):
+            missing = check_optional_tools()
+
+        assert missing == ["ripgrep"]
 
     def test_warning_suppressed_via_config(self, tmp_path: Path) -> None:
         """Returns empty list when ripgrep warning is suppressed in config."""
@@ -701,6 +750,106 @@ class TestCheckOptionalTools:
             missing = check_optional_tools(config_path=config_path)
 
         assert missing == []
+
+
+class TestIsManagedRipgrepPath:
+    """Tests for `_is_managed_ripgrep_path`."""
+
+    def test_none_is_not_managed(self) -> None:
+        """A missing `rg` (path `None`) is not the managed binary."""
+        assert _is_managed_ripgrep_path(None) is False
+
+    def test_managed_path_matches(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The resolved managed path is recognized as managed."""
+        managed = tmp_path / "bin" / "rg"
+        managed.parent.mkdir(parents=True)
+        managed.write_bytes(b"x")
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
+        )
+
+        assert _is_managed_ripgrep_path(str(managed)) is True
+
+    def test_system_path_is_not_managed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A system `rg` elsewhere on `PATH` is not the managed binary."""
+        managed = tmp_path / "bin" / "rg"
+        monkeypatch.setattr(
+            "deepagents_code.managed_tools.managed_rg_path", lambda: managed
+        )
+
+        assert _is_managed_ripgrep_path(str(tmp_path / "usr" / "bin" / "rg")) is False
+
+
+class TestAutoInstallRipgrepCli:
+    """Tests for the headless `_auto_install_ripgrep_cli` helper."""
+
+    def test_success_drops_ripgrep_and_prepends(self) -> None:
+        """A successful install prepends `PATH` and drops `ripgrep`."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=Path("/managed/rg")),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep", "tavily"])
+
+        assert result == ["tavily"]
+        prepend.assert_called_once()
+
+    def test_install_returns_none_keeps_ripgrep(self) -> None:
+        """A skipped/failed install leaves `ripgrep` in the missing list."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        prepend.assert_not_called()
+
+    def test_checksum_mismatch_keeps_ripgrep_and_reports(self) -> None:
+        """A checksum mismatch is reported loudly and is not swallowed silently."""
+        from deepagents_code.managed_tools import ChecksumMismatchError
+
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=ChecksumMismatchError("bad")),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "SHA-256" in printed
+
+    def test_unexpected_failure_keeps_ripgrep(self) -> None:
+        """An unexpected error degrades gracefully to the missing-tool path."""
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
 
 
 class TestRipgrepInstallHint:

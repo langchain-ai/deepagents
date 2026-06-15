@@ -8,7 +8,7 @@ import tomllib
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -264,14 +264,135 @@ async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None
         assert "Update available" not in content
 
 
+async def test_version_slash_command_indicates_editable_install() -> None:
+    """Verify `/version` reports editable mode and lists core dependencies."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.config._get_editable_install_path",
+                return_value="~/src/deepagents/libs/code",
+            ),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        msgs = app.query(AppMessage)
+        plain = str([m for m in msgs if not m._is_markdown][-1]._content)
+        assert "Editable install: ~/src/deepagents/libs/code" in plain
+
+        md_sources = [str(m._content) for m in msgs if m._is_markdown]
+        core = [s for s in md_sources if "### Core dependencies" in s]
+        assert core
+        assert "langchain-core" in core[-1]
+        assert "langgraph" in core[-1]
+        assert "langsmith" in core[-1]
+
+
+async def test_version_slash_command_omits_editable_info_when_not_editable() -> None:
+    """Verify `/version` hides editable info and core deps for normal installs."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        msgs = app.query(AppMessage)
+        plain = str([m for m in msgs if not m._is_markdown][-1]._content)
+        assert "Editable install" not in plain
+        md_sources = [str(m._content) for m in msgs if m._is_markdown]
+        assert not any("### Core dependencies" in s for s in md_sources)
+
+
+def test_build_version_text_includes_editable_core_deps() -> None:
+    """Verify the `--version` text reports editable mode and core deps."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.config._get_editable_install_path",
+            return_value="~/src/deepagents/libs/code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Editable install: ~/src/deepagents/libs/code" in text
+    assert "Core dependencies:" in text
+    assert "langchain-core" in text
+    assert "langsmith" in text
+
+
+def test_build_version_text_omits_core_deps_when_not_editable() -> None:
+    """Verify the `--version` text hides editable info for normal installs."""
+    from deepagents_code.main import build_version_text
+
+    with patch(
+        "deepagents_code.config._is_editable_install",
+        return_value=False,
+    ):
+        text = build_version_text()
+
+    assert "Editable install" not in text
+    assert "Core dependencies:" not in text
+
+
+def test_format_core_dependencies_lists_known_packages() -> None:
+    """Verify `format_core_dependencies` renders a row for each core package."""
+    from deepagents_code.extras_info import (
+        CORE_DEPENDENCIES,
+        format_core_dependencies,
+    )
+
+    rendered = format_core_dependencies()
+    assert rendered.startswith("### Core dependencies")
+    for name in CORE_DEPENDENCIES:
+        assert f"| {name} |" in rendered
+
+
+def test_get_core_dependency_versions_marks_missing_as_none() -> None:
+    """Verify missing core packages resolve to `None` rather than raising."""
+    from importlib.metadata import PackageNotFoundError
+
+    from deepagents_code.extras_info import get_core_dependency_versions
+
+    def patched_version(name: str) -> str:
+        if name == "langgraph-sdk":
+            raise PackageNotFoundError(name)
+        return "1.2.3"
+
+    with patch("deepagents_code.extras_info.pkg_version", side_effect=patched_version):
+        result = dict(get_core_dependency_versions())
+
+    assert result["langgraph-sdk"] is None
+    assert result["langchain"] == "1.2.3"
+
+
 async def test_update_slash_command_editable_install_short_circuits() -> None:
     """Editable install must not invoke `perform_upgrade` from the TUI.
 
     A regression here would run `uv tool upgrade deepagents-code` on an
     editable dev checkout and clobber the local install with a PyPI copy.
     """
-    from unittest.mock import AsyncMock
-
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.widgets.messages import AppMessage
 
@@ -306,8 +427,6 @@ async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
     Regression guard: collapsing this branch into the up-to-date message
     would tell users they're current when the check actually failed.
     """
-    from unittest.mock import AsyncMock
-
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.widgets.messages import AppMessage
 
@@ -322,7 +441,7 @@ async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=(False, None),
-            ),
+            ) as is_update_mock,
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
@@ -331,10 +450,153 @@ async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
             await app._handle_command("/update")
             await pilot.pause()
 
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
         perform_upgrade_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Could not determine the latest version" in content
+
+
+async def test_update_slash_command_omitted_prerelease_preserves_channel() -> None:
+    """`/update` lets update helpers infer the channel from the installed version."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_prerelease_updates_channel() -> None:
+    """`/update --prerelease` opts into alpha/beta/rc releases."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage, UserMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            # `--prerelease` is only honored on uv installs; pin the detected
+            # method so the precheck doesn't refuse based on the test runner's
+            # own environment.
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0rc1"),
+            ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update --prerelease")
+            await pilot.pause()
+
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=True)
+        user_msgs = list(app.query(UserMessage))
+        assert str(user_msgs[-1]._content) == "/update --prerelease"
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Updated to v99.0.0rc1" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_prerelease_unsupported_install_refuses() -> None:
+    """`/update --prerelease` refuses on a non-uv install before hitting PyPI."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            # Pin a non-uv install so the precheck's refusal is driven by the
+            # test rather than the test runner's own environment.
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+            ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update --prerelease")
+            await pilot.pause()
+
+        # The refusal must short-circuit before promising or attempting an
+        # upgrade the install method can't honor.
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "aren't supported for this install" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_rejects_unknown_option() -> None:
+    """`/update` surfaces typo'd options instead of silently running stable."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.is_update_available",
+        ) as is_update_mock:
+            await app._handle_command("/update --prereleases")
+            await pilot.pause()
+
+        # A discarded flag must never silently fall through to an update check.
+        is_update_mock.assert_not_called()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Unknown option(s) for /update: --prereleases" in str(
+            app_msgs[-1]._content
+        )
 
 
 def test_help_mentions_version_flag() -> None:

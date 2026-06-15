@@ -188,6 +188,7 @@ def test_skips_known_composite_extras() -> None:
         "langchain-anthropic>=1.0.0 ; extra == 'all-providers'",
         "langchain-baseten>=1.0.0 ; extra == 'all-providers'",
         "langchain-daytona>=1.0.0 ; extra == 'all-sandboxes'",
+        "langchain-vercel-sandbox>=0.0.1 ; extra == 'all-sandboxes'",
         "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
     ]
 

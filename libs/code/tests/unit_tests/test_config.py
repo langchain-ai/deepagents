@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code.config import (
+    CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     ModelResult,
@@ -18,6 +20,9 @@ from deepagents_code.config import (
     _create_model_from_class,
     _create_model_via_init,
     _get_provider_kwargs,
+    _read_config_toml_retries,
+    _resolve_retry_kwargs,
+    _resolve_retry_param_name,
     build_langsmith_thread_url,
     create_model,
     detect_mode_prefix,
@@ -37,6 +42,56 @@ from deepagents_code.project_utils import (
     find_project_root as _find_project_root,
     get_server_project_context,
 )
+
+
+class TestRuntimeDotenvReload:
+    """Tests for project-scoped dotenv refresh behavior."""
+
+    def test_reload_from_environment_refreshes_loaded_project_dotenv_values(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Runtime reload replaces managed `.env` values after a cwd switch."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-current\n",
+        )
+        (target / ".env").write_text(
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-target\n"
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY=sk-target-anthropic\n",
+        )
+
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-shell")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=current)
+            runtime = Settings.from_environment(start_path=current)
+            assert runtime.openai_api_key == "sk-current"
+
+            changes = runtime.reload_from_environment(start_path=target)
+
+            assert runtime.openai_api_key == "sk-target"
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-target"
+            assert runtime.anthropic_api_key == "sk-shell"
+            assert os.environ["DEEPAGENTS_CODE_ANTHROPIC_API_KEY"] == "sk-shell"
+            assert "openai_api_key: set -> set" in changes
+        finally:
+            config_mod._dotenv_loaded_values.clear()
 
 
 class TestProjectRootDetection:
@@ -236,7 +291,7 @@ class TestProjectAgentMdFinding:
             if self.name == "AGENTS.md" and ".deepagents" in str(self):
                 msg = "Permission denied"
                 raise PermissionError(msg)
-            return original_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+            return original_resolve(self, *args, **kwargs)  # ty: ignore
 
         with patch.object(Path, "resolve", patched_resolve):
             result = _find_project_agent_md(project_root)
@@ -897,6 +952,402 @@ class TestModelResultApplyToSettings:
             assert settings.model_unsupported_modalities == expected
         finally:
             settings.model_unsupported_modalities = original
+
+
+class TestRetriesConfig:
+    """Tests for `[retries]` config.toml support."""
+
+    def test_read_retries_returns_none_when_section_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing `[retries]` returns `None`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\ndefault = 'openai:gpt-5.5'\n")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        """Missing config file returns `None`."""
+        config_path = tmp_path / "config.toml"
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_when_unreadable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unreadable config returns `None` with a warning."""
+        config_path = tmp_path / "config.toml"
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(Path, "open", side_effect=PermissionError("denied")),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() is None
+
+        assert "Could not read retries config" in caplog.text
+
+    def test_read_retries_allows_unknown_provider_with_param(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown providers can opt into retries with an explicit param."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.custom_provider]\nparam = 'max_retries'\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() == {
+                "custom_provider": {"param": "max_retries"}
+            }
+
+        assert "is not a known provider" not in caplog.text
+
+    def test_read_retries_warns_unknown_provider_without_param(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown retry tables still warn when they cannot provide a kwarg."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.custom_provider]\nmax_retries = 2\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() == {
+                "custom_provider": {"max_retries": 2}
+            }
+
+        assert "is not a known provider" in caplog.text
+
+    def test_resolve_retry_kwargs_global(self) -> None:
+        """Global retry config applies to supported providers."""
+        assert _resolve_retry_kwargs({"max_retries": 2}, "fireworks") == {
+            "max_retries": 2
+        }
+
+    @pytest.mark.parametrize(
+        ("provider", "retry_param"),
+        [
+            ("anthropic", "max_retries"),
+            ("azure_openai", "max_retries"),
+            ("baseten", "max_retries"),
+            ("bedrock", "max_retries"),
+            ("deepseek", "max_retries"),
+            ("fireworks", "max_retries"),
+            ("google_genai", "max_retries"),
+            ("google_vertexai", "max_retries"),
+            ("groq", "max_retries"),
+            ("litellm", "max_retries"),
+            ("mistralai", "max_retries"),
+            ("openai", "max_retries"),
+            ("openrouter", "max_retries"),
+            ("perplexity", "max_retries"),
+            ("together", "max_retries"),
+            ("xai", "max_retries"),
+        ],
+    )
+    def test_resolve_retry_kwargs_registered_providers(
+        self, provider: str, retry_param: str
+    ) -> None:
+        """Registered providers receive the retry kwarg their constructor expects."""
+        assert _resolve_retry_kwargs({"max_retries": 2}, provider) == {retry_param: 2}
+
+    def test_resolve_retry_kwargs_provider_override_wins(self) -> None:
+        """Provider retry config beats the global value."""
+        section = {"max_retries": 2, "fireworks": {"max_retries": 3}}
+        assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 3}
+
+    def test_resolve_retry_kwargs_provider_only(self) -> None:
+        """Provider retry config works without a global value."""
+        assert _resolve_retry_kwargs(
+            {"fireworks": {"max_retries": 3}}, "fireworks"
+        ) == {"max_retries": 3}
+
+    def test_resolve_retry_kwargs_custom_provider_param(self) -> None:
+        """Custom providers can name the retry constructor kwarg."""
+        section = {
+            "max_retries": 2,
+            "custom_provider": {"param": "retries", "max_retries": 4},
+        }
+        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 4}
+
+    def test_resolve_retry_kwargs_custom_provider_param_uses_global(self) -> None:
+        """Custom provider param can use the global retry count."""
+        section = {"max_retries": 2, "custom_provider": {"param": "retries"}}
+        assert _resolve_retry_kwargs(section, "custom_provider") == {"retries": 2}
+
+    def test_resolve_retry_kwargs_param_overrides_registry(self) -> None:
+        """Known providers can override the registered retry kwarg name."""
+        section = {"max_retries": 2, "fireworks": {"param": "retries"}}
+        assert _resolve_retry_kwargs(section, "fireworks") == {"retries": 2}
+
+    @pytest.mark.parametrize("value", [-1, 1.5, True, False, "3"])
+    def test_resolve_retry_kwargs_invalid_values_warn(
+        self, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invalid retry values are ignored with a warning."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs({"max_retries": value}, "fireworks") == {}
+
+        assert "Ignoring [retries].max_retries" in caplog.text
+
+    def test_resolve_retry_kwargs_unknown_provider_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unsupported providers do not receive retry kwargs."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs({"max_retries": 2}, "custom_provider") == {}
+
+        assert (
+            "does not support a registered or configured retry parameter" in caplog.text
+        )
+
+    @pytest.mark.parametrize("value", ["max-retries", "class", "", 2, True])
+    def test_resolve_retry_kwargs_invalid_param_warns(
+        self, value: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invalid retry kwarg names are ignored with a warning."""
+        section = {"max_retries": 2, "custom_provider": {"param": value}}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "custom_provider") == {}
+
+        assert "Ignoring [retries.custom_provider].param" in caplog.text
+        assert (
+            "does not support a registered or configured retry parameter" in caplog.text
+        )
+
+    def test_resolve_retry_kwargs_unknown_keys_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown retry keys are ignored with warnings."""
+        section = {"max_retries": 2, "fireworks": {"other": 4}, "other": 5}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+
+        assert "Ignoring [retries].other" in caplog.text
+        assert "Ignoring [retries.fireworks].other" in caplog.text
+
+    def test_get_provider_kwargs_includes_retries(self, tmp_path: Path) -> None:
+        """Provider kwargs include retries from `[retries]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.fireworks]\nmax_retries = 3\n")
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 3
+
+    def test_get_provider_kwargs_params_beat_retries(self, tmp_path: Path) -> None:
+        """Provider params keep precedence over `[retries]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[models.providers.fireworks.params]
+max_retries = 5
+
+[retries.fireworks]
+max_retries = 3
+"""
+        )
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 5
+
+    def test_get_provider_kwargs_includes_global_retries(self, tmp_path: Path) -> None:
+        """A global `[retries]` default reaches provider kwargs via setdefault."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries]\nmax_retries = 2\n")
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _get_provider_kwargs("fireworks")["max_retries"] == 2
+
+    def test_resolve_retry_kwargs_zero_is_valid(self) -> None:
+        """`max_retries = 0` is a valid count (disables retries)."""
+        assert _resolve_retry_kwargs({"max_retries": 0}, "fireworks") == {
+            "max_retries": 0
+        }
+
+    def test_resolve_retry_kwargs_provider_scalar_falls_back_to_global(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-table provider value warns and falls back to the global count."""
+        section = {"max_retries": 2, "fireworks": 5}
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            assert _resolve_retry_kwargs(section, "fireworks") == {"max_retries": 2}
+
+        assert "expected table" in caplog.text
+
+    def test_read_retries_returns_none_when_not_table(self, tmp_path: Path) -> None:
+        """A scalar `retries` value (not a table) yields `None`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("retries = 5\n")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _read_config_toml_retries() is None
+
+    def test_read_retries_returns_none_on_malformed_toml(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed TOML returns `None` with a warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries\nmax_retries = 1\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            assert _read_config_toml_retries() is None
+
+        assert "Could not read retries config" in caplog.text
+
+    def test_read_retries_warns_unknown_provider_table(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A mistyped provider sub-table warns; a valid one does not."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[retries.fireworks]\nmax_retries = 3\n\n"
+            "[retries.fireorks]\nmax_retries = 2\n"
+        )
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            section = _read_config_toml_retries()
+
+        assert section is not None
+        assert "'fireorks' is not a known provider" in caplog.text
+        # The correctly spelled provider table must not be flagged.
+        assert "[retries.fireworks]" not in caplog.text
+
+    def test_read_retries_allows_bedrock_table(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Retry-capable providers without API-key env entries are still known."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[retries.bedrock]\nmax_retries = 3\n")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            section = _read_config_toml_retries()
+
+        assert section == {"bedrock": {"max_retries": 3}}
+        assert "is not a known provider" not in caplog.text
+
+
+class TestResolveRetryParamName:
+    """`_resolve_retry_param_name` picks the constructor kwarg for a provider."""
+
+    def test_registered_provider_returns_mapped_name(self) -> None:
+        """A registered provider resolves to its mapped kwarg."""
+        assert _resolve_retry_param_name("openai") == "max_retries"
+
+    def test_unknown_provider_defaults_to_max_retries(self) -> None:
+        """An unregistered provider falls back to the universal `max_retries`."""
+        assert _resolve_retry_param_name("some_unregistered_provider") == "max_retries"
+
+    def test_config_param_override_wins_for_custom_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """`[retries.<provider>].param` names the kwarg for a custom provider."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.custom]\nparam = "num_retries"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("custom") == "num_retries"
+
+    def test_config_param_override_wins_for_registered_provider(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured `param` overrides even a registered provider's mapping."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.openai]\nparam = "request_retries"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("openai") == "request_retries"
+
+    def test_invalid_config_param_falls_back_to_registry(self, tmp_path: Path) -> None:
+        """An invalid `param` value is ignored, falling back to the registry."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.openai]\nparam = "not an identifier"\n')
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert _resolve_retry_param_name("openai") == "max_retries"
+
+
+class TestCreateModelMaxRetries:
+    """`create_model` folds the `--max-retries` sentinel into the constructor.
+
+    The flag value rides `extra_kwargs` under `CLI_MAX_RETRIES_KEY`; these tests
+    mock `init_chat_model` and assert on the kwargs forwarded to it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_folds_to_resolved_param(self, mock_init: Mock) -> None:
+        """A registered provider receives the value under `max_retries`."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 4}
+        )
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["max_retries"] == 4
+        # The internal carrier must never reach the constructor.
+        assert CLI_MAX_RETRIES_KEY not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_beats_model_params_max_retries(self, mock_init: Mock) -> None:
+        """The CLI flag outranks a `max_retries` supplied via `--model-params`."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 4, "max_retries": 1},
+        )
+        assert mock_init.call_args.kwargs["max_retries"] == 4
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sentinel_folds_to_configured_param(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """A `[retries.<provider>].param` override redirects the folded kwarg."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[retries.anthropic]\nparam = "request_retries"\n')
+        mock_init.return_value = Mock()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={CLI_MAX_RETRIES_KEY: 4},
+            )
+        kwargs = mock_init.call_args.kwargs
+        assert kwargs["request_retries"] == 4
+        assert CLI_MAX_RETRIES_KEY not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_zero_is_forwarded(self, mock_init: Mock) -> None:
+        """`--max-retries 0` (disable retries) folds through, not dropped."""
+        mock_init.return_value = Mock()
+        create_model(
+            "anthropic:claude-sonnet-4-5", extra_kwargs={CLI_MAX_RETRIES_KEY: 0}
+        )
+        assert mock_init.call_args.kwargs["max_retries"] == 0
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_caller_extra_kwargs_not_mutated(self, mock_init: Mock) -> None:
+        """The caller's dict keeps the sentinel for reuse (runtime model switch)."""
+        mock_init.return_value = Mock()
+        extra = {CLI_MAX_RETRIES_KEY: 4}
+        create_model("anthropic:claude-sonnet-4-5", extra_kwargs=extra)
+        assert extra == {CLI_MAX_RETRIES_KEY: 4}
 
 
 class TestCreateModelProfileOverrides:
@@ -3188,7 +3639,7 @@ class TestInterpreterSettings:
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is False
-        assert settings_obj.interpreter_timeout_seconds == 5.0
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
@@ -3213,7 +3664,7 @@ ptc_acknowledge_unsafe = true
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == 12.5
+        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
         assert settings_obj.interpreter_memory_limit_mb == 128
         assert settings_obj.interpreter_max_ptc_calls == 64
         assert settings_obj.interpreter_max_result_chars == 8000
@@ -3245,3 +3696,179 @@ ptc = [""]
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.interpreter_ptc is False
+
+    def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
+        """`"safe"` is preserved as a list entry until agent-build expansion."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = ["safe", "task"]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc == ["safe", "task"]
+
+    def test_ptc_list_with_all_falls_back(self, tmp_path: Path) -> None:
+        """`"all"` inside a list is rejected, falling back to the default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = ["all", "task"]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc is False
+
+
+class TestCreateModelCodex:
+    """`create_model` dispatch for the ChatGPT-OAuth `openai_codex` provider.
+
+    Covers the runtime path that turns a stored token into a working model —
+    untested before this suite. All cases isolate the token store to a temp
+    path and never touch the network.
+    """
+
+    def _plant_token(self, path: Path) -> None:
+        """Write a valid (unexpired) token bundle at `path` with 0600 perms."""
+        import json as _json
+        from datetime import UTC, datetime, timedelta
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps(
+                {
+                    "access_token": "fake_access",
+                    "refresh_token": "fake_refresh",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct_abc",
+                    "plan_type": "pro",
+                    "user_id": "user_xyz",
+                    "id_token": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+
+    def test_missing_token_raises_missing_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No stored token → `MissingCredentialsError` pointing at `/auth`."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import MissingCredentialsError
+
+        monkeypatch.setattr(
+            openai_codex, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        # No env var to set; the recovery hint must route through `/auth`.
+        assert exc_info.value.env_var is None
+        assert "ChatGPT" in str(exc_info.value)
+
+    def test_success_builds_codex_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored token → a `_ChatOpenAICodex` under the codex provider."""
+        from langchain_openai.chat_models.codex import _ChatOpenAICodex
+
+        from deepagents_code.integrations import openai_codex
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(openai_codex, "default_store_path", lambda: path)
+        clear_caches()
+        result = create_model("openai_codex:gpt-5.2-codex")
+        assert isinstance(result.model, _ChatOpenAICodex)
+        assert result.provider == "openai_codex"
+        assert result.model_name == "gpt-5.2-codex"
+
+    def test_api_key_kwarg_is_stripped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A passed `api_key` must not reach the model; bearer is OAuth-only.
+
+        `_ChatOpenAICodex` wires the OAuth token into `openai_api_key` as a
+        callable, so the cleanest check is that the codex branch drops the
+        `api_key` kwarg before it reaches `build_chat_model`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        captured: dict[str, Any] = {}
+        real_build = codex_mod.build_chat_model
+
+        def _capture(model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401  # passthrough capture
+            captured.update(kwargs)
+            return real_build(model_name, **kwargs)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        create_model(
+            "openai_codex:gpt-5.2-codex",
+            extra_kwargs={"api_key": "sk-should-be-stripped"},
+        )
+        assert "api_key" not in captured
+
+    def test_expired_session_routes_to_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A revoked refresh token → `MissingCredentialsError`, not generic.
+
+        The codex branch must route `CodexAuthExpiredError` to the same
+        sign-in recovery path as a missing token so the retry flow offers
+        `/auth`, rather than wrapping it in a generic `ModelConfigError`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import MissingCredentialsError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _raise_expired(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "session expired"
+            raise codex_mod.CodexAuthExpiredError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _raise_expired)
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert exc_info.value.env_var is None
+        assert "expired" in str(exc_info.value).lower()
+
+    def test_unexpected_build_error_wraps_as_model_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuinely unexpected build failure → `ModelConfigError` with spec.
+
+        The broad catch-all is the last resort for construction failures that
+        are neither missing nor expired credentials; it must name the spec
+        rather than leak a raw traceback.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import ModelConfigError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _boom(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "unexpected constructor failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _boom)
+        clear_caches()
+        with pytest.raises(ModelConfigError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert "openai_codex:gpt-5.2-codex" in str(exc_info.value)

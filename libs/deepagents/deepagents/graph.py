@@ -11,7 +11,7 @@ from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
+from langchain.agents.middleware.types import AgentMiddleware, InputAgentState, OutputAgentState, ResponseT
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -253,7 +253,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
+) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
     !!! warning "Deep agents require a LLM that supports tool calling!"
@@ -674,7 +674,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+            processed_spec: SubAgent = {
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
@@ -721,7 +721,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_names=_main_matched_names,
         )
 
-        general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+        general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
             "model": model,
             "tools": _tools or [],
@@ -859,7 +859,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             "recursion_limit": 9_999,
             "metadata": {
                 "ls_integration": "deepagents",
-                "versions": {"deepagents": __version__},
+                "lc_versions": {"deepagents": __version__},
                 "lc_agent_name": name,
             },
         }

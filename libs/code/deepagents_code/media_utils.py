@@ -12,7 +12,7 @@ import subprocess  # noqa: S404
 import sys
 import tempfile
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.messages.content import VideoContentBlock
@@ -451,7 +451,7 @@ def encode_to_base64(data: bytes) -> str:
 
 def create_multimodal_content(
     text: str, images: list[ImageData], videos: list[VideoData] | None = None
-) -> list[dict]:
+) -> list[Any]:
     """Create multimodal message content with text, images, and videos.
 
     Args:

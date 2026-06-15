@@ -4,6 +4,15 @@
 # Usage:
 #   curl -LsSf https://langch.in/dcode | bash
 #
+# Install an exact pre-release version:
+#   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_VERSION="0.1.0rc1" bash
+#
+# Allow uv to consider alpha/beta/rc releases when resolving the latest version:
+#   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
+#
+# DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
+# an exact pin already selects a single version, so setting both is an error.
+#
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
@@ -17,8 +26,24 @@
 #
 # Environment variables:
 #   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona"
-#                             (see pyproject.toml for available extras)
+#                             "ollama,groq", or "daytona". Valid extras
+#                             (see pyproject.toml for the authoritative list):
+#                               Model providers: anthropic, baseten, bedrock,
+#                                 cohere, deepseek, fireworks, google-genai,
+#                                 groq, huggingface, ibm, litellm, mistralai,
+#                                 nvidia, ollama, openai, openrouter,
+#                                 perplexity, together, vertex, xai,
+#                                 all-providers
+#                               Sandbox providers: agentcore, daytona, modal,
+#                                 runloop, vercel, all-sandboxes
+#                               Standalone integrations: quickjs
+#   DEEPAGENTS_CODE_VERSION — exact package version to install, e.g. "0.1.0rc1"
+#                             (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
+#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when resolving
+#                                the latest version: disallow, allow,
+#                                if-necessary, explicit, or
+#                                if-necessary-or-explicit
+#                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
@@ -201,6 +226,8 @@ prompt_yn() {
 # Config
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
+VERSION="${DEEPAGENTS_CODE_VERSION:-}"
+PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
@@ -215,6 +242,40 @@ if [[ -n "$EXTRAS" ]]; then
     exit 1
   fi
   EXTRAS="[${EXTRAS}]"
+fi
+
+# An exact pin already selects a single version, so a pre-release strategy
+# (which only affects how a range resolves) is redundant at best and
+# contradictory at worst (e.g. an rc pin with "disallow"). Reject the combo
+# up front rather than forwarding an ambiguous request to uv.
+if [[ -n "$VERSION" && -n "$PRERELEASE" ]]; then
+  log_error "DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive."
+  log_error "Pin an exact version, or set a pre-release strategy — not both."
+  exit 1
+fi
+
+VERSION_SPEC=""
+if [[ -n "$VERSION" ]]; then
+  # Require a leading alphanumeric so the value reads as a version rather than
+  # an option (e.g. "-U"); the class excludes every shell metacharacter, so the
+  # value is safe to interpolate into the single argv token passed to uv.
+  if [[ ! "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9_.!+-]*$ ]]; then
+    log_error "DEEPAGENTS_CODE_VERSION must be an exact version, e.g. '0.1.0rc1'"
+    exit 1
+  fi
+  VERSION_SPEC="==${VERSION}"
+fi
+
+if [[ -n "$PRERELEASE" ]]; then
+  case "$PRERELEASE" in
+    disallow|allow|if-necessary|explicit|if-necessary-or-explicit)
+      ;;
+    *)
+      log_error "Invalid DEEPAGENTS_CODE_PRERELEASE."
+      log_error "Use: disallow, allow, if-necessary, explicit, or if-necessary-or-explicit"
+      exit 1
+      ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
@@ -268,7 +329,7 @@ fi
 # ---------------------------------------------------------------------------
 # Install deepagents-code
 # ---------------------------------------------------------------------------
-PACKAGE="deepagents-code${EXTRAS}"
+PACKAGE="deepagents-code${EXTRAS}${VERSION_SPEC}"
 
 # Capture pre-install version (if any) for messaging
 PRE_VERSION=""
@@ -332,7 +393,13 @@ fi
 # status and don't race the warning past later log lines.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
-"$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
+if [[ -n "$PRERELEASE" ]]; then
+  "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
+    --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
+else
+  "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
+    2>"$uv_stderr" || uv_rc=$?
+fi
 if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
   awk '
     /^Ignoring existing environment/ {

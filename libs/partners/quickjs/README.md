@@ -24,7 +24,6 @@ agent = create_deep_agent(
   - [Timeouts and memory](#timeouts-and-memory)
   - [Result formatting](#result-formatting)
 - [Programmatic tool calling (PTC)](#programmatic-tool-calling-ptc)
-- [Skills: importable JS/TS modules](#skills-importable-jsts-modules)
 - [Configuration reference](#configuration-reference)
 - [Errors the model can see](#errors-the-model-can-see)
 - [License](#license)
@@ -92,10 +91,7 @@ fib(10)  // 55
 
 The REPL runs in a QuickJS context with **no ambient capabilities**. There is no filesystem, no network, no `fetch`, no `require`, no real clock (`Date.now()` is whatever QuickJS provides, not wall-clock for security-sensitive uses), no `process`, no `import` of anything you didn't explicitly install.
 
-Escape hatches, if you want them, go through explicit middleware:
-
-- **PTC** — to call into the agent's own tools (see below).
-- **Skills** — to pre-install JS/TS modules the agent can `import`.
+Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below).
 
 ### Console capture
 
@@ -209,31 +205,6 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 - When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so subagent tools like `task` see graph `state`, `store`, `context`, and a synthesised child `tool_call_id`.
 - Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.
 
-## Skills: importable JS/TS modules
-
-If your agent uses `SkillsMiddleware` (from `deepagents`), any skill whose frontmatter includes a `module:` key becomes dynamically importable inside the REPL:
-
-```js
-const helpers = await import("@/skills/my-helpers");
-helpers.greet("world")
-```
-
-Under the hood:
-
-- At eval time, the middleware scans the source for literal `"@/skills/<name>"` specifiers.
-- For each referenced skill, it fetches the skill directory through your `BackendProtocol`, packages every typescript file into a module scope, and installs it under the bare specifier.
-- Installs are cached per-`Runtime` — each skill loads at most once, and a broken skill is cached as an error so it doesn't re-hit the backend every eval.
-- If a skill referenced in source isn't available or fails to install, the eval call short-circuits with `<error type="SkillNotAvailable">...</error>` — the model sees a clean failure instead of a guest-side `ReferenceError`.
-- Skills are isolated: one skill's scope can't bare-import another. Bundle shared code into each skill or re-export through a single skill.
-
-Enable it by passing the same `BackendProtocol` your `SkillsMiddleware` uses:
-
-```python
-CodeInterpreterMiddleware(skills_backend=my_backend)
-```
-
-There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or prune generated code.
-
 ## Configuration reference
 
 ```python
@@ -247,7 +218,6 @@ CodeInterpreterMiddleware(
     mode="thread",                   # "thread" | "turn" | "call"
     max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
-    skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )
 ```
 
@@ -261,10 +231,14 @@ CodeInterpreterMiddleware(
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
-| `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |
 
 `asyncio.CancelledError` propagates out cleanly when JS declines to catch a `HostCancellationError` — so LangGraph cancellation semantics work end-to-end.
 
 ## License
 
 MIT. See [`LICENSE`](LICENSE)
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

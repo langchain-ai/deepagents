@@ -90,3 +90,8 @@ Supported providers: **AgentCore**, **Modal**, **Daytona**, **Runloop**.
 
 - Original Ralph concept by [Geoff Huntley](https://ghuntley.com)
 - [Brief History of Ralph](https://www.humanlayer.dev/blog/brief-history-of-ralph) by HumanLayer
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -26,6 +26,7 @@ from deepagents_code import theme
 from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
+    CODEX_PROVIDER,
     ModelConfig,
     ModelProfileEntry,
     ProviderAuthState,
@@ -75,6 +76,11 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openai:gpt-5.4-pro",
         "openai:gpt-5.5",
         "openai:gpt-5.5-pro",
+        "openai_codex:gpt-5.2",
+        "openai_codex:gpt-5.3-codex",
+        "openai_codex:gpt-5.4",
+        "openai_codex:gpt-5.4-mini",
+        "openai_codex:gpt-5.5",
         "openrouter:anthropic/claude-opus-4.6",
         "openrouter:anthropic/claude-opus-4.7",
         "openrouter:anthropic/claude-opus-4.7-fast",
@@ -694,6 +700,48 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         ]
         self._selected_index = 0
 
+    @staticmethod
+    def _unique_model_entries(
+        models: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Return unique model/provider pairs while preserving first-seen order."""
+        seen: set[tuple[str, str]] = set()
+        unique: list[tuple[str, str]] = []
+        for entry in models:
+            if entry in seen:
+                continue
+            seen.add(entry)
+            unique.append(entry)
+        return unique
+
+    @staticmethod
+    def _find_same_occurrence_index(
+        models: list[tuple[str, str]],
+        entry: tuple[str, str],
+        occurrence: int,
+    ) -> int:
+        """Find the `occurrence`th matching model/provider tuple in `models`.
+
+        Args:
+            models: Render-ordered model/provider pairs to search.
+            entry: Exact `(model_spec, provider)` tuple to match.
+            occurrence: One-based occurrence count to find.
+
+        Returns:
+            Matching index, or `0` if no matching occurrence exists.
+        """
+        matches = 0
+        first_match: int | None = None
+        for i, candidate in enumerate(models):
+            if candidate != entry:
+                continue
+            if first_match is None:
+                first_match = i
+            matches += 1
+            if matches == occurrence:
+                return i
+        return first_match or 0
+
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
 
@@ -734,14 +782,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
+        has_filter = bool(self._filter_text.strip())
+        source = self._filtered_models if has_filter else self._all_models
+        source_models = self._unique_model_entries(source)
+
         # Resolve which recent specs are present in the current filtered set.
         # Recent rendering only happens at the top of an unfiltered view; once
         # the user starts fuzzy-filtering, recents are surfaced through the
         # match logic like any other model so the search remains predictable.
-        if self._filter_text.strip():
+        if has_filter:
             recent_entries: list[tuple[str, str]] = []
         else:
-            spec_to_provider = dict(self._filtered_models)
+            spec_to_provider = dict(source_models)
             recent_entries = [
                 (spec, spec_to_provider[spec])
                 for spec in self._recent_specs
@@ -753,7 +805,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # who opens `/model` always finds their model at its provider's
         # familiar position in addition to the MRU shortcut at the top.
         by_provider: dict[str, list[tuple[str, str]]] = {}
-        for model_spec, provider in self._filtered_models:
+        for model_spec, provider in source_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
 
         # Rebuild _filtered_models to match the rendered order (recents first,
@@ -765,12 +817,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         for entries in by_provider.values():
             grouped_order.extend(entries)
 
-        # Remap selected_index so the same model stays highlighted.
-        old_spec = self._filtered_models[self._selected_index][0]
+        # Remap selected_index so the same visual occurrence stays highlighted.
+        old_entry = self._filtered_models[self._selected_index]
+        old_occurrence = self._filtered_models[: self._selected_index + 1].count(
+            old_entry
+        )
         self._filtered_models = grouped_order
-        self._selected_index = next(
-            (i for i, (s, _) in enumerate(grouped_order) if s == old_spec),
-            0,
+        self._selected_index = self._find_same_occurrence_index(
+            grouped_order,
+            old_entry,
+            old_occurrence,
         )
 
         glyphs = get_glyphs()
@@ -1269,6 +1325,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not status.blocks_start:
             self._dismiss_with_result((model_spec, provider))
             return
+
+        if provider == CODEX_PROVIDER:
+            # ChatGPT auth is an OAuth browser flow, not an API key, so the
+            # generic key/base-url prompt doesn't apply. Route to the
+            # dedicated sign-in modal (the same one the auth manager uses).
+            self._prompt_codex_sign_in(model_spec, provider)
+            return
+
         env_var = status.env_var or get_credential_env_var(provider)
 
         from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
@@ -1290,6 +1354,53 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             ),
             _on_auth_done,
         )
+
+    def _prompt_codex_sign_in(self, model_spec: str, provider: str) -> None:
+        """Confirm, then run the ChatGPT OAuth flow for the selected model.
+
+        Signing in launches a browser and a multi-minute loopback wait, so a
+        confirmation modal is shown first. If the user declines, refresh the
+        credential indicator and stay on the selector so they can retry or
+        pick a different provider.
+        """
+        from deepagents_code.widgets.auth import AuthConfirmScreen
+
+        def _on_confirm(proceed: bool | None) -> None:
+            if proceed:
+                self._run_codex_oauth(model_spec, provider)
+                return
+            self.call_after_refresh(self._update_display)
+
+        confirm = AuthConfirmScreen(
+            title="No ChatGPT sign-in detected",
+            body=Content.from_markup(
+                "[bold]$model[/bold] authenticates with ChatGPT, but no "
+                "sign-in was detected. Sign in now, or return to the model "
+                "list.",
+                model=model_spec,
+            ),
+            help_text="Enter to sign in, Esc to return to model list",
+        )
+        self.app.push_screen(confirm, _on_confirm)
+
+    def _run_codex_oauth(self, model_spec: str, provider: str) -> None:
+        """Run the ChatGPT OAuth sign-in flow for the selected codex model.
+
+        On a successful sign-in, dismiss with the originally-selected model.
+        On cancel or error, refresh the credential indicator and stay on the
+        selector so the user can retry or pick a different provider.
+        """
+        from deepagents_code.model_config import clear_caches
+        from deepagents_code.widgets.codex_auth import CodexAuthScreen
+
+        def _on_codex_done(signed_in: bool | None) -> None:
+            clear_caches()
+            if signed_in:
+                self._dismiss_with_result((model_spec, provider))
+                return
+            self.call_after_refresh(self._update_display)
+
+        self.app.push_screen(CodexAuthScreen(), _on_codex_done)
 
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.

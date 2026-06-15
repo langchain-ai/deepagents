@@ -45,6 +45,7 @@ body:
         - label: deepagents (SDK)
         - label: cli
         - label: code
+        - label: talon
         - label: acp
         - label: evals
         - label: harbor
@@ -52,6 +53,7 @@ body:
         - label: modal
         - label: quickjs
         - label: runloop
+        - label: vercel
         - label: langsmith-sandbox
         - label: Other / not sure / general
   - type: textarea

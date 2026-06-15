@@ -10,9 +10,11 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
+| `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
+| `langchain-vercel-sandbox` | `libs/partners/vercel` | `langchain-vercel-sandbox` | [`langchain-vercel-sandbox`](https://pypi.org/project/langchain-vercel-sandbox/) |
 | `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
 
 ## Overview
@@ -145,19 +147,29 @@ Defines release-please behavior for each package.
 
 ### `.release-please-manifest.json`
 
-Tracks the current version of each package. Automatically updated by release-please — **do not edit manually**. Example (versions shown are illustrative; check the actual file for current values):
+Tracks the current version of each package. Automatically updated by release-please — **do not edit manually** except when adding a new release-please-managed package. Example (versions shown are illustrative; check the actual file for current values):
 
 ```json
 {
   "libs/cli": "0.0.35",
   "libs/deepagents": "0.5.1",
   "libs/acp": "0.0.5",
+  "libs/talon": "0.0.1",
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
+  "libs/partners/vercel": "0.0.1",
   "libs/partners/quickjs": "0.0.1"
 }
 ```
+
+### Adding a release-please-managed package
+
+When adding a new managed package, add it to both `release-please-config.json` and `.release-please-manifest.json`. The manifest entry is the **latest released version baseline**, not the package's current source version.
+
+User story: you are adding a first-party integration package, such as a new sandbox provider under `libs/partners/<provider>`, and the PR title is release-worthy (`feat(<scope>): ...`). The package source starts at `0.0.1`, and you want the first release PR for that package to publish `0.0.1`, not immediately bump to `0.0.2` before the package has ever shipped. In this case, set the new `.release-please-manifest.json` entry to `0.0.0` while keeping the package's own `pyproject.toml` and `_version.py` at `0.0.1`.
+
+Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` has already been released outside release-please. If the new manifest baseline is `0.0.1`, release-please treats that as already released and opens the initial release PR for `0.0.2`. The `Release-please initial baseline check` workflow blocks PRs that add a new `0.0.1` managed package baseline.
 
 ## Release Workflow
 
@@ -284,14 +296,16 @@ release-please is SemVer-only internally. Its `prerelease` versioning strategy p
 
 Alpha releases use a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
 
-1. **Create a branch from `main`:**
+1. **Create a branch from the version line you are releasing:**
 
    ```bash
-   git checkout main && git pull
+   git checkout <BASE_BRANCH> && git pull
    git checkout -b alpha/<PACKAGE>-<VERSION>
    ```
 
-   Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+
+   For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x` and you need an installable alpha for validation, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work — the PEP 440 version `0.7.0a1` becomes `alpha/deepagents-0-7-0a1` (hyphens instead of periods) as the branch name.
 
 2. **Bump the version** in both files to a [PEP 440 pre-release](https://peps.python.org/pep-0440/#pre-releases) (e.g., `0.0.35a1`):
 
@@ -315,7 +329,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Enable `dangerous-nonmain-release` ✓
    - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
-5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
+5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
 6. **Clean up** — delete the branch after the workflow succeeds:
 

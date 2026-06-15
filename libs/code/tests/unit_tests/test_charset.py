@@ -1,5 +1,6 @@
 """Tests for charset mode configuration and glyph selection."""
 
+import os
 import sys
 from unittest.mock import Mock, patch
 
@@ -113,7 +114,7 @@ class TestGlyphs:
     def test_glyphs_frozen(self) -> None:
         """Test that Glyphs instances are immutable."""
         with pytest.raises(AttributeError):
-            UNICODE_GLYPHS.tool_prefix = "changed"  # type: ignore[misc]
+            UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
         """Test that both glyph sets have all required fields."""
@@ -204,6 +205,22 @@ class TestDetectCharsetMode:
             with patch.object(sys, "stdout", mock_stdout):
                 mode = _detect_charset_mode()
         assert mode == CharsetMode.UNICODE
+
+    @patch.dict("os.environ", {"DEEPAGENTS_CODE_UI_CHARSET_MODE": "ascii"}, clear=False)
+    def test_prefixed_env_var_is_honored(self) -> None:
+        """The `DEEPAGENTS_CODE_` prefixed variant resolves the mode."""
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("UI_CHARSET_MODE", None)
+            assert _detect_charset_mode() == CharsetMode.ASCII
+
+    @patch.dict(
+        "os.environ",
+        {"UI_CHARSET_MODE": "ascii", "DEEPAGENTS_CODE_UI_CHARSET_MODE": "unicode"},
+        clear=False,
+    )
+    def test_prefixed_env_var_overrides_canonical(self) -> None:
+        """The prefixed variant wins over the canonical one, matching runtime."""
+        assert _detect_charset_mode() == CharsetMode.UNICODE
 
 
 class TestGetGlyphs:

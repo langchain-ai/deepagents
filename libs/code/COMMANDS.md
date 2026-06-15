@@ -6,7 +6,7 @@ Canonical list of slash commands for `deepagents-code`, derived from
 regenerate after editing the registry.
 
 
-## Public (27)
+## Public (28)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ regenerate after editing the registry.
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload config from environment variables and .env |
 | `/remember` |  | Update memory and skills from conversation |
+| `/restart` |  | Restart the app-owned LangGraph server |
 | `/skill-creator` |  | Guide for creating effective agent skills |
 | `/theme` |  | Switch color theme |
 | `/threads` |  | Browse and resume previous threads |
@@ -38,9 +39,8 @@ regenerate after editing the registry.
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version |
 
-## Hidden (2)
+## Hidden (1)
 
 Hidden commands not exposed in autocomplete or help. See the `HIDDEN_COMMANDS` docstring in the registry for context.
 
 - `/debug-error`
-- `/restart`

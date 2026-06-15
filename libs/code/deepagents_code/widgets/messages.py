@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual import on
 from textual.containers import Horizontal, Vertical
@@ -137,7 +137,12 @@ class UserMessage(Static):
         border-left: wide $primary;
         pointer: text;
     }
+
+    UserMessage.-cancelled {
+        opacity: 0.6;
+    }
     """
+    """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a user message.
@@ -148,6 +153,10 @@ class UserMessage(Static):
         """
         super().__init__(**kwargs)
         self._content = content
+
+    def set_cancelled(self) -> None:
+        """Dim the message to mark its turn as interrupted by the user."""
+        self.add_class("-cancelled")
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
@@ -551,7 +560,16 @@ class AssistantMessage(Vertical):
     the first chunk, so any later recompose (click, focus change, theme
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
+
+    Streamed tokens are coalesced in `_pending_append` and flushed to the
+    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
+    every token immediately forced a markdown re-parse per chunk on the UI
+    event loop, which starved keyboard input while the model streamed.
+    Batching the writes keeps the event loop free so typing stays responsive.
     """
+
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+    """Seconds between coalesced flushes of streamed text to the markdown widget."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -581,9 +599,22 @@ class AssistantMessage(Vertical):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
+        self._pending_append = ""
+        self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -626,19 +657,49 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append content to the message (for streaming).
+        """Append streamed content, coalescing writes onto a throttled timer.
 
-        Uses MarkdownStream for smoother rendering instead of re-rendering
-        the full content on each chunk.
+        Tokens are buffered in `_pending_append` and written to the
+        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
+        event loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
         """
         if not text:
             return
-        self._content += text
-        stream = self._ensure_stream()
-        await stream.write(text)
+        self._content_parts.append(text)
+        self._pending_append += text
+        if self._flush_timer is None:
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
+            )
+
+    async def _flush_pending_append(self) -> None:
+        """Write any buffered streamed text to the markdown stream.
+
+        Runs from a Textual timer callback, where an unhandled exception
+        escalates to `App._handle_exception` and tears down the whole REPL.
+        On a transient write failure the buffer is restored (re-prepended
+        ahead of any text that arrived in the meantime) so the next tick
+        retries instead of silently dropping the fragment.
+        """
+        if not self._pending_append:
+            return
+        pending = self._pending_append
+        self._pending_append = ""
+        try:
+            stream = self._ensure_stream()
+            await stream.write(pending)
+        except Exception:  # a render hiccup must not crash the app
+            self._pending_append = pending + self._pending_append
+            logger.exception("Failed to flush streamed markdown fragment")
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -647,6 +708,8 @@ class AssistantMessage(Vertical):
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
+        self._stop_flush_timer()
+        await self._flush_pending_append()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
@@ -662,6 +725,8 @@ class AssistantMessage(Vertical):
         Args:
             content: The markdown content to display
         """
+        self._stop_flush_timer()
+        self._pending_append = ""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
@@ -1234,9 +1299,10 @@ class ToolCallMessage(Vertical):
         if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
             # The outer size threshold is necessary but not sufficient: only
             # treat output as expandable if the formatter actually hides
-            # content. Formatters that truncate by line count (e.g. grep/glob)
-            # leave long single-line output fully visible, so expanding it
-            # would reveal nothing.
+            # content. Some formatters cap by line count alone (task and the
+            # web fallback, via `_format_task_output` / `_format_lines_output`),
+            # so a long single line crosses the char threshold yet renders in
+            # full with nothing hidden.
             return self._format_output(output, is_preview=True).truncation is not None
 
         return False
@@ -1549,27 +1615,12 @@ class ToolCallMessage(Vertical):
         if had_trailing_newline:
             lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
-
         char_budget = self._PREVIEW_CHARS if is_preview else None
-        parts: list[Content] = []
-        chars_used = 0
-        char_truncated = False
-        for line in lines[:max_lines]:
-            display_line = line
-            if char_budget is not None:
-                separator_cost = 1 if parts else 0
-                remaining = char_budget - chars_used - separator_cost
-                if remaining <= 0:
-                    char_truncated = True
-                    break
-                if len(line) > remaining:
-                    display_line = line[:remaining]
-                    char_truncated = True
-                chars_used += separator_cost + len(display_line)
-            parts.append(Content(display_line))
-            if char_truncated:
-                break
 
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        parts = [Content(line) for line in shown]
         content = Content("\n").join(parts) if parts else Content("")
 
         truncation = self._build_truncation_hint(
@@ -1585,6 +1636,46 @@ class ToolCallMessage(Vertical):
         return FormattedOutput(content=content, truncation=truncation)
 
     @staticmethod
+    def _truncate_to_budget(
+        lines: list[str], *, max_lines: int, char_budget: int | None
+    ) -> tuple[list[str], int, bool]:
+        """Apply line- and character-count caps to a list of display lines.
+
+        Shared by the file, shell, and search formatters so preview truncation
+        stays identical across tool outputs. When `char_budget` is `None` (the
+        expanded, non-preview view) only the line cap applies.
+
+        Args:
+            lines: Candidate display lines, already cleaned by the caller.
+            max_lines: Maximum number of lines to emit.
+            char_budget: Maximum characters to emit across all lines, counting
+                the newline separators between them, or `None` for no cap.
+
+        Returns:
+            The lines to show, the characters consumed (including separators),
+            and whether the character budget forced truncation.
+        """
+        shown: list[str] = []
+        chars_used = 0
+        char_truncated = False
+        for line in lines[:max_lines]:
+            display_line = line
+            if char_budget is not None:
+                separator_cost = 1 if shown else 0
+                remaining = char_budget - chars_used - separator_cost
+                if remaining <= 0:
+                    char_truncated = True
+                    break
+                if len(line) > remaining:
+                    display_line = line[:remaining]
+                    char_truncated = True
+                chars_used += separator_cost + len(display_line)
+            shown.append(display_line)
+            if char_truncated:
+                break
+        return shown, chars_used, char_truncated
+
+    @staticmethod
     def _build_truncation_hint(
         *,
         output: str,
@@ -1594,13 +1685,15 @@ class ToolCallMessage(Vertical):
         char_truncated: bool,
         had_trailing_newline: bool,
         is_preview: bool,
+        line_unit: Literal["files", "lines"] = "lines",
     ) -> str | None:
         """Compose the truncation hint, preferring line counts over char counts.
 
         When both the line cap and the char cap were hit, hidden-line count is
         the more useful signal for the user — char counts dominate the hint
         for big files where what they really want to know is "how many more
-        lines am I missing?".
+        lines am I missing?". `line_unit` names the hidden-row noun ("lines"
+        for text output, "files" for glob path lists).
 
         Returns:
             Hint string for the UI, or `None` if nothing was truncated.
@@ -1609,14 +1702,14 @@ class ToolCallMessage(Vertical):
             return None
         hidden_lines = len(lines) - parts_count
         if hidden_lines > 0:
-            return f"{hidden_lines} more lines"
+            return f"{hidden_lines} more {line_unit}"
         if char_truncated:
             effective_output_len = len(output) - (1 if had_trailing_newline else 0)
             hidden_chars = effective_output_len - chars_used
             return f"{hidden_chars} more chars"
         return None
 
-    def _format_search_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _format_search_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format grep/glob search output.
@@ -1624,45 +1717,73 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with search results and optional truncation info.
         """
-        # Try to parse as a Python list (glob returns list of paths)
+        # Try to parse as a Python list (glob returns list of paths). The
+        # except is scoped to detection only — formatting runs outside it so a
+        # bug in `_format_search_lines` can't silently reroute to the fallback.
         try:
             items = ast.literal_eval(output.strip())
-            if isinstance(items, list):
-                parts: list[Content] = []
-                max_items = 5 if is_preview else len(items)
-                for item in items[:max_items]:
-                    path = Path(str(item))
-                    try:
-                        rel = path.relative_to(Path.cwd())
-                        display = str(rel)
-                    except ValueError:
-                        display = path.name
-                    parts.append(Content(display))
-
-                truncation = None
-                if is_preview and len(items) > max_items:
-                    truncation = f"{len(items) - max_items} more files"
-
-                return FormattedOutput(
-                    content=Content("\n").join(parts), truncation=truncation
-                )
         except (ValueError, SyntaxError):
-            pass
+            items = None
+
+        if isinstance(items, list):
+            paths: list[str] = []
+            for item in items:
+                path = Path(str(item))
+                try:
+                    display = str(path.relative_to(Path.cwd()))
+                except ValueError:
+                    display = path.name
+                paths.append(display)
+            return self._format_search_lines(
+                paths, is_preview=is_preview, line_unit="files"
+            )
 
         # Fallback: line-based output (grep results)
-        lines = output.split("\n")
-        max_lines = 5 if is_preview else len(lines)
-
-        parts = [
-            Content(raw_line.strip())
-            for raw_line in lines[:max_lines]
-            if raw_line.strip()
+        lines = [
+            raw_line.strip() for raw_line in output.split("\n") if raw_line.strip()
         ]
+        return self._format_search_lines(
+            lines, is_preview=is_preview, line_unit="lines"
+        )
 
+    def _format_search_lines(
+        self,
+        lines: list[str],
+        *,
+        is_preview: bool,
+        line_unit: Literal["files", "lines"],
+    ) -> FormattedOutput:
+        """Format search result rows with line and character preview caps.
+
+        `line_unit` names the hidden-row noun for the hint — "files" for glob
+        path lists, "lines" for grep matches.
+
+        Returns:
+            FormattedOutput with search rows and optional truncation info.
+        """
+        # Search rows are denser than file/shell output, so the preview shows
+        # one extra row (5) before truncating.
+        max_lines = 5 if is_preview else len(lines)
+        char_budget = self._PREVIEW_CHARS if is_preview else None
+
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        parts = [Content(line) for line in shown]
         content = Content("\n").join(parts) if parts else Content("")
-        truncation = None
-        if is_preview and len(lines) > max_lines:
-            truncation = f"{len(lines) - max_lines} more"
+
+        # The cleaned `lines` carry no trailing-newline element, so the joined
+        # length is the full preview-able content length.
+        truncation = self._build_truncation_hint(
+            output="\n".join(lines),
+            lines=lines,
+            parts_count=len(parts),
+            chars_used=chars_used,
+            char_truncated=char_truncated,
+            had_trailing_newline=False,
+            is_preview=is_preview,
+            line_unit=line_unit,
+        )
 
         return FormattedOutput(content=content, truncation=truncation)
 
@@ -1679,31 +1800,18 @@ class ToolCallMessage(Vertical):
         if had_trailing_newline:
             lines = lines[:-1]
         max_lines = 4 if is_preview else len(lines)
-
         char_budget = self._PREVIEW_CHARS if is_preview else None
-        parts: list[Content] = []
-        chars_used = 0
-        char_truncated = False
-        for i, line in enumerate(lines[:max_lines]):
-            display_line = line
-            if char_budget is not None:
-                separator_cost = 1 if parts else 0
-                remaining = char_budget - chars_used - separator_cost
-                if remaining <= 0:
-                    char_truncated = True
-                    break
-                if len(line) > remaining:
-                    display_line = line[:remaining]
-                    char_truncated = True
-                chars_used += separator_cost + len(display_line)
 
-            if i == 0 and display_line.startswith("$ "):
-                parts.append(Content.styled(display_line, "dim"))
-            else:
-                parts.append(Content(display_line))
-            if char_truncated:
-                break
-
+        shown, chars_used, char_truncated = self._truncate_to_budget(
+            lines, max_lines=max_lines, char_budget=char_budget
+        )
+        # Dim the leading `$ command` echo; only the first row can carry it.
+        parts = [
+            Content.styled(line, "dim")
+            if index == 0 and line.startswith("$ ")
+            else Content(line)
+            for index, line in enumerate(shown)
+        ]
         content = Content("\n").join(parts) if parts else Content("")
 
         truncation = self._build_truncation_hint(
@@ -1904,10 +2012,8 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = True
 
             # Offer expansion only when the formatter actually hid content.
-            # The raw size threshold can trip without anything being hidden
-            # (e.g. a long single-line grep/glob result, which only truncates
-            # by line count), and promising an expansion that reveals nothing
-            # is misleading.
+            # The raw size threshold can trip without anything being hidden, and
+            # promising an expansion that reveals nothing is misleading.
             if result.truncation:
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(

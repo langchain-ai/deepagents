@@ -8,6 +8,7 @@ encodes the score (0-1 correctness).
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import math
 from dataclasses import dataclass, field

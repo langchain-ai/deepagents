@@ -131,12 +131,12 @@ class MediaTracker:
         if kind == "image":
             placeholder = f"[image {self.next_image_id}]"
             data.placeholder = placeholder
-            self.images.append(data)  # type: ignore[arg-type]
+            self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
         else:
             placeholder = f"[video {self.next_video_id}]"
             data.placeholder = placeholder
-            self.videos.append(data)  # type: ignore[arg-type]
+            self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
         return placeholder
 
@@ -161,19 +161,6 @@ class MediaTracker:
             Placeholder string like "[video 1]".
         """
         return self.add_media(video_data, "video")
-
-    def get_media(self, kind: MediaKind) -> list[ImageData] | list[VideoData]:
-        """Get all tracked media of a given type.
-
-        Args:
-            kind: Media type key.
-
-        Returns:
-            Copy of the list of tracked media items.
-        """
-        if kind == "image":
-            return list(self.images)
-        return list(self.videos)
 
     def get_images(self) -> list[ImageData]:
         """Get all tracked images.

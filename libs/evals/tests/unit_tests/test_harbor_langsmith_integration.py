@@ -89,6 +89,39 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
 
 
+def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+
+    _, harbor_job = workflow.split("  harbor:", maxsplit=1)
+    job_env = harbor_job.split("    steps:", maxsplit=1)[0]
+    install_step = harbor_job.split('      - name: "📦 Install Dependencies"', maxsplit=1)[1]
+    install_step = install_step.split("      - name:", maxsplit=1)[0]
+    run_step = harbor_job.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+
+    for secret in [
+        "ANTHROPIC_API_KEY",
+        "BASETEN_API_KEY",
+        "FIREWORKS_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_SANDBOX_API_KEY",
+        "NVIDIA_API_KEY",
+        "OLLAMA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
+    ]:
+        assert secret not in job_env
+
+    assert "secrets." not in install_step
+    assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in run_step
+    assert "inputs.sandbox_env == 'langsmith'" in run_step
+    assert "startsWith(matrix.model, 'fireworks:')" in run_step
+    assert "startsWith(matrix.model, 'ollama:')" in run_step
+
+
 def test_harbor_workflow_only_exposes_docker_and_langsmith_sandboxes() -> None:
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
 
@@ -121,3 +154,37 @@ def test_contributing_docs_use_langsmith_sandbox_example() -> None:
     assert "--jobs-dir harbor-jobs/terminal-bench" in contributing
     assert "--env langsmith" in contributing
     assert "--plugin langsmith" in contributing
+
+
+def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "_eval.yml").read_text()
+
+    _, eval_job = workflow.split("  eval:", maxsplit=1)
+    job_env = eval_job.split("    steps:", maxsplit=1)[0]
+    install_step = eval_job.split('      - name: "📦 Install Dependencies"', maxsplit=1)[1]
+    install_step = install_step.split("      - name:", maxsplit=1)[0]
+    run_step = eval_job.split('      - name: "📊 Run Evals"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+    analysis_step = eval_job.split('      - name: "🧠 Analyze eval failures"', maxsplit=1)[1]
+    analysis_step = analysis_step.split("      - name:", maxsplit=1)[0]
+
+    for secret in [
+        "ANTHROPIC_API_KEY",
+        "BASETEN_API_KEY",
+        "FIREWORKS_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "LANGSMITH_API_KEY",
+        "NVIDIA_API_KEY",
+        "OLLAMA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
+    ]:
+        assert secret not in job_env
+
+    assert "secrets." not in install_step
+    assert "LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}" in run_step
+    assert "inputs.provider == 'fireworks'" in run_step
+    assert "inputs.provider == 'ollama'" in run_step
+    assert "startsWith(inputs.analysis_model, 'anthropic:')" in analysis_step

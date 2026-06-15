@@ -212,23 +212,24 @@ jobs:
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # tracing + experiments + dataset mgmt
-      LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }} # sandbox creation (LangSmithEnvironment)
       LANGSMITH_TRACING: "true"
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
         working-directory: .
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           missing=()
 
@@ -240,7 +241,8 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              ;; # LANGSMITH_API_KEY already checked above
+              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
+              ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1
@@ -290,6 +292,19 @@ jobs:
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
       - name: "⚓ Run Harbor"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           # Run Harbor
           n_tasks_flag=""

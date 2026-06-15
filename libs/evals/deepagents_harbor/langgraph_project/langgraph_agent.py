@@ -128,7 +128,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
-    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=True)
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
     return create_deep_agent(
         model=model,
         backend=backend,

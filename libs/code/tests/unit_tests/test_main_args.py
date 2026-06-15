@@ -2170,3 +2170,40 @@ class TestWarnInterpreterToolsWithoutInterpreter:
             args = parse_args()
         _warn_if_interpreter_tools_without_interpreter(args)
         assert capsys.readouterr().err == ""
+
+    def test_cli_main_emits_warning_on_non_interactive_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --interpreter-tools` without `--interpreter` warns.
+
+        Guards the wiring (not just the helper): a dropped or misplaced call
+        site, or an earlier `sys.exit` swallowing the warning, fails here.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--interpreter-tools", "safe"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )

@@ -2357,6 +2357,34 @@ class DeepAgentsApp(App):
         )
         self._maybe_start_external_event_source()
 
+        # Non-essential advisory: defer past first paint so it never delays
+        # the initial frame.
+        self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
+
+    def _notify_interpreter_tools_without_interpreter(self) -> None:
+        """Toast when `--interpreter-tools` was set without `--interpreter`.
+
+        The PTC allowlist applies only when the interpreter middleware is
+        enabled, so the flag is a no-op on its own. This is the TUI counterpart
+        of the non-interactive stderr warning emitted in
+        `main._warn_if_interpreter_tools_without_interpreter`: a stderr line is
+        invisible behind the alternate screen, so the same advisory is surfaced
+        as a startup notification here.
+
+        Reads the values from `self._server_kwargs` (which already carries them
+        for server startup); no extra plumbing is required.
+        """
+        server_kwargs = self._server_kwargs or {}
+        if server_kwargs.get("interpreter_ptc") is None:
+            return
+        if server_kwargs.get("enable_interpreter"):
+            return
+        self.notify(
+            "--interpreter-tools has no effect unless --interpreter is set.",
+            severity="warning",
+            markup=False,
+        )
+
     def _maybe_start_external_event_source(self) -> None:
         """Start the external event listener when explicitly enabled."""
         from deepagents_code._env_vars import (

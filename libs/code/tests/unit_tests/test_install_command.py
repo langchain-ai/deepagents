@@ -508,6 +508,7 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
+            patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
@@ -521,6 +522,8 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
         ):
             await app._handle_command("/install fireworks")
             await pilot.pause()
+        # The modal is preloaded before the upgrade can rewrite our own tree.
+        preload.assert_called_once()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
         assert calls == ["reload", "clear", "restart"]
@@ -648,6 +651,7 @@ async def test_install_package_offers_restart_when_idle() -> None:
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
+            patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
@@ -661,6 +665,8 @@ async def test_install_package_offers_restart_when_idle() -> None:
         ):
             await app._handle_command("/install langchain-custom --package --force")
             await pilot.pause()
+        # The modal is preloaded before the upgrade can rewrite our own tree.
+        preload.assert_called_once()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
         assert calls == ["reload", "clear", "restart"]
@@ -790,9 +796,10 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
 
     `/install` runs `uv tool install -U 'deepagents-code[...]'`, which rewrites
     deepagents-code's own on-disk tree mid-session. A first import of the
-    restart modal on the post-install path can then raise `ModuleNotFoundError`
-    (observed in the field). The handler must fall back to the already-mounted
-    manual `/restart` hint instead of letting the import crash the app.
+    restart modal on the post-install path then reads the half-replaced tree
+    and raises `ModuleNotFoundError`. The handler must fall back to the
+    already-mounted manual `/restart` hint instead of letting the import crash
+    the app.
     """
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -803,8 +810,9 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
         app._connecting = False
         push = AsyncMock(return_value="restart")
         with (
-            # `None` in sys.modules forces `import` to raise ImportError,
-            # reproducing the half-replaced on-disk tree after a self-upgrade.
+            # `None` in sys.modules makes the `from`-import raise
+            # `ModuleNotFoundError` — a deterministic stand-in for the import
+            # failure a half-replaced on-disk tree causes after a self-upgrade.
             patch.dict(
                 sys.modules,
                 {"deepagents_code.widgets.restart_prompt": None},
@@ -820,3 +828,33 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
         # The modal was never mounted and no restart was attempted.
         push.assert_not_awaited()
         restart.assert_not_awaited()
+
+
+def test_ensure_restart_prompt_loaded_caches_module() -> None:
+    """Preloading leaves the restart modal resident in `sys.modules`.
+
+    This is the actual fix: importing the modal before the self-upgrade
+    rewrites the on-disk tree means the post-install import in
+    `_offer_restart_after_install` resolves from `sys.modules` rather than the
+    mutated tree. Dropping the resident copy first forces a real import.
+    """
+    with patch.dict(sys.modules):
+        sys.modules.pop("deepagents_code.widgets.restart_prompt", None)
+        DeepAgentsApp._ensure_restart_prompt_loaded()
+        assert "deepagents_code.widgets.restart_prompt" in sys.modules
+
+
+def test_ensure_restart_prompt_loaded_swallows_missing_module() -> None:
+    """A failed preload is best-effort and must not raise.
+
+    `None` in `sys.modules` makes `import deepagents_code.widgets.restart_prompt`
+    raise `ModuleNotFoundError`, standing in for the half-replaced tree left by
+    a self-upgrade. The preload swallows it so the install continues; the
+    post-install import then falls back to its own guard.
+    """
+    with patch.dict(
+        sys.modules,
+        {"deepagents_code.widgets.restart_prompt": None},
+    ):
+        # Must not raise despite the unimportable module.
+        DeepAgentsApp._ensure_restart_prompt_loaded()

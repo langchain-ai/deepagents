@@ -36,37 +36,32 @@
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
-#   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona". Valid extras
-#                             (see pyproject.toml for the authoritative list):
-#                               Model providers: anthropic, baseten, bedrock,
-#                                 cohere, deepseek, fireworks, google-genai,
-#                                 groq, huggingface, ibm, litellm, mistralai,
-#                                 nvidia, ollama, openai, openrouter,
-#                                 perplexity, together, vertex, xai,
-#                                 all-providers
-#                               Sandbox providers: agentcore, daytona, modal,
-#                                 runloop, vercel, all-sandboxes
-#                               Standalone integrations: quickjs
-#   DEEPAGENTS_CODE_VERSION — exact package version to install, e.g. "0.1.0rc1"
-#                             (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
-#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when resolving
-#                                the latest version: disallow, allow,
-#                                if-necessary, explicit, or
-#                                if-necessary-or-explicit
-#                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
-#   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
-#   DEEPAGENTS_CODE_YES     — set to 1 to accept an available update without
-#                             prompting (assume "yes"). Exists so automated runs
-#                             that still attach a terminal (CI, wrapper scripts)
-#                             update instead of stalling at the y/n prompt.
+#   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
+#     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
+#     authoritative list):
+#       Model providers: anthropic, baseten, bedrock, cohere, deepseek,
+#         fireworks, google-genai, groq, huggingface, ibm, litellm, mistralai,
+#         nvidia, ollama, openai, openrouter, perplexity, together, vertex, xai,
+#         all-providers
+#       Sandbox providers: agentcore, daytona, modal, runloop, vercel,
+#         all-sandboxes
+#       Standalone integrations: quickjs
+#   DEEPAGENTS_CODE_VERSION — exact version to install, e.g. "0.1.0rc1"
+#     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
+#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
+#     resolving the latest version: disallow, allow, if-necessary, explicit,
+#     or if-necessary-or-explicit (mutually exclusive with
+#     DEEPAGENTS_CODE_VERSION)
+#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
+#     prompting (assume "yes"). Exists so automated runs that still attach a
+#     terminal (CI, wrapper scripts) update instead of stalling at the y/n
+#     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
-#                             lines, unfiltered package diff) and the
-#                             quiet-by-default status lines (optional-tool
-#                             checks, post-install footer); useful when
-#                             debugging
-#   UV_BIN                  — path to uv binary (auto-detected if unset)
+#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
+#     unfiltered package diff) and the quiet-by-default status lines
+#     (optional-tool checks, post-install footer); useful when debugging
+#   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install

@@ -1522,6 +1522,39 @@ def _read_update_config() -> dict[str, bool]:
         return {}
 
 
+def is_auto_update_explicitly_set() -> bool:
+    """Return whether the user explicitly chose an auto-update preference.
+
+    `True` when `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean or
+    `[update].auto_update` is present in `config.toml`. Distinguishes a
+    deliberate opt-in/out from the implicit opt-out default.
+    """
+    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
+
+    if (
+        AUTO_UPDATE in os.environ
+        and classify_env_bool(os.environ[AUTO_UPDATE]) is not None
+    ):
+        return True
+    return "auto_update" in _read_update_config()
+
+
+def should_announce_auto_update_default() -> bool:
+    """Return whether to show the one-time auto-update default migration notice.
+
+    `True` only when auto-update is active *implicitly* (the opt-out default,
+    not an explicit env/config choice) and the notice has not been shown yet.
+    """
+    if is_auto_update_explicitly_set():
+        return False
+    return not _read_update_state().get("auto_update_default_acknowledged", False)
+
+
+def mark_auto_update_default_acknowledged() -> None:
+    """Record that the one-time auto-update default migration notice was shown."""
+    _write_update_state({"auto_update_default_acknowledged": True})
+
+
 # ---------------------------------------------------------------------------
 # "What's new" tracking
 # ---------------------------------------------------------------------------

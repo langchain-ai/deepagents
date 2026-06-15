@@ -153,7 +153,9 @@ def _run_startup_auto_update(console: "Console") -> None:
         is_auto_update_enabled,
         is_installed_version_at_least,
         is_update_check_enabled,
+        mark_auto_update_default_acknowledged,
         perform_upgrade,
+        should_announce_auto_update_default,
         upgrade_command,
     )
 
@@ -186,6 +188,21 @@ def _run_startup_auto_update(console: "Console") -> None:
                 "available after an automatic update; skipping auto-update to "
                 f"avoid a restart loop. Update manually: [cyan]{cmd}[/cyan]\n"
                 f"Continuing with v{cli_version}.",
+                highlight=False,
+            )
+            return
+        if should_announce_auto_update_default():
+            # First-run consent/migration: auto-update is on only because of the
+            # opt-out default, not an explicit choice. Announce it once and skip
+            # this install so the user can opt out before anything runs.
+            mark_auto_update_default_acknowledged()
+            console.print(
+                "[bold]dcode now updates automatically by default.[/bold] "
+                f"v{latest} will be installed on the next launch.\n"
+                "To opt out, run [cyan]dcode --auto-update[/cyan], set "
+                "[cyan][update].auto_update = false[/cyan] in config.toml, or set "
+                "[cyan]DEEPAGENTS_CODE_AUTO_UPDATE=0[/cyan].\n"
+                f"Continuing with v{cli_version} for now.",
                 highlight=False,
             )
             return

@@ -46,10 +46,12 @@ from deepagents_code.update_check import (
     install_extras_command,
     install_package_command,
     is_auto_update_enabled,
+    is_auto_update_explicitly_set,
     is_installed_version_at_least,
     is_update_available,
     is_valid_extra_name,
     is_valid_package_name,
+    mark_auto_update_default_acknowledged,
     mark_update_notified,
     mark_version_seen,
     perform_install_extra,
@@ -57,6 +59,7 @@ from deepagents_code.update_check import (
     perform_upgrade,
     prerelease_upgrade_supported,
     set_auto_update,
+    should_announce_auto_update_default,
     should_notify_update,
     upgrade_command,
 )
@@ -2072,6 +2075,56 @@ class TestIsAutoUpdateEnabled:
         assert config_path.exists()
         with patch("deepagents_code.config._is_editable_install", return_value=True):
             assert is_auto_update_enabled() is False
+
+
+class TestAutoUpdateDefaultMigration:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary file."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_explicit_config_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
+        """An explicit config choice counts as explicitly set."""
+        set_auto_update(True)
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert is_auto_update_explicitly_set() is True
+        assert should_announce_auto_update_default() is False
+
+    def test_explicit_env_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A recognized env value counts as explicitly set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}):
+            assert is_auto_update_explicitly_set() is True
+            assert should_announce_auto_update_default() is False
+
+    def test_implicit_default_announces_once(self, config_path, state_file) -> None:  # noqa: ARG002
+        """With no explicit choice, the migration notice fires exactly once."""
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert is_auto_update_explicitly_set() is False
+        assert should_announce_auto_update_default() is True
+        mark_auto_update_default_acknowledged()
+        assert should_announce_auto_update_default() is False
+
+    def test_unrecognized_env_is_not_explicit(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A garbage env token does not count as an explicit choice."""
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "ture"}):
+            assert is_auto_update_explicitly_set() is False
+            assert should_announce_auto_update_default() is True
 
 
 class TestShouldNotifyUpdate:

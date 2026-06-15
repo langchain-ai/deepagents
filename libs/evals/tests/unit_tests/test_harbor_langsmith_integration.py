@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[4]
 EVALS = ROOT / "libs" / "evals"
+
+
+def test_evals_uses_harbor_langsmith_fork_source() -> None:
+    pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
+
+    assert pyproject["tool"]["uv"]["sources"]["harbor"] == {
+        "git": "https://github.com/nick-hollon-lc/harbor.git",
+        "branch": "nh/integration",
+    }
 
 
 def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:

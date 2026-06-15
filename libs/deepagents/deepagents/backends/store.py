@@ -475,6 +475,9 @@ class StoreBackend(BackendProtocol):
         # Add directories to the results
         infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
 
+        if not infos and normalized_path != "/":
+            return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+
         infos.sort(key=lambda x: x.get("path", ""))
         return LsResult(entries=infos)
 

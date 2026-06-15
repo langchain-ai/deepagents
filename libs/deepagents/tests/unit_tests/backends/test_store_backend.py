@@ -112,8 +112,26 @@ def test_store_backend_ls_nested_directories():
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = be.ls("/nonexistent/")
-    assert empty_listing.entries == []
+    missing_listing = be.ls("/nonexistent/")
+    assert missing_listing.error == "Path '/nonexistent/': path_not_found"
+    assert missing_listing.entries is None
+
+
+def test_store_backend_ls_missing_path():
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/a/b.txt", "content")
+
+    result = be.ls("/does/not/exist")
+    assert result.error == "Path '/does/not/exist': path_not_found"
+    assert result.entries is None
+
+    # Root always exists, even when no files present
+    empty_store = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    root_listing = empty_store.ls("/")
+    assert root_listing.error is None
+    assert root_listing.entries == []
 
 
 def test_store_backend_ls_trailing_slash():

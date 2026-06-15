@@ -2459,6 +2459,34 @@ class TestStateBackendConfigKeys:
         ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
         assert "/data/notes.md" in ls_msg.content
 
+    def test_ls_missing_path_returns_path_not_found(self) -> None:
+        """Ls on a non-existent path should surface path_not_found, not an empty list."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": {"path": "/nonexistent/"},
+                                "id": "call_ls",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
+        assert "path_not_found" in ls_msg.content
+
     def test_backward_compat_lambda_factory(self) -> None:
         """The old `lambda rt: StateBackend(rt)` factory pattern still works."""
         model = FixedGenericFakeChatModel(

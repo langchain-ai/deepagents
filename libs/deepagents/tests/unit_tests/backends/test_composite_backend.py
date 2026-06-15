@@ -401,7 +401,8 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     assert paths == sorted(paths)
 
     empty_listing = comp.ls("/store/nonexistent/")
-    assert empty_listing.entries == []
+    assert empty_listing.entries is None
+    assert "path_not_found" in empty_listing.error
 
     missing_listing = comp.ls("/nonexistent/")
     assert missing_listing.entries is None

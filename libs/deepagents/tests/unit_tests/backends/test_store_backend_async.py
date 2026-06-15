@@ -88,8 +88,9 @@ async def test_store_backend_als_nested_directories():
     assert "/src/utils/common.py" in utils_paths
     assert len(utils_paths) == 2
 
-    empty_listing = await be.als("/nonexistent/")
-    assert empty_listing.entries == []
+    missing_listing = await be.als("/nonexistent/")
+    assert missing_listing.error == "Path '/nonexistent/': path_not_found"
+    assert missing_listing.entries is None
 
 
 async def test_store_backend_als_trailing_slash():

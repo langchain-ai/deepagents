@@ -366,6 +366,35 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
+    """Warn that `--interpreter-tools` is a no-op without `--interpreter`.
+
+    The PTC allowlist applies only when the interpreter middleware is enabled,
+    and on the CLI that gate is the `--interpreter` flag alone (`args.interpreter`).
+    `[interpreter]` config is not consulted: `config.toml`'s `enable_interpreter`
+    does not currently enable the middleware on this path, so a missing
+    `--interpreter` always means the flag has no effect. If that ever changes,
+    this check must consider config to avoid a false-positive warning.
+
+    This drives the non-interactive (`-n`) path and prints to stderr. The
+    interactive TUI surfaces the same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
+
+    Attributes are accessed directly (not via `getattr` defaults) so an argparse
+    `dest` rename fails loudly in tests rather than silently disabling the warning.
+    """
+    if args.interpreter_tools is None:
+        return
+    if args.interpreter:
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
+        "unless --interpreter is set."
+    )
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -753,6 +782,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
+    "auth": ("auth_command", "show_auth_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -776,8 +806,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
-    subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
+    when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -814,6 +844,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.auth_commands import setup_auth_parser
     from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
@@ -949,6 +980,11 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
         add_output_args=add_json_output_arg,
+    )
+
+    setup_auth_parser(
+        subparsers,
+        make_help_action=_make_help_action,
     )
 
     threads_parser = subparsers.add_parser(
@@ -2211,6 +2247,11 @@ def cli_main() -> None:
 
             sys.exit(run_config_command(args))
 
+        if args.command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
             from deepagents_code.config import parse_shell_allow_list
@@ -2876,6 +2917,7 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
+            _warn_if_interpreter_tools_without_interpreter(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2976,6 +3018,10 @@ def cli_main() -> None:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
                 )
+                # A stderr warning here would be clobbered by the alternate
+                # screen the moment the TUI launches; the app surfaces the
+                # advisory as a startup notification instead (see
+                # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
                 result = asyncio.run(
                     run_textual_cli_async(

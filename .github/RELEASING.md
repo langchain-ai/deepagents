@@ -296,14 +296,16 @@ release-please is SemVer-only internally. Its `prerelease` versioning strategy p
 
 Alpha releases use a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
 
-1. **Create a branch from `main`:**
+1. **Create a branch from the version line you are releasing:**
 
    ```bash
-   git checkout main && git pull
+   git checkout <BASE_BRANCH> && git pull
    git checkout -b alpha/<PACKAGE>-<VERSION>
    ```
 
-   Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+
+   For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x` and you need an installable alpha for validation, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work — the PEP 440 version `0.7.0a1` becomes `alpha/deepagents-0-7-0a1` (hyphens instead of periods) as the branch name.
 
 2. **Bump the version** in both files to a [PEP 440 pre-release](https://peps.python.org/pep-0440/#pre-releases) (e.g., `0.0.35a1`):
 
@@ -327,7 +329,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Enable `dangerous-nonmain-release` ✓
    - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
-5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
+5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
 6. **Clean up** — delete the branch after the workflow succeeds:
 

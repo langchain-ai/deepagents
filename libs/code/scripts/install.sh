@@ -362,9 +362,11 @@ fi
 # Latest-version lookup
 # ---------------------------------------------------------------------------
 # Print the latest published deepagents-code version from PyPI, or nothing on
-# any failure (offline, transient error, missing downloader). PyPI's JSON
-# exposes the latest release as a single top-level "version" field, so a
-# targeted grep avoids depending on a JSON parser.
+# any failure (offline, transient error, missing downloader). PyPI nests the
+# latest release at "info.version"; that key appears first in the response (the
+# "info" object leads), so taking the first "version" match selects it without
+# depending on a JSON parser. The pattern tolerates whitespace around the colon
+# so a switch to pretty-printed JSON wouldn't silently break the probe.
 fetch_latest_version() {
   local json="" ua="deepagents-code-install"
   if command -v curl >/dev/null 2>&1; then
@@ -377,9 +379,9 @@ fetch_latest_version() {
   # `|| true` keeps a no-match (grep exit 1 under `pipefail`) from aborting the
   # script; an empty result is handled by the caller as "unknown latest".
   printf '%s' "$json" \
-    | grep -o '"version":"[^"]*"' \
+    | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 \
-    | sed -E 's/.*"version":"([^"]*)".*/\1/' || true
+    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' || true
 }
 
 # ---------------------------------------------------------------------------
@@ -434,10 +436,18 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
   # upgrading, rather than silently pulling the latest version every run.
   # A pinned version or pre-release strategy (handled by the branches above and
   # below) expresses explicit intent, so those install directly.
+  #
+  # The up-to-date check below is plain string equality, so it relies on
+  # PRE_VERSION (the raw `dcode -v` literal) and LATEST_VERSION (PyPI's
+  # PEP 440-normalized `info.version`) being identically canonical. release-please
+  # keeps `_version.py` to clean `X.Y.Z`, so they match today; a non-canonical
+  # release literal would merely re-prompt an up-to-date user, never silently
+  # skip a real upgrade. A shell installer can't import `packaging` to compare
+  # semantically the way `update_check.py` does.
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
-    log_warn "Could not reach PyPI to check for updates — continuing with an upgrade attempt."
+    log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
   elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
     if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
       log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."

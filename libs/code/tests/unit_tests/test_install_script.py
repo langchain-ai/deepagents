@@ -428,11 +428,40 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
 
 def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
     """Answering 'y' to the update prompt runs `uv tool install -U`."""
-    code, _output, args_path = _invoke_interactive(
+    code, output, args_path = _invoke_interactive(
         tmp_path, {}, answer="y", installed_version="0.1.0", latest_version="0.2.0"
     )
 
     assert code == 0
+    # The accept-path uv argv is identical to the auto-update and assume-yes
+    # paths, so assert the "Updating ..." line to prove the prompt was shown and
+    # answered yes rather than bypassed.
+    assert "Updating deepagents-code 0.1.0 → 0.2.0" in output
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
+
+
+def test_install_script_pinned_version_skips_prompt_over_existing_install(
+    tmp_path: Path,
+) -> None:
+    """A pinned `DEEPAGENTS_CODE_VERSION` installs directly, never prompting.
+
+    Guards the dispatch gate (`[ -z "$VERSION" ]`) that routes an explicit pin
+    past the update prompt: answering 'n' must not stop the install, and neither
+    the prompt arrow nor the "Keeping" decline message should appear.
+    """
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {"DEEPAGENTS_CODE_VERSION": "0.2.0"},
+        answer="n",
+        installed_version="0.1.0",
+        latest_version="0.3.0",
+    )
+
+    assert code == 0
+    assert "→" not in output
+    assert "Keeping deepagents-code" not in output
+    args = args_path.read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+    assert args[-1] == "deepagents-code==0.2.0"

@@ -2124,3 +2124,49 @@ class TestParseInterpreterToolsFlag:
         with pytest.raises(SystemExit) as exc_info:
             _parse_interpreter_tools_flag("   ")
         assert exc_info.value.code == 2
+
+
+class TestWarnInterpreterToolsWithoutInterpreter:
+    """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
+
+    def test_warns_without_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter-tools without --interpreter warns and does not exit."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )
+
+    def test_no_warning_with_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""
+
+    def test_no_warning_without_flag(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Absent --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""

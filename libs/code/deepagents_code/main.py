@@ -366,6 +366,25 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
+    """Warn when the `--interpreter-tools` flag is set without `--interpreter`.
+
+    The PTC allowlist only takes effect once the interpreter middleware is
+    enabled, so the flag is a silent no-op on its own. Only the CLI flag is
+    checked here, never `[interpreter]` config values.
+    """
+    if getattr(args, "interpreter_tools", None) is None:
+        return
+    if getattr(args, "interpreter", False):
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
+        "unless --interpreter is set."
+    )
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -2888,6 +2907,7 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
+            _warn_if_interpreter_tools_without_interpreter(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2988,6 +3008,7 @@ def cli_main() -> None:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
                 )
+                _warn_if_interpreter_tools_without_interpreter(args)
 
                 result = asyncio.run(
                     run_textual_cli_async(

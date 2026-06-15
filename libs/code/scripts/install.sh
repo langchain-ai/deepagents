@@ -13,6 +13,14 @@
 # DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
 # an exact pin already selects a single version, so setting both is an error.
 #
+# Already installed?
+#   The installer checks PyPI for the latest release. If you are already up to
+#   date it exits without changes. If a newer version exists, an interactive
+#   shell is prompted before upgrading; a piped/non-interactive run (no TTY)
+#   upgrades automatically. Setting DEEPAGENTS_CODE_VERSION or
+#   DEEPAGENTS_CODE_PRERELEASE skips the prompt and installs that selection
+#   directly. Set DEEPAGENTS_CODE_YES=1 to accept the update without prompting.
+#
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
@@ -45,6 +53,8 @@
 #                                if-necessary-or-explicit
 #                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_YES     — set to 1 to accept an available update without
+#                             prompting (assume "yes"); useful for scripted runs
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
 #                             lines, unfiltered package diff) and the
@@ -222,6 +232,17 @@ prompt_yn() {
   return 1
 }
 
+# Whether an interactive y/n prompt can actually be answered. IS_INTERACTIVE
+# trusts `[ -r /dev/tty ]`, which only access-checks the device — opening it
+# still fails when there is no controlling terminal (cron, systemd, some CI).
+# Confirm the channel is usable so callers can fall back instead of blocking
+# or silently treating an unanswerable prompt as "no".
+can_prompt() {
+  [ "$IS_INTERACTIVE" = true ] || return 1
+  [ -t 0 ] && return 0
+  { : < /dev/tty; } 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -231,6 +252,11 @@ PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
+ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+
+# PyPI JSON endpoint used to discover the latest published release so we can
+# tell whether an existing install is out of date before upgrading it.
+PYPI_JSON_URL="https://pypi.org/pypi/deepagents-code/json"
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -327,6 +353,30 @@ if [ -z "${UV_BIN:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Latest-version lookup
+# ---------------------------------------------------------------------------
+# Print the latest published deepagents-code version from PyPI, or nothing on
+# any failure (offline, transient error, missing downloader). PyPI's JSON
+# exposes the latest release as a single top-level "version" field, so a
+# targeted grep avoids depending on a JSON parser.
+fetch_latest_version() {
+  local json="" ua="deepagents-code-install"
+  if command -v curl >/dev/null 2>&1; then
+    json=$(curl -fsSL -H "User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  elif command -v wget >/dev/null 2>&1; then
+    json=$(wget -qO- --header="User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  else
+    return 0
+  fi
+  # `|| true` keeps a no-match (grep exit 1 under `pipefail`) from aborting the
+  # script; an empty result is handled by the caller as "unknown latest".
+  printf '%s' "$json" \
+    | grep -o '"version":"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"version":"([^"]*)".*/\1/' || true
+}
+
+# ---------------------------------------------------------------------------
 # Install deepagents-code
 # ---------------------------------------------------------------------------
 PACKAGE="deepagents-code${EXTRAS}${VERSION_SPEC}"
@@ -373,6 +423,32 @@ if [ "$IS_EDITABLE" = true ]; then
     log_info "deepagents-code ${pre_label} found (editable install from local source)."
   fi
   log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
+  # Default path with an existing install: probe PyPI and prompt before
+  # upgrading, rather than silently pulling the latest version every run.
+  # A pinned version or pre-release strategy (handled by the branches above and
+  # below) expresses explicit intent, so those install directly.
+  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  LATEST_VERSION=$(fetch_latest_version)
+  if [ -z "$LATEST_VERSION" ]; then
+    log_warn "Could not reach PyPI to check for updates — continuing with an upgrade attempt."
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+    log_success "deepagents-code ${PRE_VERSION} is already up to date."
+    exit 0
+  elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+  elif can_prompt; then
+    if prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?"; then
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    else
+      log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
+      exit 0
+    fi
+  else
+    # No TTY to prompt (e.g. piped into a non-interactive shell): preserve the
+    # historical behavior and upgrade automatically.
+    log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
+  fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
 else

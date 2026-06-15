@@ -784,7 +784,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
@@ -858,7 +858,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns

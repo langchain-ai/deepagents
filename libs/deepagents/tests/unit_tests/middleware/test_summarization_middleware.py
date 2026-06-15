@@ -1,6 +1,7 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
 import asyncio
+import re
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -411,7 +412,44 @@ class TestOffloadingBasic:
         assert path == "/conversation_history/test-thread-123.md"
 
         assert "## Summarized at" in content
-        assert "Human:" in content or "AI:" in content
+        assert '<message type="human">' in content or '<message type="ai">' in content
+
+    def test_offload_preserves_image_urls(self) -> None:
+        """Image URLs in evicted messages survive the offload (issue #2873).
+
+        The default `get_buffer_string` drops image content; the XML format keeps
+        image URLs, so the archived markdown still references them.
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        image_url = "https://example.com/diagram.png"
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is the diagram"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+                id="img-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        assert len(backend.write_calls) == 1
+        _, content = backend.write_calls[0]
+        assert image_url in content
 
     def test_offload_appends_to_existing_content(self) -> None:
         """Test that second summarization appends to existing file."""
@@ -1147,8 +1185,8 @@ class TestMarkdownFormatting:
         # Verify the offloaded content is markdown formatted
         _, content = backend.write_calls[0]
 
-        # Should contain human-readable message prefixes
-        assert "Human:" in content or "AI:" in content
+        # Should contain XML-tagged messages (get_buffer_string format="xml")
+        assert '<message type="human">' in content or '<message type="ai">' in content
         # Should contain the actual message content
         assert "User message" in content
 
@@ -2189,8 +2227,8 @@ def test_chained_summarization_cutoff_index() -> None:
         return [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(n)]
 
     def offloaded_labels(write_call_content: str) -> list[str]:
-        """Extract S-labels from backend write content (e.g. "Human: S0" -> "S0")."""
-        return [word for word in write_call_content.split() if word.startswith("S") and word[1:].isdigit()]
+        """Extract S-labels from backend write content (e.g. `<message ...>S0</message>` -> "S0")."""
+        return re.findall(r"S\d+", write_call_content)
 
     # --- Round 1: first summarization, no previous event ---
     state = cast("AgentState[Any]", {"messages": make_state_messages(8)})

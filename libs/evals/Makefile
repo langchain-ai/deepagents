@@ -41,33 +41,34 @@ test_watch: ## Run tests in watch mode
 # Harbor jobs
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
-# AGENT_MODE: cli (local default) or sdk (CI default)
-AGENT_MODE ?= cli
-AGENT_KWARG = --agent-kwarg use_cli_agent=$(if $(filter cli,$(AGENT_MODE)),true,false)
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=. --agent-kwarg config=deepagents_harbor/langgraph.json --agent-kwarg graph=deepagent
+HARBOR_HELLO_WORLD_JOBS_DIR ?= ../harbor-jobs/hello-world
+HARBOR_TERMINAL_BENCH_JOBS_DIR ?= ../harbor-jobs/terminal-bench
+HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
 run-hello-world: ## Run hello-world job
-	@mkdir -p jobs/hello-world
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 4 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env modal
 
 run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 40 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env daytona
 
 run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env docker
 
 run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 -n 10 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env runloop
 
 run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir jobs/terminal-bench --env langsmith $(AGENT_KWARG)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=terminal-bench@2.0 --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
 
 ######################
 # CHARTS

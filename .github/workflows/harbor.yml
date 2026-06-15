@@ -25,7 +25,7 @@
 
 name: "📊 Evals - Harbor"
 run-name: >-
-  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }}
+  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }}
 
 on:
   workflow_dispatch:
@@ -136,15 +136,6 @@ on:
         required: true
         default: "1"
         type: string
-      agent_mode:
-        description: "Agent implementation to use"
-        required: true
-        default: "sdk"
-        type: choice
-        options:
-          - sdk
-          # - cli # need to support properly first
-
 permissions:
   contents: read
 
@@ -171,7 +162,6 @@ jobs:
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
-          AGENT_MODE: ${{ inputs.agent_mode }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -189,7 +179,6 @@ jobs:
             echo "| \`n_tasks\` | \`${N_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| \`agent_mode\` | \`${AGENT_MODE}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
@@ -201,23 +190,8 @@ jobs:
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
-      - name: "🐍 Set up Python + UV"
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: "3.12"
-          cache-suffix: harbor-prep
-          working-directory: libs/evals
-
-      - name: "📦 Install Dependencies"
-        working-directory: libs/evals
-        run: uv sync --group test --locked
-
-      - name: "🧪 Ensure LangSmith dataset"
-        working-directory: libs/evals
-        run: uv run python scripts/harbor_langsmith.py ensure-dataset "$HARBOR_DATASET_NAME" --version "$HARBOR_DATASET_VERSION"
-
   harbor:
-    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }})"
+    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }})"
     needs: prep
     runs-on: ubuntu-latest
     environment: evals
@@ -234,7 +208,6 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_MODEL: ${{ matrix.model }}
-      HARBOR_AGENT_MODE: ${{ inputs.agent_mode }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
@@ -321,28 +294,6 @@ jobs:
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
 
-      - name: "🧪 Create LangSmith experiment"
-        id: langsmith
-        run: |
-          set -euo pipefail
-          output=$(uv run python scripts/harbor_langsmith.py create-experiment "$HARBOR_DATASET_NAME" --model "$HARBOR_MODEL")
-          line_count=$(echo "$output" | wc -l | tr -d ' ')
-          if [ "$line_count" -ne 2 ]; then
-            echo "::error::Expected exactly 2 lines from create-experiment, got $line_count:"
-            echo "$output" | head -5
-            exit 1
-          fi
-          experiment_name=$(echo "$output" | head -1)
-          experiment_url=$(echo "$output" | tail -1)
-          if [ -z "$experiment_name" ] || [ -z "$experiment_url" ]; then
-            echo "::error::create-experiment returned empty name or URL: name='$experiment_name' url='$experiment_url'"
-            exit 1
-          fi
-          echo "experiment_name=$experiment_name" >> "$GITHUB_OUTPUT"
-          echo "experiment_url=$experiment_url" >> "$GITHUB_OUTPUT"
-          echo "LANGSMITH_EXPERIMENT=$experiment_name" >> "$GITHUB_ENV"
-          echo "LANGSMITH_EXPERIMENT_URL=$experiment_url" >> "$GITHUB_ENV"
-
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
           mkdir -p ~/.cache/harbor
@@ -350,11 +301,6 @@ jobs:
 
       - name: "⚓ Run Harbor"
         run: |
-          # Print LangSmith experiment link
-          echo "LangSmith experiment: $LANGSMITH_EXPERIMENT"
-          echo "  View at: $LANGSMITH_EXPERIMENT_URL"
-          echo ""
-
           # Run Harbor
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -362,16 +308,29 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
+          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          HARBOR_LANGSMITH_DATASET="${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_model}"
+          echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
+          echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
+
+          echo "LangSmith plugin experiment base: $HARBOR_LANGSMITH_EXPERIMENT"
+          echo ""
 
           uv run harbor run \
-            --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+            --agent langgraph \
+            --agent-kwarg project_path=. \
+            --agent-kwarg config=deepagents_harbor/langgraph.json \
+            --agent-kwarg graph=deepagent \
             --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
-            --jobs-dir jobs/terminal-bench \
+            --jobs-dir ../harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
-            --agent-kwarg use_cli_agent=${{ inputs.agent_mode == 'cli' && 'true' || 'false' }}
+            --plugin langsmith \
+            --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
@@ -379,7 +338,7 @@ jobs:
           latest_job=$(python - <<'PY'
           from pathlib import Path
 
-          jobs_dir = Path("jobs/terminal-bench")
+          jobs_dir = Path("../harbor-jobs/terminal-bench")
           job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
           if not job_dirs:
               raise SystemExit("No Harbor job directory found")
@@ -388,22 +347,12 @@ jobs:
           )
           echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
 
-      - name: "⭐ Add Harbor rewards to LangSmith"
-        if: always() && steps.latest-job.outcome == 'success' && steps.langsmith.outcome == 'success'
-        env:
-          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
-        run: |
-          uv run python scripts/harbor_langsmith.py add-feedback \
-            "$HARBOR_JOB_DIR" \
-            --project-name "$LANGSMITH_EXPERIMENT_NAME"
-
       - name: "📝 Write workflow summary"
         if: always()
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          LANGSMITH_EXPERIMENT_NAME: ${{ steps.langsmith.outputs.experiment_name }}
-          LANGSMITH_EXPERIMENT_URL: ${{ steps.langsmith.outputs.experiment_url }}
+          HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
+          HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
         run: |
           {
@@ -418,12 +367,9 @@ jobs:
             else
               echo "- Max tasks: ${HARBOR_N_TASKS}"
             fi
-            echo "- Agent mode: ${HARBOR_AGENT_MODE}"
-            if [ -n "$LANGSMITH_EXPERIMENT_URL" ]; then
-              echo "- LangSmith experiment: [$LANGSMITH_EXPERIMENT_NAME]($LANGSMITH_EXPERIMENT_URL)"
-            else
-              echo "- LangSmith experiment: $LANGSMITH_EXPERIMENT_NAME"
-            fi
+            echo "- Agent: Harbor LangGraph (`deepagents_harbor/langgraph.json`)"
+            echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
+            echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
               echo "- Harbor job dir: $HARBOR_JOB_DIR"
             fi
@@ -435,5 +381,5 @@ jobs:
         with:
           name: harbor-${{ strategy.job-index }}
           path: |
-            libs/evals/jobs/terminal-bench
+            libs/harbor-jobs/terminal-bench
           if-no-files-found: warn

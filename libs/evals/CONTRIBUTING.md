@@ -409,12 +409,28 @@ export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default
 
 ```bash
 # Run via Docker (sequential, all tasks)
-uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=. \
+  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --dataset terminal-bench@2.0 \
+  --model "$MODEL" \
+  -n 1 \
+  --jobs-dir ../harbor-jobs/terminal-bench \
+  --env docker
 
 # Run via Daytona (10 concurrent trials)
-uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=. \
+  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --dataset terminal-bench@2.0 \
+  --model "$MODEL" \
+  -n 10 \
+  --jobs-dir ../harbor-jobs/terminal-bench \
+  --env daytona
 ```
 
 ### Available environments
@@ -441,48 +457,35 @@ LangSmith provides tracing and observability for agent runs. The workflow:
 Deep Agents -> Harbor (evaluate) -> LangSmith (analyze) -> Improve -> Repeat
 ```
 
-#### Step 1: Create dataset and experiment
+#### Run benchmark with tracing
 
 ```bash
-# Create dataset from Harbor tasks
-python scripts/harbor_langsmith.py create-dataset terminal-bench --version 2.0
+# Makefile shortcut using the Harbor LangSmith plugin
+MODEL="$MODEL" HARBOR_LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-langsmith
 
-# Create experiment session (outputs session ID and URL)
-python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
-```
-
-#### Step 2: Run benchmark with tracing
-
-```bash
-# Option 1: For experiments (enables side-by-side comparison in LangSmith)
-export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
-make run-terminal-bench-daytona  # 40 concurrent trials on Daytona
-
-# Option 2: For development (simpler project view in LangSmith)
-export LANGSMITH_PROJECT="deepagents-development"
-make run-terminal-bench-daytona
-
-# Option 3: Run harbor directly (-n = concurrency; add -l N to limit tasks)
-export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
+# Run Harbor directly (-n = concurrency; add -l N to limit tasks)
 uv run harbor run \
-  --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+  --agent langgraph \
+  --agent-kwarg project_path=. \
+  --agent-kwarg config=deepagents_harbor/langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --dataset terminal-bench@2.0 \
+  --model "$MODEL" \
+  -n 10 \
+  --jobs-dir ../harbor-jobs/terminal-bench \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=terminal-bench@2.0 \
+  --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 
-#### Step 3: Add feedback scores
-
-After the benchmark completes, push reward scores to LangSmith for filtering and analysis:
-
-```bash
-python scripts/harbor_langsmith.py add-feedback jobs/terminal-bench/2025-12-02__16-25-40 \
-  --project-name deepagents-baseline-v1
-```
-
-This matches trials to traces and adds `harbor_reward` feedback (0.0-1.0) from Harbor's test results.
+The Harbor LangSmith plugin syncs dataset examples, creates the experiment,
+nests the Deep Agents LangGraph trace under the Harbor trial run, and writes
+verifier rewards as LangSmith feedback.
 
 ### Analyzing results
 
-LangSmith captures every LLM call, tool invocation, and performance metric. Combined with Harbor reward scores (added via Step 3), you can filter runs by performance and identify patterns in successful vs. failed runs.
+LangSmith captures every LLM call, tool invocation, and performance metric. Combined with Harbor reward scores from the plugin, you can filter runs by performance and identify patterns in successful vs. failed runs.
 
 #### Common failure patterns
 

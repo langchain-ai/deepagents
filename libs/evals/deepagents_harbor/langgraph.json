@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "deepagent": "./deepagents_harbor/langgraph_agent.py:make_graph"
+  }
+}

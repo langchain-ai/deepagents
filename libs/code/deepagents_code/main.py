@@ -366,6 +366,35 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
+    """Warn that `--interpreter-tools` is a no-op without `--interpreter`.
+
+    The PTC allowlist applies only when the interpreter middleware is enabled,
+    and on the CLI that gate is the `--interpreter` flag alone (`args.interpreter`).
+    `[interpreter]` config is not consulted: `config.toml`'s `enable_interpreter`
+    does not currently enable the middleware on this path, so a missing
+    `--interpreter` always means the flag has no effect. If that ever changes,
+    this check must consider config to avoid a false-positive warning.
+
+    This drives the non-interactive (`-n`) path and prints to stderr. The
+    interactive TUI surfaces the same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
+
+    Attributes are accessed directly (not via `getattr` defaults) so an argparse
+    `dest` rename fails loudly in tests rather than silently disabling the warning.
+    """
+    if args.interpreter_tools is None:
+        return
+    if args.interpreter:
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
+        "unless --interpreter is set."
+    )
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -2888,6 +2917,7 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
+            _warn_if_interpreter_tools_without_interpreter(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2988,6 +3018,10 @@ def cli_main() -> None:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
                 )
+                # A stderr warning here would be clobbered by the alternate
+                # screen the moment the TUI launches; the app surfaces the
+                # advisory as a startup notification instead (see
+                # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
                 result = asyncio.run(
                     run_textual_cli_async(

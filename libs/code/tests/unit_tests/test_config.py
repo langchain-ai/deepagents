@@ -19,7 +19,9 @@ from deepagents_code.config import (
     Settings,
     _create_model_from_class,
     _create_model_via_init,
+    _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _quiet_sdk_tracing_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
@@ -1807,6 +1809,111 @@ class TestGetLangsmithProjectName:
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "deepagents-code"
+
+
+class TestDisableOrphanedTracing:
+    """Tests for _disable_orphaned_tracing()."""
+
+    _ALL_TRACING_VARS = (
+        "LANGSMITH_TRACING_V2",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+    )
+
+    def _clean_env(self) -> dict[str, str]:
+        return dict.fromkeys(self._ALL_TRACING_VARS, "")
+
+    def test_disables_tracing_when_no_key(self) -> None:
+        """Tracing flag on with empty key should be turned off."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_preserves_tracing_when_key_present(self) -> None:
+        """Tracing stays enabled when a usable API key is set."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """LANGCHAIN_API_KEY also counts as a usable key."""
+        env = self._clean_env()
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGCHAIN_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_noop_when_tracing_disabled(self) -> None:
+        """Does nothing when no tracing flag is enabled."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "false"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_disables_all_set_tracing_flags(self) -> None:
+        """Every set tracing flag is turned off, not just one."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_TRACING"] = "1"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestQuietSdkTracingLogging:
+    """Tests for _quiet_sdk_tracing_logging()."""
+
+    def test_attaches_null_handler_without_debug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without debug, SDK loggers get a NullHandler so logs stay off stderr."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated calls do not stack duplicate handlers."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert len(handlers) == 1
 
 
 class TestFetchLangsmithProjectUrl:

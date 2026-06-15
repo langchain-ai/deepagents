@@ -298,6 +298,72 @@ def _load_dotenv(
     return loaded
 
 
+_TRACING_ENABLE_ENV_VARS = (
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING",
+)
+"""Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
+
+_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+"""Env vars that hold the LangSmith API key used for trace ingestion."""
+
+
+def _quiet_sdk_tracing_logging() -> None:
+    """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
+
+    These SDK loggers emit ingestion/auth errors (e.g. repeated 401s) on their
+    own loggers. With no handler attached they reach Python's last-resort stderr
+    handler and bleed onto the alternate-screen TUI. Route them to the debug log
+    when `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they
+    stay off the terminal.
+    """
+    from deepagents_code._debug import configure_debug_logging
+
+    for name in ("langsmith", "langchain"):
+        sdk_logger = logging.getLogger(name)
+        configure_debug_logging(sdk_logger)
+        if not sdk_logger.handlers:
+            sdk_logger.addHandler(logging.NullHandler())
+
+
+def _disable_orphaned_tracing() -> None:
+    """Disable LangSmith tracing when enabled without a usable API key.
+
+    LangChain enables tracing whenever a tracing flag is truthy, regardless of
+    credentials. With no key the background tracer retries ingestion and floods
+    `langsmith.client` 401 errors into the TUI (most visibly at the atexit
+    flush). When a tracing flag is set but no API key is resolvable, unset the
+    flags so tracing never starts.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+
+    tracing_on = any(
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    )
+    if not tracing_on:
+        return
+
+    has_key = any(
+        (os.environ.get(var) or "").strip() for var in _TRACING_API_KEY_ENV_VARS
+    )
+    if has_key:
+        return
+
+    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
+    for var in disabled:
+        os.environ[var] = "false"
+    logger.warning(
+        "LangSmith tracing is enabled (%s) but no API key is set; disabling "
+        "tracing to avoid repeated authentication failures. Set LANGSMITH_API_KEY "
+        "to enable tracing, or unset the tracing flag to silence this warning.",
+        ", ".join(disabled),
+    )
+
+
 def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
@@ -334,6 +400,10 @@ def _ensure_bootstrap() -> None:
             from deepagents_code._debug import configure_debug_logging
 
             configure_debug_logging(logging.getLogger("deepagents_code"))
+
+            # Keep LangSmith/LangChain SDK logging off the TUI (route to the
+            # debug log when enabled, else swallow via NullHandler).
+            _quiet_sdk_tracing_logging()
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
@@ -379,6 +449,10 @@ def _ensure_bootstrap() -> None:
                         prefixed,
                         canonical,
                     )
+
+            # Tracing enabled without a key floods the TUI with 401 ingest
+            # errors; disable it before any traced run starts.
+            _disable_orphaned_tracing()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "

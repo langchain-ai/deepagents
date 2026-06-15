@@ -1,0 +1,33 @@
+libs/code/pyproject.toml
+  s_40e50620137ff4::t_3c5d3109cf7559 42
+  s_40e50620137ff4::t_770bb8e6e0f528 99
+libs/code/tests/unit_tests/test_openai_codex_integration.py
+  s_40e50620137ff4::t_8932d1d5bb8df6 195
+  s_40e50620137ff4::t_12e80b7c9230d3 194,196,198
+libs/code/deepagents_code/integrations/openai_codex.py
+  s_40e50620137ff4::t_9398b0472decb2 103-105,108
+  s_40e50620137ff4::t_11ce295397d488 264
+  s_40e50620137ff4::t_bb614b12424486 340,344,347,354-359,361,368-369
+  s_40e50620137ff4::t_1998429d807262 212-216
+  s_40e50620137ff4::t_f04cdb6f495246 334
+libs/code/deepagents_code/auth_display.py
+  s_40e50620137ff4::t_22e4cca0b1cfa7 10
+  s_40e50620137ff4::t_a12fbf5544114a 33-39
+  s_40e50620137ff4::t_36ff4d2fd639bc 114-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "5d65437263e0116fe7748871bb1710d83cc17768",
+  "prompts": {},
+  "sessions": {
+    "s_40e50620137ff4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9730472c-a32d-4878-86f2-f9ab424af95d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

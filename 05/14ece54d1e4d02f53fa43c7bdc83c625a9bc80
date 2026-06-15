@@ -1,0 +1,19 @@
+.github/workflows/harbor.yml
+  s_71e35914070ebf::t_c02124c1775069 257-258,288-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "0514ece54d1e4d02f53fa43c7bdc83c625a9bc80",
+  "prompts": {},
+  "sessions": {
+    "s_71e35914070ebf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebe6b-0301-7fb0-a5c4-2c02324d1a73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

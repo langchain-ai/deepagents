@@ -1,0 +1,32 @@
+libs/code/scripts/install.sh
+  s_378cdf7b86f890::t_ee32930a9b2040 32-37
+  s_378cdf7b86f890::t_a290d4b05f191e 10,12-14
+  s_73f3d9b6710ab8::t_e08296b2ecea8f 8,11
+  s_378cdf7b86f890::t_a562b13704ebf4 238-253
+libs/code/tests/unit_tests/test_install_script.py
+  s_378cdf7b86f890::t_4031c496ffd0a1 10-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "98948e8d2d2d9778f2d1989a4691a9a9a880bc73",
+  "prompts": {},
+  "sessions": {
+    "s_378cdf7b86f890": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1d85898-b453-4e2e-90da-41bcdfbdae97",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_73f3d9b6710ab8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebfb5-8544-7f90-b259-e38b65af3dc5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

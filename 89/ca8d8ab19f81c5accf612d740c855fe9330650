@@ -1,0 +1,55 @@
+libs/code/tests/unit_tests/test_openai_codex_integration.py
+  s_fe5389c60f7039::t_2ca2a93bb9cf16 615,617-620,629
+  s_fe5389c60f7039::t_ab4e230da00bcc 524-557,559-614,616,621-628,630-639
+  s_fe5389c60f7039::t_47035c776cf465 558
+libs/code/deepagents_code/integrations/openai_codex.py
+  s_fe5389c60f7039::t_835103548b9d1c 519-521,527,537-546
+  s_fe5389c60f7039::t_41cc90cbe5b9e5 218-227
+  s_fe5389c60f7039::t_fae033f7cd7b62 96-99,107-109,113-117,119
+  s_fe5389c60f7039::t_11f518b0648ec3 118
+  s_fe5389c60f7039::t_038431e133f44b 153-167
+  s_fe5389c60f7039::t_87374d538dbf6a 317-320
+  s_fe5389c60f7039::t_759a4c16e37972 405-412
+libs/code/tests/unit_tests/test_config.py
+  s_fe5389c60f7039::t_b45c2411a68238 3822-3874
+libs/code/deepagents_code/model_config.py
+  s_fe5389c60f7039::t_df75234845e47b 1020,1023-1025,1029-1030,1033-1036
+  s_fe5389c60f7039::t_e64b103bf6e47d 1026-1028,1031-1032
+libs/code/deepagents_code/widgets/codex_auth.py
+  s_fe5389c60f7039::t_bf8c723ccd5260 306-417
+  s_fe5389c60f7039::t_8b16e898475620 159
+  s_fe5389c60f7039::t_fefb8138e1c4f5 63
+  s_fe5389c60f7039::t_31dc757b22f5e8 438-443
+  s_fe5389c60f7039::t_53a0ccb1d9f5ed 24
+libs/code/deepagents_code/widgets/auth.py
+  s_fe5389c60f7039::t_44357185f4a9e8 616-619
+  s_fe5389c60f7039::t_e0cee859e429e3 37-38
+  s_fe5389c60f7039::t_ae0de381741b45 639-640,644,652
+  s_fe5389c60f7039::t_11f518b0648ec3 635
+  s_fe5389c60f7039::t_bb54b6708a797b 642-643
+libs/code/deepagents_code/config.py
+  s_fe5389c60f7039::t_efdb189f8a684c 3180-3189
+libs/code/tests/unit_tests/test_auth_widgets.py
+  s_fe5389c60f7039::t_46272a3930e9a7 714-732,735-753,755-774,776-783,785-836
+  s_fe5389c60f7039::t_001134de669ca4 671
+  s_fe5389c60f7039::t_0c178276acf874 733-734
+  s_fe5389c60f7039::t_b4ddfb34187a83 775
+libs/code/tests/unit_tests/test_model_config.py
+  s_fe5389c60f7039::t_8b77fe29eb028c 5063-5103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "89ca8d8ab19f81c5accf612d740c855fe9330650",
+  "prompts": {},
+  "sessions": {
+    "s_fe5389c60f7039": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2c130999-d13a-48bf-a7f2-57835dadb56f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

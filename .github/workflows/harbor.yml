@@ -1,7 +1,7 @@
 # Harbor evaluation workflow for Deep Agents
 #
-# Runs terminal-bench evaluations via Harbor with configurable sandbox
-# environments (Docker, Daytona, LangSmith, Modal, Runloop, Vercel).
+# Runs terminal-bench evaluations via Harbor with Docker or LangSmith
+# sandboxes.
 # Models are selected via dropdown or comma-separated override.
 #
 # Required secrets (vary by sandbox + model provider):
@@ -18,11 +18,6 @@
 #   BASETEN_API_KEY            — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY         — needed for OpenRouter-hosted models
-#   DAYTONA_API_KEY            — needed for Daytona sandbox
-#   MODAL_TOKEN_ID             — needed for Modal sandbox
-#   MODAL_TOKEN_SECRET         — needed for Modal sandbox
-#   RUNLOOP_API_KEY            — needed for Runloop sandbox
-#   VERCEL_TOKEN               — needed for Vercel sandbox
 
 name: "📊 Evals - Harbor"
 run-name: >-
@@ -123,11 +118,7 @@ on:
         type: choice
         options:
           - docker
-          - daytona
           - langsmith
-          - modal
-          - runloop
-          - vercel
       agent_impl:
         description: "Deep Agents implementation to run through Harbor's LangGraph agent"
         required: true
@@ -223,24 +214,17 @@ jobs:
       HARBOR_MODEL: ${{ matrix.model }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }} # tracing + experiments + dataset mgmt
       LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }} # sandbox creation (LangSmithEnvironment)
       LANGSMITH_TRACING: "true"
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -255,23 +239,8 @@ jobs:
           case "$HARBOR_SANDBOX_ENV" in
             docker)
               ;; # No additional credentials needed
-            daytona)
-              [ -z "$DAYTONA_API_KEY" ] && missing+=("DAYTONA_API_KEY")
-              ;;
             langsmith)
               ;; # LANGSMITH_API_KEY already checked above
-            modal)
-              [ -z "$MODAL_TOKEN_ID" ] && missing+=("MODAL_TOKEN_ID")
-              [ -z "$MODAL_TOKEN_SECRET" ] && missing+=("MODAL_TOKEN_SECRET")
-              ;;
-            runloop)
-              [ -z "$RUNLOOP_API_KEY" ] && missing+=("RUNLOOP_API_KEY")
-              ;;
-            vercel)
-              [ -z "$VERCEL_TOKEN" ] && missing+=("VERCEL_TOKEN")
-              [ -z "$VERCEL_PROJECT_ID" ] && missing+=("VERCEL_PROJECT_ID")
-              [ -z "$VERCEL_TEAM_ID" ] && missing+=("VERCEL_TEAM_ID")
-              ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1

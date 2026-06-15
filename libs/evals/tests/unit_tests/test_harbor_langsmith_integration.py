@@ -89,6 +89,30 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
 
 
+def test_harbor_workflow_only_exposes_docker_and_langsmith_sandboxes() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+
+    _, sandbox_input = workflow.split("sandbox_env:", maxsplit=1)
+    sandbox_input = sandbox_input.split("agent_impl:", maxsplit=1)[0]
+
+    assert "- docker" in sandbox_input
+    assert "- langsmith" in sandbox_input
+    for sandbox in ["daytona", "modal", "runloop", "vercel"]:
+        assert f"- {sandbox}" not in sandbox_input
+        assert f"{sandbox})" not in workflow
+
+    for secret in [
+        "DAYTONA_API_KEY",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET",
+        "RUNLOOP_API_KEY",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+        "VERCEL_TOKEN",
+    ]:
+        assert secret not in workflow
+
+
 def test_contributing_docs_use_langsmith_sandbox_example() -> None:
     contributing = (EVALS / "CONTRIBUTING.md").read_text()
 

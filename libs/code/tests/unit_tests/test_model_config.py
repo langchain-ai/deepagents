@@ -3467,9 +3467,7 @@ class TestProviderAuthStatusGateway:
         assert status.state is ProviderAuthState.CONFIGURED
         assert status.source is ProviderAuthSource.ENV
 
-    def test_config_provider_gateway_reports_configured(
-        self, tmp_path: Path
-    ) -> None:
+    def test_config_provider_gateway_reports_configured(self, tmp_path: Path) -> None:
         """A config-file provider with an unset key still resolves via the gateway."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""

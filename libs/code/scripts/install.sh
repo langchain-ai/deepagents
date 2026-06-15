@@ -14,14 +14,15 @@
 # an exact pin already selects a single version, so setting both is an error.
 #
 # Already installed?
-#   The installer checks PyPI for the latest release. If you are already up to
-#   date it exits without changes. If a newer version exists, an interactive
-#   shell is prompted before upgrading; a piped/non-interactive run (no TTY)
-#   upgrades automatically. Setting DEEPAGENTS_CODE_VERSION or
-#   DEEPAGENTS_CODE_PRERELEASE skips the prompt and installs that selection
-#   directly. Setting DEEPAGENTS_CODE_EXTRAS or DEEPAGENTS_CODE_PYTHON also
-#   skips the prompt and rebuilds the tool environment with those requested
-#   options. Set DEEPAGENTS_CODE_YES=1 to accept an update without prompting.
+#   Re-running is safe — the script checks PyPI and only acts when needed:
+#     - Already up to date  -> exits without changes.
+#     - Newer version       -> asks before upgrading in a real terminal; a
+#                              piped run with no terminal (curl | bash) just
+#                              upgrades on its own.
+#   To skip the prompt:
+#     - DEEPAGENTS_CODE_YES=1                     accept the upgrade
+#     - DEEPAGENTS_CODE_VERSION / _PRERELEASE     install that exact selection
+#     - DEEPAGENTS_CODE_EXTRAS / _PYTHON          rebuild with those options
 #
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
@@ -56,7 +57,9 @@
 #                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_YES     — set to 1 to accept an available update without
-#                             prompting (assume "yes"); useful for scripted runs
+#                             prompting (assume "yes"). Exists so automated runs
+#                             that still attach a terminal (CI, wrapper scripts)
+#                             update instead of stalling at the y/n prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
 #                             lines, unfiltered package diff) and the
@@ -470,8 +473,10 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
       exit 0
     fi
   else
-    # No TTY to prompt (e.g. piped into a non-interactive shell): preserve the
-    # historical behavior and upgrade automatically.
+    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
+    # ask, and an installer's job is to make the current version present, so
+    # complete the upgrade rather than silently no-op. Callers that want a fixed
+    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
     log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
   fi
 elif [ -n "$PRE_VERSION" ]; then

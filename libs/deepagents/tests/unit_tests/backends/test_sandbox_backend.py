@@ -1326,3 +1326,140 @@ def test_sandbox_edit_inline_permission_denied() -> None:
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/locked.txt" in result.error
+
+
+# -- async override tests (issue #665) ----------------------------------------
+#
+# These tests verify that the async helpers on BaseSandbox call aexecute()
+# rather than wrapping the sync methods with asyncio.to_thread. The fixture is
+# a NativeAsyncSandbox that overrides aexecute() with a coroutine that records
+# all calls, while execute() raises to prove it is never reached.
+
+
+class NativeAsyncSandbox(BaseSandbox):
+    """Sandbox where aexecute() is natively async; execute() always raises."""
+
+    def __init__(self) -> None:
+        self._aexecute_calls: list[str] = []
+        self._aupload_calls: list[list[tuple[str, bytes]]] = []
+        self._next_output: str = ""
+        self._next_exit_code: int = 0
+
+    @property
+    def id(self) -> str:
+        return "native-async-sandbox"
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        raise RuntimeError("sync execute() must not be called from async helpers")
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        self._aexecute_calls.append(command)
+        output = self._next_output
+        exit_code = self._next_exit_code
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        raise RuntimeError("sync upload_files() must not be called from async helpers")
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        self._aupload_calls.append(files)
+        return [FileUploadResponse(path=f[0], error=None) for f in files]
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        raise RuntimeError("sync download_files() must not be called from async helpers")
+
+
+@pytest.mark.asyncio
+async def test_als_calls_aexecute() -> None:
+    """als() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"path": "/foo/bar.txt", "is_dir": False})
+
+    result = await sandbox.als("/foo")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.entries is not None
+
+
+@pytest.mark.asyncio
+async def test_aread_calls_aexecute() -> None:
+    """aread() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"encoding": "utf-8", "content": "hello"})
+
+    result = await sandbox.aread("/foo/bar.txt")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.file_data is not None
+
+
+@pytest.mark.asyncio
+async def test_agrep_calls_aexecute() -> None:
+    """agrep() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = "/foo/bar.txt\x00" + "1:hello"
+    sandbox._next_exit_code = 0
+
+    result = await sandbox.agrep("hello")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_aglob_calls_aexecute() -> None:
+    """aglob() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"path": "/foo/bar.txt", "is_dir": False})
+
+    result = await sandbox.aglob("**/*.txt")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.matches is not None
+
+
+@pytest.mark.asyncio
+async def test_awrite_calls_aexecute_and_aupload_files() -> None:
+    """awrite() must call aexecute() for preflight and aupload_files(), not sync methods."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = ""
+    sandbox._next_exit_code = 0
+
+    result = await sandbox.awrite("/foo/new.txt", "content")
+
+    assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for preflight"
+    assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call"
+    assert result.error is None
+    assert result.path == "/foo/new.txt"
+
+
+@pytest.mark.asyncio
+async def test_aedit_inline_calls_aexecute() -> None:
+    """aedit() (small payload) must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+
+    result = await sandbox.aedit("/foo/bar.txt", "old", "new")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.occurrences == 1
+
+
+@pytest.mark.asyncio
+async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
+    """aedit() (large payload) must call aexecute() and aupload_files(), not sync methods."""
+    from deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES
+
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+    large = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+
+    result = await sandbox.aedit("/foo/bar.txt", large, "new")
+
+    assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call for temp files"
+    assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for server-side replace"
+    assert result.error is None

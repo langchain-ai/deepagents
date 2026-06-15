@@ -2967,6 +2967,7 @@ def create_model(
         >>> model = create_model()  # Uses environment defaults
     """
     from deepagents_code.model_config import (
+        FIREWORKS_PROVIDER,
         IMPLICIT_AUTH_PROVIDERS,
         ModelConfig,
         ModelConfigError,
@@ -2974,6 +2975,7 @@ def create_model(
         apply_stored_credentials,
         get_credential_env_var,
         has_provider_credentials,
+        normalize_fireworks_model,
         warn_on_split_credential_source,
     )
 
@@ -3004,6 +3006,12 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
+
+    # Fireworks routes by fully-qualified resource path; qualify bare ids with
+    # the account/model prefix while leaving custom-account models, deployment
+    # suffixes, and already-qualified ids untouched.
+    if provider == FIREWORKS_PROVIDER:
+        model_name = normalize_fireworks_model(model_name)
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so

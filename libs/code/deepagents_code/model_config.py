@@ -556,6 +556,36 @@ the full `openai` API, so mirroring every openai model would surface specs the
 backend rejects at call time.
 """
 
+FIREWORKS_PROVIDER = "fireworks"
+"""Provider name for Fireworks AI models served via `langchain-fireworks`."""
+
+FIREWORKS_MODEL_PREFIX = "accounts/fireworks/models/"
+"""Fully-qualified prefix Fireworks expects for its first-party model IDs.
+
+Fireworks routes by resource path (`accounts/<account>/models/<model>`), so a
+bare id like `kimi-k2p6` resolves only once this prefix is prepended. The
+status bar strips this same prefix for display (see `PROVIDER_PREFIX_STRIPS`).
+"""
+
+
+def normalize_fireworks_model(model_name: str) -> str:
+    """Qualify a bare Fireworks model id with the account/model prefix.
+
+    Any id that already carries an `accounts/...` path is returned unchanged so
+    custom-account models, on-demand deployment suffixes (`...#<deployment>`),
+    and already-qualified ids are preserved verbatim.
+
+    Args:
+        model_name: The Fireworks model identifier as supplied by the user.
+
+    Returns:
+        The id prefixed with `accounts/fireworks/models/` when it is a bare
+        name, otherwise the original id unchanged.
+    """
+    if not model_name or model_name.startswith("accounts/"):
+        return model_name
+    return f"{FIREWORKS_MODEL_PREFIX}{model_name}"
+
 
 RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "anthropic": "max_retries",

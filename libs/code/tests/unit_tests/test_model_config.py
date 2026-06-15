@@ -12,6 +12,7 @@ import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
+    FIREWORKS_MODEL_PREFIX,
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
@@ -41,6 +42,7 @@ from deepagents_code.model_config import (
     load_recent_agent,
     load_recent_models,
     load_thread_columns,
+    normalize_fireworks_model,
     save_default_agent,
     save_recent_agent,
     save_recent_model,
@@ -77,6 +79,43 @@ class TestRetryParamByProvider:
         assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
+
+
+class TestNormalizeFireworksModel:
+    """Tests for `normalize_fireworks_model`."""
+
+    def test_prepends_prefix_to_bare_name(self) -> None:
+        """A bare model id is qualified with the account/model prefix."""
+        assert (
+            normalize_fireworks_model("kimi-k2p6")
+            == f"{FIREWORKS_MODEL_PREFIX}kimi-k2p6"
+        )
+
+    def test_qualified_first_party_id_unchanged(self) -> None:
+        """An already-qualified first-party id is returned verbatim."""
+        qualified = f"{FIREWORKS_MODEL_PREFIX}kimi-k2p6"
+        assert normalize_fireworks_model(qualified) == qualified
+
+    def test_custom_account_id_preserved(self) -> None:
+        """A custom-account path is not clobbered by the fireworks prefix."""
+        custom = "accounts/my-org/models/my-tune"
+        assert normalize_fireworks_model(custom) == custom
+
+    def test_deployment_suffix_on_bare_name_prefixed(self) -> None:
+        """A bare id with a deployment suffix keeps the suffix after prefixing."""
+        assert (
+            normalize_fireworks_model("gpt-oss-120b#my-deploy")
+            == f"{FIREWORKS_MODEL_PREFIX}gpt-oss-120b#my-deploy"
+        )
+
+    def test_deployment_suffix_on_qualified_id_preserved(self) -> None:
+        """A qualified id with a deployment suffix is returned verbatim."""
+        qualified = f"{FIREWORKS_MODEL_PREFIX}gpt-oss-120b#my-deploy"
+        assert normalize_fireworks_model(qualified) == qualified
+
+    def test_empty_name_unchanged(self) -> None:
+        """An empty model id is returned unchanged."""
+        assert normalize_fireworks_model("") == ""
 
 
 class TestModelSpec:

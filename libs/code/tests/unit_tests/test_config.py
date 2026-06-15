@@ -3053,6 +3053,68 @@ class TestCreateModelEdgeCaseParsing:
         mock_default.assert_called_once()
 
 
+class TestCreateModelFireworksPrefix:
+    """Tests for Fireworks model-id normalization in create_model()."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_bare_name_is_qualified(self, mock_init_chat_model: Mock) -> None:
+        """A bare fireworks model id is prefixed before model creation."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("fireworks:kimi-k2p6")
+
+        args, kwargs = mock_init_chat_model.call_args
+        assert args[0] == "accounts/fireworks/models/kimi-k2p6"
+        assert kwargs["model_provider"] == "fireworks"
+        assert result.model_name == "accounts/fireworks/models/kimi-k2p6"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_qualified_id_unchanged(self, mock_init_chat_model: Mock) -> None:
+        """An already-qualified fireworks id is left untouched."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("fireworks:accounts/fireworks/models/kimi-k2p6")
+
+        args, _ = mock_init_chat_model.call_args
+        assert args[0] == "accounts/fireworks/models/kimi-k2p6"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_custom_account_not_clobbered(self, mock_init_chat_model: Mock) -> None:
+        """A custom-account fireworks path is preserved verbatim."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("fireworks:accounts/my-org/models/my-tune")
+
+        args, _ = mock_init_chat_model.call_args
+        assert args[0] == "accounts/my-org/models/my-tune"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_non_fireworks_provider_unaffected(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Non-fireworks providers never receive the fireworks prefix."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("openai:gpt-5.5")
+
+        args, _ = mock_init_chat_model.call_args
+        assert args[0] == "gpt-5.5"
+
+
 class TestCreateModelViaInitImportError:
     """Tests for _create_model_via_init() ImportError handling."""
 

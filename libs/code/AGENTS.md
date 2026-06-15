@@ -2,7 +2,7 @@
 
 `deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split.
 
-For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`.
+For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
 ## Textual (terminal UI framework)
 

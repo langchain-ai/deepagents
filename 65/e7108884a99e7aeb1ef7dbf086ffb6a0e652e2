@@ -1,0 +1,22 @@
+libs/code/deepagents_code/widgets/autocomplete.py
+  s_f83ed211e19a44::t_a171afdf0ea67d 349-351,355,368,370-371,386-387,390
+libs/code/tests/unit_tests/test_autocomplete.py
+  s_f83ed211e19a44::t_50861d2651d35c 841-849
+  s_f83ed211e19a44::t_d9b6f60a667614 840
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "65e7108884a99e7aeb1ef7dbf086ffb6a0e652e2",
+  "prompts": {},
+  "sessions": {
+    "s_f83ed211e19a44": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eba2c-f8b9-7f92-904c-052cea8b2258",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

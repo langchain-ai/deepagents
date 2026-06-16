@@ -1,0 +1,58 @@
+.github/ISSUE_TEMPLATE/privileged.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 43
+.github/workflows/release-please.yml
+  s_c096440d2744f0::t_b49e132a95470b 72,181-186,547,566,691,730
+  s_c096440d2744f0::t_ac85b39c72a4db 180
+.github/workflows/pr_lint.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 32-33,131,139
+libs/partners/vercel/pyproject.toml
+  s_c096440d2744f0::t_ac85b39c72a4db 1-97
+libs/code/pyproject.toml
+  s_c096440d2744f0::t_ac85b39c72a4db 176,186
+libs/partners/vercel/Makefile
+  s_c096440d2744f0::t_ac85b39c72a4db 1-64
+release-please-config.json
+  s_c096440d2744f0::t_c4ae4b3173f6fd 155-165
+  s_c096440d2744f0::t_ac85b39c72a4db 154
+.github/dependabot.yml
+  s_c096440d2744f0::t_ac85b39c72a4db 30
+.github/workflows/release.yml
+  s_c096440d2744f0::t_ac85b39c72a4db 144
+  s_c096440d2744f0::t_f82e5c9fc7b875 850-851
+  s_c096440d2744f0::t_c4ae4b3173f6fd 40,143,145,148
+.release-please-manifest.json
+  s_c096440d2744f0::t_ac85b39c72a4db 10
+.github/workflows/auto-label-by-package.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 48
+.github/ISSUE_TEMPLATE/bug-report.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 59
+.github/RELEASING.md
+  s_c096440d2744f0::t_ac85b39c72a4db 17,161
+.github/workflows/ci.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 46,128,130-133,223-228,333-338,416,427
+  s_c096440d2744f0::t_ac85b39c72a4db 129,229,339
+.github/scripts/pr-labeler-config.json
+  s_c096440d2744f0::t_c4ae4b3173f6fd 70,77,136-137
+  s_c096440d2744f0::t_b49e132a95470b 76
+  s_c096440d2744f0::t_ac85b39c72a4db 138
+.github/ISSUE_TEMPLATE/feature-request.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 56
+.github/workflows/harbor.yml
+  s_c096440d2744f0::t_c4ae4b3173f6fd 4,25,130,257,284-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "fccda99fa8c42e6a33ee00557065924a156565b7",
+  "prompts": {},
+  "sessions": {
+    "s_c096440d2744f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebe32-ceea-7ba2-ac9f-211d1ec570ed",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+libs/deepagents/deepagents/middleware/summarization.py
+  s_1ea61717de3310::t_90e2a23fdad934 979,1100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "5b315dab22f778332de6682984cd6bdd5ba238f8",
+  "prompts": {},
+  "sessions": {
+    "s_1ea61717de3310": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4be949ea-c225-4553-8561-c2c4233afa7c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

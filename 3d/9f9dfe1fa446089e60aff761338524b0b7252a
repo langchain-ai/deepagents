@@ -1,0 +1,22 @@
+libs/code/tests/unit_tests/test_openai_codex_integration.py
+  s_17793264139691::t_7f6fbd8657c926 164,169-171
+libs/code/tests/unit_tests/test_auth_widgets.py
+  s_17793264139691::t_d896a81c092fe1 5,632-638,640-659
+  s_17793264139691::t_aaae28f69ce12c 639
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "3d9f9dfe1fa446089e60aff761338524b0b7252a",
+  "prompts": {},
+  "sessions": {
+    "s_17793264139691": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebef3-0a4b-73f1-8025-23b2f7c5ffe5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

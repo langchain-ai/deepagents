@@ -1,0 +1,36 @@
+libs/code/deepagents_code/integrations/sandbox_factory.py
+  s_017910d441f6d5::t_3250ac6474cdc9 902-906
+  s_017910d441f6d5::t_c1f3333db373e4 973-975
+  s_017910d441f6d5::t_ba63c3c078c68f 976
+  s_017910d441f6d5::t_89f06f4edf2627 849-867
+  s_017910d441f6d5::t_5667c6bd29d0f2 1005
+  s_017910d441f6d5::t_747c7e467236ee 15
+libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
+  s_017910d441f6d5::t_fe13362414c733 43-47,49-51
+  s_017910d441f6d5::t_0416383910c750 96-115,122-123
+  s_017910d441f6d5::t_311146e6e307a3 212-214
+  s_017910d441f6d5::t_de2d31955a96c0 158
+  s_017910d441f6d5::t_9910aa1492db2c 148-153
+libs/partners/vercel/tests/unit_tests/test_sandbox.py
+  s_017910d441f6d5::t_3a0d7435656ef1 29,35,47-48
+  s_017910d441f6d5::t_673d3f12aa07eb 226,244-253
+  s_017910d441f6d5::t_39d4e5cad32e77 378-414
+libs/code/tests/unit_tests/test_sandbox_factory.py
+  s_017910d441f6d5::t_02c36225498fb3 1116-1205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "0657e5a2d671d1c3da88df7b72cd4f0e5466057c",
+  "prompts": {},
+  "sessions": {
+    "s_017910d441f6d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c999c010-550d-4fcd-a1ef-95d3294aedbb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

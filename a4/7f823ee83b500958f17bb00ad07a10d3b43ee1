@@ -1,0 +1,19 @@
+libs/partners/quickjs/pyproject.toml
+  s_3e81b55d57e7a9::t_96c86e9f40669a 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "a47f823ee83b500958f17bb00ad07a10d3b43ee1",
+  "prompts": {},
+  "sessions": {
+    "s_3e81b55d57e7a9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ebd97-e23a-7471-9dc8-6db142a61069",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

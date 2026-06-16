@@ -1,0 +1,25 @@
+.github/workflows/release-please.yml
+  s_3bbf16177d7630::t_3bc1d47c4b83f7 616-629
+  s_3bbf16177d7630::t_a0a9f119950e0d 724-728
+  s_3bbf16177d7630::t_3100648bcdedea 702-710,720-723,729
+  s_3bbf16177d7630::t_a860ccdd5f82fb 735-742
+  s_3bbf16177d7630::t_f2fb99ccb22cd7 576,580
+  s_3bbf16177d7630::t_4610140ffd11cf 604-615,649-668
+  s_3bbf16177d7630::t_7d4496d6502376 577-579
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "510ce24188f3642717f7b5e96f48b74084b560eb",
+  "prompts": {},
+  "sessions": {
+    "s_3bbf16177d7630": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d9eb9eac-4253-437a-a42f-6a2614bb2c18",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

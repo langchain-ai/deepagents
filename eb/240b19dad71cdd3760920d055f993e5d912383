@@ -1,0 +1,24 @@
+libs/code/deepagents_code/widgets/autocomplete.py
+  s_6eb204bc0f5aef::t_67263981065d09 494-500,503-508,515
+libs/code/tests/unit_tests/test_autocomplete.py
+  s_6eb204bc0f5aef::t_8402b9ee38b32d 888-949,951-961,963-966
+  s_6eb204bc0f5aef::t_cac8179cf428fa 24
+  s_6eb204bc0f5aef::t_1c35e9ad192844 962
+  s_6eb204bc0f5aef::t_f1f48a5519ad26 950
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "eb240b19dad71cdd3760920d055f993e5d912383",
+  "prompts": {},
+  "sessions": {
+    "s_6eb204bc0f5aef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82cc950d-a27d-4705-8dfb-198cd158ef64",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

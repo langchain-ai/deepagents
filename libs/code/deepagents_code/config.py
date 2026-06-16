@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import threading
 from dataclasses import dataclass
@@ -62,6 +63,9 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
+
+_orphaned_tracing_disabled_notice: str | None = None
+"""One-shot TUI notice populated when bootstrap disables orphaned tracing."""
 
 _INHERITED_PYTHONPATH_ENV = "DEEPAGENTS_INHERITED_PYTHONPATH"
 """Carrier var that relays a launch-time `PYTHONPATH` to agent `execute` commands.
@@ -345,6 +349,29 @@ def _has_langsmith_profile_credentials() -> bool:
     )
 
 
+def _build_orphaned_tracing_disabled_notice() -> str:
+    """Return the user-facing notice for disabled orphaned tracing."""
+    base = (
+        "LangSmith tracing was disabled because tracing is enabled but no "
+        "credentials were found."
+    )
+    if shutil.which("langsmith"):
+        return (
+            f"{base} Set LANGSMITH_API_KEY or run `langsmith auth login`, "
+            "then restart Deep Agents Code."
+        )
+    return f"{base} Set LANGSMITH_API_KEY, then restart Deep Agents Code."
+
+
+def consume_orphaned_tracing_disabled_notice() -> str | None:
+    """Return and clear the pending orphaned-tracing notice, if any."""
+    global _orphaned_tracing_disabled_notice  # noqa: PLW0603
+
+    notice = _orphaned_tracing_disabled_notice
+    _orphaned_tracing_disabled_notice = None
+    return notice
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -354,6 +381,8 @@ def _disable_orphaned_tracing() -> None:
     at the atexit flush). When a tracing flag is set but no credentials are
     resolvable, unset the flags so tracing never starts.
     """
+    global _orphaned_tracing_disabled_notice  # noqa: PLW0603
+
     from deepagents_code._env_vars import classify_env_bool
 
     tracing_on = any(
@@ -373,6 +402,7 @@ def _disable_orphaned_tracing() -> None:
     disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
     for var in disabled:
         os.environ[var] = "false"
+    _orphaned_tracing_disabled_notice = _build_orphaned_tracing_disabled_notice()
     logger.warning(
         "LangSmith tracing is enabled (%s) but no API key is set; disabling "
         "tracing to avoid repeated authentication failures. Set LANGSMITH_API_KEY "

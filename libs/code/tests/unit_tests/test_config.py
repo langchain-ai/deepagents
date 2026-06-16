@@ -26,6 +26,7 @@ from deepagents_code.config import (
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
     build_langsmith_thread_url,
+    consume_orphaned_tracing_disabled_notice,
     create_model,
     detect_mode_prefix,
     detect_provider,
@@ -1826,6 +1827,7 @@ class TestDisableOrphanedTracing:
     )
 
     def _clean_env(self) -> dict[str, str]:
+        consume_orphaned_tracing_disabled_notice()
         env = dict.fromkeys(self._ALL_TRACING_VARS, "")
         env["LANGSMITH_CONFIG_FILE"] = "/__deepagents_missing_langsmith_config__.json"
         return env
@@ -1839,6 +1841,38 @@ class TestDisableOrphanedTracing:
             import os
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+            # One-shot: the notice clears on read, so a second read is empty.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_notice_mentions_langsmith_auth_login_when_cli_available(self) -> None:
+        """The startup notice gives the CLI login command only when available."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value="/bin/langsmith"),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" in notice
+
+    def test_notice_omits_langsmith_auth_login_when_cli_unavailable(self) -> None:
+        """The startup notice avoids unavailable CLI commands."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value=None),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" not in notice
+        assert "LANGSMITH_API_KEY" in notice
 
     def test_preserves_tracing_when_key_present(self) -> None:
         """Tracing stays enabled when a usable API key is set."""
@@ -1850,6 +1884,8 @@ class TestDisableOrphanedTracing:
             import os
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # No tracing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
 
     def test_accepts_langchain_api_key(self) -> None:
         """LANGCHAIN_API_KEY also counts as a usable key."""

@@ -4213,3 +4213,124 @@ class TestThreadSelectorAgentFilter:
                 assert all(
                     t["agent_name"] == "my-agent" for t in screen._filtered_threads
                 )
+
+    async def test_reload_clears_stale_agent_filter_and_refilters(self) -> None:
+        """Reloading without the selected agent should show all remaining rows."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_SELECT_ID,
+            _AGENT_VALUE_ALL,
+        )
+
+        reloaded_threads = [MOCK_THREADS[1]]
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                agent_select.value = "my-agent"
+                screen._filter_agent = "my-agent"
+                screen._update_filtered_list()
+                assert len(screen._filtered_threads) == 2
+
+                with _patch_list_threads(reloaded_threads):
+                    await screen._load_threads()
+                await pilot.pause()
+
+                assert screen._filter_agent is None
+                assert agent_select.value == _AGENT_VALUE_ALL
+                assert screen._filtered_threads == reloaded_threads
+
+    async def test_enter_opens_agent_select_without_resuming_thread(self) -> None:
+        """Enter on the focused agent control should open its dropdown."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.has_focus
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert agent_select.expanded
+                assert not app.dismissed
+
+    async def test_tab_keys_move_open_agent_select_highlight(self) -> None:
+        """Tab and Shift+Tab should move the agent dropdown highlight while open."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert agent_select.expanded
+                overlay = agent_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 0
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.expanded
+                assert overlay.highlighted == 1
+                assert not sort_switch.has_focus
+                assert not app.dismissed
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert agent_select.expanded
+                assert overlay.highlighted == 0
+                assert not scope_select.has_focus
+                assert not app.dismissed
+
+    async def test_escape_closes_open_agent_select_without_dismissing(self) -> None:
+        """Esc should close the agent dropdown before it cancels the selector."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert agent_select.expanded
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert not agent_select.expanded
+                assert agent_select.has_focus
+                assert not app.dismissed

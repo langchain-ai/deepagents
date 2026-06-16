@@ -1033,50 +1033,83 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
         return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in names)]
 
-    def _refresh_agent_select_options(self) -> None:
+    def _refresh_agent_select_options(self) -> bool:
         """Repopulate the agent dropdown after threads are reloaded.
 
         Preserves the current selection when the chosen agent is still present
         in the new thread list; falls back to "All agents" otherwise.
+
+        Returns:
+            `True` when the active agent filter was cleared.
         """
         try:
             agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
         except NoMatches:
-            return
+            return False
         options = self._collect_agent_options()
         valid_values = {value for _, value in options}
         current = agent_select.value
         agent_select.set_options(options)
         if current in valid_values:
             agent_select.value = current
-        else:
-            agent_select.value = _AGENT_VALUE_ALL
-            self._filter_agent = None
-
-    def _get_scope_select(self) -> Select[str]:
-        """Return the scope dropdown widget."""
-        return self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
-
-    def _is_scope_select_expanded(self) -> bool:
-        """Return whether the scope dropdown menu is currently open."""
-        try:
-            return self._get_scope_select().expanded
-        except NoMatches:
             return False
+        agent_select.value = _AGENT_VALUE_ALL
+        self._filter_agent = None
+        return True
 
-    def _close_scope_select(self) -> None:
-        """Close the scope dropdown and restore focus to the select control."""
-        scope_select = self._get_scope_select()
-        scope_select.expanded = False
-        scope_select.focus()
+    def _get_select(self, select_id: str) -> Select[str]:
+        """Return an Options panel dropdown widget by ID."""
+        return self.query_one(f"#{select_id}", Select)
 
-    def _select_scope_highlight(self) -> None:
-        """Select the currently highlighted option in the open scope dropdown."""
+    def _expanded_select_id(self) -> str | None:
+        """Return the ID for the currently open Options panel dropdown."""
+        for select_id in (_SCOPE_SELECT_ID, _AGENT_SELECT_ID):
+            try:
+                if self._get_select(select_id).expanded:
+                    return select_id
+            except NoMatches:
+                continue
+        return None
+
+    def _is_select_expanded(self) -> bool:
+        """Return whether an Options panel dropdown menu is currently open."""
+        return self._expanded_select_id() is not None
+
+    def _close_expanded_select(self) -> None:
+        """Close the open Options panel dropdown and restore focus."""
+        select_id = self._expanded_select_id()
+        if select_id is None:
+            return
+        select = self._get_select(select_id)
+        select.expanded = False
+        select.focus()
+
+    def _select_expanded_highlight(self) -> None:
+        """Select the currently highlighted option in the open dropdown."""
         action_select = getattr(self.focused, "action_select", None)
         if callable(action_select):
             action_select()
             return
-        self._close_scope_select()
+        self._close_expanded_select()
+
+    def _open_focused_select(self) -> bool:
+        """Open a focused Options panel dropdown.
+
+        Returns:
+            `True` when a dropdown was focused and opened.
+        """
+        try:
+            selects = (
+                self._get_select(_SCOPE_SELECT_ID),
+                self._get_select(_AGENT_SELECT_ID),
+            )
+        except NoMatches:
+            return False
+        for select in selects:
+            if self.focused is select:
+                select.action_show_overlay()
+                return True
+        return False
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -1276,7 +1309,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
 
-        if event.key in {"tab", "shift+tab"} and self._is_scope_select_expanded():
+        if event.key in {"tab", "shift+tab"} and self._is_select_expanded():
             event.prevent_default()
             event.stop()
             return
@@ -1716,7 +1749,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 )
         self._update_filtered_list()
         self._sync_selected_index()
-        self._refresh_agent_select_options()
+        if self._refresh_agent_select_options():
+            self._update_filtered_list()
+            self._sync_selected_index()
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
@@ -2114,12 +2149,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Confirm the highlighted thread and dismiss the selector."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
-            self._select_scope_highlight()
+        if self._is_select_expanded():
+            self._select_expanded_highlight()
             return
-        scope_select = self._get_scope_select()
-        if self.focused is scope_select:
-            scope_select.action_show_overlay()
+        if self._open_focused_select():
             return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
@@ -2129,7 +2162,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._is_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2144,7 +2177,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus backward through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._is_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2339,7 +2372,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
-        if self._is_scope_select_expanded():
-            self._close_scope_select()
+        if self._is_select_expanded():
+            self._close_expanded_select()
             return
         self.dismiss(None)

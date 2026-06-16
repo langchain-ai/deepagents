@@ -342,6 +342,92 @@ async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
     assert calls == [{"name": "world", "times": 2}]
 
 
+async def test_ptc_tool_run_nests_under_eval() -> None:
+    """A PTC tool call must nest under the ``eval`` run in the callback tree.
+
+    Regression for #3991: a tool invoked from JS via ``tools.x()`` during an
+    ``eval`` was run without the eval's callback context, so its run had no
+    parent. Tracing back-ends (e.g. OpenInference) then orphaned the tool's
+    span at the top level instead of nesting it under the ``eval`` span. We
+    assert the run tree directly through a callback handler so the test needs
+    no tracing-backend dependency — span nesting is downstream of this tree.
+    """
+    from uuid import UUID  # noqa: TC003 — used in a nested-class annotation
+
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.messages import AIMessage
+    from langchain_core.tools import tool
+    from langgraph._internal._constants import (
+        CONF,
+        CONFIG_KEY_RUNTIME,
+    )
+    from langgraph.prebuilt import ToolNode
+    from langgraph.runtime import Runtime as AgentRuntime
+
+    class _RunTreeRecorder(BaseCallbackHandler):
+        """Record every tool-start with its run id and parent run id."""
+
+        def __init__(self) -> None:
+            self.tool_starts: list[dict[str, Any]] = []
+
+        def on_tool_start(
+            self,
+            serialized: dict[str, Any],
+            input_str: str,
+            *,
+            run_id: UUID,
+            parent_run_id: UUID | None = None,
+            **kwargs: Any,
+        ) -> None:
+            name = (serialized or {}).get("name") or kwargs.get("name")
+            self.tool_starts.append(
+                {"name": name, "run_id": run_id, "parent_run_id": parent_run_id}
+            )
+
+    @tool
+    def stub_tool(x: int) -> int:
+        """Return x doubled."""
+        return x * 2
+
+    middleware = CodeInterpreterMiddleware(ptc=["stub_tool"], mode="thread")
+    eval_tool = middleware.tools[0]
+    repl = middleware._registry.get(middleware._fallback_thread_id)
+    repl.install_tools([stub_tool])
+
+    node = ToolNode([eval_tool, stub_tool])
+    msg = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "eval",
+                "args": {"code": "await tools.stubTool({ x: 21 })"},
+                "id": "call_eval_1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    runtime = AgentRuntime(context=None, store=None, stream_writer=lambda _: None)
+    recorder = _RunTreeRecorder()
+    config = {CONF: {CONFIG_KEY_RUNTIME: runtime}, "callbacks": [recorder]}
+
+    try:
+        await node.ainvoke({"messages": [msg]}, config=config)
+    finally:
+        # Close the REPL worker explicitly; otherwise the middleware's
+        # __del__ tries to close it synchronously during GC and blocks.
+        middleware._registry.close()
+
+    eval_starts = [t for t in recorder.tool_starts if t["name"] == "eval"]
+    stub_starts = [t for t in recorder.tool_starts if t["name"] == "stub_tool"]
+    assert eval_starts, "expected an eval tool-start in the run tree"
+    assert stub_starts, "expected a stub_tool tool-start from the PTC bridge"
+    assert stub_starts[0]["parent_run_id"] == eval_starts[0]["run_id"], (
+        "PTC stub_tool run must nest under the eval run "
+        f"(eval={eval_starts[0]['run_id']}, "
+        f"stub parent={stub_starts[0]['parent_run_id']})"
+    )
+
+
 async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
     """``Promise.all`` on two tool calls resolves both before returning."""
     calls: list[dict] = []

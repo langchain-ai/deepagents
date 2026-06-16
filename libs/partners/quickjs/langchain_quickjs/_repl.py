@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from langchain_core.runnables.config import ensure_config
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -47,6 +48,7 @@ from langchain_quickjs._subagent import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -123,6 +125,9 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    # The ``eval`` invocation's run-scoped RunnableConfig, captured while its
+    # callback context is live so PTC tool calls nest under the eval run.
+    eval_config: RunnableConfig | None = None
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -598,6 +603,7 @@ class _ThreadREPL:
         tool_call: dict[str, Any],
         *,
         outer_loop: asyncio.AbstractEventLoop | None,
+        config: RunnableConfig | None = None,
     ) -> Any:
         """Run the tool on the outer runtime's loop when available.
 
@@ -606,14 +612,23 @@ class _ThreadREPL:
         value rather than a string-coerced ``ToolMessage``. We only pass
         ``tool_call_id`` when the tool declares ``InjectedToolCallId`` —
         otherwise ``_format_output`` would wrap the result anyway.
+
+        ``config`` carries the active ``eval`` invocation's callback context.
+        Its callback manager is forwarded via ``BaseTool.arun(callbacks=...)``
+        — the ``callbacks`` argument (not ``config["callbacks"]``, which
+        ``arun`` does not use for parenting) is what makes the tool's run a
+        child of the ``eval`` run. Without it the tool starts a fresh root run
+        and tracing back-ends orphan its span at the top level instead of
+        nesting it under ``eval`` (#3991).
         """
         args = tool_call["args"]
         tool_call_id = (
             tool_call.get("id") if _tool_uses_injected_tool_call_id(tool) else None
         )
+        callbacks = config.get("callbacks") if config else None
 
         async def _call() -> Any:
-            return await tool.arun(args, tool_call_id=tool_call_id)
+            return await tool.arun(args, tool_call_id=tool_call_id, callbacks=callbacks)
 
         if outer_loop is None:
             return await _call()
@@ -670,6 +685,7 @@ class _ThreadREPL:
                 tool,
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
                 outer_loop=state.outer_loop,
+                config=state.eval_config,
             )
             return coerce_tool_output_for_ptc(result)
 
@@ -687,10 +703,16 @@ class _ThreadREPL:
         # the worker loop. Sync ctx.eval can't dispatch async host functions
         # (PTC bridges are is_async=True), so routing sync callers through
         # the async path is required for PTC to work under sync invocation.
+        #
+        # Capture the eval invocation's run-scoped config here, on the calling
+        # thread where the callback context is live; the worker loop it runs on
+        # does not inherit it. PTC tools are then invoked under this config so
+        # their runs nest under the eval run (#3991).
         return self._worker.run_sync(
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
+                eval_config=ensure_config(),
             )
         )
 
@@ -701,11 +723,15 @@ class _ThreadREPL:
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
+        # Capture the eval invocation's run-scoped config on this (calling)
+        # task, where its callback context is live; the worker loop the eval
+        # body runs on does not inherit it. See ``eval_sync`` for why (#3991).
         return await self._worker.run_async(
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
                 outer_loop=outer_loop,
+                eval_config=ensure_config(),
             )
         )
 
@@ -751,6 +777,7 @@ class _ThreadREPL:
         *,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        eval_config: RunnableConfig | None = None,
     ) -> EvalOutcome:
         """Uses ``ctx.eval_async`` directly.
 
@@ -770,6 +797,7 @@ class _ThreadREPL:
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
+            eval_config=eval_config,
         )
         try:
             # Drive any final-expression Promise (e.g. a bare async

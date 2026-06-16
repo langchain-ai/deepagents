@@ -14082,3 +14082,128 @@ class TestEnsureManagedRipgrep:
             await app._start_server_background()
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
+
+
+class TestNotifyInterpreterToolsWithoutInterpreter:
+    """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""
+
+    def test_toasts_when_tools_set_without_interpreter(self) -> None:
+        """`interpreter_ptc` set with the interpreter disabled warns once."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_called_once()
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in notify_mock.call_args.args[0]
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_interpreter_enabled(self) -> None:
+        """The allowlist takes effect with `--interpreter`, so no warning."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": True,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_without_interpreter_tools(self) -> None:
+        """Absent `interpreter_ptc` does not warn."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": None,
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_when_server_kwargs_absent(self) -> None:
+        """An agent-backed app with no `server_kwargs` does not warn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+
+class TestNotifyOrphanedTracingDisabled:
+    """Tests for `_notify_orphaned_tracing_disabled` (TUI advisory)."""
+
+    def test_toasts_when_notice_pending(self) -> None:
+        """A pending notice is surfaced as a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value="tracing disabled, set LANGSMITH_API_KEY",
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_called_once()
+        assert (
+            notify_mock.call_args.args[0] == "tracing disabled, set LANGSMITH_API_KEY"
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_no_notice(self) -> None:
+        """No pending notice means no toast fires."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value=None,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_not_called()
+
+    def test_render_failure_is_swallowed_and_logged(self) -> None:
+        """A failed toast render is logged rather than escaping the callback."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock(side_effect=RuntimeError("render boom"))
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+                return_value="tracing disabled",
+            ),
+            patch("deepagents_code.app.logger.exception") as log_mock,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        log_mock.assert_called_once()

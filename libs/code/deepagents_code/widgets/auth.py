@@ -718,6 +718,15 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "Keys and Endpoint page, then paste it below. ",
                 (label, self._link_style(url)),
             )
+        elif self._provider == "openai":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. A Restricted key is enough: grant "
+                "Write access to Responses (/v1/responses), and add Chat "
+                "completions (/v1/chat/completions) only if you use a "
+                "completions model. ",
+                (label, self._link_style(url)),
+            )
         else:
             instructions = Content.assemble(
                 f"Sign in to {provider}, create or copy an API key, "

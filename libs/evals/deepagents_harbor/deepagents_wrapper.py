@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import importlib.metadata
 import json
 import logging
@@ -167,9 +166,6 @@ class DeepAgentsWrapper(BaseAgent):
         self._langsmith_run_id: str | None = None
         self._task_name: str | None = None
 
-        # Per-trial env contributed by harbor job plugins (see add_runtime_env).
-        self._runtime_env: dict[str, str] = {}
-
         # Build instruction->example_id mapping if LANGSMITH_EXPERIMENT is set
         self._instruction_to_example_id: dict[str, str] = {}
         langsmith_experiment_name = os.environ.get("LANGSMITH_EXPERIMENT", "").strip() or None
@@ -191,53 +187,6 @@ class DeepAgentsWrapper(BaseAgent):
     def name() -> str:
         """Return the agent name identifier."""
         return "deepagent-harbor"
-
-    def add_runtime_env(self, env: dict[str, str]) -> None:
-        """Receive per-trial env contributed by harbor job plugins.
-
-        Harbor's trial loop calls this (when the agent exposes it) just before
-        the agent runs, passing trial-scoped env from registered
-        ``AgentEnvProvider`` hooks. The LangSmith plugin contributes
-        ``HARBOR_LANGSMITH_PARENT`` (a trace-context handle for the trial's
-        ``agent_start`` run) and ``HARBOR_LANGSMITH_BAGGAGE``; we stash them so
-        :meth:`run` can nest the agent's trace under the harbor trial run rather
-        than emitting a disconnected root trace.
-
-        Args:
-            env: Trial-scoped environment variables from job plugins.
-        """
-        self._runtime_env.update(env)
-
-    def _parent_tracing_context(self) -> contextlib.AbstractContextManager[Any]:
-        """Return a context that nests the agent trace under harbor's trial run.
-
-        Mirrors harbor's own ``langgraph_runner._parent_tracing_context``: when
-        ``HARBOR_LANGSMITH_PARENT`` is present (set by the LangSmith job plugin
-        via :meth:`add_runtime_env`, with an env fallback), the agent's LangSmith
-        trace is attached under that parent. Returns a no-op context when no
-        parent handle is set, so the standalone flow is unaffected.
-        """
-        parent = self._runtime_env.get("HARBOR_LANGSMITH_PARENT") or os.environ.get(
-            "HARBOR_LANGSMITH_PARENT"
-        )
-        if not parent:
-            return contextlib.nullcontext()
-        try:
-            # Lazy import: optional at runtime; mirrors harbor's own runner.
-            from langsmith.run_helpers import tracing_context  # noqa: PLC0415
-        except ImportError:
-            logger.warning(
-                "HARBOR_LANGSMITH_PARENT is set but langsmith tracing_context is "
-                "unavailable; agent trace will not nest under the harbor trial run"
-            )
-            return contextlib.nullcontext()
-        headers = {"langsmith-trace": parent}
-        baggage = self._runtime_env.get("HARBOR_LANGSMITH_BAGGAGE") or os.environ.get(
-            "HARBOR_LANGSMITH_BAGGAGE"
-        )
-        if baggage:
-            headers["baggage"] = baggage
-        return tracing_context(parent=headers)
 
     async def setup(self, environment: BaseEnvironment) -> None:
         """Setup the agent with the given environment.
@@ -385,33 +334,29 @@ class DeepAgentsWrapper(BaseAgent):
         # This will link runs to the given experiment in LangSmith.
         langsmith_experiment_name = os.environ.get("LANGSMITH_EXPERIMENT", "").strip() or None
 
-        # Nest under the harbor trial run when a plugin provided a parent handle
-        # (no-op context otherwise), so the agent trace shows up inside the
-        # harbor experiment run rather than as a disconnected trace.
-        with self._parent_tracing_context():
-            if langsmith_experiment_name:
-                with trace(
-                    name=environment.session_id,
-                    reference_example_id=example_id,
-                    inputs={"instruction": instruction},
-                    project_name=langsmith_experiment_name,
-                    metadata=metadata,
-                ) as run_tree:
-                    # Invoke deep agent with LangSmith tracing
-                    result = await deep_agent.ainvoke(
-                        {"messages": [{"role": "user", "content": instruction}]},
-                        config=config,
-                    )
-                    # Extract last AI message and add as output
-                    last_message = result["messages"][-1]
-                    if isinstance(last_message, AIMessage):
-                        run_tree.end(outputs={"last_message": last_message.text})
-            else:
-                config["metadata"] = metadata
+        if langsmith_experiment_name:
+            with trace(
+                name=environment.session_id,
+                reference_example_id=example_id,
+                inputs={"instruction": instruction},
+                project_name=langsmith_experiment_name,
+                metadata=metadata,
+            ) as run_tree:
+                # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
                     {"messages": [{"role": "user", "content": instruction}]},
                     config=config,
                 )
+                # Extract last AI message and add as output
+                last_message = result["messages"][-1]
+                if isinstance(last_message, AIMessage):
+                    run_tree.end(outputs={"last_message": last_message.text})
+        else:
+            config["metadata"] = metadata
+            result = await deep_agent.ainvoke(
+                {"messages": [{"role": "user", "content": instruction}]},
+                config=config,
+            )
 
         self._save_trajectory(environment, instruction, result, infra_meta)
 

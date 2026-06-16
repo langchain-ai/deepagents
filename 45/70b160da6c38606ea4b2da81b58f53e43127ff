@@ -1,0 +1,31 @@
+libs/evals/Makefile
+  s_0d650ca1e6949f::t_c4bb2142598930 52,66,70,74,78,82
+libs/evals/deepagents_harbor/langsmith.py
+  s_0d650ca1e6949f::t_10e289075f6bfd 232-233,235,238,240,253,264-266,285,289-292,329,334-335
+  s_0d650ca1e6949f::t_da826b3dd97283 299-300
+  s_0d650ca1e6949f::t_a5e10216394cbb 228,234
+libs/evals/tests/unit_tests/test_langsmith.py
+  s_0d650ca1e6949f::t_e85dda78d43d0a 120-124,126-127,140,146,162
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_0d650ca1e6949f::t_dc684473f114ce 40,47-48,82-83,98
+.github/workflows/harbor.yml
+  s_0d650ca1e6949f::t_3b9cf6f4524bbd 145,350,385,425
+libs/evals/scripts/harbor_langsmith.py
+  s_0d650ca1e6949f::t_b983863e3fe8e9 43,45,50-51,67,69,74-75,141,147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "4570b160da6c38606ea4b2da81b58f53e43127ff",
+  "prompts": {},
+  "sessions": {
+    "s_0d650ca1e6949f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecca5-97dc-7843-8de7-19d44b52cd43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

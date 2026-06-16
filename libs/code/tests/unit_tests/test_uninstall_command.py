@@ -121,9 +121,7 @@ class TestUninstallExtraSubcommand:
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.config.console", console_mock, create=True),
-            patch(
-                "deepagents_code.config._is_editable_install", return_value=editable
-            ),
+            patch("deepagents_code.config._is_editable_install", return_value=editable),
             patch(
                 "deepagents_code.extras_info.installed_extra_names",
                 return_value=set(installed),
@@ -304,6 +302,4 @@ async def test_uninstall_slash_editable_install_refuses() -> None:
             await pilot.pause()
         perform_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert any(
-            "Editable install detected" in str(m._content) for m in app_msgs
-        )
+        assert any("Editable install detected" in str(m._content) for m in app_msgs)

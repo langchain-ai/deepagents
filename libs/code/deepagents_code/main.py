@@ -2759,9 +2759,7 @@ def cli_main() -> None:
                 # The absent-extra case is a no-op: report it clearly and never
                 # invoke uv.
                 try:
-                    installed = installed_extra_names(
-                        "deepagents-code", strict=True
-                    )
+                    installed = installed_extra_names("deepagents-code", strict=True)
                 except ExtrasIntrospectionError as exc:
                     console.print(
                         f"[bold red]Error:[/bold red] "
@@ -2813,9 +2811,7 @@ def cli_main() -> None:
                 sys.exit(130)
             except Exception as exc:
                 logger.warning("--uninstall failed", exc_info=True)
-                log_line = (
-                    f"\nLog: {uninstall_log_path}" if uninstall_log_path else ""
-                )
+                log_line = f"\nLog: {uninstall_log_path}" if uninstall_log_path else ""
                 fallback_cmd = uninstall_manual_cmd or (
                     "uv tool install -U deepagents-code"
                 )

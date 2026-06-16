@@ -1306,6 +1306,35 @@ class TestThreadSelectorOnClickOpensLink:
         event.stop.assert_not_called()
 
 
+class TestThreadSelectorPointer:
+    """Tests for `ThreadSelectorScreen` link hover affordance."""
+
+    def test_hover_over_link_uses_pointer(self) -> None:
+        """Hovering a Rich-style link sets a pointer cursor."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        event = MagicMock()
+        event.style = Style(link="https://example.com")
+        screen.on_mouse_move(event)
+        assert screen.styles.pointer == "pointer"
+
+    def test_hover_off_link_uses_default(self) -> None:
+        """Hovering non-link text keeps the default cursor."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        event = MagicMock()
+        event.style = Style()
+        screen.on_mouse_move(event)
+        assert screen.styles.pointer == "default"
+
+    def test_leave_resets_pointer(self) -> None:
+        """Leaving the selector resets the cursor to default."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        link_event = MagicMock()
+        link_event.style = Style(link="https://example.com")
+        screen.on_mouse_move(link_event)
+        screen.on_leave()
+        assert screen.styles.pointer == "default"
+
+
 class TestThreadSelectorBuildTitle:
     """Tests for _build_title with clickable thread ID."""
 

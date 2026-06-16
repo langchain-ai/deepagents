@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
-    from textual.events import Click, Key
+    from textual.events import Click, Key, MouseMove
 
     from deepagents_code.sessions import ThreadInfo
 
@@ -1914,6 +1914,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Resolve the LangSmith URL and update the title with a clickable link."""
         if not self._current_thread:
             return
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
@@ -1931,6 +1933,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 "Unexpected error resolving LangSmith thread URL for '%s'",
                 self._current_thread,
                 exc_info=True,
+            )
+            return
+        if loop.time() - started >= _URL_FETCH_TIMEOUT:
+            logger.debug(
+                "LangSmith thread URL for '%s' resolved after the timeout deadline",
+                self._current_thread,
             )
             return
         if thread_url:
@@ -2441,6 +2449,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open Rich-style hyperlinks on single click."""
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over Rich-style hyperlinks."""
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the selector."""
+        self.styles.pointer = "default"
 
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.

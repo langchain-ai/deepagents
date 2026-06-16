@@ -41,7 +41,7 @@ from deepagents_code.widgets._links import open_style_link
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click
+    from textual.events import Click, MouseMove
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,14 @@ class CodexAuthScreen(ModalScreen[bool]):
         """Open the authorize URL when the user clicks it."""
         open_style_link(event)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over inline authorization links."""
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the modal."""
+        self.styles.pointer = "default"
+
     async def _run_login(self) -> codex_integration.CodexAuthStatus:
         """Worker body: drive the upstream OAuth flow with our UI hooks.
 
@@ -230,10 +238,11 @@ class CodexAuthScreen(ModalScreen[bool]):
         colors = theme.get_theme_colors(self)
         ansi = self.app.theme in {"ansi-dark", "ansi-light"}
         link_style: str | TStyle = (
-            TStyle(bold=True, link=url)
+            TStyle(bold=True, underline=True, link=url)
             if ansi
             else TStyle(
                 foreground=TColor.parse(colors.primary),
+                underline=True,
                 link=url,
             )
         )

@@ -430,6 +430,22 @@ class ProviderConfig(TypedDict, total=False):
     creation.
     """
 
+    display_name: str
+    """Human-readable provider name shown in auth UI.
+
+    Useful for arbitrary providers whose config key is optimized for machine use
+    (e.g., `my_gateway`) but whose UI label should include spaces or brand
+    capitalization.
+    """
+
+    api_key_url: str
+    """Provider page where users can create or manage API keys.
+
+    Used by `/auth` as an acquisition link before the API-key input. The value is
+    a URL, not a credential. Must use an `http` or `https` scheme to render as a
+    clickable link; values with other schemes are ignored with a warning.
+    """
+
     base_url: str
     """Custom base URL."""
 
@@ -2239,6 +2255,27 @@ class ModelConfig:
                     enabled,
                 )
 
+            # `display_name`/`api_key_url` also originate from untyped TOML; cast
+            # to `object` so the runtime non-string checks stay reachable (the
+            # TypedDict types them as `str`).
+            display_name = cast("object", provider.get("display_name"))
+            if display_name is not None and not isinstance(display_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'display_name' value %r "
+                    "(expected a string). Falling back to the default label.",
+                    name,
+                    display_name,
+                )
+
+            api_key_url = cast("object", provider.get("api_key_url"))
+            if api_key_url is not None and not isinstance(api_key_url, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'api_key_url' value %r "
+                    "(expected a string). Ignoring it.",
+                    name,
+                    api_key_url,
+                )
+
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
                 logger.warning(
@@ -2399,6 +2436,32 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         return provider.get("api_key_env") if provider else None
+
+    def get_provider_display_name(self, provider_name: str) -> str | None:
+        """Get the configured display name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Human-readable display name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("display_name") if provider else None
+        return name if isinstance(name, str) else None
+
+    def get_provider_api_key_url(self, provider_name: str) -> str | None:
+        """Get the configured API-key management URL for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            API-key management URL if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        url = provider.get("api_key_url") if provider else None
+        return url if isinstance(url, str) else None
 
     def get_base_url_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's base URL.

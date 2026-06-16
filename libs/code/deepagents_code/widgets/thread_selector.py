@@ -1914,6 +1914,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Resolve the LangSmith URL and update the title with a clickable link."""
         if not self._current_thread:
             return
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
@@ -1931,6 +1933,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 "Unexpected error resolving LangSmith thread URL for '%s'",
                 self._current_thread,
                 exc_info=True,
+            )
+            return
+        if loop.time() - started >= _URL_FETCH_TIMEOUT:
+            logger.debug(
+                "LangSmith thread URL for '%s' resolved after the timeout deadline",
+                self._current_thread,
             )
             return
         if thread_url:

@@ -14,7 +14,7 @@ def test_evals_uses_harbor_langsmith_fork_source() -> None:
 
     assert pyproject["tool"]["uv"]["sources"]["harbor"] == {
         "git": "https://github.com/nick-hollon-lc/harbor.git",
-        "rev": "24c37553ef072938a58adde76852b3d4dab6144b",
+        "rev": "604066d188964345853094bc6eb3b3b18a0c202d",
     }
 
 

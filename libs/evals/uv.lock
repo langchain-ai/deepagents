@@ -647,7 +647,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", directory = "../code" },
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
-    { name = "harbor", extras = ["langsmith"], git = "https://github.com/nick-hollon-lc/harbor.git?rev=24c37553ef072938a58adde76852b3d4dab6144b" },
+    { name = "harbor", extras = ["langsmith"], git = "https://github.com/nick-hollon-lc/harbor.git?rev=604066d188964345853094bc6eb3b3b18a0c202d" },
     { name = "langchain", specifier = ">=1.3.9,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.6,<1.5.0" },
     { name = "langchain-baseten", specifier = ">=0.2.0,<0.3.0" },
@@ -1024,7 +1024,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.13.2"
-source = { git = "https://github.com/nick-hollon-lc/harbor.git?rev=24c37553ef072938a58adde76852b3d4dab6144b#24c37553ef072938a58adde76852b3d4dab6144b" }
+source = { git = "https://github.com/nick-hollon-lc/harbor.git?rev=604066d188964345853094bc6eb3b3b18a0c202d#604066d188964345853094bc6eb3b3b18a0c202d" }
 dependencies = [
     { name = "claude-agent-sdk", version = "0.1.48", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "claude-agent-sdk", version = "0.1.49", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
@@ -1059,7 +1059,7 @@ langsmith = [
 [[package]]
 name = "harbor-langsmith"
 version = "0.1.1"
-source = { git = "https://github.com/nick-hollon-lc/harbor.git?subdirectory=packages%2Fharbor-langsmith&rev=24c37553ef072938a58adde76852b3d4dab6144b#24c37553ef072938a58adde76852b3d4dab6144b" }
+source = { git = "https://github.com/nick-hollon-lc/harbor.git?subdirectory=packages%2Fharbor-langsmith&rev=604066d188964345853094bc6eb3b3b18a0c202d#604066d188964345853094bc6eb3b3b18a0c202d" }
 dependencies = [
     { name = "harbor", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "requests", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

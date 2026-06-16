@@ -18,6 +18,7 @@ Security notes:
 from __future__ import annotations
 
 import logging
+import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
@@ -509,7 +510,14 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             # (or the `Ctrl+D delete` affordance shown in the help line) is
             # what's about to happen — both are gated on `_has_existing`.
             resolved_from_env = self._auth_status.source is ProviderAuthSource.ENV
-            active_env_var = (
+            scoped_env_var = None
+            if self._auth_status.env_var:
+                candidate = resolved_env_var_name(self._auth_status.env_var)
+                if candidate.startswith("DEEPAGENTS_CODE_") and os.environ.get(
+                    candidate
+                ):
+                    scoped_env_var = candidate
+            active_env_var = scoped_env_var or (
                 resolved_env_var_name(self._auth_status.env_var)
                 if resolved_from_env and self._auth_status.env_var
                 else None

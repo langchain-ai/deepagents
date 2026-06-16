@@ -224,6 +224,26 @@ class TestAuthPromptScreen:
             content = cast("Content", status.content)
             assert any("$warning" in str(span.style) for span in content.spans)
 
+    async def test_prefixed_env_key_status_shows_when_stored_key_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scoped env override is shown even when stored auth exists."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "from-prefixed")
+        auth_store.set_stored_key("openai", "from-store")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            title = app.screen.query_one(".auth-prompt-title", Static)
+            status = app.screen.query_one("#auth-prompt-env-status", Static)
+            text = str(status.content)
+            assert get_glyphs().warning in str(title.content)
+            assert "Replace key for OpenAI (stored)" in str(title.content)
+            assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
+            assert "scoped env var takes priority" in text
+            assert "saved key will be used only when" in text
+
     async def test_azure_instructions_name_resource_keys_page(self) -> None:
         """Azure keys live on a resource-specific Keys and Endpoint page."""
         app = _AuthHostApp()

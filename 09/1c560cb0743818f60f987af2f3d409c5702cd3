@@ -1,0 +1,21 @@
+libs/evals/uv.lock
+  s_0be8bec6b9bed6::t_0fb360974568e5 650,1027,1062
+libs/evals/pyproject.toml
+  s_0be8bec6b9bed6::t_4715bb565d82b1 115-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "091c560cb0743818f60f987af2f3d409c5702cd3",
+  "prompts": {},
+  "sessions": {
+    "s_0be8bec6b9bed6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f6463fc-a287-4877-ba5e-4c4a5838d106",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

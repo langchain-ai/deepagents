@@ -501,16 +501,10 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
     parse_error: str | None = None
     for line in output.split("\n"):
         # Format is: path\0line_number:text
-        parts = line.split("\0", 1)
-        if len(parts) != 2:  # noqa: PLR2004
-            parse_error = line
-            continue
-        line_parts = parts[1].split(":", 1)
-        if len(line_parts) != 2:  # noqa: PLR2004
-            parse_error = line
-            continue
         try:
-            matches.append({"path": parts[0], "line": int(line_parts[0]), "text": line_parts[1]})
+            file_path, rest = line.split("\0", 1)
+            line_num_str, text = rest.split(":", 1)
+            matches.append({"path": file_path, "line": int(line_num_str), "text": text})
         except ValueError:
             parse_error = line
     if parse_error is not None and not matches:
@@ -544,7 +538,7 @@ def _parse_glob_output(output: str, search_path: str) -> GlobResult:
     return GlobResult(matches=file_infos)
 
 
-def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, replace_all: bool) -> str:  # noqa: FBT001
+def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, replace_all: bool) -> str:
     payload = json.dumps({"path": file_path, "old": old_string, "new": new_string, "replace_all": replace_all})
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
@@ -578,7 +572,7 @@ def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResu
     return EditResult(path=file_path, occurrences=data.get("count", 1))
 
 
-def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, replace_all: bool) -> str:  # noqa: FBT001
+def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, replace_all: bool) -> str:
     return _EDIT_TMPFILE_TEMPLATE.format(
         old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
         new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
@@ -814,7 +808,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
         """Server-side replace via `execute()` (single round-trip)."""
-        result = self.execute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
+        result = self.execute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
         return _parse_edit_output(result.output, file_path, old_string)
 
     async def _aedit_inline(
@@ -825,7 +819,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
         """Async version of `_edit_inline`, delegating to `aexecute`."""
-        result = await self.aexecute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
+        result = await self.aexecute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
         return _parse_edit_output(result.output, file_path, old_string)
 
     def _edit_via_upload(
@@ -857,7 +851,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             if r.error:
                 return EditResult(error=f"Error editing file '{file_path}': {r.error}")
 
-        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all)
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
         result = self.execute(cmd)
         output = result.output.rstrip()
 
@@ -912,7 +906,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             if r.error:
                 return EditResult(error=f"Error editing file '{file_path}': {r.error}")
 
-        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all)
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
         result = await self.aexecute(cmd)
         output = result.output.rstrip()
 

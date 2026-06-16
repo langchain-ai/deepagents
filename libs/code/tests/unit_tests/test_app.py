@@ -14198,3 +14198,55 @@ class TestNotifyOrphanedTracingDisabled:
             app._notify_orphaned_tracing_disabled()
 
         log_mock.assert_called_once()
+
+
+class TestClearInputEscape:
+    """Tests for the double-Esc chat-input clear fallback."""
+
+    @staticmethod
+    def _make_app() -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore[invalid-assignment]
+        app.set_timer = MagicMock()  # ty: ignore[invalid-assignment]
+        return app
+
+    def test_double_escape_clears_input(self) -> None:
+        """First Esc arms the clear; the second clears the draft."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+        chat_input.discard_text.assert_not_called()
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_called_once_with()
+
+    def test_escape_no_op_when_input_empty(self) -> None:
+        """Esc never arms a clear when the draft is empty."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = ""
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_not_called()
+
+    def test_pending_resets_when_input_emptied_between_presses(self) -> None:
+        """A pending clear is disarmed if the draft becomes empty before press 2."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "x"
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+
+        chat_input.value = ""
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_not_called()

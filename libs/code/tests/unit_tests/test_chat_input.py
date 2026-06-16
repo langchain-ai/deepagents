@@ -252,6 +252,130 @@ class TestChatTextAreaKeybindings:
         assert "alt+backspace" in word_delete_keys
 
 
+class TestDiscardText:
+    """Tests for the undoable draft clear behind esc+esc and the `[ X ]` button."""
+
+    async def test_discard_text_clears_and_reports_cleared(self) -> None:
+        """`discard_text` empties the draft and returns True when text existed."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("a draft I changed my mind about")
+            await pilot.pause()
+
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+
+    async def test_discard_text_no_op_when_empty(self) -> None:
+        """`discard_text` returns False when there is nothing to clear."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            await pilot.pause()
+            assert chat_input.discard_text() is False
+
+    async def test_discard_text_is_undoable(self) -> None:
+        """The cleared draft is restorable via the TextArea undo (ctrl+z)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("restore me")
+            await pilot.pause()
+
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "restore me"
+
+
+class TestInputActionButtons:
+    """Tests for the `[ X ]` clear and `[ COPY ]` buttons in the chat input."""
+
+    async def test_clear_button_clears_input(self) -> None:
+        """Clicking `[ X ]` empties the draft."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("clear me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert chat_input.value == ""
+
+    async def test_clear_button_is_undoable(self) -> None:
+        """A draft cleared via `[ X ]` can be restored with undo."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("undo me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert chat_input.value == ""
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "undo me"
+
+    async def test_copy_button_copies_input(self, monkeypatch) -> None:
+        """Clicking `[ COPY ]` sends the draft to the clipboard helper."""
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("copy me")
+            await pilot.pause()
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+
+        assert copied == ["copy me"]
+
+    async def test_copy_button_no_op_when_empty(self, monkeypatch) -> None:
+        """Clicking `[ COPY ]` with an empty draft does not call the helper."""
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#copy-button")
+            await pilot.pause()
+
+        assert copied == []
+
+
 class _ImagePasteApp(App[None]):
     """App that wires a shared tracker into ChatInput for paste tests."""
 

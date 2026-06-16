@@ -227,6 +227,53 @@ class CompletionOption(Static):
         self.post_message(self.Clicked(self._index))
 
 
+class InputActionButton(Static):
+    """Small clickable button shown at the top-right of the chat input.
+
+    Provides discoverable mouse alternatives to keyboard shortcuts for
+    clearing (`[ X ]`) and copying (`[ COPY ]`) the current draft.
+    """
+
+    DEFAULT_CSS = """
+    InputActionButton {
+        height: 1;
+        width: auto;
+        margin: 0 0 0 1;
+        text-style: bold;
+    }
+
+    InputActionButton:hover {
+        background: $surface-lighten-1;
+    }
+
+    InputActionButton.input-action-clear {
+        color: $error;
+    }
+
+    InputActionButton.input-action-copy {
+        color: $primary;
+    }
+    """
+
+    class Clicked(Message):
+        """Message sent when an input action button is clicked."""
+
+        def __init__(self, action: str) -> None:
+            """Initialize with the action identifier (`clear` or `copy`)."""
+            super().__init__()
+            self.action = action
+
+    def __init__(self, label: str, action: str, **kwargs: Any) -> None:
+        """Initialize the button with a label and an action identifier."""
+        super().__init__(label, **kwargs)
+        self._action = action
+
+    def on_click(self, event: Click) -> None:
+        """Relay the click as a typed `Clicked` message."""
+        event.stop()
+        self.post_message(self.Clicked(self._action))
+
+
 class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
@@ -1178,6 +1225,27 @@ class ChatTextArea(TextArea):
         self.text = ""
         self.move_cursor((0, 0))
 
+    def discard_text(self) -> bool:
+        """Clear the draft via an undoable edit (restorable with ctrl+z).
+
+        Unlike `clear_text`, the deletion is recorded in the undo history and
+        the resulting `Changed` event is allowed to propagate, so completion
+        and argument-hint state stay in sync.
+
+        Returns:
+            `True` when there was text to clear.
+        """
+        if not self.text:
+            return False
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
+        self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
+        self.clear()
+        return True
+
 
 class _CompletionViewAdapter:
     """Translate completion-space replacements to text-area coordinates."""
@@ -1387,6 +1455,18 @@ class ChatInput(Vertical):
         with Horizontal(classes="input-row"):
             yield Static(">", classes="input-prompt", id="prompt")
             yield ChatTextArea(id="chat-input")
+            yield InputActionButton(
+                "[ X ]",
+                "clear",
+                id="clear-button",
+                classes="input-action input-action-clear",
+            )
+            yield InputActionButton(
+                "[ COPY ]",
+                "copy",
+                id="copy-button",
+                classes="input-action input-action-copy",
+            )
 
         yield CompletionPopup(id="completion-popup")
 
@@ -2302,6 +2382,57 @@ class ChatInput(Vertical):
             return
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
+
+    def discard_text(self) -> bool:
+        """Clear the draft, keeping it restorable via undo (ctrl+z).
+
+        Returns:
+            `True` when there was text to clear.
+        """
+        if self._text_area is None:
+            return False
+        return self._text_area.discard_text()
+
+    def on_input_action_button_clicked(
+        self, event: InputActionButton.Clicked
+    ) -> None:
+        """Handle clicks on the `[ X ]` / `[ COPY ]` input buttons."""
+        event.stop()
+        if event.action == "clear":
+            self._clear_via_button()
+        elif event.action == "copy":
+            self._copy_via_button()
+
+    def _clear_via_button(self) -> None:
+        """Clear the draft from the `[ X ]` button (undoable with ctrl+z)."""
+        if self.discard_text():
+            self.app.notify(
+                "Input cleared (ctrl+z to undo)", timeout=3, markup=False
+            )
+        if self._text_area is not None:
+            self._text_area.focus()
+
+    def _copy_via_button(self) -> None:
+        """Copy the current draft to the clipboard from the `[ COPY ]` button."""
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        text = self.value
+        if not text:
+            return
+        success, error = copy_text_to_clipboard(self.app, text)
+        if success:
+            self.app.notify("Input copied to clipboard", timeout=3, markup=False)
+        else:
+            self.app.notify(
+                f"Failed to copy input: {error}"
+                if error
+                else "Failed to copy input - no clipboard method available",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+        if self._text_area is not None:
+            self._text_area.focus()
 
     @property
     def input_widget(self) -> ChatTextArea | None:

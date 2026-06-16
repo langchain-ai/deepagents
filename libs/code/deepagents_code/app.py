@@ -1998,6 +1998,10 @@ class DeepAgentsApp(App):
         self._quit_pending = False
         """True after a first `Ctrl+C` so a second press within the window quits."""
 
+        self._clear_input_pending = False
+        """True after a first `Esc` (with nothing else to interrupt) so a second
+        press within the window clears the chat input draft."""
+
         self._thread_switching = False
         """Re-entry guard for `/threads` switches; blocks message handling
         until the new thread's history finishes loading."""
@@ -8354,6 +8358,7 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it
+        9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
 
@@ -8414,6 +8419,39 @@ class DeepAgentsApp(App):
                 self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
+
+        # Nothing left to interrupt: a double Esc clears the chat input draft.
+        self._handle_clear_input_escape()
+
+    def _handle_clear_input_escape(self) -> None:
+        """Clear the chat input draft on a double `Esc` press.
+
+        With nothing else to interrupt, the first `Esc` arms a pending flag and
+        shows a hint; a second `Esc` within the window clears the draft. The
+        clear is undoable via ctrl+z so a mistaken clear can be restored.
+        """
+        chat_input = self._chat_input
+        if chat_input is None or not chat_input.value:
+            self._clear_input_pending = False
+            return
+        if self._clear_input_pending:
+            self._clear_input_pending = False
+            chat_input.discard_text()
+            return
+        self._arm_clear_input_pending()
+
+    def _arm_clear_input_pending(self) -> None:
+        """Set the clear-input flag and show a matching hint."""
+        self._clear_input_pending = True
+        timeout = 3
+        self.notify(
+            "Press Esc again to clear input (ctrl+z to undo)",
+            timeout=timeout,
+            markup=False,
+        )
+        self.set_timer(
+            timeout, lambda: setattr(self, "_clear_input_pending", False)
+        )
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

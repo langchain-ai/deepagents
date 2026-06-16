@@ -11,6 +11,10 @@ from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _get_file_type,
     _glob_search_files,
+    _redact_secrets,
+    format_content_with_line_numbers,
+    format_grep_matches,
+    grep_matches_from_files,
     perform_string_replacement,
     slice_read_response,
     to_posix_path,
@@ -359,3 +363,159 @@ class TestSliceReadResponse:
         assert isinstance(result, ReadResult)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+
+class TestRedactSecrets:
+    """`_redact_secrets` must redact every known-secret pattern.
+
+    False positives are acceptable; false negatives leak credentials into
+    model context. Redaction tags preserve the prefix and length so the
+    agent can still answer "which key is configured" questions.
+    """
+
+    def test_redacts_openai_project_token(self) -> None:
+        token = "sk-proj-" + ("A" * 48)
+        out = _redact_secrets(f"OPENAI_API_KEY={token}")
+        assert token not in out
+        assert f"sk-proj-<redacted len={len(token)}>" in out
+
+    def test_redacts_openai_legacy_token(self) -> None:
+        token = "sk-" + ("a" * 40)
+        out = _redact_secrets(f"key: {token}")
+        assert token not in out
+        assert f"sk-<redacted len={len(token)}>" in out
+
+    def test_legacy_sk_does_not_double_match_sk_proj(self) -> None:
+        token = "sk-proj-" + ("B" * 48)
+        out = _redact_secrets(token)
+        assert out == f"sk-proj-<redacted len={len(token)}>"
+
+    def test_legacy_sk_does_not_double_match_sk_ant(self) -> None:
+        token = "sk-ant-api03-" + ("C" * 40)
+        out = _redact_secrets(token)
+        assert out.startswith("sk-ant-<redacted len=")
+        assert out.count("redacted") == 1
+
+    def test_redacts_anthropic_token(self) -> None:
+        token = "sk-ant-api03-" + ("d" * 40)
+        out = _redact_secrets(f"ANTHROPIC_API_KEY={token}")
+        assert token not in out
+        assert "sk-ant-<redacted len=" in out
+
+    def test_redacts_langsmith_pt_token(self) -> None:
+        token = "lsv2_pt_" + ("e" * 40)
+        out = _redact_secrets(f"LANGSMITH_API_KEY={token}")
+        assert token not in out
+        assert "lsv2_pt_<redacted len=" in out
+
+    def test_redacts_langsmith_sk_token(self) -> None:
+        token = "lsv2_sk_" + ("f" * 40)
+        out = _redact_secrets(token)
+        assert token not in out
+        assert "lsv2_sk_<redacted len=" in out
+
+    def test_redacts_langsmith_tr_token(self) -> None:
+        token = "lsv2_tr_" + ("g" * 40)
+        out = _redact_secrets(token)
+        assert token not in out
+        assert "lsv2_tr_<redacted len=" in out
+
+    def test_redacts_aws_access_key_id(self) -> None:
+        token = "AKIA" + ("Z" * 16)
+        out = _redact_secrets(f"AWS_ACCESS_KEY_ID={token}")
+        assert token not in out
+        assert "AKIA<redacted len=20>" in out
+
+    def test_redacts_github_personal_token(self) -> None:
+        token = "ghp_" + ("h" * 40)
+        out = _redact_secrets(f"GITHUB_TOKEN={token}")
+        assert token not in out
+        assert "ghp_<redacted len=" in out
+
+    @pytest.mark.parametrize("prefix", ["gho_", "ghu_", "ghs_", "ghr_"])
+    def test_redacts_github_other_tokens(self, prefix: str) -> None:
+        token = prefix + ("i" * 40)
+        out = _redact_secrets(token)
+        assert token not in out
+        assert f"{prefix}<redacted len=" in out
+
+    @pytest.mark.parametrize("prefix", ["xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"])
+    def test_redacts_slack_tokens(self, prefix: str) -> None:
+        token = prefix + ("j" * 20)
+        out = _redact_secrets(f"SLACK_TOKEN={token}")
+        assert token not in out
+        assert f"{prefix}<redacted len=" in out
+
+    def test_redacts_generic_envvar_secret_catchall(self) -> None:
+        # Unknown prefix, but envvar name flags it.
+        token = "x" * 32
+        out = _redact_secrets(f"MY_CUSTOM_API_KEY={token}")
+        assert token not in out
+        assert "MY_CUSTOM_API_KEY=<redacted len=32>" in out
+
+    def test_redacts_envvar_with_quoted_value(self) -> None:
+        token = "y" * 40
+        out = _redact_secrets(f'SOME_TOKEN="{token}"')
+        assert token not in out
+        assert 'SOME_TOKEN="<redacted len=40>"' in out
+
+    def test_preserves_prefix_and_length_for_56_char_openai_token(self) -> None:
+        token = "sk-proj-" + ("X" * 48)
+        assert len(token) == 56
+        out = _redact_secrets(token)
+        assert out == "sk-proj-<redacted len=56>"
+
+    def test_preserves_surrounding_text(self) -> None:
+        token = "sk-proj-" + ("Q" * 48)
+        out = _redact_secrets(f"prefix text {token} suffix text")
+        assert out == f"prefix text sk-proj-<redacted len={len(token)}> suffix text"
+
+    def test_does_not_match_short_partials(self) -> None:
+        # `sk-` followed by too few chars is not a token.
+        assert _redact_secrets("use sk-short here") == "use sk-short here"
+
+    def test_no_secret_returns_line_unchanged(self) -> None:
+        line = "this line has no secrets, just code: def foo(): pass"
+        assert _redact_secrets(line) == line
+
+
+class TestGrepRedactsSecrets:
+    """Grep over a dotenv-shaped file must never echo secret values verbatim."""
+
+    def test_grep_content_mode_redacts_dotenv_secret(self) -> None:
+        token = "sk-proj-" + ("F" * 48)
+        files = {
+            "/.env": FileData(
+                content=f"OPENAI_API_KEY={token}\nOTHER=value\n",
+                encoding="utf-8",
+            ),
+        }
+        result = grep_matches_from_files(files, "OPENAI_API_KEY")
+        formatted = format_grep_matches(result.matches, "content")
+        assert token not in formatted
+        assert f"sk-proj-<redacted len={len(token)}>" in formatted
+
+    def test_grep_files_with_matches_does_not_include_line_content(self) -> None:
+        token = "sk-proj-" + ("G" * 48)
+        files = {
+            "/.env": FileData(
+                content=f"OPENAI_API_KEY={token}\n",
+                encoding="utf-8",
+            ),
+        }
+        result = grep_matches_from_files(files, "OPENAI_API_KEY")
+        formatted = format_grep_matches(result.matches, "files_with_matches")
+        # files_with_matches only emits paths, so no secret can leak.
+        assert token not in formatted
+        assert formatted == "/.env"
+
+
+class TestFormatContentWithLineNumbersRedactsSecrets:
+    """`read_file`'s line-number formatter must redact dotenv-shaped lines."""
+
+    def test_read_file_formatter_redacts_dotenv_secret(self) -> None:
+        token = "sk-proj-" + ("H" * 48)
+        content = f"OPENAI_API_KEY={token}\nOTHER=value"
+        out = format_content_with_line_numbers(content)
+        assert token not in out
+        assert f"<redacted len={len(token)}>" in out

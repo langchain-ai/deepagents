@@ -55,6 +55,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _get_file_type,
+    _redact_secrets,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -209,7 +210,10 @@ def _format_grep_tool_result(
     if result.error and not matches:
         return result.error, "error"
 
-    formatted = format_grep_matches(matches, output_mode)
+    # Defense-in-depth: the backend formatter already redacts secrets, but
+    # re-apply on the final string so future code paths that bypass
+    # `_format_grep_results` still get redacted before reaching model context.
+    formatted = "\n".join(_redact_secrets(line) for line in format_grep_matches(matches, output_mode).splitlines())
     if result.error:
         return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
     return formatted, "success"

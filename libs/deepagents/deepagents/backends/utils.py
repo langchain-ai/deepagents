@@ -73,6 +73,42 @@ FileInfo = _FileInfo
 GrepMatch = _GrepMatch
 
 
+# Known-secret patterns. First-match-wins; each entry records the prefix to
+# preserve in the redaction tag so the agent can still identify "which key"
+# without ever seeing the secret value. When in doubt, redact — false positives
+# are acceptable, false negatives leak credentials into model context.
+_SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("sk-proj-", re.compile(r"sk-proj-[A-Za-z0-9_-]{20,}")),
+    ("sk-ant-", re.compile(r"sk-ant-(?:api03-|sid-)?[A-Za-z0-9_-]{20,}")),
+    ("sk-", re.compile(r"(?<![A-Za-z0-9_-])sk-(?!proj-|ant-)[A-Za-z0-9_-]{20,}")),
+    ("lsv2_pt_", re.compile(r"lsv2_pt_[A-Za-z0-9]{20,}")),
+    ("lsv2_sk_", re.compile(r"lsv2_sk_[A-Za-z0-9]{20,}")),
+    ("lsv2_tr_", re.compile(r"lsv2_tr_[A-Za-z0-9]{20,}")),
+    ("AKIA", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("ghp_", re.compile(r"ghp_[A-Za-z0-9]{36,}")),
+    ("gho_", re.compile(r"gho_[A-Za-z0-9]{36,}")),
+    ("ghu_", re.compile(r"ghu_[A-Za-z0-9]{36,}")),
+    ("ghs_", re.compile(r"ghs_[A-Za-z0-9]{36,}")),
+    ("ghr_", re.compile(r"ghr_[A-Za-z0-9]{36,}")),
+    ("xoxa-", re.compile(r"xoxa-[A-Za-z0-9-]{10,}")),
+    ("xoxb-", re.compile(r"xoxb-[A-Za-z0-9-]{10,}")),
+    ("xoxp-", re.compile(r"xoxp-[A-Za-z0-9-]{10,}")),
+    ("xoxr-", re.compile(r"xoxr-[A-Za-z0-9-]{10,}")),
+    ("xoxs-", re.compile(r"xoxs-[A-Za-z0-9-]{10,}")),
+]
+_ENVVAR_SECRET = re.compile(r"([A-Za-z0-9_]*(?:_API_KEY|_TOKEN|_SECRET|_PASSWORD|_ACCESS_KEY))\s*=\s*(['\"]?)([^'\"\s]{20,})\2")
+
+
+def _redact_secrets(line: str) -> str:
+    """Redact known secret patterns in `line`, preserving prefix and length."""
+    for prefix, pat in _SECRET_PATTERNS:
+        line = pat.sub(lambda m, p=prefix: f"{p}<redacted len={len(m.group(0))}>", line)
+    return _ENVVAR_SECRET.sub(
+        lambda m: f"{m.group(1)}={m.group(2)}<redacted len={len(m.group(3))}>{m.group(2)}",
+        line,
+    )
+
+
 @functools.lru_cache(maxsize=256)
 def _compile_glob(pattern: str) -> wcglob.WcMatcher:
     """Compile a glob pattern once and cache it (BRACE flag)."""
@@ -139,8 +175,9 @@ def format_content_with_line_numbers(
         lines = content
 
     result_lines = []
-    for i, line in enumerate(lines):
+    for i, raw_line in enumerate(lines):
         line_num = i + start_line
+        line = _redact_secrets(raw_line)
 
         if len(line) <= MAX_LINE_LENGTH:
             result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
@@ -676,7 +713,7 @@ def _format_grep_results(
     for file_path in sorted(results.keys()):
         lines.append(f"{file_path}:")
         for line_num, line in results[file_path]:
-            lines.append(f"  {line_num}: {line}")
+            lines.append(f"  {line_num}: {_redact_secrets(line)}")
     return "\n".join(lines)
 
 

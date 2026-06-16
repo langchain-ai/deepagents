@@ -1893,6 +1893,29 @@ class TestDisableOrphanedTracing:
             # Nothing was disabled, so no startup notice should be staged.
             assert consume_orphaned_tracing_disabled_notice() is None
 
+    def test_preserves_tracing_when_profile_custom_endpoint_set(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile api_url is a custom endpoint and is trusted without a key."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
     def test_preserves_tracing_when_key_present(self) -> None:
         """Tracing stays enabled when a usable API key is set."""
         env = self._clean_env()

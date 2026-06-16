@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
 
 from deepagents_code._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
@@ -317,6 +317,22 @@ _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
 
+class _LangSmithProfileConfig(Protocol):
+    """Subset of LangSmith profile client config fields used at bootstrap."""
+
+    api_url: str | None
+    """Base URL for a custom self-hosted or proxied LangSmith endpoint."""
+
+    api_key: str | None
+    """API key from the active LangSmith profile."""
+
+    oauth_access_token: str | None
+    """OAuth access token from the active LangSmith profile."""
+
+    oauth_refresh_token: str | None
+    """OAuth refresh token from the active LangSmith profile."""
+
+
 def _quiet_sdk_tracing_logging() -> None:
     """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
 
@@ -335,21 +351,38 @@ def _quiet_sdk_tracing_logging() -> None:
             sdk_logger.addHandler(logging.NullHandler())
 
 
-def _has_langsmith_profile_credentials() -> bool:
-    """Return whether the LangSmith profile config has usable auth material."""
+def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
+    """Return the active LangSmith profile client config, if available."""
     try:
         client_module = importlib.import_module("langsmith.client")
     except ImportError:
-        return False
+        return None
 
     profiles = getattr(client_module, "_profiles", None)
     if profiles is None:
+        return None
+
+    return profiles.load_profile_client_config()
+
+
+def _has_langsmith_profile_credentials() -> bool:
+    """Return whether the LangSmith profile config has usable auth material."""
+    config = _load_langsmith_profile_config()
+    if config is None:
         return False
 
-    config = profiles.load_profile_client_config()
     return bool(
         config.api_key or config.oauth_access_token or config.oauth_refresh_token
     )
+
+
+def _has_langsmith_profile_custom_endpoint() -> bool:
+    """Return whether the LangSmith profile points at a custom endpoint."""
+    config = _load_langsmith_profile_config()
+    if config is None:
+        return False
+
+    return bool((config.api_url or "").strip())
 
 
 def _build_orphaned_tracing_disabled_notice() -> str:
@@ -384,11 +417,12 @@ def _disable_orphaned_tracing() -> None:
     at the atexit flush). When a tracing flag is set but no credentials are
     resolvable, unset the flags so tracing never starts.
 
-    A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`) signals a
-    self-hosted or proxied LangSmith that may ingest without an API key, so an
-    explicitly configured endpoint is trusted and left alone rather than risk
-    disabling a working keyless setup. The SDK loggers are quieted separately by
-    `_quiet_sdk_tracing_logging`, so any residual ingest errors stay off the TUI.
+    A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
+    `api_url`) signals a self-hosted or proxied LangSmith that may ingest without
+    an API key, so an explicitly configured endpoint is trusted and left alone
+    rather than risk disabling a working keyless setup. The SDK loggers are
+    quieted separately by `_quiet_sdk_tracing_logging`, so any residual ingest
+    errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
@@ -405,7 +439,7 @@ def _disable_orphaned_tracing() -> None:
     has_custom_endpoint = any(
         (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
     )
-    if has_custom_endpoint:
+    if has_custom_endpoint or _has_langsmith_profile_custom_endpoint():
         return
 
     has_key = any(

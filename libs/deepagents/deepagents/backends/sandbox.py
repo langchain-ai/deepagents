@@ -694,7 +694,14 @@ except PermissionError:
         return await self._aedit_via_upload(file_path, old_string, new_string, replace_all)
 
     def _build_edit_inline_cmd(self, file_path: str, old_string: str, new_string: str, replace_all: bool) -> str:  # noqa: FBT001
-        payload = json.dumps({"path": file_path, "old": old_string, "new": new_string, "replace_all": replace_all})
+        payload = json.dumps(
+            {
+                "path": file_path,
+                "old": old_string,
+                "new": new_string,
+                "replace_all": replace_all,
+            }
+        )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
 
@@ -719,7 +726,7 @@ except PermissionError:
         new_string: str,
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
-        """Server-side replace via `execute()` — single round-trip."""
+        """Server-side replace via `execute()` (single round-trip)."""
         result = self.execute(self._build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
         return self._parse_edit_output(result.output, file_path, old_string)
 
@@ -867,8 +874,18 @@ except PermissionError:
 
     def _build_grep_cmd(self, pattern: str, path: str | None, glob: str | None) -> str:
         search_path = shlex.quote(path or ".")
+
+        # Build grep command to get structured output
+        # `-Z` separates the filename from line data with NUL, so filenames may
+        # contain `:` without making the output ambiguous.
         grep_opts = "-rHnFZ"
-        glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
+
+        # Add glob pattern if specified
+        glob_pattern = ""
+        if glob:
+            glob_pattern = f"--include={shlex.quote(glob)}"
+
+        # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
         return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
 
@@ -942,6 +959,7 @@ except PermissionError:
         return self._parse_grep_output(result, path)
 
     def _build_glob_cmd(self, pattern: str, search_path: str) -> str:
+        # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
         return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
@@ -950,6 +968,11 @@ except PermissionError:
         output = output.strip()
         if not output:
             return GlobResult(matches=[])
+
+        # Parse JSON output into FileInfo dicts. Any error record (emitted when
+        # the search path itself is unreachable) wins over partial matches —
+        # mirrors read()/ls() convention: sandbox emits a short code, host wraps
+        # it with the search-path prefix.
         file_infos: list[FileInfo] = []
         error: str | None = None
         for line in output.split("\n"):
@@ -960,7 +983,13 @@ except PermissionError:
             if isinstance(data, dict) and "error" in data:
                 error = data["error"]
                 continue
-            file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+            file_infos.append(
+                {
+                    "path": data["path"],
+                    "is_dir": data["is_dir"],
+                }
+            )
+
         if error is not None:
             return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
         return GlobResult(matches=file_infos)

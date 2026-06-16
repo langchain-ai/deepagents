@@ -1837,15 +1837,16 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Recommended models from uninstalled providers are surfaced."""
-        import importlib.util
-
-        if importlib.util.find_spec("langchain_baseten") is not None:
-            pytest.skip("langchain_baseten is installed in this environment")
-
+        from deepagents_code import config_manifest
         from deepagents_code.widgets import model_selector
 
         monkeypatch.setattr(
             model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider not in {"baseten", "ollama"},
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
@@ -1854,7 +1855,9 @@ class TestModelSelectorInstallRouting:
 
         specs = {spec for spec, _ in all_models}
         assert any(spec.startswith("baseten:") for spec in specs)
+        assert any(spec.startswith("ollama:") for spec in specs)
         assert install_extras.get("baseten") == "baseten"
+        assert install_extras.get("ollama") == "ollama"
 
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch

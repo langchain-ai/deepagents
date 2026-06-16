@@ -187,16 +187,18 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
+        provider = self._provider.replace("_", "-").title()
         with Vertical():
             yield Static(
-                "Install provider?",
+                f"Install {provider} support?",
                 classes="install-confirm-title",
                 markup=False,
             )
             yield Static(
                 Content.from_markup(
-                    "[bold]$model[/bold] needs the [bold]$extra[/bold] "
-                    "integration, which isn't installed yet. Install it now?",
+                    "To use [bold]$model[/bold], Deep Agents Code needs to "
+                    "install the [bold]$extra[/bold] integration. This will add "
+                    "the provider package to your dcode environment.",
                     model=self._model_spec,
                     extra=self._extra,
                 ),

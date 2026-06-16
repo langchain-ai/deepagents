@@ -85,15 +85,19 @@ def test_provider_install_extra_known_provider() -> None:
     assert provider_install_extra("google_genai") == "google-genai"
 
 
+def test_provider_install_extra_extra_only_provider() -> None:
+    """Providers without required API keys can still resolve to extras."""
+    assert provider_install_extra("bedrock") == "bedrock"
+    assert provider_install_extra("ollama") == "ollama"
+
+
 def test_provider_install_extra_unknown_provider() -> None:
     """Providers without a curated extra resolve to `None`."""
-    assert provider_install_extra("ollama") is None
     assert provider_install_extra("not-a-real-provider") is None
 
 
 def test_is_provider_package_installed_unknown_provider() -> None:
     """Providers without a curated extra are reported as installed."""
-    assert is_provider_package_installed("ollama") is True
     assert is_provider_package_installed("not-a-real-provider") is True
 
 
@@ -1007,17 +1011,19 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:
-    """Every provider key has dependency metadata, and vice versa.
-
-    The module promises new providers cannot silently miss the config surface;
-    that guarantee only holds for the *availability hints* if the dependency
-    table tracks `PROVIDER_API_KEY_ENV` exactly.
-    """
+    """Provider dependency metadata must cover auth and install surfaces."""
     from deepagents_code.config_manifest import _PROVIDER_DEPENDENCIES
+    from deepagents_code.extras_info import MODEL_PROVIDER_EXTRAS
 
-    assert set(_PROVIDER_DEPENDENCIES) == set(PROVIDER_API_KEY_ENV), (
-        "_PROVIDER_DEPENDENCIES must track PROVIDER_API_KEY_ENV so config show's "
-        "availability hints stay complete for every provider"
+    assert set(PROVIDER_API_KEY_ENV) <= set(_PROVIDER_DEPENDENCIES), (
+        "_PROVIDER_DEPENDENCIES must include every provider credential so config "
+        "show's availability hints stay complete"
+    )
+    assert {extra for _module, extra in _PROVIDER_DEPENDENCIES.values()} == set(
+        MODEL_PROVIDER_EXTRAS
+    ), (
+        "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
+        "model selector can surface install-required recommended models"
     )
 
 

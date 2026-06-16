@@ -6660,6 +6660,94 @@ class TestDefaultAgentNameDrift:
         assert app.DEFAULT_ASSISTANT_ID is canonical
 
 
+class TestInstallExtraModelSwitch:
+    """Test switching after installing model-provider extras."""
+
+    async def test_install_extra_prompts_for_missing_auth_before_switch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freshly installed providers should use the normal auth prompt flow."""
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=True)  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var="BASETEN_API_KEY",
+            ),
+        )
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert isinstance(screen, AuthPromptScreen)
+        dispatch.assert_called_once_with(
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
+
+    async def test_install_extra_failed_restart_does_not_prompt_auth_or_switch(
+        self,
+    ) -> None:
+        """A model-selection install only continues after the server restarts."""
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=False)  # ty: ignore
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+        )
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        dispatch.assert_not_called()
+
+    async def test_install_extra_cancelled_auth_does_not_switch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling the post-install auth prompt leaves the model unchanged."""
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+        from deepagents_code.widgets.auth import AuthResult
+
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=True)  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var="BASETEN_API_KEY",
+            ),
+        )
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+        )
+
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        dispatch.assert_not_called()
+
+
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 

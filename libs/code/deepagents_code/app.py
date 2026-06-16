@@ -3968,7 +3968,9 @@ class DeepAgentsApp(App):
         extra = names[0].lower()
         await self._install_extra(extra, force=force)
 
-    async def _install_extra(self, extra: str, *, force: bool = False) -> bool:
+    async def _install_extra(
+        self, extra: str, *, force: bool = False, auto_restart: bool = False
+    ) -> bool:
         """Install a `deepagents-code` extra, mounting progress and restart offer.
 
         Shared by the `/install <extra>` command and the model selector's
@@ -3978,9 +3980,13 @@ class DeepAgentsApp(App):
         Args:
             extra: The extra name to install (e.g. `"baseten"`, `"quickjs"`).
             force: Skip the "unknown extra" guard for valid-but-unlisted names.
+            auto_restart: Restart the app-owned server immediately after a
+                restart-capable install. Used only when the user selected a model
+                that cannot load until the server respawns.
 
         Returns:
-            `True` when the extra installed successfully; `False` otherwise.
+            `True` when the extra installed successfully and any requested restart
+                completed; `False` otherwise.
         """
         try:
             from deepagents_code.config import _is_editable_install
@@ -4096,6 +4102,18 @@ class DeepAgentsApp(App):
         # (`verify_interpreter_deps` gates `--interpreter`), so a full
         # relaunch is required.
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
+        if restart_capable and auto_restart:
+            if await self._restart_after_install(extra):
+                return True
+            await self._mount_message(
+                AppMessage(
+                    f"Installed extra '{extra}', but couldn't restart the server "
+                    "automatically. Run `/restart` to load it, then select the "
+                    "model again."
+                ),
+            )
+            return False
+
         if restart_capable:
             next_step = "Run `/restart` to load it now, or relaunch dcode."
         else:
@@ -8901,8 +8919,47 @@ class DeepAgentsApp(App):
             model_spec: The `provider:model` spec to switch to once installed.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        if await self._install_extra(extra):
+        if await self._install_extra(
+            extra, auto_restart=True
+        ) and await self._prompt_model_auth_if_needed(model_spec):
             self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+
+    async def _prompt_model_auth_if_needed(self, model_spec: str) -> bool:
+        """Prompt for missing credentials before switching to `model_spec`.
+
+        Args:
+            model_spec: The `provider:model` spec selected after installation.
+
+        Returns:
+            `True` when switching can continue, or `False` when the user did not
+                save required credentials.
+        """
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            get_provider_auth_status,
+        )
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        parsed = ModelSpec.try_parse(model_spec)
+        provider = parsed.provider if parsed else detect_provider(model_spec)
+        if not provider:
+            return True
+
+        status = get_provider_auth_status(provider)
+        if not status.blocks_start:
+            return True
+
+        env_var = status.env_var or get_credential_env_var(provider)
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=f"Required to use {model_spec}",
+            )
+        )
+        return result is AuthResult.SAVED
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
@@ -10859,11 +10916,36 @@ class DeepAgentsApp(App):
             return
 
         if choice == "restart":
-            if not await self._reload_configuration_for_restart():
-                return
-            await self._mount_message(AppMessage("Restarting server..."))
-            if await self._restart_server_manual():
-                await self._mount_message(AppMessage("Restart complete."))
+            await self._restart_after_install(label)
+
+    async def _restart_after_install(self, label: str) -> bool:
+        """Restart the app-owned server after installing a dependency.
+
+        Args:
+            label: Installed extra/package name, used for logs and fallback copy.
+
+        Returns:
+            `True` when the server restarted successfully; `False` when restart is
+                not currently available or fails.
+        """
+        if self._server_proc is None or self._server_kwargs is None:
+            logger.info(
+                "Cannot auto-restart after installing %s: no app-owned server", label
+            )
+            return False
+        if self._agent_running or self._connecting:
+            logger.info(
+                "Cannot auto-restart after installing %s: server is busy",
+                label,
+            )
+            return False
+        if not await self._reload_configuration_for_restart():
+            return False
+        await self._mount_message(AppMessage("Restarting server..."))
+        if not await self._restart_server_manual():
+            return False
+        await self._mount_message(AppMessage("Restart complete."))
+        return True
 
     async def _reload_configuration_for_restart(self) -> bool:
         """Reload config state before respawning the owned server.

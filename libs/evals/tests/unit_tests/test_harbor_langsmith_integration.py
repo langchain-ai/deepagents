@@ -23,7 +23,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     _, target = makefile.split("run-terminal-bench-langsmith:", maxsplit=1)
     target = target.split("\n\n", maxsplit=1)[0]
 
-    assert "HARBOR_AGENT_IMPL ?= cli" in makefile
+    assert "HARBOR_AGENT_IMPL ?= dcode" in makefile
     assert (
         "HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)"
         in makefile
@@ -74,6 +74,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "create-experiment" not in workflow
     assert "add-feedback" not in workflow
     assert "agent_impl:" in workflow
+    assert 'default: "dcode"' in workflow
+    assert "          - dcode" in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
     assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow

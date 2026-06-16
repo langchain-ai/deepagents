@@ -41,7 +41,7 @@ test_watch: ## Run tests in watch mode
 # Harbor jobs
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
-HARBOR_AGENT_IMPL ?= cli
+HARBOR_AGENT_IMPL ?= dcode
 HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
 HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
 HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps

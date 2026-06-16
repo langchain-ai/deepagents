@@ -18,28 +18,41 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
 
     config = json.loads(config_path.read_text())
 
-    assert config["dependencies"] == [
-        "deepagents>=0.6.8",
-        "deepagents-code>=0.1.11",
-        "langchain>=1.3.9,<2.0.0",
-        "langchain-anthropic>=1.4.6,<1.5.0",
-        "langchain-baseten>=0.2.0,<0.3.0",
-        "langchain-fireworks>=1.4.2,<1.5.0",
-        "langchain-google-genai>=4.2.4,<4.3.0",
-        "langchain-groq>=1.1.3,<1.2.0",
-        "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0",
-        "langchain-ollama>=1.1.0,<1.2.0",
-        "langchain-openai>=1.3.0,<1.4.0",
-        "langchain-openrouter>=0.2.3,<0.3.0",
-        "langchain-xai>=1.2.2,<1.3.0",
-        "aiohttp>=3.14.0,<4.0.0",
-        "toml>=0.10.2,<1.0.0",
-    ]
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
         "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
     }
     assert not (project_path / "langsmith.py").exists()
+
+
+def test_make_graph_scrubs_credentials_from_shell_backend_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    graph = object()
+    captured_env: list[dict[str, str]] = []
+
+    def fake_create_cli_agent(**_kwargs: object) -> tuple[object, object]:
+        captured_env.append(dict(langgraph_agent.os.environ))
+        return graph, object()
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "secret")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:test-model")
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    result = langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
+
+    assert result is graph
+    assert captured_env
+    assert "ANTHROPIC_API_KEY" not in captured_env[0]
+    assert "LANGSMITH_API_KEY" not in captured_env[0]
+    assert "LANGSMITH_TRACING" not in captured_env[0]
+    assert langgraph_agent.os.environ["ANTHROPIC_API_KEY"] == "secret"
+    assert langgraph_agent.os.environ["LANGSMITH_API_KEY"] == "secret"
+    assert langgraph_agent.os.environ["LANGSMITH_TRACING"] == "true"
 
 
 def test_make_graph_builds_headless_local_deepagent(

@@ -4,15 +4,42 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
 from langchain.chat_models import init_chat_model
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 _DEFAULT_WORKDIR = Path("/app")
+
+_SHELL_ENV_DENYLIST = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "BASETEN_API_KEY",
+        "FIREWORKS_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "LANGCHAIN_ENDPOINT",
+        "LANGCHAIN_PROJECT",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGSMITH_PROJECT",
+        "LANGSMITH_TRACING",
+        "NVIDIA_API_KEY",
+        "OLLAMA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
+    }
+)
 
 _SYSTEM_PROMPT = """You are running in a Harbor benchmark sandbox.
 
@@ -27,6 +54,19 @@ current directory.
 Prefer non-interactive command variants. Do not run commands that wait for
 human input.
 """
+
+
+@contextmanager
+def _scrub_shell_env() -> Iterator[None]:
+    saved = {name: os.environ.pop(name, None) for name in _SHELL_ENV_DENYLIST}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _configurable(config: dict[str, object] | None) -> dict[str, object]:
@@ -91,19 +131,20 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
-    graph, _backend = create_cli_agent(
-        model=model,
-        assistant_id=assistant_id,
-        sandbox=None,
-        sandbox_type="harbor",
-        system_prompt=_SYSTEM_PROMPT,
-        interactive=False,
-        auto_approve=True,
-        enable_memory=False,
-        enable_skills=False,
-        enable_shell=True,
-        cwd=_workdir(configurable),
-    )
+    with _scrub_shell_env():
+        graph, _backend = create_cli_agent(
+            model=model,
+            assistant_id=assistant_id,
+            sandbox=None,
+            sandbox_type="harbor",
+            system_prompt=_SYSTEM_PROMPT,
+            interactive=False,
+            auto_approve=True,
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=True,
+            cwd=_workdir(configurable),
+        )
     return graph
 
 

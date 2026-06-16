@@ -407,6 +407,9 @@ export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default
 ### Running benchmarks
 
 ```bash
+# Stage checked-out Deep Agents packages for LangGraph's sandbox install
+make stage-harbor-local-deps
+
 # Run via Docker (sequential, all tasks)
 uv run harbor run \
   --agent langgraph \
@@ -472,6 +475,7 @@ Deep Agents -> Harbor (evaluate) -> LangSmith (analyze) -> Improve -> Repeat
 MODEL="$MODEL" HARBOR_LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-langsmith
 
 # Run Harbor directly (-n = concurrency; add -l N to limit tasks)
+make stage-harbor-local-deps
 uv run harbor run \
   --agent langgraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \

@@ -14,7 +14,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     _token_counter_accepts_tools,
@@ -189,6 +189,17 @@ class MockBackend(BackendProtocol):
             msg = "Mock aedit exception"
             raise RuntimeError(msg)
         return self.edit(path, old_string, new_string, replace_all)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Record binary file uploads."""
+        responses = []
+        for path, _ in files:
+            self.write_calls.append((path, "<binary>"))
+            responses.append(FileUploadResponse(path=path, error=None))
+        return responses
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return self.upload_files(files)
 
 
 def make_mock_runtime() -> MagicMock:
@@ -454,6 +465,74 @@ class TestOffloadingBasic:
         assert len(backend.write_calls) == 1
         _, content = backend.write_calls[0]
         assert image_url in content
+
+    def test_offload_externalizes_base64_images(self) -> None:
+        """Base64 image data is decoded to files and referenced by path in the archive (issue #2873).
+
+        `get_buffer_string(format="xml")` drops base64 blocks, so the middleware
+        externalizes each one: decodes it to a binary file at
+        `/conversation_history/images/{sha256}.{ext}` via `upload_files`, then
+        rewrites the block to `<image url="…" />`. This covers all three base64
+        shapes recognized by langchain_core.
+        """
+        import base64 as _base64
+        import hashlib
+
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # 1x1 transparent PNG — minimal valid PNG bytes
+        raw_png = _base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/images/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            # Shape 1: explicit base64 field
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "explicit base64 field"},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="b64-field",
+            ),
+            # Shape 2: top-level data: URL
+            HumanMessage(
+                content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+                id="b64-url",
+            ),
+            # Shape 3: OpenAI-style image_url with data: URL
+            HumanMessage(
+                content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+                id="b64-openai",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Identical images are deduped — only one upload despite three messages.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        # Archive markdown references the image path three times (once per message).
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert archive_write[1].count(expected_path) == 3
+        # No raw base64 payload in the archive.
+        assert b64 not in archive_write[1]
 
     def test_offload_appends_to_existing_content(self) -> None:
         """Test that second summarization appends to existing file."""

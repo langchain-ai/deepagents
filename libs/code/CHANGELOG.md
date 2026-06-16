@@ -4,22 +4,20 @@
 
 ## [0.1.17](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.16...deepagents-code==0.1.17) (2026-06-16)
 
-
 ### Features
 
-* **code:** add agent filter dropdown to `/threads` picker ([#3677](https://github.com/langchain-ai/deepagents/issues/3677)) ([f8193df](https://github.com/langchain-ai/deepagents/commit/f8193df41d7c47626d94252039217f4079d117cd))
-* **code:** add pre-release update support ([#3960](https://github.com/langchain-ai/deepagents/issues/3960)) ([341a5cc](https://github.com/langchain-ai/deepagents/commit/341a5cc55a30d808dbb366b396923c7801c431d2))
-* **code:** make auto-update opt-out by default ([#3994](https://github.com/langchain-ai/deepagents/issues/3994)) ([7ff6e22](https://github.com/langchain-ai/deepagents/commit/7ff6e2224d7ba8462c073333da937c35831f9b34))
-* **code:** non-interactive `deepagents auth` subcommands ([#3910](https://github.com/langchain-ai/deepagents/issues/3910)) ([11a71bb](https://github.com/langchain-ai/deepagents/commit/11a71bbf00c4e6c1f989e70fb3472a65c8d39662))
-* **code:** prompt before updating an out-of-date dcode install ([#3995](https://github.com/langchain-ai/deepagents/issues/3995)) ([a5ec6dd](https://github.com/langchain-ai/deepagents/commit/a5ec6dd0fec66ad321c1cc0f5e2f990c9026e03f))
-* **code:** warn on `--interpreter-tools` without `--interpreter` ([#3976](https://github.com/langchain-ai/deepagents/issues/3976)) ([e68e720](https://github.com/langchain-ai/deepagents/commit/e68e720e2c3caa4e4e7c5e937faf718db7ad2e98))
-
+* Make auto-update opt-out by default ([#3994](https://github.com/langchain-ai/deepagents/issues/3994)) ([7ff6e22](https://github.com/langchain-ai/deepagents/commit/7ff6e2224d7ba8462c073333da937c35831f9b34))
+* Warn on `--interpreter-tools` without `--interpreter` ([#3976](https://github.com/langchain-ai/deepagents/issues/3976)) ([e68e720](https://github.com/langchain-ai/deepagents/commit/e68e720e2c3caa4e4e7c5e937faf718db7ad2e98))
+* Add pre-release update support ([#3960](https://github.com/langchain-ai/deepagents/issues/3960)) ([341a5cc](https://github.com/langchain-ai/deepagents/commit/341a5cc55a30d808dbb366b396923c7801c431d2))
+* Add agent filter dropdown to `/threads` picker ([#3677](https://github.com/langchain-ai/deepagents/issues/3677)) ([f8193df](https://github.com/langchain-ai/deepagents/commit/f8193df41d7c47626d94252039217f4079d117cd))
+* Non-interactive `deepagents auth` subcommands ([#3910](https://github.com/langchain-ai/deepagents/issues/3910)) ([11a71bb](https://github.com/langchain-ai/deepagents/commit/11a71bbf00c4e6c1f989e70fb3472a65c8d39662))
+* Prompt before updating an out-of-date dcode install ([#3995](https://github.com/langchain-ai/deepagents/issues/3995)) ([a5ec6dd](https://github.com/langchain-ai/deepagents/commit/a5ec6dd0fec66ad321c1cc0f5e2f990c9026e03f))
 
 ### Bug Fixes
 
-* **code:** guard against misconfigured LangSmith tracing ([#3993](https://github.com/langchain-ai/deepagents/issues/3993)) ([81acc2e](https://github.com/langchain-ai/deepagents/commit/81acc2ecdada55a98e512f96b0caf8cb0f2c6d29))
-* **code:** guard restart-prompt import against in-place self-upgrade ([#3980](https://github.com/langchain-ai/deepagents/issues/3980)) ([7af13f6](https://github.com/langchain-ai/deepagents/commit/7af13f6ec2440c2e3eb63bad2ff31e809f772804))
-* **code:** skip startup auto-update when already updated in-session ([#3915](https://github.com/langchain-ai/deepagents/issues/3915)) ([3ba3471](https://github.com/langchain-ai/deepagents/commit/3ba347138ac61a474bad58365fdeaa0d00cc1a42))
+* Guard against misconfigured LangSmith tracing ([#3993](https://github.com/langchain-ai/deepagents/issues/3993)) ([81acc2e](https://github.com/langchain-ai/deepagents/commit/81acc2ecdada55a98e512f96b0caf8cb0f2c6d29))
+* Guard restart-prompt import against in-place self-upgrade ([#3980](https://github.com/langchain-ai/deepagents/issues/3980)) ([7af13f6](https://github.com/langchain-ai/deepagents/commit/7af13f6ec2440c2e3eb63bad2ff31e809f772804))
+* Skip startup auto-update when already updated in-session ([#3915](https://github.com/langchain-ai/deepagents/issues/3915)) ([3ba3471](https://github.com/langchain-ai/deepagents/commit/3ba347138ac61a474bad58365fdeaa0d00cc1a42))
 
 ## [0.1.16](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.15...deepagents-code==0.1.16) (2026-06-13)
 

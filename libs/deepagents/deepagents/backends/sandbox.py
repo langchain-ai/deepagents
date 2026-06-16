@@ -14,6 +14,7 @@ operations are derived from those.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -23,6 +24,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    ASYNC_GREP_TIMEOUT,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -959,8 +961,23 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Async version of `grep`, delegating to `aexecute`."""
-        result = await self.aexecute(_build_grep_cmd(pattern, path, glob))
+        """Async version of `grep`, delegating to `aexecute` with timeout guard."""
+        try:
+            result = await asyncio.wait_for(
+                self.aexecute(_build_grep_cmd(pattern, path, glob)),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
         return _parse_grep_output(result, path)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:

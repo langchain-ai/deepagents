@@ -526,6 +526,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 the extra that installs it.
         """
         available = get_available_models()
+        config = ModelConfig.load()
         all_models: list[tuple[str, str]] = [
             (f"{provider}:{model}", provider)
             for provider, models in available.items()
@@ -543,13 +544,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 provider = spec.split(":", 1)[0]
                 if provider in available:
                     continue
+                if not config.is_provider_enabled(provider):
+                    continue
                 extra = provider_install_extra(provider)
                 if extra is None or is_provider_package_installed(provider):
                     continue
                 install_extras[provider] = extra
                 all_models.append((spec, provider))
 
-        config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
         recent_specs = load_recent_models()
         return (

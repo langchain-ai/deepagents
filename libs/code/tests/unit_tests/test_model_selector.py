@@ -1877,6 +1877,45 @@ class TestModelSelectorInstallRouting:
         assert not any(spec.startswith("baseten:") for spec in specs)
         assert install_extras == {}
 
+    async def test_load_model_data_respects_disabled_uninstalled_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        tmp_path: Path,
+    ) -> None:
+        """Disabled providers stay hidden from install suggestions."""
+        from deepagents_code import config_manifest, model_config
+        from deepagents_code.widgets import model_selector
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[models.providers.baseten]
+enabled = false
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        request.addfinalizer(model_config.clear_caches)
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider != "baseten",
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert not any(spec.startswith("baseten:") for spec in specs)
+        assert "baseten" not in install_extras
+
     async def test_select_uninstalled_provider_prompts_install(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

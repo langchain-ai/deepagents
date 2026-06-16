@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from typing import TYPE_CHECKING
 
@@ -224,3 +225,52 @@ class TestOpenRouterRoutingKwargs:
         sig = inspect.signature(DeepAgentsWrapper.__init__)
         param = sig.parameters["openrouter_allow_fallbacks"]
         assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+class TestParentTraceNesting:
+    """The wrapper nests its trace under a harbor-provided LangSmith parent."""
+
+    @staticmethod
+    def _wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DeepAgentsWrapper:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        return DeepAgentsWrapper(logs_dir=tmp_path, model_name="claude-sonnet-4-6")
+
+    def test_add_runtime_env_merges(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wrapper = self._wrapper(tmp_path, monkeypatch)
+        wrapper.add_runtime_env({"HARBOR_LANGSMITH_PARENT": "trace-1"})
+        wrapper.add_runtime_env({"LANGSMITH_PROJECT": "exp-1"})
+        assert wrapper._runtime_env == {
+            "HARBOR_LANGSMITH_PARENT": "trace-1",
+            "LANGSMITH_PROJECT": "exp-1",
+        }
+
+    def test_no_parent_is_noop_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HARBOR_LANGSMITH_PARENT", raising=False)
+        wrapper = self._wrapper(tmp_path, monkeypatch)
+        assert isinstance(wrapper._parent_tracing_context(), contextlib.nullcontext)
+
+    def test_parent_from_runtime_env_yields_real_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HARBOR_LANGSMITH_PARENT", raising=False)
+        wrapper = self._wrapper(tmp_path, monkeypatch)
+        wrapper.add_runtime_env(
+            {
+                "HARBOR_LANGSMITH_PARENT": "20260101T000000000000Zrun-id",
+                "HARBOR_LANGSMITH_BAGGAGE": "langsmith-project=exp-1",
+            }
+        )
+        ctx = wrapper._parent_tracing_context()
+        assert not isinstance(ctx, contextlib.nullcontext)
+
+    def test_parent_falls_back_to_os_environ(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wrapper = self._wrapper(tmp_path, monkeypatch)
+        monkeypatch.setenv("HARBOR_LANGSMITH_PARENT", "20260101T000000000000Zrun-id")
+        ctx = wrapper._parent_tracing_context()
+        assert not isinstance(ctx, contextlib.nullcontext)

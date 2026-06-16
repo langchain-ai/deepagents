@@ -22,7 +22,7 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     """Format an auth manager badge for a provider.
 
     Used by the `/auth` manager, where each provider renders a bracketed,
-    styled badge (e.g. `[stored]`, `[env: ANTHROPIC_API_KEY]`, `[missing]`).
+    styled badge (e.g. `[stored]`, `[env set: ANTHROPIC_API_KEY]`, `[missing]`).
 
     Args:
         status: Provider auth/readiness status.

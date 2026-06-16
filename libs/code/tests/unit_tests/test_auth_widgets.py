@@ -138,9 +138,46 @@ class TestAuthPromptScreen:
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
         assert set(PROVIDER_API_KEY_URLS) <= set(model_config.PROVIDER_API_KEY_ENV)
 
+    def test_every_known_provider_has_a_display_name(self) -> None:
+        """A new provider can't ship without a branded `/auth` label.
+
+        The title-cased fallback would otherwise mask the omission silently, so
+        this pins the reverse direction: every canonical provider must appear in
+        `PROVIDER_DISPLAY_NAMES`.
+        """
+        assert set(model_config.PROVIDER_API_KEY_ENV) <= set(PROVIDER_DISPLAY_NAMES)
+
+    def test_providers_without_key_url_are_intentionally_omitted(self) -> None:
+        """Only providers with no self-serve key page may skip `PROVIDER_API_KEY_URLS`.
+
+        `azure_openai` keys live on a per-resource page (special-cased in the
+        instructions) and `google_vertexai` uses application-default
+        credentials rather than an API-key page. Any other omission is an
+        oversight that should fail here rather than ship a generic docs link.
+        """
+        no_self_serve_key_page = {"azure_openai", "google_vertexai"}
+        missing = set(model_config.PROVIDER_API_KEY_ENV) - set(PROVIDER_API_KEY_URLS)
+        assert missing == no_self_serve_key_page
+
     def test_display_name_falls_back_to_title_cased_key(self) -> None:
         """Unmapped provider keys degrade to a readable title-cased label."""
         assert _provider_display_name("acme_gateway") == "Acme Gateway"
+
+    def test_config_display_name_overrides_builtin_map(self) -> None:
+        """A configured `display_name` wins over the built-in label.
+
+        Pins the resolution order (config > built-in map) so reordering the
+        `or` chain in `_provider_display_name` would fail a test instead of
+        silently shadowing user config.
+        """
+        config = model_config.ModelConfig(
+            providers={"openai": {"display_name": "Custom OpenAI"}}
+        )
+        assert _provider_display_name("openai", config) == "Custom OpenAI"
+        # Without the override, resolution falls through to the built-in map.
+        empty = model_config.ModelConfig()
+        builtin_label = PROVIDER_DISPLAY_NAMES["openai"]
+        assert _provider_display_name("openai", empty) == builtin_label
 
     def test_is_safe_acquisition_url_rejects_non_http_schemes(self) -> None:
         """Only http/https URLs are eligible to render as clickable links."""
@@ -327,6 +364,29 @@ api_key_env = "MY_GATEWAY_API_KEY"
             # back to the generic setup-docs link.
             assert "Provider setup docs" in str(content)
 
+    async def test_unsafe_configured_key_url_surfaces_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected `api_key_url` is surfaced in the UI, not just the log."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "javascript:alert(1)"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("my_gateway", "MY_GATEWAY_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "configured api_key_url was ignored" in text
+            assert "unsupported URL scheme" in text
+
     async def test_f2_toggles_advanced_details(self) -> None:
         """Advanced endpoint and env-var details are hidden behind F2."""
         app = _AuthHostApp()
@@ -377,6 +437,42 @@ api_key_env = "MY_GATEWAY_API_KEY"
                 is True
             )
             assert app.screen.query_one("#auth-prompt-base-url", Input).display is True
+
+    async def test_collapsing_advanced_restores_key_input_focus(self) -> None:
+        """Collapsing Advanced returns focus to the key input for fast entry."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")  # expand
+            await pilot.pause()
+            await pilot.press("f2")  # collapse
+            await pilot.pause()
+            key_input = app.screen.query_one("#auth-prompt-input", Input)
+            assert app.screen.focused is key_input
+
+    async def test_link_and_toggle_hover_use_pointer(self) -> None:
+        """A pointer shows over links and the Advanced row; leaving resets it."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = app.screen
+            if not isinstance(screen, AuthPromptScreen):
+                pytest.fail(f"expected AuthPromptScreen, got {type(screen).__name__}")
+            toggle = screen.query_one("#auth-prompt-advanced-toggle", Static)
+            link_event = SimpleNamespace(
+                style=SimpleNamespace(link="https://example.com"), widget=None
+            )
+            screen.on_mouse_move(link_event)  # ty: ignore[invalid-argument-type]
+            assert screen.styles.pointer == "pointer"
+            toggle_event = SimpleNamespace(
+                style=SimpleNamespace(link=None), widget=toggle
+            )
+            screen.on_mouse_move(toggle_event)  # ty: ignore[invalid-argument-type]
+            assert screen.styles.pointer == "pointer"
+            screen.on_leave()
+            assert screen.styles.pointer == "default"
 
     async def test_existing_base_url_expands_advanced_by_default(self) -> None:
         """Stored endpoint values remain visible when replacing a key."""
@@ -587,6 +683,14 @@ api_key_env = "MY_GATEWAY_API_KEY"
             error_widgets = app.screen.query(".auth-prompt-error")
             warning_text = " ".join(str(w.render()) for w in error_widgets)
             assert "unreadable" in warning_text
+            # The MISSING fallback renders no env-source block and an unprefixed
+            # title (no warning/checkmark glyph), confirming the cosmetic-only
+            # degradation the construction guard promises.
+            assert not app.screen.query("#auth-prompt-env-status")
+            title_text = str(app.screen.query_one(".auth-prompt-title", Static).content)
+            glyphs = get_glyphs()
+            assert glyphs.warning not in title_text
+            assert glyphs.checkmark not in title_text
 
     async def test_helper_text_describes_precedence(self) -> None:
         """Helper text names both env vars and their order vs the stored key.

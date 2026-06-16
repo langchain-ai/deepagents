@@ -477,7 +477,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # Treat unreadable as "no env source" / "no existing key" and surface a
         # one-line warning at compose time. The status is consumed only
         # cosmetically (title prefix, env note), so a MISSING fallback is safe.
+        # The config is loaded once here so compose-time helpers can read the
+        # cached instance instead of reloading outside this crash-safety guard.
         try:
+            self._config = ModelConfig.load()
             self._auth_status = get_provider_auth_status(provider)
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
@@ -487,6 +490,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             logger.warning(
                 "Could not read stored credentials for %s: %s", provider, exc
             )
+            self._config = ModelConfig()
             self._auth_status = ProviderAuthStatus(
                 state=ProviderAuthState.MISSING, provider=provider
             )
@@ -504,7 +508,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Widgets that make up the auth prompt modal.
         """
         glyphs = get_glyphs()
-        provider_label = _provider_display_name(self._provider)
+        provider_label = _provider_display_name(self._provider, self._config)
         with Vertical():
             # Tag the title with `(stored)` so the user knows a replacement
             # (or the `Ctrl+D delete` affordance shown in the help line) is
@@ -686,15 +690,19 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Build provider-specific API-key acquisition guidance.
 
         Returns:
-            Content shown before the API-key input.
+            Content shown before the API-key input. Appends a muted notice when
+                a user-configured `api_key_url` was rejected for using an
+                unsupported URL scheme.
         """
-        config = ModelConfig.load()
+        config = self._config
         configured_url = config.get_provider_api_key_url(self._provider)
+        rejected_url = False
         if configured_url and not _is_safe_acquisition_url(configured_url):
             logger.warning(
                 "Ignoring api_key_url for %s: unsupported URL scheme", self._provider
             )
             configured_url = None
+            rejected_url = True
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
@@ -705,15 +713,28 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         )
         provider = _provider_display_name(self._provider, config)
         if self._provider == "azure_openai":
-            return Content.assemble(
+            instructions = Content.assemble(
                 "Find your key in your Azure OpenAI resource's "
                 "Keys and Endpoint page, then paste it below. ",
                 (label, self._link_style(url)),
             )
-        return Content.assemble(
-            f"Sign in to {provider}, create or copy an API key, then paste it below. ",
-            (label, self._link_style(url)),
-        )
+        else:
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+            )
+        if rejected_url:
+            notice = (
+                "Your configured api_key_url was ignored (unsupported URL "
+                "scheme); showing the default link instead."
+            )
+            instructions = Content.assemble(
+                instructions,
+                "\n",
+                (notice, "italic $text-muted"),
+            )
+        return instructions
 
     def _build_advanced_toggle_label(self) -> str:
         """Build the disclosure-row label for advanced settings.

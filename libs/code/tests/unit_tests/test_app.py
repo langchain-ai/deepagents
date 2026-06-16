@@ -2066,6 +2066,8 @@ class TestModalScreenCtrlDHandling:
             assert app.focused is not None
             assert app.focused.id == "auth-prompt-input"
 
+            await pilot.press("f2")
+            await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
             assert app.focused is not None

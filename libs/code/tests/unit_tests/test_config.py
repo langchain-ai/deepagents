@@ -19,11 +19,14 @@ from deepagents_code.config import (
     Settings,
     _create_model_from_class,
     _create_model_via_init,
+    _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _quiet_sdk_tracing_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
     build_langsmith_thread_url,
+    consume_orphaned_tracing_disabled_notice,
     create_model,
     detect_mode_prefix,
     detect_provider,
@@ -1807,6 +1810,229 @@ class TestGetLangsmithProjectName:
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "deepagents-code"
+
+
+class TestDisableOrphanedTracing:
+    """Tests for _disable_orphaned_tracing()."""
+
+    _ALL_TRACING_VARS = (
+        "LANGSMITH_TRACING_V2",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
+        "LANGSMITH_CONFIG_FILE",
+        "LANGSMITH_PROFILE",
+    )
+
+    def _clean_env(self) -> dict[str, str]:
+        consume_orphaned_tracing_disabled_notice()
+        env = dict.fromkeys(self._ALL_TRACING_VARS, "")
+        env["LANGSMITH_CONFIG_FILE"] = "/__deepagents_missing_langsmith_config__.json"
+        return env
+
+    def test_disables_tracing_when_no_key(self) -> None:
+        """Tracing flag on with empty key should be turned off."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+            # One-shot: the notice clears on read, so a second read is empty.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_notice_mentions_langsmith_auth_login_when_cli_available(self) -> None:
+        """The startup notice gives the CLI login command only when available."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value="/bin/langsmith"),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" in notice
+
+    def test_notice_omits_langsmith_auth_login_when_cli_unavailable(self) -> None:
+        """The startup notice avoids unavailable CLI commands."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value=None),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" not in notice
+        assert "LANGSMITH_API_KEY" in notice
+
+    def test_preserves_tracing_when_custom_endpoint_set(self) -> None:
+        """A custom endpoint (self-hosted/proxied) is trusted even without a key.
+
+        Keyless ingestion is valid against a self-hosted LangSmith, so an
+        explicitly configured endpoint must not trip the orphaned-tracing guard.
+        """
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_profile_custom_endpoint_set(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile api_url is a custom endpoint and is trusted without a key."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_key_present(self) -> None:
+        """Tracing stays enabled when a usable API key is set."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # No tracing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """LANGCHAIN_API_KEY also counts as a usable key."""
+        env = self._clean_env()
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGCHAIN_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_preserves_tracing_when_profile_api_key_present(
+        self, tmp_path: Path
+    ) -> None:
+        """LangSmith profile API keys count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_preserves_tracing_when_profile_oauth_present(self, tmp_path: Path) -> None:
+        """LangSmith profile OAuth credentials count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"oauth":{"refresh_token":"refresh"}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_noop_when_tracing_disabled(self) -> None:
+        """Does nothing when no tracing flag is enabled."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "false"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_disables_all_set_tracing_flags(self) -> None:
+        """Every set tracing flag is turned off, not just one."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_TRACING"] = "1"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestQuietSdkTracingLogging:
+    """Tests for _quiet_sdk_tracing_logging()."""
+
+    def test_attaches_null_handler_without_debug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without debug, SDK loggers get a NullHandler so logs stay off stderr."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated calls do not stack duplicate handlers."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert len(handlers) == 1
 
 
 class TestFetchLangsmithProjectUrl:

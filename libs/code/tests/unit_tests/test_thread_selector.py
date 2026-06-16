@@ -106,6 +106,31 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
     return _ctx()
 
 
+def _patch_available_agents(names: list[str] | None = None) -> Any:  # noqa: ANN401
+    """Return a patch context manager for `get_available_agent_names`.
+
+    Args:
+        names: Configured agent names to return. Defaults to an empty list so
+            the agent filter depends only on the (deterministic) thread data.
+    """
+    return patch(
+        "deepagents_code.agent.get_available_agent_names",
+        return_value=list(names) if names is not None else [],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_available_agents() -> Any:  # noqa: ANN401
+    """Keep the agent filter independent of the machine's `~/.deepagents/`.
+
+    `_load_threads` scans the user's agents directory to populate the filter
+    dropdown. Without isolation the option set would vary by developer/CI host,
+    so default it to empty; tests that need specific agents patch it locally.
+    """
+    with _patch_available_agents():
+        yield
+
+
 def _style_scalar_value(value: object) -> int:
     """Return the integer value from a Textual style scalar.
 
@@ -464,11 +489,16 @@ class TestThreadSelectorTabSort:
                     Checkbox,
                 )
 
+                agent_select = screen.query_one("#thread-agent-select", Select)
                 assert filter_input.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
                 assert scope_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
@@ -506,6 +536,7 @@ class TestThreadSelectorTabSort:
 
                 filter_input = screen.query_one("#thread-filter", Input)
                 scope_select = screen.query_one("#thread-scope-select", Select)
+                agent_select = screen.query_one("#thread-agent-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 assert filter_input.has_focus
 
@@ -515,7 +546,15 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.pause()
+                assert agent_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
                 assert sort_switch.has_focus
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert agent_select.has_focus
 
                 await pilot.press("shift+tab")
                 await pilot.pause()
@@ -524,6 +563,52 @@ class TestThreadSelectorTabSort:
                 await pilot.press("shift+tab")
                 await pilot.pause()
                 assert filter_input.has_focus
+
+    async def test_thread_load_preserves_open_agent_dropdown_focus(self) -> None:
+        """Async thread loading should not move focus away from an open dropdown."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_list_threads(
+            *_args: object, **_kwargs: object
+        ) -> list[ThreadInfo]:
+            started.set()
+            await release.wait()
+            return MOCK_THREADS
+
+        mock_list = AsyncMock(side_effect=delayed_list_threads)
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+
+                agent_select = screen.query_one("#thread-agent-select", Select)
+                assert agent_select.expanded
+                assert isinstance(screen.focused, ThreadScopeSelectOverlay)
+
+                with patch.object(screen, "_scroll_selected_into_view") as mock_scroll:
+                    release.set()
+                    for _ in range(20):
+                        await pilot.pause()
+                        if screen._disk_load_complete and screen._option_widgets:
+                            break
+
+                assert agent_select.expanded
+                assert isinstance(screen.focused, ThreadScopeSelectOverlay)
+                mock_scroll.assert_not_called()
 
     async def test_cached_filter_controls_handle_tab_and_typing(self) -> None:
         """Tab traversal and type-to-search should use cached control lookups."""
@@ -557,7 +642,7 @@ class TestThreadSelectorTabSort:
                     assert screen._filter_focus_order() == controls
                     assert controls[0] is filter_input
                     assert controls[1] is scope_select
-                    assert controls[2] is sort_switch
+                    assert controls[3] is sort_switch
 
                     screen.on_key(event)
 
@@ -579,6 +664,7 @@ class TestThreadSelectorTabSort:
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -604,6 +690,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -634,6 +721,7 @@ class TestThreadSelectorTabSort:
 
                 await pilot.press("tab")
                 await pilot.press("tab")
+                await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
 
@@ -662,6 +750,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
@@ -4051,3 +4140,461 @@ class TestThreadSelectorDomSkip:
 
                 # Same widget objects should still be mounted (no rebuild)
                 assert screen._option_widgets == initial_widgets
+
+
+class TestThreadSelectorAgentFilter:
+    """Tests for the agent filter dropdown in the Options panel."""
+
+    def test_agent_filtered_threads_no_filter(self) -> None:
+        """No agent filter returns all threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        assert screen._filter_agent is None
+        result = screen._agent_filtered_threads()
+        assert len(result) == 3
+
+    def test_agent_filtered_threads_with_filter(self) -> None:
+        """Agent filter returns only matching threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "my-agent"
+        result = screen._agent_filtered_threads()
+        assert len(result) == 2
+        assert all(t["agent_name"] == "my-agent" for t in result)
+
+    def test_agent_filtered_threads_unknown_agent(self) -> None:
+        """Threads with no agent_name are matched by the '(unknown)' sentinel."""
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "t1",
+                "agent_name": None,
+                "updated_at": "2025-01-01T00:00:00",
+                "created_at": "2025-01-01T00:00:00",
+            },
+            {
+                "thread_id": "t2",
+                "agent_name": "my-agent",
+                "updated_at": "2025-01-01T00:00:00",
+                "created_at": "2025-01-01T00:00:00",
+            },
+        ]
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=threads,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "(unknown)"
+        result = screen._agent_filtered_threads()
+        assert len(result) == 1
+        assert result[0]["thread_id"] == "t1"
+
+    def test_update_filtered_list_respects_agent_filter(self) -> None:
+        """_update_filtered_list applies agent filter before fuzzy search."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "other-agent"
+        screen._filter_text = ""
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 1
+        assert screen._filtered_threads[0]["thread_id"] == "def67890"
+
+    def test_update_filtered_list_agent_and_text_combined(self) -> None:
+        """Agent filter and text filter are ANDed together."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        screen._filter_agent = "my-agent"
+        screen._filter_text = "Hello"
+        screen._update_filtered_list()
+        assert len(screen._filtered_threads) == 1
+        assert screen._filtered_threads[0]["thread_id"] == "abc12345"
+
+    def test_collect_agent_options_all_sentinel_first(self) -> None:
+        """collect_agent_options always returns 'All agents' as the first option."""
+        from deepagents_code.widgets.thread_selector import _AGENT_VALUE_ALL
+
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        options = screen._collect_agent_options()
+        assert options[0] == ("All agents", _AGENT_VALUE_ALL)
+
+    def test_collect_agent_options_sorted_unique(self) -> None:
+        """collect_agent_options returns sorted unique agent names."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        # Inject mixed-case configured names so the order assertion distinguishes
+        # the production case-insensitive `str.casefold` key from a plain
+        # case-sensitive sort: the latter would place "Zebra" (uppercase) ahead
+        # of the lowercase names rather than last.
+        screen._available_agent_names = ["Zebra", "apple"]
+        options = screen._collect_agent_options()
+        # First entry is the sentinel; the rest are unique agents in
+        # case-insensitive order with the thread/config overlap de-duplicated.
+        labels = [label for label, _ in options[1:]]
+        assert labels == ["apple", "my-agent", "other-agent", "Zebra"]
+        assert len(set(labels)) == len(labels)  # no duplicates
+
+    def test_collect_agent_options_includes_configured_agents(self) -> None:
+        """Configured agents (the /agents list) appear even without threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        # Simulate the off-thread scan of ~/.deepagents/ surfacing an agent that
+        # has not produced any threads yet, plus one that overlaps a thread.
+        screen._available_agent_names = ["my-agent", "zeta-agent"]
+        labels = [label for label, _ in screen._collect_agent_options()[1:]]
+        # Threadless configured agent is selectable...
+        assert "zeta-agent" in labels
+        # ...alongside thread-derived names, with the overlap de-duplicated.
+        assert "my-agent" in labels
+        assert "other-agent" in labels
+        assert labels.count("my-agent") == 1
+        assert labels == sorted(labels, key=str.casefold)
+
+    async def test_load_threads_populates_configured_agents(self) -> None:
+        """`/threads` agent filter mirrors `/agents`, not just agents w/ threads."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            _patch_available_agents(["brand-new-agent"]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._available_agent_names == ["brand-new-agent"]
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                values = set(agent_select._legal_values)
+                # Configured-but-threadless agent is offered as a filter option.
+                assert "brand-new-agent" in values
+                # Thread-derived agents remain selectable too.
+                assert "my-agent" in values
+                assert "other-agent" in values
+
+    async def test_agent_select_widget_present(self) -> None:
+        """The agent Select widget is rendered inside the Options panel."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                assert agent_select is not None
+
+    async def test_agent_select_filters_thread_list(self) -> None:
+        """Changing the agent dropdown filters the visible thread list."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._filtered_threads) == 3
+
+                # Set agent filter directly and re-run filtering
+                screen._filter_agent = "my-agent"
+                screen._update_filtered_list()
+
+                assert len(screen._filtered_threads) == 2
+                assert all(
+                    t["agent_name"] == "my-agent" for t in screen._filtered_threads
+                )
+
+    async def test_reload_clears_stale_agent_filter_and_refilters(self) -> None:
+        """Reloading without the selected agent should show all remaining rows."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_SELECT_ID,
+            _AGENT_VALUE_ALL,
+        )
+
+        reloaded_threads = [MOCK_THREADS[1]]
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                agent_select.value = "my-agent"
+                screen._filter_agent = "my-agent"
+                screen._update_filtered_list()
+                assert len(screen._filtered_threads) == 2
+
+                with _patch_list_threads(reloaded_threads):
+                    await screen._load_threads()
+                await pilot.pause()
+
+                assert screen._filter_agent is None
+                assert agent_select.value == _AGENT_VALUE_ALL
+                assert screen._filtered_threads == reloaded_threads
+
+    async def test_enter_opens_agent_select_without_resuming_thread(self) -> None:
+        """Enter on the focused agent control should open its dropdown."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.has_focus
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert agent_select.expanded
+                assert not app.dismissed
+
+    async def test_tab_keys_move_open_agent_select_highlight(self) -> None:
+        """Tab and Shift+Tab should move the agent dropdown highlight while open."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert agent_select.expanded
+                overlay = agent_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 0
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert agent_select.expanded
+                assert overlay.highlighted == 1
+                assert not sort_switch.has_focus
+                assert not app.dismissed
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert agent_select.expanded
+                assert overlay.highlighted == 0
+                assert not scope_select.has_focus
+                assert not app.dismissed
+
+    async def test_escape_closes_open_agent_select_without_dismissing(self) -> None:
+        """Esc should close the agent dropdown before it cancels the selector."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert agent_select.expanded
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert not agent_select.expanded
+                assert agent_select.has_focus
+                assert not app.dismissed
+
+    async def test_agent_name_load_failure_does_not_strand_picker(self) -> None:
+        """An unexpected agent-scan error must not abort the post-load build.
+
+        `_load_available_agent_names` is awaited after `_load_threads`'s own
+        try/except, so a raise there would otherwise skip the filter refresh,
+        DOM build, and checkpoint enrichment, leaving the picker half-rendered.
+        """
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_code.agent.get_available_agent_names",
+                side_effect=RuntimeError("agent scan blew up"),
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                screen: object = None
+                for _ in range(20):
+                    await pilot.pause()
+                    screen = app.screen
+                    if (
+                        isinstance(screen, ThreadSelectorScreen)
+                        and screen._disk_load_complete
+                        and screen._option_widgets
+                    ):
+                        break
+
+                assert isinstance(screen, ThreadSelectorScreen)
+                # The load completed and the list was built despite the failure.
+                assert screen._disk_load_complete
+                assert len(screen._filtered_threads) == 3
+                assert screen._option_widgets
+                # The filter degraded to thread-derived names only (the scan
+                # never assigned, so the cache keeps its empty default).
+                assert screen._available_agent_names == []
+
+    async def test_reload_preserves_present_agent_filter(self) -> None:
+        """Reloading with the selected agent still present keeps the filter."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                agent_select.value = "my-agent"
+                screen._filter_agent = "my-agent"
+                screen._update_filtered_list()
+                assert len(screen._filtered_threads) == 2
+
+                # Reload with a thread set that still contains my-agent.
+                with _patch_list_threads(MOCK_THREADS):
+                    await screen._load_threads()
+                for _ in range(20):
+                    await pilot.pause()
+                    if (
+                        screen._filter_agent == "my-agent"
+                        and len(screen._filtered_threads) == 2
+                    ):
+                        break
+
+                # Selection and filter survive the reload (no fallback to All).
+                assert screen._filter_agent == "my-agent"
+                assert agent_select.value == "my-agent"
+                assert len(screen._filtered_threads) == 2
+                assert all(
+                    t["agent_name"] == "my-agent" for t in screen._filtered_threads
+                )
+
+    async def test_agent_dropdown_change_filters_via_event(self) -> None:
+        """Selecting an agent via the dropdown event filters the list.
+
+        Drives the real `Select.Changed` handler rather than poking
+        `_filter_agent`, covering the `_AGENT_VALUE_ALL` translation and the
+        async `_filter_and_build` path the handler schedules.
+        """
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_SELECT_ID,
+            _AGENT_VALUE_ALL,
+        )
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._filter_agent is None
+                assert len(screen._filtered_threads) == 3
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+
+                agent_select.value = "my-agent"
+                for _ in range(20):
+                    await pilot.pause()
+                    if (
+                        screen._filter_agent == "my-agent"
+                        and len(screen._filtered_threads) == 2
+                    ):
+                        break
+                assert screen._filter_agent == "my-agent"
+                assert len(screen._filtered_threads) == 2
+
+                # Returning to the sentinel clears the filter.
+                agent_select.value = _AGENT_VALUE_ALL
+                for _ in range(20):
+                    await pilot.pause()
+                    if (
+                        screen._filter_agent is None
+                        and len(screen._filtered_threads) == 3
+                    ):
+                        break
+                assert screen._filter_agent is None
+                assert len(screen._filtered_threads) == 3
+
+    async def test_confirming_delete_ignores_agent_select_change(self) -> None:
+        """Agent dropdown changes are ignored while a delete is being confirmed."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                screen._confirming_delete = True
+
+                agent_select.value = "my-agent"
+                for _ in range(10):
+                    await pilot.pause()
+
+                # The guard short-circuits before mutating the filter state.
+                assert screen._filter_agent is None
+                assert len(screen._filtered_threads) == 3

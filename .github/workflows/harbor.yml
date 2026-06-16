@@ -401,6 +401,8 @@ jobs:
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \
+            --agent-timeout-multiplier 1.5 \
+            --agent-setup-timeout-multiplier 2.0 \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
             --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"

@@ -544,7 +544,7 @@ def _parse_glob_output(output: str, search_path: str) -> GlobResult:
     return GlobResult(matches=file_infos)
 
 
-def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, replace_all: bool) -> str:  # noqa: FBT001
+def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, replace_all: bool) -> str:
     payload = json.dumps({"path": file_path, "old": old_string, "new": new_string, "replace_all": replace_all})
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
@@ -578,7 +578,7 @@ def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResu
     return EditResult(path=file_path, occurrences=data.get("count", 1))
 
 
-def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, replace_all: bool) -> str:  # noqa: FBT001
+def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, replace_all: bool) -> str:
     return _EDIT_TMPFILE_TEMPLATE.format(
         old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
         new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
@@ -755,7 +755,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing exact string occurrences.
 
@@ -789,32 +790,34 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
 
         if payload_size <= _EDIT_INLINE_MAX_BYTES:
-            return self._edit_inline(file_path, old_string, new_string, replace_all)
+            return self._edit_inline(file_path, old_string, new_string, replace_all=replace_all)
 
-        return self._edit_via_upload(file_path, old_string, new_string, replace_all)
+        return self._edit_via_upload(file_path, old_string, new_string, replace_all=replace_all)
 
     async def aedit(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool = False,  # noqa: FBT001, FBT002
+        *,
+        replace_all: bool = False,
     ) -> EditResult:
         """Async version of `edit`, delegating to `aexecute` and `aupload_files`."""
         payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
         if payload_size <= _EDIT_INLINE_MAX_BYTES:
-            return await self._aedit_inline(file_path, old_string, new_string, replace_all)
-        return await self._aedit_via_upload(file_path, old_string, new_string, replace_all)
+            return await self._aedit_inline(file_path, old_string, new_string, replace_all=replace_all)
+        return await self._aedit_via_upload(file_path, old_string, new_string, replace_all=replace_all)
 
     def _edit_inline(
         self,
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool,  # noqa: FBT001
+        *,
+        replace_all: bool,
     ) -> EditResult:
         """Server-side replace via `execute()` (single round-trip)."""
-        result = self.execute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
+        result = self.execute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
         return _parse_edit_output(result.output, file_path, old_string)
 
     async def _aedit_inline(
@@ -822,10 +825,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool,  # noqa: FBT001
+        *,
+        replace_all: bool,
     ) -> EditResult:
         """Async version of `_edit_inline`, delegating to `aexecute`."""
-        result = await self.aexecute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
+        result = await self.aexecute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
         return _parse_edit_output(result.output, file_path, old_string)
 
     def _edit_via_upload(
@@ -833,7 +837,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool,  # noqa: FBT001
+        *,
+        replace_all: bool,
     ) -> EditResult:
         """Upload old/new as temp files, replace server-side.
 
@@ -857,7 +862,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             if r.error:
                 return EditResult(error=f"Error editing file '{file_path}': {r.error}")
 
-        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all)
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
         result = self.execute(cmd)
         output = result.output.rstrip()
 
@@ -893,7 +898,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         old_string: str,
         new_string: str,
-        replace_all: bool,  # noqa: FBT001
+        *,
+        replace_all: bool,
     ) -> EditResult:
         """Async version of `_edit_via_upload`, delegating to `aexecute` and `aupload_files`."""
         uid = base64.b32encode(os.urandom(10)).decode("ascii").lower()
@@ -912,7 +918,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             if r.error:
                 return EditResult(error=f"Error editing file '{file_path}': {r.error}")
 
-        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all)
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
         result = await self.aexecute(cmd)
         output = result.output.rstrip()
 

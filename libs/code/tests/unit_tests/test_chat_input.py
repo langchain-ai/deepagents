@@ -337,7 +337,7 @@ class TestInputActionButtons:
 
         copied: list[str] = []
 
-        def fake_copy(app: object, text: str) -> tuple[bool, str | None]:
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
             copied.append(text)
             return True, None
 
@@ -362,7 +362,7 @@ class TestInputActionButtons:
 
         copied: list[str] = []
 
-        def fake_copy(app: object, text: str) -> tuple[bool, str | None]:
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
             copied.append(text)
             return True, None
 

@@ -8449,9 +8449,7 @@ class DeepAgentsApp(App):
             timeout=timeout,
             markup=False,
         )
-        self.set_timer(
-            timeout, lambda: setattr(self, "_clear_input_pending", False)
-        )
+        self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

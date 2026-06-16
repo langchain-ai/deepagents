@@ -237,7 +237,6 @@ class InputActionButton(Static):
     DEFAULT_CSS = """
     InputActionButton {
         height: 1;
-        width: auto;
         margin: 0 0 0 1;
         text-style: bold;
     }
@@ -247,10 +246,12 @@ class InputActionButton(Static):
     }
 
     InputActionButton.input-action-clear {
+        width: 5;
         color: $error;
     }
 
     InputActionButton.input-action-copy {
+        width: 8;
         color: $primary;
     }
     """
@@ -2393,9 +2394,7 @@ class ChatInput(Vertical):
             return False
         return self._text_area.discard_text()
 
-    def on_input_action_button_clicked(
-        self, event: InputActionButton.Clicked
-    ) -> None:
+    def on_input_action_button_clicked(self, event: InputActionButton.Clicked) -> None:
         """Handle clicks on the `[ X ]` / `[ COPY ]` input buttons."""
         event.stop()
         if event.action == "clear":
@@ -2406,9 +2405,7 @@ class ChatInput(Vertical):
     def _clear_via_button(self) -> None:
         """Clear the draft from the `[ X ]` button (undoable with ctrl+z)."""
         if self.discard_text():
-            self.app.notify(
-                "Input cleared (ctrl+z to undo)", timeout=3, markup=False
-            )
+            self.app.notify("Input cleared (ctrl+z to undo)", timeout=3, markup=False)
         if self._text_area is not None:
             self._text_area.focus()
 

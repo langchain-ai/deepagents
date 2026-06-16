@@ -654,6 +654,8 @@ class Glyphs:
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
     cursor: str  # cursor vs >
+    disclosure_collapsed: str  # ▸ vs >
+    disclosure_expanded: str  # ▾ vs v
 
     # Box-drawing characters
     box_vertical: str  # │ vs |
@@ -684,6 +686,8 @@ UNICODE_GLYPHS = Glyphs(
     arrow_down="↓",
     bullet="•",
     cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
+    disclosure_collapsed="▸",
+    disclosure_expanded="▾",
     # Box-drawing characters
     box_vertical="│",
     box_horizontal="─",
@@ -710,6 +714,8 @@ ASCII_GLYPHS = Glyphs(
     arrow_down="v",
     bullet="-",
     cursor=">",
+    disclosure_collapsed=">",
+    disclosure_expanded="v",
     # Box-drawing characters
     box_vertical="|",
     box_horizontal="-",

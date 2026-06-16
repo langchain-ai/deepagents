@@ -1182,6 +1182,26 @@ api_key_env = "OPENAI_API_KEY"
         ]
         assert config.providers["anthropic"]["api_key_env"] == "ANTHROPIC_API_KEY"
 
+    def test_loads_provider_display_metadata(self, tmp_path):
+        """Loads provider metadata used by auth UI."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "https://gateway.example/keys"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_display_name("my_gateway") == "My Gateway"
+        assert (
+            config.get_provider_api_key_url("my_gateway")
+            == "https://gateway.example/keys"
+        )
+        assert config.get_provider_display_name("missing") is None
+        assert config.get_provider_api_key_url("missing") is None
+
     def test_loads_custom_base_url(self, tmp_path):
         """Loads custom base_url for providers."""
         config_path = tmp_path / "config.toml"

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
-    from textual.events import Click, Key
+    from textual.events import Click, Key, MouseMove
 
     from deepagents_code.sessions import ThreadInfo
 
@@ -2245,6 +2245,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open Rich-style hyperlinks on single click."""
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over Rich-style hyperlinks."""
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the selector."""
+        self.styles.pointer = "default"
 
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.

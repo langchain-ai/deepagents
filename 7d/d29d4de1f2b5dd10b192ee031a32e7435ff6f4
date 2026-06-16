@@ -1,0 +1,45 @@
+libs/evals/tests/harbor_tasks/write-file-simple/task.toml
+  s_0be8bec6b9bed6::t_d912883a5bf9b9 1-33
+libs/evals/tests/harbor_tasks/write-file-simple/instruction.md
+  s_0be8bec6b9bed6::t_fa33725ff9fc21 1-4
+libs/evals/tests/harbor_tasks/write-file-simple/README.md
+  s_0be8bec6b9bed6::t_546597776822d8 1-53
+libs/evals/tests/unit_tests/test_harbor_task_reward.py
+  s_0be8bec6b9bed6::t_4e7a2ab17d2774 14,17-19
+  s_0be8bec6b9bed6::t_c8462c29df089b 1-13,15-16,20-176
+libs/evals/deepagents_harbor/langsmith.py
+  s_0be8bec6b9bed6::t_4ab5dfeb0f33ba 565-609
+  s_0be8bec6b9bed6::t_2e71782086b374 676-693
+libs/evals/tests/harbor_tasks/write-file-simple/tests/test.sh
+  s_0be8bec6b9bed6::t_8e0ee067856784 1-10
+libs/evals/tests/harbor_tasks/write-file-simple/tests/score.py
+  s_0be8bec6b9bed6::t_f6ee89258d5cdd 1-32,34-55,57-78,80-83,86-172,175-189
+  s_0be8bec6b9bed6::t_3931556d21e570 84-85
+  s_0be8bec6b9bed6::t_8a65fbbac178ba 56
+  s_0be8bec6b9bed6::t_cbfff298c4d7db 173-174
+  s_0be8bec6b9bed6::t_2a65f0c1725012 33
+  s_0be8bec6b9bed6::t_de0fce0a72c282 79
+libs/evals/tests/harbor_tasks/write-file-simple/environment/Dockerfile
+  s_0be8bec6b9bed6::t_e78ec20566ffb8 1-7
+libs/evals/tests/unit_tests/test_langsmith.py
+  s_0be8bec6b9bed6::t_cfece93ad7478c 14
+  s_0be8bec6b9bed6::t_93c7116146c054 461-571
+libs/evals/pyproject.toml
+  s_0be8bec6b9bed6::t_c713cd5872dc9e 170-173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "7dd29d4de1f2b5dd10b192ee031a32e7435ff6f4",
+  "prompts": {},
+  "sessions": {
+    "s_0be8bec6b9bed6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f6463fc-a287-4877-ba5e-4c4a5838d106",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

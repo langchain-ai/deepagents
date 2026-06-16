@@ -92,16 +92,23 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent update debug/loop-guard env vars from affecting tests.
+    """Prevent update debug/loop-guard and toggle env vars from affecting tests.
 
     `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
     internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
-    auto-update to break a restart loop. Either leaking in (from a developer
+    auto-update to break a restart loop. `DEEPAGENTS_CODE_NO_UPDATE_CHECK` and
+    `DEEPAGENTS_CODE_AUTO_UPDATE` are read directly from the environment by the
+    startup gate (`is_update_check_enabled` / `is_auto_update_enabled`), so a
+    developer who exports either to opt out would otherwise make the auto-update
+    tests fail or pass spuriously. Any of these leaking in (from a developer
     shell, or a prior test exercising the production code that sets the
-    sentinel) would make the startup auto-update tests non-deterministic.
+    sentinel) would make the startup auto-update tests non-deterministic. Tests
+    that need a specific value set them explicitly via `monkeypatch`/`patch`.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
 
 
 @pytest.fixture(autouse=True)

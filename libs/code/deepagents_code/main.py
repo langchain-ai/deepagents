@@ -152,12 +152,19 @@ def _run_startup_auto_update(console: "Console") -> None:
         get_cached_update_available,
         is_auto_update_enabled,
         is_installed_version_at_least,
+        is_update_check_enabled,
+        mark_auto_update_default_acknowledged,
         perform_upgrade,
+        should_announce_auto_update_default,
         upgrade_command,
     )
 
     try:
-        if _is_editable_install() or not is_auto_update_enabled():
+        if (
+            _is_editable_install()
+            or not is_update_check_enabled()
+            or not is_auto_update_enabled()
+        ):
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
@@ -183,6 +190,35 @@ def _run_startup_auto_update(console: "Console") -> None:
                 f"Continuing with v{cli_version}.",
                 highlight=False,
             )
+            return
+        if should_announce_auto_update_default():
+            # First-run consent/migration: auto-update is on only because of the
+            # opt-out default, not an explicit choice. Announce it once and skip
+            # this install so the user can opt out before anything runs.
+            #
+            # Mark *before* printing so a `console.print` failure cannot leave
+            # the notice un-acknowledged and re-firing forever. The inverse risk
+            # (mark succeeds, print fails, user never sees it) requires a broken
+            # console and is the lesser evil versus an unbounded re-nag.
+            acknowledged = mark_auto_update_default_acknowledged()
+            message = (
+                "[bold]dcode now updates automatically by default.[/bold] "
+                f"v{latest} will be installed on the next launch.\n"
+                "To opt out, set [cyan][update].auto_update = false[/cyan] in "
+                "config.toml or [cyan]DEEPAGENTS_CODE_AUTO_UPDATE=0[/cyan] "
+                "(or run [cyan]dcode --auto-update[/cyan] to toggle it off now).\n"
+                f"Continuing with v{cli_version} for now."
+            )
+            if not acknowledged:
+                # The acknowledgement could not be persisted (e.g. a read-only
+                # state dir). Without this note the identical notice would
+                # reappear every launch with no explanation.
+                message += (
+                    "\n[yellow]Note:[/yellow] this acknowledgement could not be "
+                    "saved, so this message may appear again until you opt out "
+                    "or the state directory becomes writable."
+                )
+            console.print(message, highlight=False)
             return
         release_age = format_release_age_parenthetical(latest)
         console.print(

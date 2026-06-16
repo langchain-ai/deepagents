@@ -260,51 +260,6 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     }
 
 
-def _base64_block_to_inline(block: str | dict[str, Any]) -> str | None:
-    """Return an inline `data:` URL for a base64-carrying content block.
-
-    `get_buffer_string(format="xml")` drops content blocks that carry
-    base64-encoded data, so the raw image would be lost from the offload archive
-    (issue #2873). This converts such a block into a single `data:` URL string
-    that can be re-embedded inline as message text.
-
-    Mirrors the three shapes recognized by
-    `langchain_core.messages.utils._has_base64_data`:
-
-    1. A standard content block with an explicit `base64` field.
-    2. A top-level `data:` URL on the `url` field.
-    3. An OpenAI-style `image_url` block whose `url` is a `data:` URL.
-
-    Args:
-        block: A single content block (usually a dict).
-
-    Returns:
-        A `data:` URL string, or `None` if the block carries no base64 data.
-    """
-    if not isinstance(block, dict):
-        return None
-
-    # 1. Standard content block with an explicit base64 field.
-    data = block.get("base64")
-    if data:
-        mime = block.get("mime_type") or "application/octet-stream"
-        return f"data:{mime};base64,{data}"
-
-    # 2. Top-level data: URL.
-    url = block.get("url", "")
-    if isinstance(url, str) and url.startswith("data:"):
-        return url
-
-    # 3. OpenAI-style image_url with a data: URL.
-    image_url = block.get("image_url")
-    if isinstance(image_url, dict):
-        inner = image_url.get("url", "")
-        if isinstance(inner, str) and inner.startswith("data:"):
-            return inner
-
-    return None
-
-
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -895,45 +850,6 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
-    def _inline_base64_images(self, messages: list[AnyMessage]) -> list[AnyMessage]:
-        """Rewrite base64 image blocks to inline text so they survive offload.
-
-        `get_buffer_string(format="xml")` discards base64-encoded content, so the
-        raw image would otherwise be lost from the archive (issue #2873). Each
-        base64 block is replaced by a text block holding the `data:` URL inline;
-        the XML formatter then emits it verbatim as message text.
-
-        Args:
-            messages: Messages about to be offloaded.
-
-        Returns:
-            Messages with base64 blocks replaced by inline-text `data:` URLs.
-                Messages without base64 content are returned unchanged.
-        """
-        rewritten: list[AnyMessage] = []
-        for msg in messages:
-            if not isinstance(msg.content, list):
-                rewritten.append(msg)
-                continue
-
-            new_blocks: list[Any] = []
-            modified = False
-            for block in msg.content:
-                inline = _base64_block_to_inline(block)
-                if inline is None:
-                    new_blocks.append(block)
-                else:
-                    new_blocks.append({"type": "text", "text": inline})
-                    modified = True
-
-            if modified:
-                new_msg = msg.model_copy()
-                new_msg.content = new_blocks
-                rewritten.append(new_msg)
-            else:
-                rewritten.append(msg)
-        return rewritten
-
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -961,9 +877,6 @@ A condensed summary follows:
 
         # Filter out previous summary messages to avoid redundant storage
         filtered_messages = self._filter_summary_messages(messages)
-        # Inline base64 images so they survive get_buffer_string(format="xml"),
-        # which would otherwise drop base64-encoded content (issue #2873).
-        filtered_messages = self._inline_base64_images(filtered_messages)
 
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
@@ -1038,9 +951,6 @@ A condensed summary follows:
 
         # Filter out previous summary messages to avoid redundant storage
         filtered_messages = self._filter_summary_messages(messages)
-        # Inline base64 images so they survive get_buffer_string(format="xml"),
-        # which would otherwise drop base64-encoded content (issue #2873).
-        filtered_messages = self._inline_base64_images(filtered_messages)
 
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"

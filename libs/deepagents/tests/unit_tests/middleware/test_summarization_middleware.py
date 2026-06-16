@@ -455,54 +455,6 @@ class TestOffloadingBasic:
         _, content = backend.write_calls[0]
         assert image_url in content
 
-    def test_offload_preserves_base64_images(self) -> None:
-        """Base64 image data in evicted messages survives the offload (issue #2873).
-
-        `get_buffer_string(format="xml")` drops base64-encoded blocks, so the
-        middleware rewrites them to inline `data:` URLs before formatting. This
-        covers all three base64 shapes: an explicit `base64` field, a top-level
-        `data:` URL, and an OpenAI-style `image_url` `data:` URL.
-        """
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        messages: list[BaseMessage] = [
-            HumanMessage(
-                content=[
-                    {"type": "text", "text": "explicit base64 field"},
-                    {"type": "image", "base64": b64, "mime_type": "image/png"},
-                ],
-                id="b64-field",
-            ),
-            HumanMessage(
-                content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
-                id="b64-url",
-            ),
-            HumanMessage(
-                content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
-                id="b64-openai",
-            ),
-            *make_conversation_messages(num_old=5, num_recent=2),
-        ]
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        with mock_get_config():
-            call_wrap_model_call(middleware, state, runtime)
-
-        assert len(backend.write_calls) == 1
-        _, content = backend.write_calls[0]
-        # Raw base64 payload appears inline, reconstructed as a data: URL for each shape.
-        assert content.count(f"data:image/png;base64,{b64}") == 3
-
     def test_offload_appends_to_existing_content(self) -> None:
         """Test that second summarization appends to existing file."""
         existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"

@@ -1350,23 +1350,26 @@ class NativeAsyncSandbox(BaseSandbox):
         return "native-async-sandbox"
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        raise RuntimeError("sync execute() must not be called from async helpers")
+        msg = "sync execute() must not be called from async helpers"
+        raise RuntimeError(msg)
 
-    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
         self._aexecute_calls.append(command)
         output = self._next_output
         exit_code = self._next_exit_code
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        raise RuntimeError("sync upload_files() must not be called from async helpers")
+        msg = "sync upload_files() must not be called from async helpers"
+        raise RuntimeError(msg)
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         self._aupload_calls.append(files)
         return [FileUploadResponse(path=f[0], error=None) for f in files]
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        raise RuntimeError("sync download_files() must not be called from async helpers")
+        msg = "sync download_files() must not be called from async helpers"
+        raise RuntimeError(msg)
 
 
 @pytest.mark.asyncio
@@ -1452,8 +1455,6 @@ async def test_aedit_inline_calls_aexecute() -> None:
 @pytest.mark.asyncio
 async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
     """aedit() (large payload) must call aexecute() and aupload_files(), not sync methods."""
-    from deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES
-
     sandbox = NativeAsyncSandbox()
     sandbox._next_output = json.dumps({"count": 1})
     large = "x" * (_EDIT_INLINE_MAX_BYTES + 1)

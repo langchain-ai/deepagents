@@ -313,6 +313,9 @@ _TRACING_ENABLE_ENV_VARS = (
 _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Env vars that hold the LangSmith API key used for trace ingestion."""
 
+_TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+"""Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
+
 
 def _quiet_sdk_tracing_logging() -> None:
     """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
@@ -380,6 +383,12 @@ def _disable_orphaned_tracing() -> None:
     ingestion and floods `langsmith.client` 401 errors into the TUI (most visibly
     at the atexit flush). When a tracing flag is set but no credentials are
     resolvable, unset the flags so tracing never starts.
+
+    A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`) signals a
+    self-hosted or proxied LangSmith that may ingest without an API key, so an
+    explicitly configured endpoint is trusted and left alone rather than risk
+    disabling a working keyless setup. The SDK loggers are quieted separately by
+    `_quiet_sdk_tracing_logging`, so any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
@@ -391,6 +400,12 @@ def _disable_orphaned_tracing() -> None:
         if var in os.environ
     )
     if not tracing_on:
+        return
+
+    has_custom_endpoint = any(
+        (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+    )
+    if has_custom_endpoint:
         return
 
     has_key = any(

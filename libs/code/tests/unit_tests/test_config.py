@@ -1822,6 +1822,8 @@ class TestDisableOrphanedTracing:
         "LANGCHAIN_TRACING",
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
         "LANGSMITH_CONFIG_FILE",
         "LANGSMITH_PROFILE",
     )
@@ -1873,6 +1875,23 @@ class TestDisableOrphanedTracing:
         assert notice is not None
         assert "langsmith auth login" not in notice
         assert "LANGSMITH_API_KEY" in notice
+
+    def test_preserves_tracing_when_custom_endpoint_set(self) -> None:
+        """A custom endpoint (self-hosted/proxied) is trusted even without a key.
+
+        Keyless ingestion is valid against a self-hosted LangSmith, so an
+        explicitly configured endpoint must not trip the orphaned-tracing guard.
+        """
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
 
     def test_preserves_tracing_when_key_present(self) -> None:
         """Tracing stays enabled when a usable API key is set."""

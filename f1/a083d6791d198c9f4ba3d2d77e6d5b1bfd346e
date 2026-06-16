@@ -1,0 +1,14 @@
+.github/workflows/harbor.yml
+  h_9f69767fa5fabf 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "f1a083d6791d198c9f4ba3d2d77e6d5b1bfd346e",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

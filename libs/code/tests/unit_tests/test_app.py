@@ -14073,3 +14073,74 @@ class TestEnsureManagedRipgrep:
             await app._start_server_background()
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
+
+
+class TestNotifyInterpreterToolsWithoutInterpreter:
+    """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""
+
+    def test_toasts_when_tools_set_without_interpreter(self) -> None:
+        """`interpreter_ptc` set with the interpreter disabled warns once."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_called_once()
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in notify_mock.call_args.args[0]
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_interpreter_enabled(self) -> None:
+        """The allowlist takes effect with `--interpreter`, so no warning."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": "safe",
+                "enable_interpreter": True,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_without_interpreter_tools(self) -> None:
+        """Absent `interpreter_ptc` does not warn."""
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "interpreter_ptc": None,
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_when_server_kwargs_absent(self) -> None:
+        """An agent-backed app with no `server_kwargs` does not warn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()

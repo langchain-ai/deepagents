@@ -31,7 +31,8 @@ import os
 # ---------------------------------------------------------------------------
 
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
-"""Enable automatic app updates ('1', 'true', or 'yes')."""
+"""Toggle automatic app updates. Enabled by default; set to a falsy value
+('0', 'false', 'no', 'off', or empty) to opt out."""
 
 DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
     "DEEPAGENTS_CODE_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"

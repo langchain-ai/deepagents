@@ -106,6 +106,31 @@ def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN4
     return _ctx()
 
 
+def _patch_available_agents(names: list[str] | None = None) -> Any:  # noqa: ANN401
+    """Return a patch context manager for `get_available_agent_names`.
+
+    Args:
+        names: Configured agent names to return. Defaults to an empty list so
+            the agent filter depends only on the (deterministic) thread data.
+    """
+    return patch(
+        "deepagents_code.agent.get_available_agent_names",
+        return_value=list(names) if names is not None else [],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_available_agents() -> Any:  # noqa: ANN401
+    """Keep the agent filter independent of the machine's `~/.deepagents/`.
+
+    `_load_threads` scans the user's agents directory to populate the filter
+    dropdown. Without isolation the option set would vary by developer/CI host,
+    so default it to empty; tests that need specific agents patch it locally.
+    """
+    with _patch_available_agents():
+        yield
+
+
 def _style_scalar_value(value: object) -> int:
     """Return the integer value from a Textual style scalar.
 
@@ -4175,6 +4200,50 @@ class TestThreadSelectorAgentFilter:
         assert "my-agent" in labels
         assert "other-agent" in labels
         assert len(set(labels)) == len(labels)  # no duplicates
+
+    def test_collect_agent_options_includes_configured_agents(self) -> None:
+        """Configured agents (the /agents list) appear even without threads."""
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=MOCK_THREADS,
+            filter_cwd=None,
+        )
+        # Simulate the off-thread scan of ~/.deepagents/ surfacing an agent that
+        # has not produced any threads yet, plus one that overlaps a thread.
+        screen._available_agent_names = ["my-agent", "zeta-agent"]
+        labels = [label for label, _ in screen._collect_agent_options()[1:]]
+        # Threadless configured agent is selectable...
+        assert "zeta-agent" in labels
+        # ...alongside thread-derived names, with the overlap de-duplicated.
+        assert "my-agent" in labels
+        assert "other-agent" in labels
+        assert labels.count("my-agent") == 1
+        assert labels == sorted(labels, key=str.casefold)
+
+    async def test_load_threads_populates_configured_agents(self) -> None:
+        """`/threads` agent filter mirrors `/agents`, not just agents w/ threads."""
+        from deepagents_code.widgets.thread_selector import _AGENT_SELECT_ID
+
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            _patch_available_agents(["brand-new-agent"]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._available_agent_names == ["brand-new-agent"]
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                values = set(agent_select._legal_values)
+                # Configured-but-threadless agent is offered as a filter option.
+                assert "brand-new-agent" in values
+                # Thread-derived agents remain selectable too.
+                assert "my-agent" in values
+                assert "other-agent" in values
 
     async def test_agent_select_widget_present(self) -> None:
         """The agent Select widget is rendered inside the Options panel."""

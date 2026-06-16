@@ -881,6 +881,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._option_widgets: list[ThreadOption] = []
         self._filter_text = ""
         self._filter_agent: str | None = None
+        # Configured agent names from `~/.deepagents/` (the `/agents` list),
+        # loaded off the event loop in `_load_threads`. Unioned with
+        # thread-derived names so the agent filter mirrors `/agents` even for
+        # agents that have not produced any threads yet.
+        self._available_agent_names: list[str] = []
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
@@ -1019,19 +1024,25 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _collect_agent_options(self) -> list[tuple[str, str]]:
         """Return Select option tuples for the agent dropdown.
 
-        Derives unique agent names from the currently loaded thread list and
-        prepends an "All agents" sentinel so the caller can always reset to
-        an unfiltered view.
+        Unions the configured agents (the `/agents` list, loaded into
+        `self._available_agent_names`) with the agent names found in the
+        currently loaded thread list, then prepends an "All agents" sentinel so
+        the caller can always reset to an unfiltered view.
+
+        Including the configured agents keeps the filter in sync with `/agents`
+        so an agent that has not produced any threads yet is still selectable;
+        including thread-derived names keeps threads from since-deleted agents
+        (and the `"(unknown)"` sentinel for threads with no agent name)
+        filterable.
 
         Returns:
             List of ``(label, value)`` pairs; the first entry is always
                 ``("All agents", _AGENT_VALUE_ALL)``.
         """
-        names = sorted(
-            {t.get("agent_name") or "(unknown)" for t in self._threads},
-            key=str.casefold,
-        )
-        return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in names)]
+        names = {t.get("agent_name") or "(unknown)" for t in self._threads}
+        names.update(self._available_agent_names)
+        ordered = sorted(names, key=str.casefold)
+        return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
 
     def _refresh_agent_select_options(self) -> bool:
         """Repopulate the agent dropdown after threads are reloaded.
@@ -1056,6 +1067,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         agent_select.value = _AGENT_VALUE_ALL
         self._filter_agent = None
         return True
+
+    async def _load_available_agent_names(self) -> None:
+        """Cache the configured agent names (the `/agents` list) off-thread.
+
+        Runs the filesystem scan in a worker thread so the Textual event loop
+        is never blocked on directory I/O. Failures are swallowed by
+        `get_available_agent_names`, which returns an empty list and logs the
+        cause, so the agent filter degrades to thread-derived names only.
+        """
+        from deepagents_code.agent import get_available_agent_names
+
+        self._available_agent_names = await asyncio.to_thread(get_available_agent_names)
 
     def _get_select(self, select_id: str) -> Select[str]:
         """Return an Options panel dropdown widget by ID."""
@@ -1747,6 +1770,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     "for thread selector",
                     exc_info=True,
                 )
+        await self._load_available_agent_names()
         self._update_filtered_list()
         self._sync_selected_index()
         if self._refresh_agent_select_options():

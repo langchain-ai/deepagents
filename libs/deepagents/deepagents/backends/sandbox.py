@@ -575,7 +575,7 @@ except PermissionError:
         Subclasses overriding `write()` (e.g., to use a native SDK transport)
         should call this first so they preserve the same "fail if file exists"
         and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
-        window between this check and the actual write, an inherent limitation
+        window between this check and the actual write — an inherent limitation
         of splitting the operation across two backend calls.
 
         Args:
@@ -719,7 +719,7 @@ except PermissionError:
         new_string: str,
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
-        """Server-side replace via `execute()` (single round-trip)."""
+        """Server-side replace via `execute()` — single round-trip."""
         result = self.execute(self._build_edit_inline_cmd(file_path, old_string, new_string, replace_all))
         return self._parse_edit_output(result.output, file_path, old_string)
 
@@ -879,23 +879,34 @@ except PermissionError:
             return GrepResult(error=f"Path '{path or '.'}': {detail}")
         if not output:
             return GrepResult(matches=[])
+
+        # Parse grep output into GrepMatch objects
         matches: list[GrepMatch] = []
         parse_error: str | None = None
         for line in output.split("\n"):
+            # Format is: path\0line_number:text
             parts = line.split("\0", 1)
-            if len(parts) != 2:  # noqa: PLR2004
+            if len(parts) != 2:  # noqa: PLR2004  # Grep output field count
                 parse_error = line
                 continue
             line_parts = parts[1].split(":", 1)
-            if len(line_parts) != 2:  # noqa: PLR2004
+            if len(line_parts) != 2:  # noqa: PLR2004  # Grep output field count
                 parse_error = line
                 continue
             try:
-                matches.append({"path": parts[0], "line": int(line_parts[0]), "text": line_parts[1]})
+                matches.append(
+                    {
+                        "path": parts[0],
+                        "line": int(line_parts[0]),
+                        "text": line_parts[1],
+                    }
+                )
             except ValueError:
                 parse_error = line
+
         if parse_error is not None and not matches:
             return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
+
         return GrepResult(matches=matches)
 
     def grep(

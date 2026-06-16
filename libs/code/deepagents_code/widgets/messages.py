@@ -36,6 +36,7 @@ from deepagents_code.widgets.diff import compose_diff_lines
 if TYPE_CHECKING:
     from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
     from textual.app import ComposeResult
+    from textual.selection import Selection
     from textual.timer import Timer
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -125,6 +126,39 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
+# Visual width of the prompt prefix (glyph + trailing space, e.g. "> ", "$ ").
+# Glyphs are single characters, so the prefix is always two columns wide.
+_PROMPT_PREFIX_WIDTH = 2
+
+
+def _strip_prompt_prefix(
+    result: tuple[str, str] | None,
+    selection: Selection,
+) -> tuple[str, str] | None:
+    """Drop the leading prompt prefix glyph from a selected range.
+
+    The prefix is only rendered on the first row, so it is stripped only when
+    the selection begins there. This keeps triple-click / select-all copies to
+    the message body instead of the decorative `"> "` (or mode glyph) prefix.
+
+    Args:
+        result: The `(text, ending)` tuple returned by `Static.get_selection`.
+        selection: The active selection geometry.
+
+    Returns:
+        The selection with the prefix removed from row 0, or `result` unchanged.
+    """
+    if result is None:
+        return None
+    text, ending = result
+    start = selection.start
+    if start is not None and start.y != 0:
+        return result
+    start_x = 0 if start is None else start.x
+    prefix_chars = max(0, _PROMPT_PREFIX_WIDTH - start_x)
+    return text[prefix_chars:], ending
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -157,6 +191,17 @@ class UserMessage(Static):
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
@@ -254,6 +299,17 @@ class QueuedUserMessage(Static):
         """Add ASCII border class when in ASCII mode."""
         if is_ascii_mode():
             self.add_class("-ascii")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
 
     def render(self) -> Content:
         """Render the queued user message (greyed out).

@@ -22,6 +22,7 @@ from deepagents_code.widgets.messages import (
     UserMessage,
     _MutedRichMarkdown,
     _strip_frontmatter,
+    _strip_prompt_prefix,
     _strip_success_exit_line,
 )
 
@@ -1947,6 +1948,98 @@ class TestQueuedUserMessageModeRendering:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
         content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
+
+
+class TestStripPromptPrefix:
+    """Unit tests for `_strip_prompt_prefix` selection trimming."""
+
+    def test_passes_through_none(self) -> None:
+        """A `None` result (no extractable text) stays `None`."""
+        from textual.selection import SELECT_ALL
+
+        assert _strip_prompt_prefix(None, SELECT_ALL) is None
+
+    def test_select_all_drops_prefix(self) -> None:
+        """Select-all (`Selection(None, None)`) trims the two-column prefix."""
+        from textual.selection import SELECT_ALL
+
+        assert _strip_prompt_prefix(("> hello", "\n"), SELECT_ALL) == (
+            "hello",
+            "\n",
+        )
+
+    def test_selection_from_row_zero_drops_prefix(self) -> None:
+        """A row-0 selection starting at column 0 trims the prefix."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(0, 0), Offset(7, 0))
+        assert _strip_prompt_prefix(("> hello", "\n"), selection) == ("hello", "\n")
+
+    def test_partial_prefix_selection_trims_remaining_glyph(self) -> None:
+        """Starting inside the prefix trims only the still-included columns."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(1, 0), Offset(7, 0))
+        assert _strip_prompt_prefix((" hello", "\n"), selection) == ("hello", "\n")
+
+    def test_selection_starting_in_body_is_untouched(self) -> None:
+        """A selection beginning past the prefix keeps the body verbatim."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(4, 0), Offset(7, 0))
+        assert _strip_prompt_prefix(("llo", "\n"), selection) == ("llo", "\n")
+
+    def test_selection_starting_below_row_zero_is_untouched(self) -> None:
+        """Selections that begin on later rows carry no prefix to strip."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(0, 1), Offset(5, 1))
+        assert _strip_prompt_prefix(("world", "\n"), selection) == ("world", "\n")
+
+
+class _SelectionApp(App[None]):
+    """Mount user-message widgets so `get_selection` has an active app."""
+
+    def compose(self) -> ComposeResult:
+        yield UserMessage("hello world", id="user")
+        yield QueuedUserMessage("hi there", id="queued")
+
+
+class TestUserMessageGetSelection:
+    """Triple-click / select-all should copy the body, not the prefix glyph."""
+
+    async def test_user_message_select_all_excludes_prefix(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert result[0] == "hello world"
+
+    async def test_queued_message_select_all_excludes_prefix(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#queued", QueuedUserMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert result[0] == "hi there"
+
+    async def test_body_selection_preserved(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            selection = Selection(Offset(8, 0), Offset(13, 0))
+            result = widget.get_selection(selection)
+            assert result is not None
+            assert result[0] == "world"
 
 
 class TestAppMessageAutoLinksDisabled:

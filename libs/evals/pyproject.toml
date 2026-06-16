@@ -167,6 +167,10 @@ ban-relative-imports = "all"
     "S",       # Security warnings — not applicable to tests
     "SLF",     # Private member access — tests need access to internals
 ]
+"tests/harbor_tasks/**" = [
+    "INP001",  # Missing `__init__.py` — harbor task dirs are not Python packages
+    "T201",    # `print` found — verifier scripts print to CI logs / stdout
+]
 "scripts/**" = [
     "INP001",  # Missing `__init__.py` — scripts are standalone
     "T201",    # `print` found — scripts use print for output

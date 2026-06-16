@@ -11,6 +11,7 @@ import pytest
 from deepagents_harbor.langsmith import (
     _dataset_ref,
     _download_dataset,
+    _extract_extra_rewards,
     _extract_reward,
     _headers,
     _process_trial,
@@ -457,3 +458,114 @@ class TestAddFeedbackOrdering:
         assert "Successfully updated: 1" in out
         assert "Skipped (already has feedback): 1" in out
         assert "Errors: 1" in out
+
+
+class TestExtractExtraRewards:
+    """Tests for `_extract_extra_rewards` (the multi-key fan-out source)."""
+
+    def test_returns_numeric_non_reward_keys(self, trial_dir: Path) -> None:
+        _write_result(
+            trial_dir,
+            {
+                "verifier_result": {
+                    "rewards": {
+                        "reward": 1.0,
+                        "correctness": 1.0,
+                        "step_ratio": 1.5,
+                        "agent_steps": 2,
+                        "note": "ignored-str",
+                        "flag": True,
+                    }
+                }
+            },
+        )
+        extras = _extract_extra_rewards(trial_dir)
+
+        # `reward` is excluded (already pushed as harbor_reward); non-numeric and
+        # bool values are dropped. Remaining values are coerced to float.
+        assert extras == {"correctness": 1.0, "step_ratio": 1.5, "agent_steps": 2.0}
+
+    def test_missing_file_returns_empty(self, trial_dir: Path) -> None:
+        assert _extract_extra_rewards(trial_dir) == {}
+
+    def test_malformed_json_returns_empty(self, trial_dir: Path) -> None:
+        (trial_dir / "result.json").write_text("{bad json")
+        assert _extract_extra_rewards(trial_dir) == {}
+
+    def test_no_verifier_result_returns_empty(self, trial_dir: Path) -> None:
+        _write_result(trial_dir, {"some_other_key": True})
+        assert _extract_extra_rewards(trial_dir) == {}
+
+    def test_only_reward_key_returns_empty(self, trial_dir: Path) -> None:
+        _write_result(trial_dir, {"verifier_result": {"rewards": {"reward": 1.0}}})
+        assert _extract_extra_rewards(trial_dir) == {}
+
+
+class TestProcessTrialMultiKey:
+    """Tests for the additive multi-key feedback fan-out in `_process_trial`."""
+
+    def test_fans_out_extra_metrics(self, trial_dir: Path) -> None:
+        _write_result(
+            trial_dir,
+            {
+                "verifier_result": {
+                    "rewards": {"reward": 1.0, "correctness": 1.0, "step_ratio": 1.0}
+                }
+            },
+        )
+        client: Any = _FakeClient(runs=[_FakeRun("run-1")])
+
+        result = _process_trial(client=client, trial_dir=trial_dir, project_name="proj")
+
+        assert result["status"] == "success"
+        keys = [c["key"] for c in client.created]
+        # harbor_reward is created first (preserves prior ordering), then extras.
+        assert keys[0] == "harbor_reward"
+        assert set(keys) == {"harbor_reward", "harbor_correctness", "harbor_step_ratio"}
+        assert "+2 metric(s)" in result["message"]
+
+    def test_single_reward_key_creates_only_harbor_reward(self, trial_dir: Path) -> None:
+        _write_result(trial_dir, {"verifier_result": {"rewards": {"reward": 1.0}}})
+        client: Any = _FakeClient(runs=[_FakeRun("run-1")])
+
+        result = _process_trial(client=client, trial_dir=trial_dir, project_name="proj")
+
+        assert result["status"] == "success"
+        assert [c["key"] for c in client.created] == ["harbor_reward"]
+
+    def test_extra_metric_failure_is_nonfatal(self, trial_dir: Path) -> None:
+        _write_result(
+            trial_dir,
+            {"verifier_result": {"rewards": {"reward": 1.0, "correctness": 1.0}}},
+        )
+
+        class _FailExtrasClient(_FakeClient):
+            """Records harbor_reward but raises for any extra metric key."""
+
+            def create_feedback(self, *, run_id, key, score, comment=None):
+                if key != "harbor_reward":
+                    msg = "boom"
+                    raise ValueError(msg)
+                super().create_feedback(run_id=run_id, key=key, score=score, comment=comment)
+
+        client: Any = _FailExtrasClient(runs=[_FakeRun("run-1")])
+
+        result = _process_trial(client=client, trial_dir=trial_dir, project_name="proj")
+
+        # Primary reward still succeeds; the failed extra is dropped silently.
+        assert result["status"] == "success"
+        assert [c["key"] for c in client.created] == ["harbor_reward"]
+
+    def test_dry_run_creates_no_extra_feedback(self, trial_dir: Path) -> None:
+        _write_result(
+            trial_dir,
+            {"verifier_result": {"rewards": {"reward": 1.0, "correctness": 1.0}}},
+        )
+        client: Any = _FakeClient(runs=[_FakeRun("run-1")])
+
+        result = _process_trial(
+            client=client, trial_dir=trial_dir, project_name="proj", dry_run=True
+        )
+
+        assert result["status"] == "success"
+        assert client.created == []

@@ -1,0 +1,33 @@
+version = "1.0"
+
+# Containerized counterpart of the pytest eval
+# tests/evals/test_file_operations.py::test_write_file_simple.
+#
+# It exists to demonstrate that the trajectory / efficiency metrics the pytest
+# suite asserts on (TrajectoryScorer) can be reproduced inside a Harbor trial
+# and emitted as a multi-dimensional reward.json. See tests/score.py.
+
+[task]
+name = "deepagents/write-file-simple"
+description = "Write a name to a file, then report it (trajectory-metrics demo)."
+
+[metadata]
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+
+# Gate the trial on the `correctness` reward key, mirroring the pytest
+# `.success(...)` tier (a hard-fail check). The remaining reward keys
+# (step_ratio, tool_call_ratio, ...) are diagnostics analogous to the pytest
+# `.expect(...)` efficiency tier: logged, never gated.
+[min_reward]
+correctness = 1.0

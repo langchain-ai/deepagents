@@ -562,6 +562,51 @@ def _extract_reward(trial_dir: Path) -> tuple[float, str | None]:
     return float(raw), None
 
 
+def _extract_extra_rewards(trial_dir: Path) -> dict[str, float]:
+    """Return numeric reward keys beyond the canonical ``reward`` scalar.
+
+    A multi-key verifier (see ``tests/harbor_tasks/write-file-simple``) emits
+    diagnostic / efficiency metrics alongside ``reward`` — e.g. ``correctness``,
+    ``step_ratio``, ``tool_call_requests``. This returns those as floats so each
+    can be pushed to LangSmith as its own ``harbor_<key>`` feedback.
+
+    Best-effort: returns ``{}`` when ``result.json`` is missing, malformed, or
+    carries no extra numeric keys. The primary reward (and any failure) is
+    already surfaced by :func:`_extract_reward`, so this never raises.
+
+    Args:
+        trial_dir: Path to the trial directory.
+
+    Returns:
+        A mapping of reward key -> float value, excluding ``reward`` itself.
+    """
+    result_path = trial_dir / "result.json"
+    try:
+        with result_path.open() as f:
+            result = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(result, dict):
+        return {}
+    verifier_result = result.get("verifier_result")
+    if not isinstance(verifier_result, dict):
+        return {}
+    rewards = verifier_result.get("rewards")
+    if not isinstance(rewards, dict):
+        return {}
+
+    extras: dict[str, float] = {}
+    for key, value in rewards.items():
+        if not isinstance(key, str) or key == "reward":
+            continue
+        # bool is an int subclass; exclude it — rewards are numeric metrics.
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        extras[key] = float(value)
+    return extras
+
+
 def _process_trial(
     client: Client,
     trial_dir: Path,
@@ -628,11 +673,24 @@ def _process_trial(
                 "status": "error",
                 "message": f"Failed to submit feedback: {exc}",
             }
-        return {
-            "status": status,
-            "message": f"Added harbor_reward feedback: {reward}"
-            + (f" ({comment})" if comment else ""),
-        }
+
+        # Additively fan out any extra reward keys (correctness, step_ratio,
+        # tool_call_requests, ...) as `harbor_<key>` feedback. These are
+        # diagnostics: a failure to submit one is logged but never fails the
+        # trial, since the primary `harbor_reward` already succeeded.
+        extra_keys: list[str] = []
+        for key, value in _extract_extra_rewards(trial_dir).items():
+            try:
+                client.create_feedback(run_id=run_id, key=f"harbor_{key}", score=value)
+            except (LangSmithError, ValueError) as exc:
+                print(f"  Warning: failed to submit harbor_{key} feedback: {exc}", file=sys.stderr)
+            else:
+                extra_keys.append(key)
+
+        message = f"Added harbor_reward feedback: {reward}" + (f" ({comment})" if comment else "")
+        if extra_keys:
+            message += f"; +{len(extra_keys)} metric(s): {', '.join(sorted(extra_keys))}"
+        return {"status": status, "message": message}
     return {
         "status": status,
         "message": f"Would add harbor_reward feedback: {reward}"

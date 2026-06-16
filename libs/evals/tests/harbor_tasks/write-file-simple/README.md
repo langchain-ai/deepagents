@@ -37,17 +37,33 @@ The reward dict carries every metric the pytest `TrajectoryScorer` checks:
 
 ## Run it
 
+On a LangSmith sandbox (no local Docker needed — harbor snapshots the
+Dockerfile's base image remotely). Needs `LANGSMITH_API_KEY` (sandbox +
+tracing) and a model-provider key:
+
 ```bash
 cd libs/evals
 uv run harbor run \
   --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --path tests/harbor_tasks/write-file-simple \
-  --model anthropic:claude-sonnet-4-6 \
-  -n 1 --jobs-dir jobs/write-file-simple --env docker \
+  --env langsmith \
+  --model google_genai:gemini-2.5-pro \
+  -n 1 --jobs-dir jobs/write-file-simple \
   --agent-kwarg use_cli_agent=false
 ```
 
-> **Status:** the scoring logic (`compute_rewards`) is unit-tested in
-> `tests/unit_tests/test_harbor_task_reward.py`. The end-to-end `harbor run`
-> above requires Docker + an API key and has **not** been run in CI yet — it is
-> the next validation step for this prototype.
+Swap `--env langsmith` for `--env docker` to run against a local Docker daemon
+instead, and `--model` for any provider you have a key for.
+
+> **Status:** validated end-to-end on a LangSmith sandbox. A passing
+> `gemini-2.5-pro` trial produced the trajectory `write_file(/app/name.txt)` →
+> `"My name is Foo Bar."` (2 agent steps, 1 tool call) and this `reward.json`:
+>
+> ```json
+> {"reward": 1.0, "correctness": 1.0, "file_name_contains": 1.0,
+>  "final_text_contains": 1.0, "wrote_name_file": 1.0, "agent_steps": 2.0,
+>  "tool_call_requests": 1.0, "step_ratio": 1.0, "tool_call_ratio": 1.0}
+> ```
+>
+> The scoring logic (`compute_rewards`) is also unit-tested in
+> `tests/unit_tests/test_harbor_task_reward.py`.

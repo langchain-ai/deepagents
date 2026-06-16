@@ -306,7 +306,26 @@ jobs:
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
-          # Run Harbor
+          # Stage current checkout packages for LangGraph's sandbox install.
+          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
+          mkdir -p "$local_deps_dir"
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude '*.egg-info' \
+            ../deepagents/ "$local_deps_dir/deepagents/"
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude '*.egg-info' \
+            ../code/ "$local_deps_dir/deepagents-code/"
+
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"

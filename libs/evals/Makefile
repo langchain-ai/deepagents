@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -43,33 +43,40 @@ test_watch: ## Run tests in watch mode
 # -l = max tasks to run (omit for all)
 HARBOR_AGENT_IMPL ?= cli
 HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
-HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=deepagents_harbor/langgraph_project --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
+HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
+HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
 HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
-run-hello-world: ## Run hello-world job
+stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sandboxes
+	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+
+run-hello-world: stage-harbor-local-deps ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
-run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
+run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 4 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env modal
 
-run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
+run-terminal-bench-daytona: stage-harbor-local-deps ## Run terminal-bench on Daytona (40 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 40 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env daytona
 
-run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
+run-terminal-bench-docker: stage-harbor-local-deps ## Run terminal-bench on Docker (sequential)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env docker
 
-run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
+run-terminal-bench-runloop: stage-harbor-local-deps ## Run terminal-bench on Runloop (10 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 -n 10 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env runloop
 
-run-terminal-bench-langsmith: ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
+run-terminal-bench-langsmith: stage-harbor-local-deps ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
 	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset terminal-bench@2.0 --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=terminal-bench@2.0 --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
 

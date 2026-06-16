@@ -172,6 +172,13 @@ SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
 SHOW_HEADER = "DEEPAGENTS_CODE_SHOW_HEADER"
 """Show Textual's native header bar at the top of the TUI when enabled."""
 
+SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING"
+"""Show LangSmith replica project info in the startup splash when enabled.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to hide replica tracing details from the splash while leaving tracing active.
+"""
+
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 

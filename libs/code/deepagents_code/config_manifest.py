@@ -714,6 +714,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.HIDE_LANGSMITH_TRACING,
     ),
     ConfigOption(
+        key="display.show_langsmith_replica_tracing",
+        group="Display",
+        summary="Show LangSmith replica project info in the startup splash.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
+    ),
+    ConfigOption(
         key="display.hide_splash_tips",
         group="Display",
         summary="Hide rotating tips in the startup splash.",

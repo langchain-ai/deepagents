@@ -7270,7 +7270,6 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
-        from deepagents_code.config import langsmith_replica_context
         from deepagents_code.textual_adapter import execute_task_textual
 
         # Create the stats object up-front and store on the app so
@@ -7280,24 +7279,23 @@ class DeepAgentsApp(App):
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
         try:
-            with langsmith_replica_context():
-                await execute_task_textual(
-                    user_input=message,
-                    agent=self._agent,
-                    assistant_id=self._assistant_id,
-                    session_state=self._session_state,
-                    adapter=self._ui_adapter,
-                    backend=self._backend,
-                    image_tracker=self._image_tracker,
-                    sandbox_type=self._sandbox_type,
-                    message_kwargs=message_kwargs,
-                    context=CLIContext(
-                        model=self._model_override,
-                        model_params=self._model_params_override or {},
-                        effective_model=self._effective_model_spec(),
-                    ),
-                    turn_stats=turn_stats,
-                )
+            await execute_task_textual(
+                user_input=message,
+                agent=self._agent,
+                assistant_id=self._assistant_id,
+                session_state=self._session_state,
+                adapter=self._ui_adapter,
+                backend=self._backend,
+                image_tracker=self._image_tracker,
+                sandbox_type=self._sandbox_type,
+                message_kwargs=message_kwargs,
+                context=CLIContext(
+                    model=self._model_override,
+                    model_params=self._model_params_override or {},
+                    effective_model=self._effective_model_spec(),
+                ),
+                turn_stats=turn_stats,
+            )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import importlib
 import json
 import keyword
@@ -390,8 +389,6 @@ def _ensure_bootstrap() -> None:
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from rich.console import Console
@@ -2240,31 +2237,38 @@ def get_langsmith_replica_projects() -> list[str]:
     return list(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
 
 
-@contextlib.contextmanager
-def langsmith_replica_context() -> Iterator[None]:
-    """Dual-write agent traces to additional LangSmith projects when configured.
+def get_langsmith_replica_project() -> str | None:
+    """The single extra LangSmith project to mirror agent runs to, if configured.
 
-    No-op (a single env-var read) unless
-    `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` is set and tracing is active.
-    When enabled, the agent run is written to the primary deepagents-code
-    project *and* each listed project as a LangSmith write replica.
+    dcode agent runs execute inside the LangGraph server subprocess, so the only
+    way to mirror them to another project is the server's own replica path: the
+    SDK forwards a `langsmith_tracing` project in the run-create request, and the
+    server wraps the run in a `tracing_context` whose write replicas are that
+    project plus the server's primary project (see `langgraph_api.stream` and
+    `langgraph_api.models.run`). Client-side callbacks and
+    `tracing_context(replicas=...)` cannot reach the run because it is created
+    server-side, not in the app process.
+
+    The server mirrors to exactly one extra project, so when
+    `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` lists several, only the first is
+    used and the rest are dropped with a warning.
+
+    Returns:
+        The first configured replica project name, or `None` when none are set.
     """
     extras = get_langsmith_replica_projects()
-    primary = get_langsmith_project_name()
-    if not extras or not primary:
-        yield
-        return
-
-    from langsmith import tracing_context
-    from langsmith.run_trees import WriteReplica
-
-    # Replicas fully define a run's destinations, so the primary project is
-    # listed explicitly here — otherwise it would be dropped. Dedupe keeps the
-    # primary first and avoids writing the same project twice.
-    projects = list(dict.fromkeys([primary, *extras]))
-    replicas = [WriteReplica(project_name=name) for name in projects]
-    with tracing_context(replicas=replicas):
-        yield
+    if not extras:
+        return None
+    if len(extras) > 1:
+        logger.warning(
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS lists %d projects, but the "
+            "LangGraph server mirrors runs to only one extra project; tracing to "
+            "%r and ignoring %s.",
+            len(extras),
+            extras[0],
+            extras[1:],
+        )
+    return extras[0]
 
 
 class LangSmithLookupError(Exception):

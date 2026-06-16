@@ -661,20 +661,17 @@ async def _stream_agent(
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
     """
-    from deepagents_code.config import langsmith_replica_context
-
     if state.spinner:
         state.spinner.start()
     try:
-        with langsmith_replica_context():
-            async for chunk in agent.astream(
-                stream_input,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-                config=config,
-                durability="exit",
-            ):
-                _process_stream_chunk(chunk, state, console, file_op_tracker)
+        async for chunk in agent.astream(
+            stream_input,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+            config=config,
+            durability="exit",
+        ):
+            _process_stream_chunk(chunk, state, console, file_op_tracker)
     finally:
         if state.spinner:
             state.spinner.stop()

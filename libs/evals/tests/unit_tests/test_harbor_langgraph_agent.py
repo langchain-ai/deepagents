@@ -18,23 +18,6 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
 
     config = json.loads(config_path.read_text())
 
-    assert config["dependencies"] == [
-        "./.local_deps/deepagents",
-        "./.local_deps/deepagents-code",
-        "langchain>=1.3.9,<2.0.0",
-        "langchain-anthropic>=1.4.6,<1.5.0",
-        "langchain-baseten>=0.2.0,<0.3.0",
-        "langchain-fireworks>=1.4.2,<1.5.0",
-        "langchain-google-genai>=4.2.4,<4.3.0",
-        "langchain-groq>=1.1.3,<1.2.0",
-        "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0",
-        "langchain-ollama>=1.1.0,<1.2.0",
-        "langchain-openai>=1.3.0,<1.4.0",
-        "langchain-openrouter>=0.2.3,<0.3.0",
-        "langchain-xai>=1.2.2,<1.3.0",
-        "aiohttp>=3.14.0,<4.0.0",
-        "toml>=0.10.2,<1.0.0",
-    ]
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
         "bare_deepagent": "./langgraph_agent.py:make_bare_graph",

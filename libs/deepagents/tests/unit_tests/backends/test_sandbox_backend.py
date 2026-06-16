@@ -30,6 +30,9 @@ from deepagents.backends.sandbox import (
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _check_preflight_result,
+    _map_edit_error,
+    _parse_grep_output,
 )
 
 
@@ -1034,7 +1037,7 @@ def test_sandbox_edit_one_over_threshold_uses_upload() -> None:
 
 def test_map_edit_error_unknown_code_falls_through() -> None:
     """Test that _map_edit_error returns a generic error for unrecognized codes."""
-    result = BaseSandbox._map_edit_error("temp_read_failed", "/test/file.txt", "old")
+    result = _map_edit_error("temp_read_failed", "/test/file.txt", "old")
 
     assert result.error is not None
     assert "temp_read_failed" in result.error
@@ -1294,7 +1297,7 @@ def test_glob_empty_returns_empty_matches() -> None:
 
 def test_map_edit_error_permission_denied() -> None:
     """_map_edit_error returns a readable message for permission_denied."""
-    result = BaseSandbox._map_edit_error("permission_denied", "/test/file.txt", "old")
+    result = _map_edit_error("permission_denied", "/test/file.txt", "old")
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/file.txt" in result.error
@@ -1464,3 +1467,73 @@ async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
     assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call for temp files"
     assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for server-side replace"
     assert result.error is None
+
+
+# -- direct unit tests for module-level helper functions ----------------------
+
+
+def test_map_edit_error_file_not_found() -> None:
+    result = _map_edit_error("file_not_found", "/a/b.txt", "old")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+    assert "/a/b.txt" in result.error
+
+
+def test_map_edit_error_not_a_file() -> None:
+    result = _map_edit_error("not_a_file", "/a/b.txt", "old")
+    assert result.error is not None
+    assert "not a regular file" in result.error.lower()
+    assert "/a/b.txt" in result.error
+
+
+def test_map_edit_error_not_a_text_file() -> None:
+    result = _map_edit_error("not_a_text_file", "/a/b.bin", "old")
+    assert result.error is not None
+    assert "not a text file" in result.error.lower()
+    assert "/a/b.bin" in result.error
+
+
+def test_map_edit_error_string_not_found() -> None:
+    result = _map_edit_error("string_not_found", "/a/b.txt", "needle")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+    assert "needle" in result.error
+
+
+def test_map_edit_error_multiple_occurrences() -> None:
+    result = _map_edit_error("multiple_occurrences", "/a/b.txt", "needle")
+    assert result.error is not None
+    assert "multiple" in result.error.lower() or "replace_all" in result.error
+    assert "needle" in result.error
+
+
+def test_check_preflight_result_nonzero_exit_returns_error() -> None:
+    resp = ExecuteResponse(output="Error: file exists", exit_code=1, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is not None
+    assert result.error is not None
+    assert "Error: file exists" in result.error
+
+
+def test_check_preflight_result_error_in_output_returns_error() -> None:
+    resp = ExecuteResponse(output="Error: parent dir missing", exit_code=0, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is not None
+    assert result.error is not None
+    assert "Error: parent dir missing" in result.error
+
+
+def test_check_preflight_result_success_returns_none() -> None:
+    resp = ExecuteResponse(output="", exit_code=0, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is None
+
+
+def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
+    # Format: path\0not_a_number:text — int() raises ValueError, line is treated as parse error.
+    output = "file.py\0not_a_number:some text"
+    resp = ExecuteResponse(output=output, exit_code=0, truncated=False)
+    result = _parse_grep_output(resp, ".")
+    # The only line has a bad line number; no valid matches → error is set.
+    assert result.matches is None or result.matches == []
+    assert result.error is not None

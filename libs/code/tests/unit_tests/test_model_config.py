@@ -1202,6 +1202,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert config.get_provider_display_name("missing") is None
         assert config.get_provider_api_key_url("missing") is None
 
+    def test_ignores_non_string_provider_api_key_url(self, tmp_path):
+        """Non-string provider API-key URLs are ignored."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+api_key_url = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_api_key_url("my_gateway") is None
+
     def test_loads_custom_base_url(self, tmp_path):
         """Loads custom base_url for providers."""
         config_path = tmp_path / "config.toml"

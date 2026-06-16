@@ -2437,7 +2437,8 @@ class ModelConfig:
             API-key management URL if configured, None otherwise.
         """
         provider = self.providers.get(provider_name)
-        return provider.get("api_key_url") if provider else None
+        url = provider.get("api_key_url") if provider else None
+        return url if isinstance(url, str) else None
 
     def get_base_url_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's base URL.

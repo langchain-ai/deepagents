@@ -114,7 +114,7 @@ on:
       sandbox_env:
         description: "Harbor sandbox environment"
         required: true
-        default: "docker"
+        default: "langsmith"
         type: choice
         options:
           - docker

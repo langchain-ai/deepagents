@@ -122,6 +122,13 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
+"""Comma-separated LangSmith project names to *also* write agent traces to.
+
+When set (and tracing is active), each agent run is dual-written to the primary
+deepagents-code project and every listed project via LangSmith write replicas.
+"""
+
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"
 """Disable all terminal escape/control sequence output when enabled."""
 

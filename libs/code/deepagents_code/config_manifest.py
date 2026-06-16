@@ -768,6 +768,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         env_var=_env_vars.USER_ID,
     ),
+    ConfigOption(
+        key="tracing.langsmith_replica_projects",
+        group="Models",
+        summary=(
+            "Extra LangSmith project names to also write agent traces to "
+            "(comma-separated)."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.LANGSMITH_REPLICA_PROJECTS,
+    ),
     # --- Tools / Features ----------------------------------------------
     ConfigOption(
         key="shell.allow_list",

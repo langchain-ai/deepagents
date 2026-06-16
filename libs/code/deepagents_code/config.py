@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import keyword
@@ -389,6 +390,8 @@ def _ensure_bootstrap() -> None:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from rich.console import Console
@@ -2218,6 +2221,50 @@ def get_langsmith_project_name() -> str | None:
         or os.environ.get("LANGSMITH_PROJECT")
         or "deepagents-code"
     )
+
+
+def get_langsmith_replica_projects() -> list[str]:
+    """Extra LangSmith project names to dual-write agent traces to.
+
+    Parses `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` (comma-separated) into a
+    de-duplicated, order-preserving list.
+
+    Returns:
+        Project names, or `[]` when the env var is unset or empty.
+    """
+    from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
+
+    raw = os.environ.get(LANGSMITH_REPLICA_PROJECTS)
+    if not raw:
+        return []
+    return list(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+
+
+@contextlib.contextmanager
+def langsmith_replica_context() -> Iterator[None]:
+    """Dual-write agent traces to additional LangSmith projects when configured.
+
+    No-op (a single env-var read) unless
+    `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` is set and tracing is active.
+    When enabled, the agent run is written to the primary deepagents-code
+    project *and* each listed project as a LangSmith write replica.
+    """
+    extras = get_langsmith_replica_projects()
+    primary = get_langsmith_project_name()
+    if not extras or not primary:
+        yield
+        return
+
+    from langsmith import tracing_context
+    from langsmith.run_trees import WriteReplica
+
+    # Replicas fully define a run's destinations, so the primary project is
+    # listed explicitly here — otherwise it would be dropped. Dedupe keeps the
+    # primary first and avoids writing the same project twice.
+    projects = list(dict.fromkeys([primary, *extras]))
+    replicas = [WriteReplica(project_name=name) for name in projects]
+    with tracing_context(replicas=replicas):
+        yield
 
 
 class LangSmithLookupError(Exception):

@@ -127,6 +127,11 @@ on:
         options:
           - dcode
           - bare
+      dataset:
+        description: "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or terminal-bench/terminal-bench-2-1)"
+        required: true
+        default: "terminal-bench/terminal-bench-2"
+        type: string
       n_tasks:
         description: "Maximum number of tasks to run (0 = all tasks in dataset)"
         required: true
@@ -142,7 +147,7 @@ permissions:
 
 env:
   UV_NO_SYNC: "true"
-  HARBOR_DATASET: "terminal-bench/terminal-bench-2"
+  HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
 
 jobs:
   prep:
@@ -161,6 +166,7 @@ jobs:
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
           AGENT_IMPL: ${{ inputs.agent_impl }}
+          DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
           N_TASKS: ${{ inputs.n_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
         run: |
@@ -175,6 +181,7 @@ jobs:
           fi
           echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`agent_impl\` | \`${AGENT_IMPL}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`dataset\` | \`${DATASET}\` |" >> "$GITHUB_STEP_SUMMARY"
           if [ "${N_TASKS}" = "0" ]; then
             echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
           else
@@ -328,6 +335,10 @@ jobs:
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
+          fi
+          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
+            exit 1
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"

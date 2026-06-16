@@ -78,8 +78,15 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "agent_impl:" in workflow
     assert 'default: "dcode"' in workflow
     assert "          - dcode" in workflow
+    assert "dataset:" in workflow
+    assert (
+        "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or "
+        "terminal-bench/terminal-bench-2-1)"
+    ) in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
-    assert 'HARBOR_DATASET: "terminal-bench/terminal-bench-2"' in workflow
+    assert "HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}" in workflow
+    assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
+    assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in workflow
     assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
     assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow

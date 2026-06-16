@@ -142,8 +142,7 @@ permissions:
 
 env:
   UV_NO_SYNC: "true"
-  HARBOR_DATASET_NAME: "terminal-bench"
-  HARBOR_DATASET_VERSION: "2.0"
+  HARBOR_DATASET: "terminal-bench/terminal-bench-2"
 
 jobs:
   prep:
@@ -348,7 +347,7 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
+          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
@@ -383,7 +382,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET_NAME@$HARBOR_DATASET_VERSION" \
+            --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
             "${agent_env_args[@]}" \
@@ -423,7 +422,7 @@ jobs:
             echo "## Harbor run"
             echo
             echo "- Model: $HARBOR_MODEL"
-            echo "- Dataset: ${HARBOR_DATASET_NAME}@${HARBOR_DATASET_VERSION}"
+            echo "- Dataset: ${HARBOR_DATASET}"
             echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
             echo "- Concurrency: ${HARBOR_CONCURRENCY}"
             if [ "$HARBOR_N_TASKS" = "0" ]; then

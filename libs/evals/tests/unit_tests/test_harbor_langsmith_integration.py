@@ -37,13 +37,15 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     assert "../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/" in makefile
     assert "../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/" in makefile
     assert "HARBOR_AGENT_ENV_ARGS ?=" in makefile
+    assert "HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2" in makefile
     assert "--agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'" in makefile
     assert "--agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}'" in makefile
     assert "$(HARBOR_AGENT_ARGS)" in target
     assert "$(HARBOR_AGENT_ENV_ARGS)" in target
     assert "--jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR)" in target
     assert "--plugin langsmith" in target
-    assert "--plugin-kwarg dataset_name=terminal-bench@2.0" in target
+    assert "--dataset $(HARBOR_TERMINAL_BENCH_DATASET)" in target
+    assert "--plugin-kwarg dataset_name=$(HARBOR_TERMINAL_BENCH_DATASET)" in target
     assert "--plugin-kwarg experiment_name=" in target
     assert "--agent-import-path deepagents_harbor:DeepAgentsWrapper" not in target
 
@@ -77,6 +79,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'default: "dcode"' in workflow
     assert "          - dcode" in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
+    assert 'HARBOR_DATASET: "terminal-bench/terminal-bench-2"' in workflow
+    assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
     assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow
     assert "--agent langgraph" in workflow
@@ -91,6 +95,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
     assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow
+    assert '--dataset "$HARBOR_DATASET"' in workflow
     assert "--plugin langsmith" in workflow
     assert "--jobs-dir harbor-jobs/terminal-bench" in workflow
     assert 'Path("harbor-jobs/terminal-bench")' in workflow

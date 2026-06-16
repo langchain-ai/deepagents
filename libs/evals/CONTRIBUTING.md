@@ -417,7 +417,7 @@ uv run harbor run \
   --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
-  --dataset terminal-bench@2.0 \
+  --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 1 \
   --jobs-dir harbor-jobs/terminal-bench \
@@ -432,13 +432,13 @@ uv run harbor run \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
-  --dataset terminal-bench@2.0 \
+  --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 1 \
   --jobs-dir harbor-jobs/terminal-bench \
   --env langsmith \
   --plugin langsmith \
-  --plugin-kwarg dataset_name=terminal-bench@2.0 \
+  --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
   --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 
@@ -484,13 +484,13 @@ uv run harbor run \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
-  --dataset terminal-bench@2.0 \
+  --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 10 \
   --jobs-dir harbor-jobs/terminal-bench \
   --env langsmith \
   --plugin langsmith \
-  --plugin-kwarg dataset_name=terminal-bench@2.0 \
+  --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
   --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 

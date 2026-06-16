@@ -112,6 +112,9 @@ override-dependencies = [
 deepagents-code = { path = "../code" }
 deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
+# Pin Harbor (and its bundled langsmith plugin) to the integration fork while
+# the LangGraph/LangSmith work lands. Tracks nh/integration; see PR #3997.
+harbor = { git = "https://github.com/nick-hollon-lc/harbor.git", rev = "23ce5e937f4875e770f78a9b40509b10a85eaee5" }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../code"]

@@ -115,6 +115,11 @@ _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
 _AGENT_SELECT_ID = "thread-agent-select"
 _AGENT_VALUE_ALL = "__all__"
+# Display label and filter key for threads with no stored `agent_name`. Shared
+# between the Agent column renderer, the agent dropdown options, and the filter
+# predicate so all three read identically. The parentheses distinguish the
+# synthetic "missing agent" bucket from an agent literally named "unknown".
+_UNKNOWN_AGENT_LABEL = "(unknown)"
 _CONTROLS_SCROLL_ID = "thread-controls-scroll"
 _CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
@@ -273,7 +278,7 @@ def _format_column_value(
         # never leaves a dangling trailing hyphen in the thread ID column.
         value = thread["thread_id"].replace("-", "")
     elif key == "agent_name":
-        value = thread.get("agent_name") or "unknown"
+        value = thread.get("agent_name") or _UNKNOWN_AGENT_LABEL
     elif key == "messages":
         raw_count = thread.get("message_count")
         value = str(raw_count) if raw_count is not None else "..."
@@ -1032,14 +1037,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Including the configured agents keeps the filter in sync with `/agents`
         so an agent that has not produced any threads yet is still selectable;
         including thread-derived names keeps threads from since-deleted agents
-        (and the `"(unknown)"` sentinel for threads with no agent name)
+        (and the `_UNKNOWN_AGENT_LABEL` sentinel for threads with no agent name)
         filterable.
 
         Returns:
-            List of ``(label, value)`` pairs; the first entry is always
-                ``("All agents", _AGENT_VALUE_ALL)``.
+            List of `(label, value)` pairs; the first entry is always
+                `("All agents", _AGENT_VALUE_ALL)`.
         """
-        names = {t.get("agent_name") or "(unknown)" for t in self._threads}
+        names = {t.get("agent_name") or _UNKNOWN_AGENT_LABEL for t in self._threads}
         names.update(self._available_agent_names)
         ordered = sorted(names, key=str.casefold)
         return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
@@ -1047,11 +1052,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _refresh_agent_select_options(self) -> bool:
         """Repopulate the agent dropdown after threads are reloaded.
 
-        Preserves the current selection when the chosen agent is still present
-        in the new thread list; falls back to "All agents" otherwise.
+        Preserves the current selection when the chosen agent is still a valid
+        option — present in the reloaded threads or the configured `/agents`
+        list (see `_collect_agent_options`); falls back to "All agents"
+        otherwise.
 
         Returns:
-            `True` when the active agent filter was cleared.
+            `True` when the active agent filter was cleared (selection fell back
+                to "All agents"); `False` when the selection was preserved or
+                the dropdown is not mounted.
         """
         try:
             agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
@@ -1060,6 +1069,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         options = self._collect_agent_options()
         valid_values = {value for _, value in options}
         current = agent_select.value
+        # `set_options` resets the value to the first option, posting a
+        # transient `Select.Changed(_AGENT_VALUE_ALL)`. When we then restore
+        # `current` below, a second `Changed(current)` is posted. Both are
+        # queued, so `on_select_changed` runs them after this method returns;
+        # the spurious intermediate rebuild they would trigger is harmless
+        # because `_schedule_filter_and_rebuild` runs exclusively and the later
+        # event's worker supersedes the earlier one before it paints.
         agent_select.set_options(options)
         if current in valid_values:
             agent_select.value = current
@@ -1072,9 +1088,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Cache the configured agent names (the `/agents` list) off-thread.
 
         Runs the filesystem scan in a worker thread so the Textual event loop
-        is never blocked on directory I/O. Failures are swallowed by
-        `get_available_agent_names`, which returns an empty list and logs the
-        cause, so the agent filter degrades to thread-derived names only.
+        is never blocked on directory I/O. Expected filesystem errors are
+        swallowed by `get_available_agent_names`, which returns an empty list
+        (logging the cause for unexpected `OSError`s, but staying silent when
+        the agents directory simply does not exist yet), so the agent filter
+        degrades to thread-derived names only. The caller in `_load_threads`
+        additionally guards against any unexpected error so the picker is never
+        stranded if the scan fails.
         """
         from deepagents_code.agent import get_available_agent_names
 
@@ -1424,19 +1444,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._schedule_list_rebuild()
 
     def _agent_filtered_threads(self) -> list[ThreadInfo]:
-        """Return ``self._threads`` narrowed to the active agent filter.
+        """Return `self._threads` narrowed to the active agent filter.
 
         Returns:
             All threads when no agent filter is active; otherwise only threads
-                whose ``agent_name`` (or ``"(unknown)"`` for missing values)
-                matches ``self._filter_agent``.
+                whose `agent_name` (or `_UNKNOWN_AGENT_LABEL` for missing
+                values) matches `self._filter_agent`.
         """
         if self._filter_agent is None:
             return list(self._threads)
         return [
             t
             for t in self._threads
-            if (t.get("agent_name") or "(unknown)") == self._filter_agent
+            if (t.get("agent_name") or _UNKNOWN_AGENT_LABEL) == self._filter_agent
         ]
 
     def _update_filtered_list(self) -> None:
@@ -1782,7 +1802,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     "for thread selector",
                     exc_info=True,
                 )
-        await self._load_available_agent_names()
+        try:
+            await self._load_available_agent_names()
+        except Exception:
+            # The configured-agent scan is non-essential: a failure here must
+            # not strand the picker by skipping the filter refresh, DOM build,
+            # and checkpoint enrichment below. `get_available_agent_names`
+            # already absorbs expected filesystem errors; this guards anything
+            # unexpected that escapes it.
+            logger.warning(
+                "Could not load configured agent names for thread selector",
+                exc_info=True,
+            )
         self._update_filtered_list()
         self._sync_selected_index()
         if self._refresh_agent_select_options():
@@ -2244,7 +2275,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle the scope and agent ``Select`` dropdowns in the Options panel."""
+        """Handle the scope and agent `Select` dropdowns in the Options panel.
+
+        The agent branch updates the in-memory `_filter_agent` and re-filters
+        the loaded threads without re-querying the database; selecting the
+        "All agents" sentinel (`_AGENT_VALUE_ALL`) clears the filter. The scope
+        branch mirrors Claude Code's `/resume`: the picker is scoped to the
+        current working directory by default, and choosing "All directories"
+        widens the view to threads from every cwd (which does re-query).
+
+        Args:
+            event: The `Select.Changed` message; `event.select.id` selects the
+                branch and `event.value` carries the new selection.
+        """
         if event.select.id == _AGENT_SELECT_ID:
             if self._confirming_delete:
                 return

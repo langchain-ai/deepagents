@@ -937,7 +937,6 @@ except PermissionError:
         Args:
             pattern: Literal string to search for (not a regex).
             path: Directory or file to search in.
-
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).

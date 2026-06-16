@@ -3985,8 +3985,10 @@ class DeepAgentsApp(App):
                 that cannot load until the server respawns.
 
         Returns:
-            `True` when the extra installed successfully and any requested restart
-                completed; `False` otherwise.
+            `True` when the extra installed successfully and, when `auto_restart`
+                was requested, the restart completed; `False` otherwise. The
+                interactive restart offer (non-`auto_restart` path) does not
+                affect the return value.
         """
         try:
             from deepagents_code.config import _is_editable_install
@@ -4114,16 +4116,30 @@ class DeepAgentsApp(App):
             )
             return False
 
-        if restart_capable:
-            next_step = "Run `/restart` to load it now, or relaunch dcode."
-        else:
-            next_step = "Exit and relaunch dcode to use the new dependencies."
+        if not restart_capable:
+            if extra == "quickjs":
+                # `quickjs` only does anything behind `--interpreter`, a
+                # launch-only flag with a startup-time dependency gate, so a
+                # `/restart` (which reuses the original launch settings) can't
+                # enable it — a full relaunch with the flag is required.
+                next_step = (
+                    "Exit and relaunch dcode with `--interpreter` to use it — "
+                    "see `dcode --help`."
+                )
+            else:
+                next_step = "Exit and relaunch dcode to use the new dependencies."
+            await self._mount_message(
+                AppMessage(f"Installed extra '{extra}'. {next_step}"),
+            )
+            return True
 
-        await self._mount_message(
-            AppMessage(f"Installed extra '{extra}'. {next_step}"),
-        )
-        if restart_capable:
-            await self._offer_restart_after_install(extra)
+        # Restart-capable extra: announce success, then offer a one-keypress
+        # restart. `_offer_restart_after_install` owns all follow-up messaging
+        # (the prompt's button is the call to action when shown; it mounts a
+        # `/restart`-or-relaunch hint itself when it can't show the prompt), so
+        # a redundant "Run /restart" line is never appended here.
+        await self._mount_message(AppMessage(f"Installed extra '{extra}'."))
+        await self._offer_restart_after_install(extra)
         return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
@@ -8934,6 +8950,13 @@ class DeepAgentsApp(App):
             `True` when switching can continue, or `False` when the user did not
                 save required credentials.
         """
+        # This assumes API-key-style providers: it always uses the generic
+        # `AuthPromptScreen` (key / base-url), never the codex OAuth flow that
+        # the selector routes separately. That holds because only providers
+        # with a `_PROVIDER_DEPENDENCIES` extra reach the install-then-switch
+        # path, and the OAuth providers (e.g. `openai_codex`) have no such
+        # entry. If an OAuth provider ever gains an extra, route it to its
+        # dedicated sign-in here rather than the key prompt.
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import (
             ModelSpec,
@@ -10858,19 +10881,38 @@ class DeepAgentsApp(App):
         app-owned LangGraph server subprocess, so a `/restart` loads them
         without exiting the TUI. When dcode owns that subprocess and is idle,
         prompt to run the restart immediately instead of making the user type
-        `/restart`. Skipped while a run is in flight or the server is still
-        connecting/restarting (a restart cancels in-flight work and a
-        connecting server has nothing to respawn into yet) and in
-        remote-server mode (no subprocess to respawn) — every skipped path
-        already carries the manual-restart hint in the install message.
+        `/restart`.
+
+        Owns all of its own follow-up messaging so the caller never appends a
+        redundant hint:
+
+        - Owned + idle: show the prompt (its button is the call to action). If
+          the prompt can't be shown, fall back to a `/restart` hint.
+        - Owned + busy/connecting: a restart cancels in-flight work, so point
+          at `/restart` for once the current task finishes.
+        - No owned subprocess (remote server): `/restart` can't respawn it, so a
+          full relaunch is the only way to load the package.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
         """
         if self._server_proc is None or self._server_kwargs is None:
+            await self._mount_message(
+                AppMessage(f"Relaunch dcode to load '{label}'."),
+            )
             return
         if self._agent_running or self._connecting:
+            await self._mount_message(
+                AppMessage(
+                    f"Run `/restart` to load '{label}' once the current task finishes.",
+                ),
+            )
             return
+
+        # Owned + idle. A `/restart` respawns the subprocess (same effect as a
+        # relaunch, without exiting), so every couldn't-show-the-prompt path
+        # below degrades to this hint rather than mentioning a relaunch.
+        manual_hint = f"Run `/restart` to load '{label}' now."
 
         try:
             from deepagents_code.widgets.restart_prompt import RestartPromptScreen
@@ -10878,17 +10920,17 @@ class DeepAgentsApp(App):
             # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
             # can rewrite deepagents-code's own on-disk package tree mid-session
             # (see `_ensure_restart_prompt_loaded`). A first import of the modal
-            # here may then fail with `ModuleNotFoundError`. The manual
-            # `/restart` hint was already mounted by the caller, so degrade to
-            # that instead of crashing the TUI. The catch is deliberately
-            # narrow — a genuine `ImportError` from a broken modal still
-            # propagates rather than being mistaken for an upgrade race.
+            # here may then fail with `ModuleNotFoundError`. Degrade to the
+            # manual `/restart` hint instead of crashing the TUI. The catch is
+            # deliberately narrow — a genuine `ImportError` from a broken modal
+            # still propagates rather than being mistaken for an upgrade race.
             logger.warning(
-                "restart_prompt unavailable after installing %r; leaving the "
-                "manual /restart hint in place",
+                "restart_prompt unavailable after installing %r; falling back "
+                "to the manual /restart hint",
                 label,
                 exc_info=True,
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
 
         choice: RestartChoice | None
@@ -10902,21 +10944,35 @@ class DeepAgentsApp(App):
             )
         except TimeoutError:
             logger.warning(
-                "Restart prompt after installing %r timed out; leaving the "
-                "manual /restart hint in place",
+                "Restart prompt after installing %r timed out; falling back to "
+                "the manual /restart hint",
                 label,
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
         except Exception:
             # Modal could not be mounted (e.g. another modal hijacked the
-            # stack). Leave the manual `/restart` hint in place.
+            # stack). Fall back to the manual `/restart` hint.
             logger.exception(
                 "Failed to mount restart prompt after installing %r", label
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
 
-        if choice == "restart":
-            await self._restart_after_install(label)
+        # The pre-prompt guards above ran before the modal await; server state
+        # can flip while the user reads the prompt (e.g. an agent run starts),
+        # tripping `_restart_after_install`'s busy/no-server guards, which only
+        # log. Surface a message so an explicit "restart" choice never looks
+        # like a silent no-op. Mirrors the `auto_restart` path.
+        if choice == "restart" and not await self._restart_after_install(label):
+            await self._mount_message(
+                AppMessage(
+                    f"Couldn't restart the server automatically to load "
+                    f"'{label}'. Run `/restart` to load it.",
+                ),
+            )
+        # Otherwise the prompt was shown and the user made an informed choice;
+        # no further hint is needed.
 
     async def _restart_after_install(self, label: str) -> bool:
         """Restart the app-owned server after installing a dependency.

@@ -14,12 +14,9 @@
 # an exact pin already selects a single version, so setting both is an error.
 #
 # Already installed?
-#   Re-running is safe — the script checks PyPI and only acts when needed:
-#     - Already up to date  -> exits without changes.
-#     - Newer version       -> asks before upgrading in a real terminal; a
-#                              piped run with no terminal (curl | bash) just
-#                              upgrades on its own.
-#   To skip the prompt:
+#   Safe to re-run. If a newer version exists, it asks before upgrading — or
+#   upgrades on its own when run unattended (cron/CI/Docker). If you're already
+#   on the latest, it does nothing. To skip the prompt:
 #     - DEEPAGENTS_CODE_YES=1                     accept the upgrade
 #     - DEEPAGENTS_CODE_VERSION / _PRERELEASE     install that exact selection
 #     - DEEPAGENTS_CODE_EXTRAS / _PYTHON          rebuild with those options

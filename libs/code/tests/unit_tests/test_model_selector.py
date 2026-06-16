@@ -1474,6 +1474,43 @@ class TestFormatOptionLabel:
 
         assert DARK_COLORS.warning not in label.markup
 
+    def test_install_required_dims_spec_when_not_selected(self) -> None:
+        """Uninstalled providers render dimmed, overriding the missing-creds warning."""
+        from deepagents_code.theme import DARK_COLORS
+
+        label = ModelSelectorScreen._format_option_label(
+            "baseten:some-model",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="baseten",
+                env_var="BASETEN_API_KEY",
+            ),
+            install_required=True,
+        )
+        assert "dim" in label.markup
+        # The dim branch takes precedence over the blocks_start warning color.
+        assert DARK_COLORS.warning not in label.markup
+
+    def test_install_required_yields_to_selection_styling(self) -> None:
+        """A selected row skips the install-required dim (CSS owns the highlight)."""
+        from deepagents_code.theme import DARK_COLORS
+
+        label = ModelSelectorScreen._format_option_label(
+            "baseten:some-model",
+            selected=True,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="baseten",
+                env_var="BASETEN_API_KEY",
+            ),
+            install_required=True,
+        )
+        # Not dimmed when selected; the missing-creds warning color applies.
+        assert DARK_COLORS.warning in label.markup
+
 
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""
@@ -2017,3 +2054,29 @@ enabled = false
 
             assert screen.pending_install_extra is None
             assert app.dismissed is False
+
+    async def test_fuzzy_ranks_installed_above_uninstalled(self) -> None:
+        """Installed providers outrank install-required suggestions in search."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Both specs fuzzy-match "gpt"; only baseten needs an install, so
+            # openai must rank first despite baseten being an equal/better match.
+            screen._curated = False
+            screen._install_extras = {"baseten": "baseten"}
+            screen._unfiltered_models = [
+                ("baseten:gpt-thing", "baseten"),
+                ("openai:gpt-5.5", "openai"),
+            ]
+            screen._all_models = list(screen._unfiltered_models)
+            screen._filter_text = "gpt"
+            screen._update_filtered_list()
+
+            providers = [provider for _spec, provider in screen._filtered_models]
+            assert "openai" in providers
+            assert "baseten" in providers
+            assert providers.index("openai") < providers.index("baseten")

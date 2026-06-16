@@ -564,6 +564,52 @@ class TestThreadSelectorTabSort:
                 await pilot.pause()
                 assert filter_input.has_focus
 
+    async def test_thread_load_preserves_open_agent_dropdown_focus(self) -> None:
+        """Async thread loading should not move focus away from an open dropdown."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_list_threads(
+            *_args: object, **_kwargs: object
+        ) -> list[ThreadInfo]:
+            started.set()
+            await release.wait()
+            return MOCK_THREADS
+
+        mock_list = AsyncMock(side_effect=delayed_list_threads)
+        with (
+            patch("deepagents_code.sessions.list_threads", mock_list),
+            _patch_columns(),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("tab")
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+
+                agent_select = screen.query_one("#thread-agent-select", Select)
+                assert agent_select.expanded
+                assert isinstance(screen.focused, ThreadScopeSelectOverlay)
+
+                with patch.object(screen, "_scroll_selected_into_view") as mock_scroll:
+                    release.set()
+                    for _ in range(20):
+                        await pilot.pause()
+                        if screen._disk_load_complete and screen._option_widgets:
+                            break
+
+                assert agent_select.expanded
+                assert isinstance(screen.focused, ThreadScopeSelectOverlay)
+                mock_scroll.assert_not_called()
+
     async def test_cached_filter_controls_handle_tab_and_typing(self) -> None:
         """Tab traversal and type-to-search should use cached control lookups."""
         with _patch_list_threads(), _patch_columns():

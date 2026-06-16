@@ -1098,6 +1098,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Return whether an Options panel dropdown menu is currently open."""
         return self._expanded_select_id() is not None
 
+    def _restore_expanded_select_focus(self, select_id: str) -> None:
+        """Return focus to an Options panel dropdown after background rendering."""
+        try:
+            select = self._get_select(select_id)
+        except NoMatches:
+            return
+        select.expanded = True
+        with contextlib.suppress(NoMatches):
+            select.query_one(ThreadScopeSelectOverlay).focus()
+            return
+        select.focus()
+
     def _close_expanded_select(self) -> None:
         """Close the open Options panel dropdown and restore focus."""
         select_id = self._expanded_select_id()
@@ -1953,6 +1965,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             recompute_widths: Whether to recalculate shared column widths first.
         """
+        expanded_select_id = self._expanded_select_id()
         async with self._render_lock:
             try:
                 scroll = self.query_one(".thread-list", VerticalScroll)
@@ -1973,7 +1986,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._option_widgets, selected_widget = self._create_option_widgets()
                 await scroll.mount(*self._option_widgets)
 
-            if selected_widget:
+            if expanded_select_id is not None:
+                self.call_after_refresh(
+                    lambda: self._restore_expanded_select_focus(expanded_select_id)
+                )
+            elif selected_widget:
                 self.call_after_refresh(self._scroll_selected_into_view)
 
     def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:

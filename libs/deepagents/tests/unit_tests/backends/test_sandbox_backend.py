@@ -1375,7 +1375,6 @@ class NativeAsyncSandbox(BaseSandbox):
         raise RuntimeError(msg)
 
 
-@pytest.mark.asyncio
 async def test_als_calls_aexecute() -> None:
     """als() must call aexecute(), not the sync execute()."""
     sandbox = NativeAsyncSandbox()
@@ -1388,7 +1387,6 @@ async def test_als_calls_aexecute() -> None:
     assert result.entries is not None
 
 
-@pytest.mark.asyncio
 async def test_aread_calls_aexecute() -> None:
     """aread() must call aexecute(), not the sync execute()."""
     sandbox = NativeAsyncSandbox()
@@ -1401,7 +1399,6 @@ async def test_aread_calls_aexecute() -> None:
     assert result.file_data is not None
 
 
-@pytest.mark.asyncio
 async def test_agrep_calls_aexecute() -> None:
     """agrep() must call aexecute(), not the sync execute()."""
     sandbox = NativeAsyncSandbox()
@@ -1414,7 +1411,6 @@ async def test_agrep_calls_aexecute() -> None:
     assert result.error is None
 
 
-@pytest.mark.asyncio
 async def test_aglob_calls_aexecute() -> None:
     """aglob() must call aexecute(), not the sync execute()."""
     sandbox = NativeAsyncSandbox()
@@ -1427,7 +1423,6 @@ async def test_aglob_calls_aexecute() -> None:
     assert result.matches is not None
 
 
-@pytest.mark.asyncio
 async def test_awrite_calls_aexecute_and_aupload_files() -> None:
     """awrite() must call aexecute() for preflight and aupload_files(), not sync methods."""
     sandbox = NativeAsyncSandbox()
@@ -1442,7 +1437,6 @@ async def test_awrite_calls_aexecute_and_aupload_files() -> None:
     assert result.path == "/foo/new.txt"
 
 
-@pytest.mark.asyncio
 async def test_aedit_inline_calls_aexecute() -> None:
     """aedit() (small payload) must call aexecute(), not the sync execute()."""
     sandbox = NativeAsyncSandbox()
@@ -1455,7 +1449,6 @@ async def test_aedit_inline_calls_aexecute() -> None:
     assert result.occurrences == 1
 
 
-@pytest.mark.asyncio
 async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
     """aedit() (large payload) must call aexecute() and aupload_files(), not sync methods."""
     sandbox = NativeAsyncSandbox()

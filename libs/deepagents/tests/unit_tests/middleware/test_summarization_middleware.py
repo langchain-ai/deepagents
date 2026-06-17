@@ -473,7 +473,7 @@ class TestOffloadingBasic:
 
         `get_buffer_string(format="xml")` drops base64 blocks, so the middleware
         externalizes each one: decodes it to a binary file at
-        `/conversation_history/images/{sha256}.{ext}` via `upload_files`, then
+        `/conversation_history/media/{sha256}.{ext}` via `upload_files`, then
         rewrites the block to `<image url="…" />`. This covers all three base64
         shapes recognized by langchain_core.
         """
@@ -491,7 +491,7 @@ class TestOffloadingBasic:
         raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         b64 = _base64.b64encode(raw_png).decode()
         expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
-        expected_path = f"/conversation_history/images/{expected_key}.png"
+        expected_path = f"/conversation_history/media/{expected_key}.png"
 
         messages: list[BaseMessage] = [
             # Shape 1: explicit base64 field
@@ -521,7 +521,7 @@ class TestOffloadingBasic:
             call_wrap_model_call(middleware, state, runtime)
 
         # Identical images are deduped — only one upload despite three messages.
-        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path
 
@@ -545,8 +545,8 @@ class TestOffloadingBasic:
         b64_b = _base64.b64encode(raw_b).decode()
         key_a = hashlib.sha256(raw_a).hexdigest()[:16]
         key_b = hashlib.sha256(raw_b).hexdigest()[:16]
-        expected_path_a = f"/conversation_history/images/{key_a}.png"
-        expected_path_b = f"/conversation_history/images/{key_b}.png"
+        expected_path_a = f"/conversation_history/media/{key_a}.png"
+        expected_path_b = f"/conversation_history/media/{key_b}.png"
 
         class PartialUploadBackend(MockBackend):
             """Backend that raises for any upload path containing key_b."""
@@ -590,7 +590,7 @@ class TestOffloadingBasic:
             call_wrap_model_call(middleware, state, runtime)
 
         # Only image A was uploaded — B's upload raised.
-        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path_a
 
@@ -615,7 +615,7 @@ class TestOffloadingBasic:
         raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         b64 = _base64.b64encode(raw_png).decode()
         expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
-        expected_path = f"/conversation_history/images/{expected_key}.png"
+        expected_path = f"/conversation_history/media/{expected_key}.png"
 
         backend = MockBackend()
         mock_model = make_mock_model()
@@ -644,7 +644,7 @@ class TestOffloadingBasic:
 
         # upload_files called exactly once — externalization is not duplicated
         # even though both offload and summary consume the result.
-        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path
 
@@ -3100,7 +3100,7 @@ async def test_async_externalizes_base64_images() -> None:
     raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
     b64 = _base64.b64encode(raw_png).decode()
     expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
-    expected_path = f"/conversation_history/images/{expected_key}.png"
+    expected_path = f"/conversation_history/media/{expected_key}.png"
 
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -3139,7 +3139,7 @@ async def test_async_externalizes_base64_images() -> None:
 
     # aupload_files delegates to upload_files in MockBackend, so write_calls captures it.
     # Identical images are deduped — only one upload despite three messages.
-    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
     assert len(image_uploads) == 1
     assert image_uploads[0][0] == expected_path
 

@@ -480,7 +480,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
-        self._images_prefix = f"{_root}/conversation_history/images"
+        self._media_prefix = f"{_root}/conversation_history/media"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
@@ -968,7 +968,7 @@ A condensed summary follows:
         prompt does not receive raw base64 bytes.
 
         Each unique image is uploaded once to
-        `/conversation_history/images/{sha256}.{ext}`. Identical images across
+        `/conversation_history/media/{sha256}.{ext}`. Identical images across
         messages are deduped by content hash.
 
         Upload failures are tracked per-block. A failed block is replaced with
@@ -1000,7 +1000,7 @@ A condensed summary follows:
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
-                img_path = f"{self._images_prefix}/{key}.{ext}"
+                img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
                     backend.upload_files([(img_path, raw)])
                     path_map[key] = img_path
@@ -1041,7 +1041,7 @@ A condensed summary follows:
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
-                img_path = f"{self._images_prefix}/{key}.{ext}"
+                img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
                     await backend.aupload_files([(img_path, raw)])
                     path_map[key] = img_path

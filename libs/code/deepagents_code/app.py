@@ -42,7 +42,10 @@ from deepagents_code import (
     theme,
 )
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
+from deepagents_code._constants import (
+    DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -7551,7 +7554,7 @@ class DeepAgentsApp(App):
                 content = (
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
-                if content.startswith("[SYSTEM]"):
+                if content.startswith(SYSTEM_MESSAGE_PREFIX):
                     continue
 
                 # Detect skill invocations persisted via additional_kwargs

@@ -2,6 +2,28 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.20](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.19...deepagents-code==0.1.20) (2026-06-17)
+
+
+### Features
+
+* **code:** manage Tavily web-search API key in `/auth` ([#4062](https://github.com/langchain-ai/deepagents/issues/4062)) ([90cc099](https://github.com/langchain-ai/deepagents/commit/90cc099b0998a9aa55df01e3bc12ad1597c65365))
+* **code:** quiet install script's full dependency list ([#4058](https://github.com/langchain-ai/deepagents/issues/4058)) ([de2c9fd](https://github.com/langchain-ai/deepagents/commit/de2c9fd8c7437fdcdfe738599f83808c5423c55c))
+* **code:** show provider in usage stats table ([#4049](https://github.com/langchain-ai/deepagents/issues/4049)) ([309b054](https://github.com/langchain-ai/deepagents/commit/309b054fdd040adb5086408a3bcb2550ba73439e))
+* **code:** surface uninstalled known providers in `/auth` menu ([#4059](https://github.com/langchain-ai/deepagents/issues/4059)) ([73db271](https://github.com/langchain-ai/deepagents/commit/73db2719bce5ad3c933ffee643df4a62cfd60e17))
+
+
+### Bug Fixes
+
+* **cli:** clarify post-update restart semantics ([#4046](https://github.com/langchain-ai/deepagents/issues/4046)) ([6318b81](https://github.com/langchain-ai/deepagents/commit/6318b817399f7dd2f2e6dc07987dca46f1da9886))
+* **code:** hide `[SYSTEM]` interrupt notices from `/threads` prompt ([#3988](https://github.com/langchain-ai/deepagents/issues/3988)) ([68fa0cb](https://github.com/langchain-ai/deepagents/commit/68fa0cb4d48ff3f3e552bbf16f8316433c7b6f34))
+* **code:** keep install-required `/model` rows dimmed after navigation ([#4048](https://github.com/langchain-ai/deepagents/issues/4048)) ([c499634](https://github.com/langchain-ai/deepagents/commit/c499634c530dcab9b18e3126b4573ff0d36c3efa))
+* **code:** read `LANGSMITH_PROJECT` for `tracing.langsmith_project` + show default ([#4054](https://github.com/langchain-ai/deepagents/issues/4054)) ([fec1551](https://github.com/langchain-ai/deepagents/commit/fec1551e901a4fe88bd74ee4833a91ef93b1e93f))
+* **code:** remove transient `Restarting server...` message after restart ([#4047](https://github.com/langchain-ai/deepagents/issues/4047)) ([87cc504](https://github.com/langchain-ai/deepagents/commit/87cc50428bc96ef11dfb11cee4020bff322a7216))
+* **code:** rescaffold server workspace on `/restart` when config is missing ([#4050](https://github.com/langchain-ai/deepagents/issues/4050)) ([de51b0e](https://github.com/langchain-ai/deepagents/commit/de51b0e082293f5f795d96d3bf717c82efb9337e))
+* **code:** suppress model-switch defer toast on bare reconnect ([#4060](https://github.com/langchain-ai/deepagents/issues/4060)) ([60b1052](https://github.com/langchain-ai/deepagents/commit/60b10520d24c87b9c8c9d85b94cffae9e3c67c43))
+* **code:** surface recommended models missing from installed provider profiles ([#4057](https://github.com/langchain-ai/deepagents/issues/4057)) ([56e0d31](https://github.com/langchain-ai/deepagents/commit/56e0d31b6c507d5a1e95c3f2058a8d3b9488a4db))
+
 ## [0.1.19](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.18...deepagents-code==0.1.19) (2026-06-17)
 
 ### Features

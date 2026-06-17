@@ -202,6 +202,7 @@ if TYPE_CHECKING:
     from deepagents_code.textual_adapter import TextualUIAdapter
     from deepagents_code.widgets.approval import ApprovalMenu
     from deepagents_code.widgets.ask_user import AskUserMenu
+    from deepagents_code.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.widgets.notification_center import (
         NotificationSuppressRequested,
     )
@@ -4004,9 +4005,9 @@ class DeepAgentsApp(App):
 
         Returns:
             `True` when the extra installed successfully and, when `auto_restart`
-                was requested, the restart completed; `False` otherwise. The
-                interactive restart offer (non-`auto_restart` path) does not
-                affect the return value.
+                was requested, the server was restarted (or a fresh startup will
+                load it); `False` otherwise. The interactive restart offer
+                (non-`auto_restart` path) does not affect the return value.
         """
         try:
             from deepagents_code.config import _is_editable_install
@@ -4124,6 +4125,12 @@ class DeepAgentsApp(App):
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
         if restart_capable and auto_restart:
             if self._restart_after_install_is_unneeded():
+                # No running server to respawn; a deferred/errored startup will
+                # import the extra on its first spawn. Acknowledge the install
+                # regardless of whether the config reload below succeeds.
+                await self._mount_message(
+                    AppMessage(f"Installed extra '{extra}'."),
+                )
                 return await self._reload_configuration_for_restart()
             if await self._restart_after_install(extra):
                 return True
@@ -8852,7 +8859,7 @@ class DeepAgentsApp(App):
         *,
         curated: bool = False,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
-    ) -> ModalScreen:
+    ) -> ModelSelectorScreen:
         """Build the model selector screen with current app model state.
 
         Args:
@@ -8891,32 +8898,50 @@ class DeepAgentsApp(App):
         Args:
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
-            if result is not None:
-                model_spec, _ = result
-                # When the selector confirmed installing a missing provider's
-                # extra, install it first (with restart offer) before switching.
-                extra = getattr(screen, "pending_install_extra", None)
-                if extra:
-                    self.call_later(
-                        partial(
-                            self._install_extra_then_switch,
-                            extra,
-                            model_spec,
-                            extra_kwargs=extra_kwargs,
-                        ),
-                    )
-                else:
-                    self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+            self._handle_model_selection(screen, result, extra_kwargs=extra_kwargs)
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
 
         screen = self._build_model_selector_screen()
         self.push_screen(screen, handle_result)
+
+    def _handle_model_selection(
+        self,
+        screen: ModelSelectorScreen,
+        result: tuple[str, str] | None,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Route a model-selector result to install-then-switch or a switch.
+
+        Args:
+            screen: The dismissed selector, read for a confirmed install extra.
+            result: The `(model_spec, provider)` pair, or `None` if cancelled.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        if result is None:
+            return
+        model_spec, _ = result
+        # When the selector confirmed installing a missing provider's extra,
+        # install it first (with restart offer) before switching.
+        extra = screen.pending_install_extra
+        if extra:
+            from functools import partial
+
+            self.call_later(
+                partial(
+                    self._install_extra_then_switch,
+                    extra,
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                ),
+            )
+        else:
+            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
 
     def _dispatch_model_switch(
         self,
@@ -8970,10 +8995,24 @@ class DeepAgentsApp(App):
             model_spec: The `provider:model` spec to switch to once installed.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        if await self._install_extra(
-            extra, auto_restart=True
-        ) and await self._prompt_model_auth_if_needed(model_spec):
-            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+        # `_install_extra` already surfaced the reason on any failure.
+        if not await self._install_extra(extra, auto_restart=True):
+            return
+        # The extra is now installed regardless of what happens next. If the
+        # user dismisses the credential prompt, only the switch is cancelled —
+        # the extra stays installed so they can switch later once a key is set.
+        # The selector is already gone, so confirm the install landed rather
+        # than leaving a silent no-op after a multi-step flow.
+        if not await self._prompt_model_auth_if_needed(model_spec):
+            await self._mount_message(
+                AppMessage(
+                    f"Installed '{extra}'. Skipped switching to {model_spec} for "
+                    f"now — add credentials with `/auth`, then switch with "
+                    f"`/model` anytime.",
+                ),
+            )
+            return
+        self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
 
     async def _prompt_model_auth_if_needed(self, model_spec: str) -> bool:
         """Prompt for missing credentials before switching to `model_spec`.

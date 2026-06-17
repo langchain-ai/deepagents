@@ -6745,6 +6745,7 @@ class TestInstallExtraModelSwitch:
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=True)  # ty: ignore
         app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
         monkeypatch.setattr(
@@ -6763,6 +6764,16 @@ class TestInstallExtraModelSwitch:
 
         app._push_screen_wait.assert_awaited_once()  # ty: ignore
         dispatch.assert_not_called()
+        # The switch is abandoned, but the message confirms the extra stayed
+        # installed and points the user at how to switch later — not a silent
+        # no-op after the install + restart.
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Installed" in mounted
+        assert "/auth" in mounted
+        assert "/model" in mounted
 
     async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -6948,6 +6959,106 @@ class TestInstallExtraModelSwitch:
         assert result is True
         app._push_screen_wait.assert_not_awaited()  # ty: ignore
 
+    async def test_install_extra_editable_install_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An editable install can't be upgraded, so `_install_extra` returns False."""
+        from deepagents_code import config as config_mod
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: True)
+
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._install_extra("baseten") is False
+
+    async def test_install_extra_failed_resolution_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failed `uv` resolution surfaces an error and returns False.
+
+        `_install_extra_then_switch` gates the model switch on this `bool`, so
+        the contract is locked here rather than only through mocked callers.
+        """
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(False, "resolver: conflict")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._install_extra("baseten", auto_restart=True) is False
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Install failed" in mounted
+
+
+class TestHandleModelSelection:
+    """Tests for the model-selector result router."""
+
+    async def test_install_extra_then_switch_when_pending_extra(self) -> None:
+        """A confirmed install routes through install-then-switch."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            extra_kwargs={"temperature": 0},
+        )
+
+        dispatch.assert_not_called()
+        app.call_later.assert_called_once()  # ty: ignore
+        scheduled = app.call_later.call_args.args[0]  # ty: ignore
+        # Bound methods compare equal (same instance + function) but each
+        # attribute access yields a fresh object, so `==`, not `is`.
+        assert scheduled.func == app._install_extra_then_switch
+        assert scheduled.args == ("baseten", "baseten:moonshotai/Kimi-K2.6")
+        assert scheduled.keywords == {"extra_kwargs": {"temperature": 0}}
+
+    async def test_plain_switch_when_no_pending_extra(self) -> None:
+        """No pending extra dispatches a normal model switch."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra=None)
+
+        app._handle_model_selection(screen, ("openai:gpt-5.5", "openai"))  # ty: ignore
+
+        app.call_later.assert_not_called()  # ty: ignore
+        dispatch.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
+
+    async def test_cancelled_selection_is_noop(self) -> None:
+        """A `None` result neither switches nor installs."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(screen, None)  # ty: ignore
+
+        app.call_later.assert_not_called()  # ty: ignore
+        dispatch.assert_not_called()
+
 
 class TestRestartAfterInstall:
     """Tests for the shared post-install server restart helper."""
@@ -7005,9 +7116,59 @@ class TestRestartAfterInstall:
 
         assert await app._restart_after_install("baseten") is False
 
+    @pytest.mark.parametrize(
+        ("proc", "kwargs", "deferred", "error", "expected"),
+        [
+            # No server yet + a pending spawn: a fresh startup loads the extra.
+            (None, {"model_name": "x"}, True, None, True),
+            (None, {"model_name": "x"}, False, "startup failed", True),
+            # No pending spawn to ride on.
+            (None, {"model_name": "x"}, False, None, False),
+            # A live server exists, so a real restart is needed (not "unneeded").
+            (object(), {"model_name": "x"}, True, None, False),
+            # Remote server (no kwargs): nothing local to spawn.
+            (None, None, True, None, False),
+        ],
+    )
+    def test_restart_after_install_is_unneeded(
+        self,
+        proc: object | None,
+        kwargs: dict[str, str] | None,
+        deferred: bool,
+        error: str | None,
+        expected: bool,
+    ) -> None:
+        """The predicate is true only when a pending fresh startup will load it."""
+        app = DeepAgentsApp()
+        app._server_proc = proc  # ty: ignore
+        app._server_kwargs = kwargs  # ty: ignore
+        app._server_startup_deferred = deferred
+        app._server_startup_error = error
+
+        assert app._restart_after_install_is_unneeded() is expected
+
 
 class TestDispatchModelSwitch:
     """Tests for the defer-vs-immediate model switch dispatcher."""
+
+    @pytest.mark.parametrize(
+        "flag", ["_agent_running", "_shell_running", "_connecting"]
+    )
+    async def test_defers_for_each_busy_flag(self, flag: str) -> None:
+        """Each busy signal independently defers the switch."""
+        app = DeepAgentsApp()
+        app._agent_running = False
+        app._shell_running = False
+        app._connecting = False
+        setattr(app, flag, True)
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
 
     async def test_switches_immediately_when_idle(self) -> None:
         """An idle app schedules the switch directly."""

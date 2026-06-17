@@ -624,14 +624,27 @@ def is_provider_package_installed(provider: str) -> bool:
 
     Returns:
         `True` when the integration package is importable or the provider has
-            no curated extra; `False` when the curated package is missing.
+            no curated extra; `False` when the curated package is missing or
+            cannot be resolved.
     """
     import importlib.util
 
     dependency = _PROVIDER_DEPENDENCIES.get(provider)
     if dependency is None:
         return True
-    return importlib.util.find_spec(dependency[0]) is not None
+    try:
+        return importlib.util.find_spec(dependency[0]) is not None
+    except (ImportError, ValueError):
+        # `find_spec` re-raises errors from a broken parent package and raises
+        # `ValueError` for a malformed spec. Treat "can't tell" as "missing"
+        # so the model selector routes to the install prompt rather than
+        # crashing a synchronous Textual handler.
+        logger.warning(
+            "Could not resolve provider package %r; treating as not installed",
+            dependency[0],
+            exc_info=True,
+        )
+        return False
 
 
 # Credentials that back a `Settings` field, keyed by canonical env var.

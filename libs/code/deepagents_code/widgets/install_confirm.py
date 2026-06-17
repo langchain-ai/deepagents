@@ -187,7 +187,15 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
-        provider = self._provider.replace("_", "-").title()
+        # Reuse the auth UI's curated labels (e.g. `google_genai` -> "Google
+        # Gemini") so the title reads naturally, falling back to a title-cased
+        # provider key. Avoids the event-loop config read in
+        # `_provider_display_name`, which is overkill for a static title.
+        from deepagents_code.widgets.auth import PROVIDER_DISPLAY_NAMES
+
+        provider = PROVIDER_DISPLAY_NAMES.get(
+            self._provider, self._provider.replace("_", " ").title()
+        )
         with Vertical():
             yield Static(
                 f"Install {provider} support?",

@@ -123,6 +123,33 @@ async def test_offer_restart_no_owned_server_recommends_relaunch() -> None:
     assert "/restart" not in contents
 
 
+async def test_offer_restart_state_flip_surfaces_fallback() -> None:
+    """An explicit "restart" that can't run (state flipped) isn't a silent no-op.
+
+    The pre-prompt guards pass (owned + idle), but server state can change
+    while the user reads the prompt, so `_restart_after_install` returns False.
+    The handler must surface a fallback rather than letting the chosen restart
+    silently do nothing.
+    """
+    app = DeepAgentsApp()
+    app._server_proc = MagicMock()
+    app._server_kwargs = {"model_name": "fireworks:fake"}
+    app._agent_running = False
+    app._connecting = False
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._push_screen_wait = AsyncMock(return_value="restart")  # ty: ignore
+    app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    app._restart_after_install.assert_awaited_once_with("fireworks")  # ty: ignore
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "Couldn't restart the server automatically to load" in contents
+
+
 async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted() -> (
     None
 ):

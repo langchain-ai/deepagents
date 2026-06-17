@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -109,6 +109,27 @@ providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
 listed under each provider intentionally so the user can pick whichever
 provider they have credentials for.
 """
+
+
+class _ModelData(NamedTuple):
+    """Model discovery data returned by `ModelSelectorScreen._load_model_data`.
+
+    Attributes:
+        all_models: `(provider:model spec, provider)` pairs for every model to
+            surface, including install-required recommended models.
+        default_spec: The configured default model spec, or `None`.
+        profiles: Spec string to profile entry mapping.
+        recent_specs: Most-recent-first `provider:model` specs read from
+            `~/.deepagents/.state/recent_models.json`.
+        install_extras: Each surfaced-but-uninstalled provider mapped to the
+            extra that installs it.
+    """
+
+    all_models: list[tuple[str, str]]
+    default_spec: str | None
+    profiles: Mapping[str, ModelProfileEntry]
+    recent_specs: list[str]
+    install_extras: dict[str, str]
 
 
 class ModelOption(Static):
@@ -495,13 +516,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
         *,
         include_uninstalled: bool = True,
-    ) -> tuple[
-        list[tuple[str, str]],
-        str | None,
-        Mapping[str, ModelProfileEntry],
-        list[str],
-        dict[str, str],
-    ]:
+    ) -> _ModelData:
         """Gather model discovery data synchronously.
 
         Intended to be called via `asyncio.to_thread` so filesystem I/O in
@@ -515,15 +530,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 dedicated dependency-install step.
 
         Returns:
-            Tuple of (all_models, default_spec, profiles, recent_specs,
-                install_extras) where `all_models` is a list of
-                `(provider:model spec, provider)` pairs, `default_spec` is the
-                configured default model or `None`, `profiles` maps spec
-                strings to profile entries, `recent_specs` is the
-                most-recent-first list of `provider:model` strings read from
-                `~/.deepagents/.state/recent_models.json`, and
-                `install_extras` maps each surfaced-but-uninstalled provider to
-                the extra that installs it.
+            A `_ModelData` bundle of the discovered models, default spec,
+                profiles, recent specs, and install-required provider extras.
         """
         available = get_available_models()
         config = ModelConfig.load()
@@ -542,19 +550,30 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             for spec in sorted(_RECOMMENDED_MODELS):
                 provider = spec.split(":", 1)[0]
-                if provider in available:
-                    continue
-                if not config.is_provider_enabled(provider):
-                    continue
-                extra = provider_install_extra(provider)
-                if extra is None or is_provider_package_installed(provider):
-                    continue
-                install_extras[provider] = extra
-                all_models.append((spec, provider))
+                try:
+                    if provider in available:
+                        continue
+                    if not config.is_provider_enabled(provider):
+                        continue
+                    extra = provider_install_extra(provider)
+                    if extra is None or is_provider_package_installed(provider):
+                        continue
+                    install_extras[provider] = extra
+                    all_models.append((spec, provider))
+                except Exception:
+                    # Isolate per-provider failures so one bad recommended
+                    # provider can't take down the entire model list (the
+                    # caller degrades any raise here to an empty selector).
+                    logger.warning(
+                        "Skipping recommended provider %r while surfacing "
+                        "install-required models",
+                        provider,
+                        exc_info=True,
+                    )
 
         profiles = get_model_profiles(cli_override=cli_override)
         recent_specs = load_recent_models()
-        return (
+        return _ModelData(
             all_models,
             config.default_model,
             profiles,
@@ -637,13 +656,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
-            (
-                all_models,
-                default_spec,
-                profiles,
-                recent_specs,
-                install_extras,
-            ) = await asyncio.to_thread(
+            data = await asyncio.to_thread(
                 self._load_model_data,
                 self._cli_profile_override,
                 include_uninstalled=not self._curated,
@@ -667,11 +680,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self.is_running:
             return
 
-        self._unfiltered_models = all_models
-        self._default_spec = default_spec
-        self._profiles = profiles
-        self._recent_specs = recent_specs
-        self._install_extras = install_extras
+        self._unfiltered_models = data.all_models
+        self._default_spec = data.default_spec
+        self._profiles = data.profiles
+        self._recent_specs = data.recent_specs
+        self._install_extras = data.install_extras
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
@@ -754,7 +767,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         self._filtered_models = [
             (spec, provider)
-            for _installed, score, spec, provider in sorted(
+            for _installed, _score, spec, provider in sorted(
                 (
                     (provider not in self._install_extras, score, spec, provider)
                     for score, spec, provider in scored

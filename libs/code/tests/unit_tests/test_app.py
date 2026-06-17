@@ -1790,6 +1790,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1829,6 +1830,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1873,6 +1875,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1928,6 +1931,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -2066,6 +2070,8 @@ class TestModalScreenCtrlDHandling:
             assert app.focused is not None
             assert app.focused.id == "auth-prompt-input"
 
+            await pilot.press("f2")
+            await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
             assert app.focused is not None
@@ -2132,6 +2138,7 @@ class TestModalScreenShiftTabHandling:
                         "initial_prompt": "prompt",
                     }
                 ],
+                filter_cwd=None,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -2139,6 +2146,7 @@ class TestModalScreenShiftTabHandling:
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
             scope_select = screen.query_one("#thread-scope-select", Select)
+            agent_select = screen.query_one("#thread-agent-select", Select)
             sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
             await pilot.press("tab")
@@ -2147,7 +2155,15 @@ class TestModalScreenShiftTabHandling:
 
             await pilot.press("tab")
             await pilot.pause()
+            assert agent_select.has_focus
+
+            await pilot.press("tab")
+            await pilot.pause()
             assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert agent_select.has_focus
 
             await pilot.press("shift+tab")
             await pilot.pause()
@@ -2219,6 +2235,7 @@ class TestModalScreenCtrlCHandling:
                         "initial_prompt": "prompt",
                     }
                 ],
+                filter_cwd=None,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -3066,9 +3083,8 @@ class TestTraceCommand:
             )
             mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
-                expected_url in str(w._content) for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
@@ -3285,10 +3301,11 @@ class TestTraceCommand:
             # Queued widget replaced by real UserMessage + AppMessage with link
             assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(
-                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
-                for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert (
+                "Opening tracing project 'proj':\n"
+                "https://smith.langchain.com/t/test-thread-123"
+            ) in rendered
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when the URL fetch raises."""
@@ -14430,3 +14447,57 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
         app._notify_interpreter_tools_without_interpreter()
 
         notify_mock.assert_not_called()
+
+
+class TestNotifyOrphanedTracingDisabled:
+    """Tests for `_notify_orphaned_tracing_disabled` (TUI advisory)."""
+
+    def test_toasts_when_notice_pending(self) -> None:
+        """A pending notice is surfaced as a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value="tracing disabled, set LANGSMITH_API_KEY",
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_called_once()
+        assert (
+            notify_mock.call_args.args[0] == "tracing disabled, set LANGSMITH_API_KEY"
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_no_notice(self) -> None:
+        """No pending notice means no toast fires."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value=None,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_not_called()
+
+    def test_render_failure_is_swallowed_and_logged(self) -> None:
+        """A failed toast render is logged rather than escaping the callback."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock(side_effect=RuntimeError("render boom"))
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+                return_value="tracing disabled",
+            ),
+            patch("deepagents_code.app.logger.exception") as log_mock,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        log_mock.assert_called_once()

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
-    from textual.events import Click, Key
+    from textual.events import Click, Key, MouseMove
 
     from deepagents_code.sessions import ThreadInfo
 
@@ -113,6 +113,13 @@ _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _SCOPE_SELECT_ID = "thread-scope-select"
 _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
+_AGENT_SELECT_ID = "thread-agent-select"
+_AGENT_VALUE_ALL = "__all__"
+# Display label and filter key for threads with no stored `agent_name`. Shared
+# between the Agent column renderer, the agent dropdown options, and the filter
+# predicate so all three read identically. The parentheses distinguish the
+# synthetic "missing agent" bucket from an agent literally named "unknown".
+_UNKNOWN_AGENT_LABEL = "(unknown)"
 _CONTROLS_SCROLL_ID = "thread-controls-scroll"
 _CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
@@ -271,7 +278,7 @@ def _format_column_value(
         # never leaves a dangling trailing hyphen in the thread ID column.
         value = thread["thread_id"].replace("-", "")
     elif key == "agent_name":
-        value = thread.get("agent_name") or "unknown"
+        value = thread.get("agent_name") or _UNKNOWN_AGENT_LABEL
     elif key == "messages":
         raw_count = thread.get("message_count")
         value = str(raw_count) if raw_count is not None else "..."
@@ -700,7 +707,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-top: 0;
     }
 
-    ThreadSelectorScreen .thread-scope-select {
+    ThreadSelectorScreen .thread-scope-select,
+    ThreadSelectorScreen .thread-agent-select {
         width: 1fr;
         height: auto;
         margin-bottom: 1;
@@ -877,6 +885,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
         self._filter_text = ""
+        self._filter_agent: str | None = None
+        # Configured agent names from `~/.deepagents/` (the `/agents` list),
+        # loaded off the event loop in `_load_threads`. Unioned with
+        # thread-derived names so the agent filter mirrors `/agents` even for
+        # agents that have not produced any threads yet.
+        self._available_agent_names: list[str] = []
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
@@ -995,6 +1009,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
             scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+            agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
             sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
             column_switches = [
@@ -1004,36 +1019,152 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filter_controls = [
                 filter_input,
                 scope_select,
+                agent_select,
                 sort_switch,
                 relative_switch,
                 *column_switches,
             ]
         return self._filter_controls
 
-    def _get_scope_select(self) -> Select[str]:
-        """Return the scope dropdown widget."""
-        return self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+    def _collect_agent_options(self) -> list[tuple[str, str]]:
+        """Return Select option tuples for the agent dropdown.
 
-    def _is_scope_select_expanded(self) -> bool:
-        """Return whether the scope dropdown menu is currently open."""
+        Unions the configured agents (the `/agents` list, loaded into
+        `self._available_agent_names`) with the agent names found in the
+        currently loaded thread list, then prepends an "All agents" sentinel so
+        the caller can always reset to an unfiltered view.
+
+        Including the configured agents keeps the filter in sync with `/agents`
+        so an agent that has not produced any threads yet is still selectable;
+        including thread-derived names keeps threads from since-deleted agents
+        (and the `_UNKNOWN_AGENT_LABEL` sentinel for threads with no agent name)
+        filterable.
+
+        Returns:
+            List of `(label, value)` pairs; the first entry is always
+                `("All agents", _AGENT_VALUE_ALL)`.
+        """
+        names = {t.get("agent_name") or _UNKNOWN_AGENT_LABEL for t in self._threads}
+        names.update(self._available_agent_names)
+        ordered = sorted(names, key=str.casefold)
+        return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
+
+    def _refresh_agent_select_options(self) -> bool:
+        """Repopulate the agent dropdown after threads are reloaded.
+
+        Preserves the current selection when the chosen agent is still a valid
+        option — present in the reloaded threads or the configured `/agents`
+        list (see `_collect_agent_options`); falls back to "All agents"
+        otherwise.
+
+        Returns:
+            `True` when the active agent filter was cleared (selection fell back
+                to "All agents"); `False` when the selection was preserved or
+                the dropdown is not mounted.
+        """
         try:
-            return self._get_scope_select().expanded
+            agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
         except NoMatches:
             return False
+        options = self._collect_agent_options()
+        valid_values = {value for _, value in options}
+        current = agent_select.value
+        # `set_options` resets the value to the first option, posting a
+        # transient `Select.Changed(_AGENT_VALUE_ALL)`. When we then restore
+        # `current` below, a second `Changed(current)` is posted. Both are
+        # queued, so `on_select_changed` runs them after this method returns;
+        # the spurious intermediate rebuild they would trigger is harmless
+        # because `_schedule_filter_and_rebuild` runs exclusively and the later
+        # event's worker supersedes the earlier one before it paints.
+        agent_select.set_options(options)
+        if current in valid_values:
+            agent_select.value = current
+            return False
+        agent_select.value = _AGENT_VALUE_ALL
+        self._filter_agent = None
+        return True
 
-    def _close_scope_select(self) -> None:
-        """Close the scope dropdown and restore focus to the select control."""
-        scope_select = self._get_scope_select()
-        scope_select.expanded = False
-        scope_select.focus()
+    async def _load_available_agent_names(self) -> None:
+        """Cache the configured agent names (the `/agents` list) off-thread.
 
-    def _select_scope_highlight(self) -> None:
-        """Select the currently highlighted option in the open scope dropdown."""
+        Runs the filesystem scan in a worker thread so the Textual event loop
+        is never blocked on directory I/O. Expected filesystem errors are
+        swallowed by `get_available_agent_names`, which returns an empty list
+        (logging the cause for unexpected `OSError`s, but staying silent when
+        the agents directory simply does not exist yet), so the agent filter
+        degrades to thread-derived names only. The caller in `_load_threads`
+        additionally guards against any unexpected error so the picker is never
+        stranded if the scan fails.
+        """
+        from deepagents_code.agent import get_available_agent_names
+
+        self._available_agent_names = await asyncio.to_thread(get_available_agent_names)
+
+    def _get_select(self, select_id: str) -> Select[str]:
+        """Return an Options panel dropdown widget by ID."""
+        return self.query_one(f"#{select_id}", Select)
+
+    def _expanded_select_id(self) -> str | None:
+        """Return the ID for the currently open Options panel dropdown."""
+        for select_id in (_SCOPE_SELECT_ID, _AGENT_SELECT_ID):
+            try:
+                if self._get_select(select_id).expanded:
+                    return select_id
+            except NoMatches:
+                continue
+        return None
+
+    def _is_select_expanded(self) -> bool:
+        """Return whether an Options panel dropdown menu is currently open."""
+        return self._expanded_select_id() is not None
+
+    def _restore_expanded_select_focus(self, select_id: str) -> None:
+        """Return focus to an Options panel dropdown after background rendering."""
+        try:
+            select = self._get_select(select_id)
+        except NoMatches:
+            return
+        select.expanded = True
+        with contextlib.suppress(NoMatches):
+            select.query_one(ThreadScopeSelectOverlay).focus()
+            return
+        select.focus()
+
+    def _close_expanded_select(self) -> None:
+        """Close the open Options panel dropdown and restore focus."""
+        select_id = self._expanded_select_id()
+        if select_id is None:
+            return
+        select = self._get_select(select_id)
+        select.expanded = False
+        select.focus()
+
+    def _select_expanded_highlight(self) -> None:
+        """Select the currently highlighted option in the open dropdown."""
         action_select = getattr(self.focused, "action_select", None)
         if callable(action_select):
             action_select()
             return
-        self._close_scope_select()
+        self._close_expanded_select()
+
+    def _open_focused_select(self) -> bool:
+        """Open a focused Options panel dropdown.
+
+        Returns:
+            `True` when a dropdown was focused and opened.
+        """
+        try:
+            selects = (
+                self._get_select(_SCOPE_SELECT_ID),
+                self._get_select(_AGENT_SELECT_ID),
+            )
+        except NoMatches:
+            return False
+        for select in selects:
+            if self.focused is select:
+                select.action_show_overlay()
+                return True
+        return False
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -1106,6 +1237,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         compact=True,
                         id=_SCOPE_SELECT_ID,
                         classes="thread-scope-select",
+                    )
+                    yield Static(
+                        "Show agent:",
+                        classes="thread-controls-label",
+                        markup=False,
+                    )
+                    yield ThreadScopeSelect(
+                        self._collect_agent_options(),
+                        value=_AGENT_VALUE_ALL,
+                        allow_blank=False,
+                        compact=True,
+                        id=_AGENT_SELECT_ID,
+                        classes="thread-agent-select",
                     )
                     with ThreadControlsScroll(
                         id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
@@ -1220,7 +1364,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
 
-        if event.key in {"tab", "shift+tab"} and self._is_scope_select_expanded():
+        if event.key in {"tab", "shift+tab"} and self._is_select_expanded():
             event.prevent_default()
             event.stop()
             return
@@ -1299,11 +1443,28 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
         self._schedule_list_rebuild()
 
+    def _agent_filtered_threads(self) -> list[ThreadInfo]:
+        """Return `self._threads` narrowed to the active agent filter.
+
+        Returns:
+            All threads when no agent filter is active; otherwise only threads
+                whose `agent_name` (or `_UNKNOWN_AGENT_LABEL` for missing
+                values) matches `self._filter_agent`.
+        """
+        if self._filter_agent is None:
+            return list(self._threads)
+        return [
+            t
+            for t in self._threads
+            if (t.get("agent_name") or _UNKNOWN_AGENT_LABEL) == self._filter_agent
+        ]
+
     def _update_filtered_list(self) -> None:
         """Update filtered threads based on search text using fuzzy matching."""
+        base = self._agent_filtered_threads()
         query = self._filter_text.strip()
         if not query:
-            self._filtered_threads = list(self._threads)
+            self._filtered_threads = base
             self._apply_sort()
             self._sync_selected_index()
             self._column_widths = self._compute_column_widths()
@@ -1313,7 +1474,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             matchers = [Matcher(token, case_sensitive=False) for token in tokens]
             scored: list[tuple[float, ThreadInfo]] = []
-            for thread in self._threads:
+            for thread in base:
                 search_text = self._get_search_text(thread)
                 scores = [matcher.match(search_text) for matcher in matchers]
                 if all(score > 0 for score in scores):
@@ -1324,7 +1485,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 query,
                 exc_info=True,
             )
-            self._filtered_threads = list(self._threads)
+            self._filtered_threads = base
             self._apply_sort()
             self._sync_selected_index()
             self._column_widths = self._compute_column_widths()
@@ -1447,7 +1608,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     async def _filter_and_build(self) -> None:
         """Run fuzzy filtering in a thread then rebuild the list."""
         query = self._filter_text.strip()
-        threads = list(self._threads)
+        threads = self._agent_filtered_threads()
         sort_by_updated = self._sort_by_updated
 
         filtered = await asyncio.to_thread(
@@ -1471,7 +1632,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         Args:
             query: Current search query text.
-            threads: Full thread list snapshot.
+            threads: Agent-pre-filtered thread list snapshot.
             sort_by_updated: Whether to sort by `updated_at`.
 
         Returns:
@@ -1641,8 +1802,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     "for thread selector",
                     exc_info=True,
                 )
+        try:
+            await self._load_available_agent_names()
+        except Exception:
+            # The configured-agent scan is non-essential: a failure here must
+            # not strand the picker by skipping the filter refresh, DOM build,
+            # and checkpoint enrichment below. `get_available_agent_names`
+            # already absorbs expected filesystem errors; this guards anything
+            # unexpected that escapes it.
+            logger.warning(
+                "Could not load configured agent names for thread selector",
+                exc_info=True,
+            )
         self._update_filtered_list()
         self._sync_selected_index()
+        if self._refresh_agent_select_options():
+            self._update_filtered_list()
+            self._sync_selected_index()
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
@@ -1738,6 +1914,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Resolve the LangSmith URL and update the title with a clickable link."""
         if not self._current_thread:
             return
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         try:
             thread_url = await asyncio.wait_for(
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
@@ -1755,6 +1933,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 "Unexpected error resolving LangSmith thread URL for '%s'",
                 self._current_thread,
                 exc_info=True,
+            )
+            return
+        if loop.time() - started >= _URL_FETCH_TIMEOUT:
+            logger.debug(
+                "LangSmith thread URL for '%s' resolved after the timeout deadline",
+                self._current_thread,
             )
             return
         if thread_url:
@@ -1820,6 +2004,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             recompute_widths: Whether to recalculate shared column widths first.
         """
+        expanded_select_id = self._expanded_select_id()
         async with self._render_lock:
             try:
                 scroll = self.query_one(".thread-list", VerticalScroll)
@@ -1840,7 +2025,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 self._option_widgets, selected_widget = self._create_option_widgets()
                 await scroll.mount(*self._option_widgets)
 
-            if selected_widget:
+            if expanded_select_id is not None:
+                self.call_after_refresh(
+                    lambda: self._restore_expanded_select_focus(expanded_select_id)
+                )
+            elif selected_widget:
                 self.call_after_refresh(self._scroll_selected_into_view)
 
     def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:
@@ -2040,12 +2229,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Confirm the highlighted thread and dismiss the selector."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
-            self._select_scope_highlight()
+        if self._is_select_expanded():
+            self._select_expanded_highlight()
             return
-        scope_select = self._get_scope_select()
-        if self.focused is scope_select:
-            scope_select.action_show_overlay()
+        if self._open_focused_select():
             return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
@@ -2055,7 +2242,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._is_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2070,7 +2257,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus backward through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
-        if self._is_scope_select_expanded():
+        if self._is_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2096,12 +2283,29 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle the scope `Select` dropdown in the Options panel.
+        """Handle the scope and agent `Select` dropdowns in the Options panel.
 
-        Mirrors Claude Code's `/resume`: the picker is scoped to the current
-        working directory by default; choosing "All directories" widens the
-        view to threads from every cwd.
+        The agent branch updates the in-memory `_filter_agent` and re-filters
+        the loaded threads without re-querying the database; selecting the
+        "All agents" sentinel (`_AGENT_VALUE_ALL`) clears the filter. The scope
+        branch mirrors Claude Code's `/resume`: the picker is scoped to the
+        current working directory by default, and choosing "All directories"
+        widens the view to threads from every cwd (which does re-query).
+
+        Args:
+            event: The `Select.Changed` message; `event.select.id` selects the
+                branch and `event.value` carries the new selection.
         """
+        if event.select.id == _AGENT_SELECT_ID:
+            if self._confirming_delete:
+                return
+            new_agent = None if event.value == _AGENT_VALUE_ALL else str(event.value)
+            if new_agent == self._filter_agent:
+                return
+            self._filter_agent = new_agent
+            self._schedule_filter_and_rebuild()
+            return
+
         if event.select.id != _SCOPE_SELECT_ID:
             return
         if self._confirming_delete:
@@ -2246,6 +2450,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Open Rich-style hyperlinks on single click."""
         open_style_link(event)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over Rich-style hyperlinks."""
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the selector."""
+        self.styles.pointer = "default"
+
     def on_thread_option_clicked(self, event: ThreadOption.Clicked) -> None:
         """Handle click on a thread option.
 
@@ -2260,7 +2472,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
-        if self._is_scope_select_expanded():
-            self._close_scope_select()
+        if self._is_select_expanded():
+            self._close_expanded_select()
             return
         self.dismiss(None)

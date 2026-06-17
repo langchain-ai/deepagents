@@ -2360,6 +2360,24 @@ class DeepAgentsApp(App):
         # Non-essential advisory: defer past first paint so it never delays
         # the initial frame.
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
+        self.call_after_refresh(self._notify_orphaned_tracing_disabled)
+
+    def _notify_orphaned_tracing_disabled(self) -> None:
+        """Toast if startup disabled tracing because credentials were missing."""
+        from deepagents_code.config import consume_orphaned_tracing_disabled_notice
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        if notice is None:
+            return
+        # The notice is already consumed (cleared) above, so a failed render
+        # would drop the toast. The durable channel is the `logger.warning`
+        # emitted at the mutation site in `_disable_orphaned_tracing`; this
+        # toast is best-effort, so swallow-and-log rather than letting the
+        # exception escape this deferred callback unlogged.
+        try:
+            self.notify(notice, severity="warning", timeout=8, markup=False)
+        except Exception:
+            logger.exception("Failed to surface orphaned-tracing disabled notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
         """Toast when `--interpreter-tools` was set without `--interpreter`.
@@ -6479,8 +6497,11 @@ class DeepAgentsApp(App):
                 with suppress(Exception):
                     await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
-                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-                await self._mount_message(AppMessage(link))
+                msg = Content.assemble(
+                    f"Opening tracing project {project_name!r}:\n",
+                    (url, TStyle(dim=True, italic=True, link=url)),
+                )
+                await self._mount_message(AppMessage(msg))
 
             # Append directly — no dedup; each /trace invocation gets its own output.
             self._deferred_actions.append(
@@ -6489,8 +6510,11 @@ class DeepAgentsApp(App):
             return
 
         await self._mount_message(UserMessage(command))
-        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-        await self._mount_message(AppMessage(link))
+        msg = Content.assemble(
+            f"Opening tracing project {project_name!r}:\n",
+            (url, TStyle(dim=True, italic=True, link=url)),
+        )
+        await self._mount_message(AppMessage(msg))
 
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.

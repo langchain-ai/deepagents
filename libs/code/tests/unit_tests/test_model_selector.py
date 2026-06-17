@@ -1474,6 +1474,43 @@ class TestFormatOptionLabel:
 
         assert DARK_COLORS.warning not in label.markup
 
+    def test_install_required_dims_spec_when_not_selected(self) -> None:
+        """Uninstalled providers render dimmed, overriding the missing-creds warning."""
+        from deepagents_code.theme import DARK_COLORS
+
+        label = ModelSelectorScreen._format_option_label(
+            "baseten:some-model",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="baseten",
+                env_var="BASETEN_API_KEY",
+            ),
+            install_required=True,
+        )
+        assert "dim" in label.markup
+        # The dim branch takes precedence over the blocks_start warning color.
+        assert DARK_COLORS.warning not in label.markup
+
+    def test_install_required_yields_to_selection_styling(self) -> None:
+        """A selected row skips the install-required dim (CSS owns the highlight)."""
+        from deepagents_code.theme import DARK_COLORS
+
+        label = ModelSelectorScreen._format_option_label(
+            "baseten:some-model",
+            selected=True,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="baseten",
+                env_var="BASETEN_API_KEY",
+            ),
+            install_required=True,
+        )
+        # Not dimmed when selected; the missing-creds warning color applies.
+        assert DARK_COLORS.warning in label.markup
+
 
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""
@@ -1828,3 +1865,218 @@ class TestModelSelectorAuthGate:
         assert app.dismissed is True
         assert app.result is not None
         assert app.result[1] == "anthropic"
+
+
+class TestModelSelectorInstallRouting:
+    """Selecting a model whose provider is not installed prompts to install."""
+
+    async def test_load_model_data_surfaces_uninstalled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recommended models from uninstalled providers are surfaced."""
+        from deepagents_code import config_manifest
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider not in {"baseten", "ollama"},
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert any(spec.startswith("baseten:") for spec in specs)
+        assert any(spec.startswith("ollama:") for spec in specs)
+        assert install_extras.get("baseten") == "baseten"
+        assert install_extras.get("ollama") == "ollama"
+
+    async def test_load_model_data_skips_uninstalled_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding (`include_uninstalled=False`) hides uninstalled providers."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=False)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert not any(spec.startswith("baseten:") for spec in specs)
+        assert install_extras == {}
+
+    async def test_load_model_data_respects_disabled_uninstalled_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+        tmp_path: Path,
+    ) -> None:
+        """Disabled providers stay hidden from install suggestions."""
+        from deepagents_code import config_manifest, model_config
+        from deepagents_code.widgets import model_selector
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[models.providers.baseten]
+enabled = false
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        request.addfinalizer(model_config.clear_caches)
+
+        monkeypatch.setattr(
+            model_selector, "get_available_models", lambda: {"openai": ["gpt-5.5"]}
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider != "baseten",
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {spec for spec, _ in all_models}
+        assert not any(spec.startswith("baseten:") for spec in specs)
+        assert "baseten" not in install_extras
+
+    async def test_select_uninstalled_provider_prompts_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting an uninstalled provider opens the install-confirm modal."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        from deepagents_code.widgets.install_confirm import (
+            InstallProviderConfirmScreen,
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._select_with_auth_check("baseten:moonshotai/Kimi-K2.6", "baseten")
+
+            assert len(pushed) == 1
+            assert isinstance(pushed[0][0], InstallProviderConfirmScreen)
+            assert app.dismissed is False
+
+    async def test_confirm_install_sets_pending_extra_and_dismisses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming install records the extra and dismisses with the model."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._prompt_install_provider(
+                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+            )
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(True)
+            await pilot.pause()
+
+        assert screen.pending_install_extra == "baseten"
+        assert app.dismissed is True
+        assert app.result == ("baseten:moonshotai/Kimi-K2.6", "baseten")
+
+    async def test_decline_install_stays_on_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declining install keeps the selector open and records no extra."""
+        import importlib.util
+
+        if importlib.util.find_spec("langchain_baseten") is not None:
+            pytest.skip("langchain_baseten is installed in this environment")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            pushed: list[tuple[object, Callable[[bool | None], None] | None]] = []
+            monkeypatch.setattr(
+                screen.app,
+                "push_screen",
+                lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
+            )
+
+            screen._prompt_install_provider(
+                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+            )
+            on_confirm = pushed[0][1]
+            assert on_confirm is not None
+            on_confirm(False)
+            await pilot.pause()
+
+            assert screen.pending_install_extra is None
+            assert app.dismissed is False
+
+    async def test_fuzzy_ranks_installed_above_uninstalled(self) -> None:
+        """Installed providers outrank install-required suggestions in search."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Both specs fuzzy-match "gpt"; only baseten needs an install, so
+            # openai must rank first despite baseten being an equal/better match.
+            screen._curated = False
+            screen._install_extras = {"baseten": "baseten"}
+            screen._unfiltered_models = [
+                ("baseten:gpt-thing", "baseten"),
+                ("openai:gpt-5.5", "openai"),
+            ]
+            screen._all_models = list(screen._unfiltered_models)
+            screen._filter_text = "gpt"
+            screen._update_filtered_list()
+
+            providers = [provider for _spec, provider in screen._filtered_models]
+            assert "openai" in providers
+            assert "baseten" in providers
+            assert providers.index("openai") < providers.index("baseten")

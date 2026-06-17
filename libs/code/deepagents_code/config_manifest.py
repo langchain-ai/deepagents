@@ -575,6 +575,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "anthropic": ("langchain_anthropic", "anthropic"),
     "azure_openai": ("langchain_openai", "openai"),
     "baseten": ("langchain_baseten", "baseten"),
+    "bedrock": ("langchain_aws", "bedrock"),
     "cohere": ("langchain_cohere", "cohere"),
     "deepseek": ("langchain_deepseek", "deepseek"),
     "fireworks": ("langchain_fireworks", "fireworks"),
@@ -586,6 +587,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "litellm": ("langchain_litellm", "litellm"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
+    "ollama": ("langchain_ollama", "ollama"),
     "openai": ("langchain_openai", "openai"),
     "openrouter": ("langchain_openrouter", "openrouter"),
     "perplexity": ("langchain_perplexity", "perplexity"),
@@ -593,6 +595,57 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "xai": ("langchain_xai", "xai"),
 }
 """Provider integration import modules and the extras that install them."""
+
+
+def provider_install_extra(provider: str) -> str | None:
+    """Return the `deepagents-code` extra that installs `provider`, if known.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The extra name (e.g. `"baseten"`, `"google-genai"`), or `None` when the
+            provider has no curated extra (custom `class_path` providers,
+            ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[1] if dependency else None
+
+
+def is_provider_package_installed(provider: str) -> bool:
+    """Return whether `provider`'s integration package is importable.
+
+    Providers without a curated extra (no `_PROVIDER_DEPENDENCIES` entry) are
+    reported as installed — they manage their own dependencies, so the app
+    should never prompt to install an extra for them.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`).
+
+    Returns:
+        `True` when the integration package is importable or the provider has
+            no curated extra; `False` when the curated package is missing or
+            cannot be resolved.
+    """
+    import importlib.util
+
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    if dependency is None:
+        return True
+    try:
+        return importlib.util.find_spec(dependency[0]) is not None
+    except (ImportError, ValueError):
+        # `find_spec` re-raises errors from a broken parent package and raises
+        # `ValueError` for a malformed spec. Treat "can't tell" as "missing"
+        # so the model selector routes to the install prompt rather than
+        # crashing a synchronous Textual handler.
+        logger.warning(
+            "Could not resolve provider package %r; treating as not installed",
+            dependency[0],
+            exc_info=True,
+        )
+        return False
+
 
 # Credentials that back a `Settings` field, keyed by canonical env var.
 _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {

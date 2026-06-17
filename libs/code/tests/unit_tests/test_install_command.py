@@ -53,11 +53,14 @@ async def test_install_slash_known_extra_runs() -> None:
         perform_mock.assert_awaited_once()
 
 
-async def test_install_slash_provider_extra_recommends_restart_slash() -> None:
-    """Provider extras advertise `/restart`, not a full relaunch.
+async def test_install_slash_provider_extra_no_owned_server_recommends_relaunch() -> (
+    None
+):
+    """With no owned server, `/restart` can't respawn — recommend a relaunch.
 
-    The langgraph subprocess is what imports model-provider packages, so
-    respawning that subprocess via `/restart` picks them up without exiting.
+    The test harness has no app-owned LangGraph subprocess, so the one-keypress
+    restart prompt is skipped and a `/restart` would have nothing to respawn;
+    the surfaced guidance is a full relaunch, not `/restart`.
     """
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -73,18 +76,125 @@ async def test_install_slash_provider_extra_recommends_restart_slash() -> None:
             await app._handle_command("/install fireworks")
             await pilot.pause()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        success = next(
-            m for m in app_msgs if "Installed extra 'fireworks'" in str(m._content)
-        )
-        assert "/restart" in str(success._content)
+        contents = " ".join(str(m._content) for m in app_msgs)
+        assert "Installed extra 'fireworks'" in contents
+        assert "Relaunch dcode" in contents
+        # No owned subprocess to respawn, so `/restart` is not recommended.
+        assert "/restart" not in contents
 
 
-async def test_install_slash_standalone_extra_recommends_full_relaunch() -> None:
-    """Standalone extras must require a full relaunch, not `/restart`.
+async def test_offer_restart_busy_recommends_restart_not_relaunch() -> None:
+    """An owned-but-busy server points at `/restart`, never a relaunch.
 
-    `quickjs` and other `STANDALONE_EXTRAS` are wired into the TUI parent
-    at startup via `verify_interpreter_deps`, so a subprocess respawn
-    won't pick them up — the user has to exit and re-run dcode.
+    `/restart` respawns the owned subprocess (same effect as a relaunch,
+    without exiting), so a "relaunch dcode" hint would be redundant noise.
+    """
+    app = DeepAgentsApp()
+    app._server_proc = MagicMock()
+    app._server_kwargs = {"model_name": "fireworks:fake"}
+    app._agent_running = True
+    app._connecting = False
+    app._mount_message = AsyncMock()  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "/restart" in contents
+    assert "relaunch" not in contents.lower()
+
+
+async def test_offer_restart_no_owned_server_recommends_relaunch() -> None:
+    """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
+    app = DeepAgentsApp()
+    app._server_proc = None
+    app._server_kwargs = None
+    app._mount_message = AsyncMock()  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "Relaunch dcode" in contents
+    assert "/restart" not in contents
+
+
+async def test_offer_restart_state_flip_surfaces_fallback() -> None:
+    """An explicit "restart" that can't run (state flipped) isn't a silent no-op.
+
+    The pre-prompt guards pass (owned + idle), but server state can change
+    while the user reads the prompt, so `_restart_after_install` returns False.
+    The handler must surface a fallback rather than letting the chosen restart
+    silently do nothing.
+    """
+    app = DeepAgentsApp()
+    app._server_proc = MagicMock()
+    app._server_kwargs = {"model_name": "fireworks:fake"}
+    app._agent_running = False
+    app._connecting = False
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._push_screen_wait = AsyncMock(return_value="restart")  # ty: ignore
+    app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    app._restart_after_install.assert_awaited_once_with("fireworks")  # ty: ignore
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "Couldn't restart the server automatically to load" in contents
+
+
+async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted() -> (
+    None
+):
+    """When the restart prompt is offered, no redundant `/restart` hint appears.
+
+    Popping a "restart now?" button while also printing "Run `/restart`" is
+    confusing, so the manual hint is reserved for when the prompt can't show.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            # The user dismisses the prompt without restarting now.
+            patch.object(app, "_push_screen_wait", new=AsyncMock(return_value="later")),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        contents = " ".join(str(m._content) for m in app_msgs)
+        assert "Installed extra 'fireworks'" in contents
+        # The button is the call to action; no inline "Run /restart" hint.
+        assert "/restart" not in contents
+
+
+async def test_install_slash_standalone_extra_recommends_interpreter_relaunch() -> None:
+    """`quickjs` must point at a `--interpreter` relaunch, not `/restart`.
+
+    `quickjs` only does anything behind the launch-only `--interpreter` flag
+    (with a startup-time dependency gate), so a `/restart` — which reuses the
+    original launch settings — can't enable it. The user has to exit and
+    relaunch with the flag.
     """
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -105,7 +215,8 @@ async def test_install_slash_standalone_extra_recommends_full_relaunch() -> None
         )
         rendered = str(success._content)
         assert "/restart" not in rendered
-        assert "relaunch dcode" in rendered
+        assert "relaunch dcode" in rendered.lower()
+        assert "--interpreter" in rendered
 
 
 async def test_install_slash_unknown_extra_requires_force() -> None:
@@ -797,9 +908,8 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
     `/install` runs `uv tool install -U 'deepagents-code[...]'`, which rewrites
     deepagents-code's own on-disk tree mid-session. A first import of the
     restart modal on the post-install path then reads the half-replaced tree
-    and raises `ModuleNotFoundError`. The handler must fall back to the
-    already-mounted manual `/restart` hint instead of letting the import crash
-    the app.
+    and raises `ModuleNotFoundError`. The handler must degrade to the manual
+    `/restart` hint instead of letting the import crash the app.
     """
     app = DeepAgentsApp()
     async with app.run_test() as pilot:

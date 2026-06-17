@@ -878,6 +878,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert label is not None
         assert "stored" in str(label)
 
+    async def test_stored_service_is_not_duplicated(self) -> None:
+        """Stored non-model services appear once in the manager list."""
+        auth_store.set_stored_key("tavily", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.count("tavily") == 1
+
     async def test_env_badge_shows_canonical_when_only_canonical_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

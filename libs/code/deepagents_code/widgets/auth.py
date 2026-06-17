@@ -1304,7 +1304,7 @@ class AuthManagerScreen(ModalScreen[None]):
         # enter it the same way they enter a model-provider key.
         options.extend(
             Option(self._format_label(service), id=service)
-            for service in sorted(SERVICE_API_KEY_ENV)
+            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
         )
         return options, warning
 

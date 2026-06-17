@@ -304,7 +304,7 @@ class TestAuthPromptScreen:
             assert "Sign in to OpenAI" in text
             assert "create or copy an API key" in text
             assert "Minimum permissions needed" in text
-            assert "in Model capabilities" in text
+            assert "under Model capabilities" in text
             assert "Write access to Responses (/v1/responses)" in text
             assert "For older models" in text
             assert "Request access to Chat completions (/v1/chat/completions)" in text

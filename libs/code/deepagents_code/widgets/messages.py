@@ -16,8 +16,10 @@ from textual import on
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
+from textual.geometry import Offset
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
+from textual.selection import Selection
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -36,7 +38,6 @@ from deepagents_code.widgets.diff import compose_diff_lines
 if TYPE_CHECKING:
     from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
     from textual.app import ComposeResult
-    from textual.selection import Selection
     from textual.timer import Timer
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -159,6 +160,17 @@ def _strip_prompt_prefix(
     return text[prefix_chars:], ending
 
 
+def _select_prompt_body(widget: Static) -> None:
+    """Select the user message body without its decorative prompt glyph.
+
+    Args:
+        widget: User message widget whose body should be selected.
+    """
+    widget.screen.selections = {  # ty: ignore[invalid-assignment]  # Textual reactive descriptor assignment updates selection watchers; `set_reactive` would skip them.
+        widget: Selection(Offset(_PROMPT_PREFIX_WIDTH, 0), None),
+    }
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -202,6 +214,10 @@ class UserMessage(Static):
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
         return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
@@ -310,6 +326,10 @@ class QueuedUserMessage(Static):
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
         return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def render(self) -> Content:
         """Render the queued user message (greyed out).

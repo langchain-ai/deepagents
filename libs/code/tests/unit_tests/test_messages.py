@@ -2006,7 +2006,9 @@ class _SelectionApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield UserMessage("hello world", id="user")
+        yield UserMessage("!ls", id="shell-user")
         yield QueuedUserMessage("hi there", id="queued")
+        yield QueuedUserMessage("!pwd", id="shell-queued")
 
 
 class TestUserMessageGetSelection:
@@ -2040,6 +2042,48 @@ class TestUserMessageGetSelection:
             result = widget.get_selection(selection)
             assert result is not None
             assert result[0] == "world"
+
+    async def test_user_message_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+
+    async def test_shell_user_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#shell-user", UserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+            result = widget.get_selection(pilot.app.screen.selections[widget])
+            assert result is not None
+            assert result[0] == "ls"
+
+    async def test_queued_message_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#queued", QueuedUserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+
+    async def test_shell_queued_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#shell-queued", QueuedUserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+            result = widget.get_selection(pilot.app.screen.selections[widget])
+            assert result is not None
+            assert result[0] == "pwd"
 
 
 class TestAppMessageAutoLinksDisabled:

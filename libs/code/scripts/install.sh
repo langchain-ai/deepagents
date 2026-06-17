@@ -57,7 +57,9 @@
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
 #     unfiltered package diff) and the quiet-by-default status lines
-#     (optional-tool checks, post-install footer); useful when debugging
+#     (optional-tool checks, post-install footer); useful when debugging. A
+#     fresh install otherwise prints only a package count rather than the full
+#     list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
@@ -532,14 +534,26 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
     { print }
     END {
       if (cnt == 0) exit
-      maxw = 0
       any_removed = 0
+      for (i = 1; i <= cnt; i++) {
+        if (order[i] in removed) any_removed = 1
+      }
+      if (!any_removed) {
+        # Fresh install: every row is a brand-new package, so listing all of
+        # the transitive dependencies is noise. Show a count and how to opt in
+        # to the full list instead.
+        printf "Installed %d packages (set DEEPAGENTS_CODE_VERBOSE=1 to list).\n", cnt
+        exit
+      }
+      maxw = 0
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         if (length(p) > maxw) maxw = length(p)
-        if (p in removed) any_removed = 1
       }
-      print (any_removed ? "Updated packages:" : "Installed packages:")
+      # Upgrades touch only a handful of packages, so the diff stays compact and
+      # genuinely useful, so keep printing it. "(new)" disambiguates added rows
+      # from upgraded/removed ones within this mixed list.
+      print "Updated packages:"
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         pad = ""
@@ -547,11 +561,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if ((p in removed) && (p in added)) {
           printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
         } else if (p in added) {
-          # "(new)" only disambiguates within an Updated list (mixed with
-          # upgraded/removed rows). Under "Installed packages:" every row is
-          # new, so the header already says it — drop the suffix.
-          if (any_removed) printf "  %s%s  %s (new)\n", p, pad, added[p]
-          else             printf "  %s%s  %s\n", p, pad, added[p]
+          printf "  %s%s  %s (new)\n", p, pad, added[p]
         } else {
           printf "  %s%s  %s (removed)\n", p, pad, removed[p]
         }

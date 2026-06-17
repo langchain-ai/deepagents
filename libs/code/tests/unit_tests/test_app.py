@@ -14294,7 +14294,7 @@ class TestCopyFocusedInputText:
         app = self._make_app()
         text_area = TextArea()
         text_area.text = "whole input draft"
-        monkeypatch.setattr(type(app), "focused", property(lambda self: text_area))
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
 
         assert app._copy_focused_input_text() is True
         assert copied == ["whole input draft"]
@@ -14314,7 +14314,7 @@ class TestCopyFocusedInputText:
 
         app = self._make_app()
         text_area = TextArea()
-        monkeypatch.setattr(type(app), "focused", property(lambda self: text_area))
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
 
         assert app._copy_focused_input_text() is False
         assert copied == []
@@ -14322,5 +14322,5 @@ class TestCopyFocusedInputText:
     def test_no_copy_when_nothing_focused(self, monkeypatch) -> None:
         """When the focused widget is not an input, nothing is copied."""
         app = self._make_app()
-        monkeypatch.setattr(type(app), "focused", property(lambda self: None))
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: None))
         assert app._copy_focused_input_text() is False

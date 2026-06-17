@@ -958,14 +958,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 if is_current:
                     classes += " model-option-current"
 
-                label = self._format_option_label(
-                    model_spec,
-                    selected=is_selected,
-                    current=is_current,
-                    auth_status=auth_status,
-                    is_default=model_spec == self._default_spec,
-                    status=self._get_model_status(model_spec),
-                    install_required=real_provider in self._install_extras,
+                label = self._build_option_label(
+                    model_spec, real_provider, auth_status, selected=is_selected
                 )
                 widget = ModelOption(
                     label=label,
@@ -1011,14 +1005,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 if is_current:
                     classes += " model-option-current"
 
-                label = self._format_option_label(
-                    model_spec,
-                    selected=is_selected,
-                    current=is_current,
-                    auth_status=auth_status,
-                    is_default=model_spec == self._default_spec,
-                    status=self._get_model_status(model_spec),
-                    install_required=provider in self._install_extras,
+                label = self._build_option_label(
+                    model_spec, provider, auth_status, selected=is_selected
                 )
                 widget = ModelOption(
                     label=label,
@@ -1071,6 +1059,43 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _install_indicator() -> str:
         """Return the provider-header text for an uninstalled provider."""
         return "not installed"
+
+    def _build_option_label(
+        self,
+        model_spec: str,
+        provider: str,
+        auth_status: ProviderAuthStatus,
+        *,
+        selected: bool,
+    ) -> Content:
+        """Build a model-option label from the current screen state.
+
+        Centralizes the per-row flag derivation (current/default/status/
+        `install_required`) shared by the full rebuild in `_update_display`
+        and the incremental relabel in `_move_selection`, so the two paths
+        cannot drift. The original `/model` dim-persistence bug came from
+        exactly such drift: `_move_selection` omitted `install_required`,
+        so uninstalled rows stopped rendering dimmed after navigation.
+
+        Args:
+            model_spec: The `provider:model` string for the row.
+            provider: The row's provider key, tested against the
+                install-required set.
+            auth_status: Provider auth/readiness status for the row.
+            selected: Whether this row is the highlighted one.
+
+        Returns:
+            Styled `Content` label.
+        """
+        return self._format_option_label(
+            model_spec,
+            selected=selected,
+            current=model_spec == self._current_spec,
+            auth_status=auth_status,
+            is_default=model_spec == self._default_spec,
+            status=self._get_model_status(model_spec),
+            install_required=provider in self._install_extras,
+        )
 
     @staticmethod
     def _format_option_label(
@@ -1299,14 +1324,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         old_widget = self._option_widgets[old_index]
         old_widget.remove_class("model-option-selected")
         old_widget.update(
-            self._format_option_label(
+            self._build_option_label(
                 old_widget.model_spec,
+                old_widget.provider,
+                old_widget.auth_status,
                 selected=False,
-                current=old_widget.model_spec == self._current_spec,
-                auth_status=old_widget.auth_status,
-                is_default=old_widget.model_spec == self._default_spec,
-                status=self._get_model_status(old_widget.model_spec),
-                install_required=old_widget.provider in self._install_extras,
             )
         )
 
@@ -1314,14 +1336,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         new_widget = self._option_widgets[new_index]
         new_widget.add_class("model-option-selected")
         new_widget.update(
-            self._format_option_label(
+            self._build_option_label(
                 new_widget.model_spec,
+                new_widget.provider,
+                new_widget.auth_status,
                 selected=True,
-                current=new_widget.model_spec == self._current_spec,
-                auth_status=new_widget.auth_status,
-                is_default=new_widget.model_spec == self._default_spec,
-                status=self._get_model_status(new_widget.model_spec),
-                install_required=new_widget.provider in self._install_extras,
             )
         )
 

@@ -2119,7 +2119,64 @@ enabled = false
             screen._move_selection(1)
             await pilot.pause()
             assert screen._selected_index == 1
+            # While highlighted the row is intentionally bright: CSS owns the
+            # selected row and `_format_option_label` only dims when
+            # `not selected`. This guards the selected-row relabel so it keeps
+            # threading the correct state.
+            assert "dim" not in install_widget.content.markup
             screen._move_selection(-1)
             await pilot.pause()
 
             assert "dim" in install_widget.content.markup
+
+    async def test_navigation_preserves_install_required_dim_in_recent(self) -> None:
+        """The Recent-section copy of an install-required row stays dimmed too.
+
+        `_move_selection` is section-agnostic, but the Recent section builds
+        its rows through a separate call site than the provider groups. An
+        install-required model also surfaces at the top as a recent pick, so
+        cursoring onto then off that Recent row must re-dim it just the same.
+        """
+        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._install_extras = {"baseten": "baseten"}
+            screen._unfiltered_models = [
+                ("openai:gpt-5.5", "openai"),
+                (install_spec, "baseten"),
+            ]
+            screen._all_models = list(screen._unfiltered_models)
+            screen._filtered_models = list(screen._unfiltered_models)
+            # The install-required model is also a recent pick, so it renders
+            # both at the top (Recent) and in its provider group.
+            screen._recent_specs = [install_spec]
+            screen._filter_text = ""
+            screen._selected_index = 0
+            await screen._update_display()
+            await pilot.pause()
+
+            # Recents render first; index 0 is the Recent-section install row.
+            recent_install = screen._option_widgets[0]
+            assert recent_install.model_spec == install_spec
+            assert "dim" in recent_install.content.markup
+            # `_update_display` keeps the openai row highlighted (rendered
+            # order: recent install, openai, provider-group install).
+            assert screen._selected_index == 1
+
+            # Move the cursor onto the Recent install row, then back off it.
+            screen._move_selection(-1)
+            await pilot.pause()
+            assert screen._selected_index == 0
+            assert "dim" not in recent_install.content.markup
+            screen._move_selection(1)
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            assert "dim" in recent_install.content.markup

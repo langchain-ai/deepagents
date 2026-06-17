@@ -260,16 +260,6 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     }
 
 
-_MIME_TO_EXT: dict[str, str] = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/gif": "gif",
-    "image/webp": "webp",
-    "image/svg+xml": "svg",
-}
-
-
 def _decode_base64_block(block: Any) -> tuple[bytes, str] | None:  # noqa: ANN401
     """Decode a base64-carrying content block to raw bytes and a file extension.
 
@@ -319,9 +309,11 @@ def _decode_base64_block(block: Any) -> tuple[bytes, str] | None:  # noqa: ANN40
 
     # Parse  data:<mime>;base64,<payload>
     try:
+        import mimetypes  # noqa: PLC0415
+
         header, payload = data_url.split(",", 1)
         mime = header.split(":")[1].split(";")[0] if ":" in header else "application/octet-stream"
-        ext = _MIME_TO_EXT.get(mime, "bin")
+        ext = (mimetypes.guess_extension(mime) or ".bin").lstrip(".")
         return _base64.b64decode(payload), ext
     except Exception:  # noqa: BLE001
         return None

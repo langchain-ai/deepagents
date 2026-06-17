@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext  # noqa: TC001
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     ModelStatsKey as ModelStatsKey,
@@ -1511,7 +1512,7 @@ async def _handle_interrupt_cleanup(
                 await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
             cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. "
+                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                 "Previous operation was cancelled."
             )
             cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}

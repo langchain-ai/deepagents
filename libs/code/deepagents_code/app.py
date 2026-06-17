@@ -3687,7 +3687,8 @@ class DeepAgentsApp(App):
                 self.notify(
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Restart dcode to install the update automatically.",
+                    "Quit and relaunch dcode to install the update "
+                    "automatically.",
                     severity="information",
                     timeout=12,
                     markup=False,
@@ -3927,7 +3928,9 @@ class DeepAgentsApp(App):
                 self._update_available = (False, None)
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Restart to use the new version."
+                        f"Updated to v{latest}. Quit and relaunch dcode to use "
+                        "the new version (`/restart` only restarts the server, "
+                        "not the CLI)."
                     ),
                 )
             else:
@@ -10090,7 +10093,8 @@ class DeepAgentsApp(App):
                     if not progress_modal_visible:
                         self.notify(
                             f"Updated to v{payload.latest}. "
-                            "Restart to use the new version.",
+                            "Quit and relaunch dcode to use the new version "
+                            "(/restart only restarts the server, not the CLI).",
                             severity="information",
                             timeout=10,
                             markup=False,

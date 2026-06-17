@@ -143,6 +143,11 @@ on:
         required: false
         default: ""
         type: string
+      rollouts_per_task:
+        description: "Number of rollouts to run per task"
+        required: true
+        default: "1"
+        type: string
       concurrency:
         description: "Number of concurrent trials (parallel sandbox slots)"
         required: true
@@ -175,6 +180,7 @@ jobs:
           DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
           N_TASKS: ${{ inputs.n_tasks }}
           INCLUDE_TASKS: ${{ inputs.include_tasks }}
+          ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
           CONCURRENCY: ${{ inputs.concurrency }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
@@ -199,6 +205,7 @@ jobs:
           else
             echo "| \`include_tasks\` | (empty) |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "| \`rollouts_per_task\` | \`${ROLLOUTS_PER_TASK}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
@@ -228,6 +235,7 @@ jobs:
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+      HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -349,6 +357,10 @@ jobs:
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+          if ! [[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
+            exit 1
+          fi
 
           include_args=()
           if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
@@ -420,6 +432,7 @@ jobs:
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
+            --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
@@ -472,6 +485,7 @@ jobs:
             else
               echo "- Included tasks: all"
             fi
+            echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"

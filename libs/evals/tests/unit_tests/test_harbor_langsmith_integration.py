@@ -83,17 +83,24 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     ) in workflow
     assert "include_tasks:" in workflow
     assert "Space-separated task-name globs to include" in workflow
+    assert "rollouts_per_task:" in workflow
+    assert 'default: "1"' in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
     assert "HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}" in workflow
     assert "HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
+    assert "HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}" in workflow
     assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
     assert "INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
     assert 'echo "| \\`include_tasks\\` | \\`${INCLUDE_TASKS}\\` |"' in workflow
+    assert 'echo "| \\`rollouts_per_task\\` | \\`${ROLLOUTS_PER_TASK}\\` |"' in workflow
+    assert '[[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]' in workflow
     assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in workflow
     assert '[[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]' in workflow
     assert '"${include_args[@]}"' in workflow
+    assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in workflow
     assert 'echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"' in workflow
     assert 'echo "- Included tasks: all"' in workflow
+    assert 'echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"' in workflow
     assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
     assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow

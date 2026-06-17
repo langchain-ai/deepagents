@@ -58,8 +58,7 @@
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
 #     unfiltered package diff) and the quiet-by-default status lines
 #     (optional-tool checks, post-install footer); useful when debugging. A
-#     fresh install otherwise prints only a package count rather than the full
-#     list of installed dependencies.
+#     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
@@ -540,9 +539,8 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
       }
       if (!any_removed) {
         # Fresh install: every row is a brand-new package, so listing all of
-        # the transitive dependencies is noise. Show a count and how to opt in
-        # to the full list instead.
-        printf "Installed %d packages (set DEEPAGENTS_CODE_VERBOSE=1 to list).\n", cnt
+        # the transitive dependencies is noise. Verbose mode keeps the full
+        # output available for debugging.
         exit
       }
       maxw = 0

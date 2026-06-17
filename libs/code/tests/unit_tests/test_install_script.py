@@ -559,8 +559,8 @@ _UPGRADE_DIFF = (
 )
 
 
-def test_install_script_fresh_install_summarizes_packages(tmp_path: Path) -> None:
-    """A fresh install reports only a package count, not every dependency."""
+def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
+    """A fresh install hides every dependency touched by uv."""
     proc, _ = _invoke(
         tmp_path,
         {"FAKE_UV_INSTALL_STDERR": _FRESH_INSTALL_DIFF},
@@ -568,8 +568,7 @@ def test_install_script_fresh_install_summarizes_packages(tmp_path: Path) -> Non
     )
 
     assert proc.returncode == 0
-    summary = "Installed 3 packages (set DEEPAGENTS_CODE_VERBOSE=1 to list)."
-    assert summary in proc.stderr
+    assert "Installed 3 packages" not in proc.stderr
     assert "Installed packages:" not in proc.stderr
     assert "agent-client-protocol" not in proc.stderr
 

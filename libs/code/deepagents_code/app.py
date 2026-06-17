@@ -4123,6 +4123,8 @@ class DeepAgentsApp(App):
         # relaunch is required.
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
         if restart_capable and auto_restart:
+            if self._restart_after_install_is_unneeded():
+                return True
             if await self._restart_after_install(extra):
                 return True
             await self._mount_message(
@@ -10997,6 +10999,16 @@ class DeepAgentsApp(App):
             )
         # Otherwise the prompt was shown and the user made an informed choice;
         # no further hint is needed.
+
+    def _restart_after_install_is_unneeded(self) -> bool:
+        """Return whether a fresh startup will load the installed dependency."""
+        return (
+            self._server_proc is None
+            and self._server_kwargs is not None
+            and (
+                self._server_startup_deferred or self._server_startup_error is not None
+            )
+        )
 
     async def _restart_after_install(self, label: str) -> bool:
         """Restart the app-owned server after installing a dependency.

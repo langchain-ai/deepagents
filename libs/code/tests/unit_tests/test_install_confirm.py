@@ -146,3 +146,22 @@ class TestInstallProviderConfirmScreen:
             rendered = str(bodies.first().render())
             assert "baseten:moonshotai/Kimi-K2.6" in rendered
             assert "baseten" in rendered
+
+    async def test_renders_add_key_body_without_model_spec(self) -> None:
+        """The `/auth` path (no model spec) frames the install around a key.
+
+        Omitting `model_spec` switches the body to the "add a key" wording and
+        drops the model-centric "To use ..." copy, since the manager installs a
+        provider so a credential can be added, not to switch to a model.
+        """
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(InstallProviderConfirmScreen("baseten", "baseten"))
+            await pilot.pause()
+
+            bodies = app.screen.query(".install-confirm-body")
+            assert len(bodies) == 1
+            rendered = str(bodies.first().render())
+            assert "add a key" in rendered
+            assert "baseten" in rendered
+            assert "To use" not in rendered

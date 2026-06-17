@@ -164,8 +164,15 @@ def _create_model_with_deepagents_import_lock(
         )
 
 
-def _extra_is_ready(extra: str) -> bool:
-    """Return whether all dependencies for `extra` are installed."""
+def _extra_is_ready(extra: str) -> bool | None:
+    """Return whether all dependencies for `extra` are installed.
+
+    Returns:
+        `True` when every package declared by `extra` is importable, `False`
+            when one or more are missing, or `None` when the extra metadata
+            can't be introspected — an unknown state, distinct from a negative
+            one, so callers don't treat "couldn't check" as "not installed".
+    """
     from deepagents_code.extras_info import (
         ExtrasIntrospectionError,
         get_optional_dependency_status,
@@ -179,7 +186,7 @@ def _extra_is_ready(extra: str) -> bool:
             extra,
             exc_info=True,
         )
-        return False
+        return None
     return any(status.name == extra and status.ready for status in statuses)
 
 
@@ -9244,7 +9251,7 @@ class DeepAgentsApp(App):
             # confirmed installing it, install the extra and reopen the manager
             # so they can add a key against the now-installed provider.
             extra = screen.pending_install_extra
-            if extra:
+            if extra is not None:
                 from functools import partial
 
                 self.call_later(
@@ -9263,11 +9270,27 @@ class DeepAgentsApp(App):
         Args:
             extra: The extra that installs the selected provider's integration.
         """
-        installed = await self._install_extra(extra, auto_restart=True)
-        if not installed and not await asyncio.to_thread(_extra_is_ready, extra):
-            # `_install_extra` already surfaced the reason on any failure.
+        if await self._install_extra(extra, auto_restart=True):
+            await self._show_auth_manager()
             return
-        await self._show_auth_manager()
+        # `_install_extra` returns `False` both when the install genuinely
+        # failed (it already surfaced the reason) and when the package landed
+        # but the server restart didn't. Adding a key doesn't need the restart,
+        # so reopen whenever the extra is importable; only stay in chat on a
+        # real failure the user has already seen explained.
+        ready = await asyncio.to_thread(_extra_is_ready, extra)
+        if ready:
+            await self._show_auth_manager()
+            return
+        if ready is None:
+            # Introspection couldn't confirm the state (rare). Don't dead-end
+            # silently after a multi-step flow — point the user back to `/auth`.
+            await self._mount_message(
+                AppMessage(
+                    f"Couldn't verify whether '{extra}' finished installing. "
+                    "Reopen `/auth` to add a key once it has.",
+                ),
+            )
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.

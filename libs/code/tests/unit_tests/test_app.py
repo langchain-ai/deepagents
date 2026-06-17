@@ -43,6 +43,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _extra_is_ready,
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.widgets.chat_input import ChatInput
@@ -6731,6 +6732,66 @@ class TestInstallExtraAuthContinuation:
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
         app._show_auth_manager.assert_not_awaited()  # ty: ignore
+
+    async def test_surfaces_hint_when_install_state_unverifiable(self) -> None:
+        """An unknown post-install state points the user back to `/auth`.
+
+        When the extra can't be introspected (`_extra_is_ready` returns `None`)
+        the manager must not reopen, but the flow must not dead-end silently
+        either — a message tells the user how to finish.
+        """
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=False)  # ty: ignore
+        app._show_auth_manager = AsyncMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        with patch("deepagents_code.app._extra_is_ready", return_value=None):
+            await app._install_provider_then_reopen_auth("baseten")
+
+        app._show_auth_manager.assert_not_awaited()  # ty: ignore
+        app._mount_message.assert_awaited_once()  # ty: ignore
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "baseten" in message._content
+
+
+class TestExtraIsReady:
+    """Tests for the `_extra_is_ready` install-state probe."""
+
+    def test_returns_true_when_extra_packages_present(self) -> None:
+        """A fully installed extra reports ready."""
+        from deepagents_code.extras_info import ExtraDependencyStatus
+
+        status = ExtraDependencyStatus(
+            name="groq", installed=(("langchain-groq", "1.0.0"),), missing=()
+        )
+        with patch(
+            "deepagents_code.extras_info.get_optional_dependency_status",
+            return_value=[status],
+        ):
+            assert _extra_is_ready("groq") is True
+
+    def test_returns_false_when_extra_packages_missing(self) -> None:
+        """An extra with missing packages reports not ready."""
+        from deepagents_code.extras_info import ExtraDependencyStatus
+
+        status = ExtraDependencyStatus(
+            name="groq", installed=(), missing=("langchain-groq",)
+        )
+        with patch(
+            "deepagents_code.extras_info.get_optional_dependency_status",
+            return_value=[status],
+        ):
+            assert _extra_is_ready("groq") is False
+
+    def test_returns_none_when_introspection_fails(self) -> None:
+        """Unparseable extra metadata is an unknown state, not a negative one."""
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+
+        with patch(
+            "deepagents_code.extras_info.get_optional_dependency_status",
+            side_effect=ExtrasIntrospectionError("broken metadata"),
+        ):
+            assert _extra_is_ready("groq") is None
 
 
 class TestInstallExtraModelSwitch:

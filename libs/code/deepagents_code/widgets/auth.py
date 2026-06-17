@@ -944,8 +944,8 @@ class AuthManagerScreen(ModalScreen[None]):
     re-rendering the option list when this screen is reopened or after a
     save/delete completes.
 
-    Known first-party providers whose integration package isn't installed yet
-    are surfaced greyed-out so they stay discoverable. Selecting one routes
+    Well-known providers whose integration package isn't installed yet are
+    surfaced greyed-out so they stay discoverable. Selecting one routes
     through an install confirmation: on confirm the screen records the extra on
     `pending_install_extra` and dismisses so the app can install it (mirroring
     the model selector's install-on-select flow) and reopen the manager.
@@ -1138,6 +1138,10 @@ class AuthManagerScreen(ModalScreen[None]):
             if proceed:
                 self.pending_install_extra = extra
                 self.dismiss(None)
+            else:
+                # Declined or dismissed: clear any pending extra so a reused
+                # screen never carries a stale install request, and stay put.
+                self.pending_install_extra = None
 
         self.app.push_screen(
             InstallProviderConfirmScreen(provider, extra),
@@ -1262,8 +1266,8 @@ class AuthManagerScreen(ModalScreen[None]):
         codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
 
         shown = well_known_installed | codex_installed | stored | config_providers
-        # Surface well-known first-party providers whose package isn't installed
-        # yet as greyed-out, install-on-select entries so they stay
+        # Surface well-known providers whose package isn't installed yet as
+        # greyed-out, install-on-select entries so they stay
         # discoverable (mirrors the model selector). Disabled providers and
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)

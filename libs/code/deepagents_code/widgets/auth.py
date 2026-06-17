@@ -720,11 +720,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
         elif self._provider == "openai":
             instructions = Content.assemble(
-                f"Sign in to {provider}, create or copy an API key, "
-                "then paste it below. A Restricted key is enough: grant "
-                "Write access to Responses (/v1/responses), and add Chat "
-                "completions (/v1/chat/completions) only if you use a "
-                "completions model. ",
+                f"Sign in to {provider}, create or copy an API key, then "
+                "paste it below. Minimum permissions needed: "
+                "under Model capabilities, grant Write access to Responses "
+                "(/v1/responses). For older models, you may also need "
+                "Request access to Chat completions (/v1/chat/completions). ",
                 (label, self._link_style(url)),
             )
         else:

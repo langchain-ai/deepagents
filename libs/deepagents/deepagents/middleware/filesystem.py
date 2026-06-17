@@ -31,6 +31,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph._internal._constants import OVERWRITE
 from langgraph.channels.delta import DeltaChannel
 from langgraph.runtime import Runtime
 from langgraph.types import Command, Overwrite
@@ -2124,8 +2125,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires, uses `Overwrite` to atomically replace
-        the messages channel with a fully-identified list. A plain append of
+        When a new eviction fires, uses the `__overwrite__` sentinel to
+        atomically replace the messages channel with a fully-identified list.
+        A plain append of
         the tagged message would not survive DeltaChannel replay: the original
         `HumanMessage(id=None)` write gets a fresh UUID on replay that
         doesn't match the eviction Command's ID, producing a duplicate.
@@ -2152,7 +2154,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
+            state_command = Command(update={"messages": {OVERWRITE: [*messages[:-1], tagged]}})
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
@@ -2223,17 +2225,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     @staticmethod
     def _unwrap_command_messages(update: Mapping[str, Any]) -> tuple[Any, bool]:
-        """Return a Command messages update and whether it used Overwrite."""
+        """Return a Command messages update and whether it used the overwrite sentinel.
+
+        Recognizes both the typed `Overwrite(...)` form and the JSON-safe
+        `{"__overwrite__": value}` dict form so the helper survives JSON
+        roundtrips through `langgraph-api` serializers.
+        """
         command_messages = update.get("messages", [])
         if isinstance(command_messages, Overwrite):
             return command_messages.value, True
+        if isinstance(command_messages, dict) and len(command_messages) == 1 and OVERWRITE in command_messages:
+            return command_messages[OVERWRITE], True
         return command_messages, False
 
     @staticmethod
-    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage] | Overwrite:
-        """Restore Overwrite semantics when the original messages update used them."""
+    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage] | dict[str, list[AnyMessage]]:
+        """Restore overwrite semantics when the original messages update used them."""
         if wrapped:
-            return Overwrite(messages)
+            return {OVERWRITE: messages}
         return messages
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:

@@ -2,6 +2,7 @@ import mimetypes
 import time
 from unittest.mock import patch
 
+import orjson
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
@@ -13,6 +14,8 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langgraph._internal._constants import OVERWRITE
+from langgraph.channels.binop import _get_overwrite
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Overwrite
 
@@ -1148,9 +1151,10 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
+        assert isinstance(result.update["messages"], dict)
+        assert set(result.update["messages"]) == {OVERWRITE}
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
-        assert "Tool result too large" in result.update["messages"].value[0].content
+        assert "Tool result too large" in result.update["messages"][OVERWRITE][0].content
 
     async def test_aintercept_command_with_overwrite_messages(self):
         """Test that the async path handles Overwrite-wrapped messages."""
@@ -1164,9 +1168,10 @@ class TestFilesystemMiddleware:
         result = await middleware._aintercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
+        assert isinstance(result.update["messages"], dict)
+        assert set(result.update["messages"]) == {OVERWRITE}
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
-        assert "Tool result too large" in result.update["messages"].value[0].content
+        assert "Tool result too large" in result.update["messages"][OVERWRITE][0].content
 
     def test_intercept_command_with_short_overwrite_messages(self):
         """A small ToolMessage stays wrapped and unchanged."""
@@ -1186,8 +1191,8 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        assert result.update["messages"].value == [tool_message]
+        assert isinstance(result.update["messages"], dict)
+        assert result.update["messages"] == {OVERWRITE: [tool_message]}
         assert result.update["custom_key"] == "custom_value"
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is None
 
@@ -1211,8 +1216,9 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        messages = result.update["messages"].value
+        assert isinstance(result.update["messages"], dict)
+        assert set(result.update["messages"]) == {OVERWRITE}
+        messages = result.update["messages"][OVERWRITE]
         assert messages[0] == ai_message
         assert "Tool result too large" in messages[1].content
         assert messages[2] == final_message
@@ -1232,8 +1238,9 @@ class TestFilesystemMiddleware:
         result = await middleware._aintercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        messages = result.update["messages"].value
+        assert isinstance(result.update["messages"], dict)
+        assert set(result.update["messages"]) == {OVERWRITE}
+        messages = result.update["messages"][OVERWRITE]
         assert messages[0] == ai_message
         assert "Tool result too large" in messages[1].content
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
@@ -1248,8 +1255,8 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        assert result.update["messages"].value == []
+        assert isinstance(result.update["messages"], dict)
+        assert result.update["messages"] == {OVERWRITE: []}
         assert result.update["custom_key"] == "custom_value"
 
     def test_sanitize_tool_call_id(self):
@@ -2058,8 +2065,9 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        assert isinstance(state_update["messages"], dict)
+        assert set(state_update["messages"]) == {OVERWRITE}
+        patched_messages = state_update["messages"][OVERWRITE]
         assert len(patched_messages) == 5
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -2112,8 +2120,9 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        assert isinstance(state_update["messages"], dict)
+        assert set(state_update["messages"]) == {OVERWRITE}
+        patched_messages = state_update["messages"][OVERWRITE]
         assert len(patched_messages) == 8
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -2139,6 +2148,44 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[6].tool_call_id == "456"
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
+
+    def test_overwrite_sentinel_survives_json_roundtrip(self) -> None:
+        """Regression: the overwrite sentinel survives `orjson` serialization.
+
+        The deployed LangGraph runtime JSON-encodes state updates across
+        worker boundaries. Producing a `langgraph.types.Overwrite` dataclass
+        gets type-erased to `{"value": [...]}` after `orjson.dumps`, which
+        the reducer no longer recognizes as an overwrite. Emitting the
+        canonical `{"__overwrite__": value}` dict sentinel survives the
+        roundtrip and is recognized by `_get_overwrite()` downstream.
+        """
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            HumanMessage(content="Hello, how are you?", id="2"),
+            AIMessage(
+                content="I'm doing well, thank you!",
+                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                id="3",
+            ),
+            HumanMessage(content="What is the weather in Tokyo?", id="4"),
+        ]
+        middleware = PatchToolCallsMiddleware()
+        state_update = middleware.before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+
+        def _default(obj):
+            # Mirror langgraph-api's serde.default(): convert pydantic models
+            # to dicts so orjson can encode message objects nested inside the
+            # state update.
+            if hasattr(obj, "model_dump") and callable(obj.model_dump):
+                return obj.model_dump()
+            msg = f"Type is not JSON serializable: {type(obj).__name__}"
+            raise TypeError(msg)
+
+        roundtripped = orjson.loads(orjson.dumps(state_update["messages"], default=_default))
+        is_overwrite, unwrapped = _get_overwrite(roundtripped)
+        assert is_overwrite
+        assert isinstance(unwrapped, list)
 
 
 class TestTruncation:

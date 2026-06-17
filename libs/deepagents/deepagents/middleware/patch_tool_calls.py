@@ -4,8 +4,8 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langgraph._internal._constants import OVERWRITE
 from langgraph.runtime import Runtime
-from langgraph.types import Overwrite
 
 
 class PatchToolCallsMiddleware(AgentMiddleware):
@@ -43,4 +43,4 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                     content = f"Tool call {name} with id {tool_call_id} was cancelled - another message came in before it could be completed."
                 patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id))
 
-        return {"messages": Overwrite(patched_messages)}
+        return {"messages": {OVERWRITE: patched_messages}}

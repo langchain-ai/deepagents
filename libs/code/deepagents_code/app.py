@@ -4124,16 +4124,25 @@ class DeepAgentsApp(App):
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
         if restart_capable and auto_restart:
             if self._restart_after_install_is_unneeded():
-                return True
+                return await self._reload_configuration_for_restart()
             if await self._restart_after_install(extra):
                 return True
-            await self._mount_message(
-                AppMessage(
-                    f"Installed extra '{extra}', but couldn't restart the server "
-                    "automatically. Run `/restart` to load it, then select the "
-                    "model again."
-                ),
-            )
+            if self._server_kwargs is None:
+                await self._mount_message(
+                    AppMessage(
+                        f"Installed extra '{extra}', but this app is connected "
+                        "to a remote LangGraph server. Relaunch dcode to load it, "
+                        "then select the model again."
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        f"Installed extra '{extra}', but couldn't restart the server "
+                        "automatically. Run `/restart` to load it, then select the "
+                        "model again."
+                    ),
+                )
             return False
 
         if not restart_capable:

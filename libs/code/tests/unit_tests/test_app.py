@@ -6786,6 +6786,7 @@ class TestInstallExtraModelSwitch:
         app = DeepAgentsApp()
         app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app._reload_configuration_for_restart = AsyncMock(return_value=True)  # ty: ignore
         app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
         app._server_proc = None
         app._server_kwargs = {"model_name": "openai:gpt-5.5"}
@@ -6794,12 +6795,50 @@ class TestInstallExtraModelSwitch:
         result = await app._install_extra("baseten", auto_restart=True)
 
         assert result is True
+        app._reload_configuration_for_restart.assert_awaited_once()  # ty: ignore
         app._restart_after_install.assert_not_awaited()  # ty: ignore
         mounted = [
             str(c.args[0]._content)
             for c in app._mount_message.await_args_list  # ty: ignore
         ]
         assert not any("couldn't restart" in text.lower() for text in mounted)
+
+    async def test_install_extra_auto_restart_no_owned_server_recommends_relaunch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A remote server cannot be loaded with `/restart` after install."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+        app._server_proc = None
+        app._server_kwargs = None
+
+        result = await app._install_extra("baseten", auto_restart=True)
+
+        assert result is False
+        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Relaunch dcode" in mounted
+        assert "/restart" not in mounted
 
     async def test_install_extra_auto_restart_fallback_on_failed_restart(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -6824,6 +6863,7 @@ class TestInstallExtraModelSwitch:
         app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
         app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+        app._server_kwargs = {"model_name": "openai:gpt-5.5"}
 
         result = await app._install_extra("baseten", auto_restart=True)
 

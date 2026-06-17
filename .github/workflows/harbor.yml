@@ -143,6 +143,11 @@ on:
         required: true
         default: "1"
         type: string
+      include_tasks:
+        description: "Space-separated task-name globs to include (e.g. re-run a subset). Empty = all tasks."
+        required: false
+        default: ""
+        type: string
 permissions:
   contents: read
 
@@ -216,6 +221,7 @@ jobs:
     env:
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
+      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -337,6 +343,13 @@ jobs:
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+
+          include_args=()
+          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+            for t in $HARBOR_INCLUDE_TASKS; do
+              include_args+=(--include-task-name "$t")
+            done
+          fi
           if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
@@ -397,6 +410,7 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
+            "${include_args[@]}" \
             "${agent_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \

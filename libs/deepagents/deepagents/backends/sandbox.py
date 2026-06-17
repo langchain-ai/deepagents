@@ -14,6 +14,7 @@ operations are derived from those.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -23,6 +24,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    ASYNC_GREP_TIMEOUT,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -391,6 +393,196 @@ success or `{{"error": ...}}` on failure.
 """
 
 
+def _build_ls_cmd(path: str) -> str:
+    path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
+    return f"""python3 -c "
+import os
+import json
+import base64
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+
+try:
+    with os.scandir(path) as it:
+        for entry in it:
+            result = {{
+                'path': os.path.join(path, entry.name),
+                'is_dir': entry.is_dir(follow_symlinks=False)
+            }}
+            print(json.dumps(result))
+except FileNotFoundError:
+    print(json.dumps({{'error': 'path_not_found'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
+except PermissionError:
+    print(json.dumps({{'error': 'permission_denied'}}))
+" 2>/dev/null"""
+
+
+def _parse_ls_output(output: str, path: str) -> LsResult:
+    file_infos: list[FileInfo] = []
+    error: str | None = None
+    for line in output.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "error" in data:
+            error = data["error"]
+            continue
+        file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+    if error is not None:
+        return LsResult(entries=None, error=f"Path '{path}': {error}")
+    return LsResult(entries=file_infos)
+
+
+def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
+    file_type = _get_file_type(file_path)
+    path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+    # Defensive int coercion in case callers bypass type checking.
+    return _READ_COMMAND_TEMPLATE.format(
+        path_b64=path_b64,
+        file_type=file_type,
+        offset=int(offset),
+        limit=int(limit),
+    )
+
+
+def _parse_read_output(output: str, file_path: str) -> ReadResult:
+    output = output.rstrip()
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        detail = output[:200] if output else "(empty)"
+        return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+    if not isinstance(data, dict):
+        detail = output[:200] if output else "(empty)"
+        return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
+    if "error" in data:
+        return ReadResult(error=f"File '{file_path}': {data['error']}")
+    return ReadResult(
+        file_data=FileData(
+            content=data["content"],
+            encoding=data.get("encoding", "utf-8"),
+        )
+    )
+
+
+def _build_write_preflight_cmd(file_path: str) -> str:
+    path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+    return _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+
+
+def _check_preflight_result(result: ExecuteResponse, file_path: str) -> WriteResult | None:
+    if result.exit_code != 0 or "Error:" in result.output:
+        error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+        return WriteResult(error=error_msg)
+    return None
+
+
+def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
+    search_path = shlex.quote(path or ".")
+    # `-Z` separates the filename from line data with NUL, so filenames may
+    # contain `:` without making the output ambiguous.
+    grep_opts = "-rHnFZ"
+    glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
+    pattern_escaped = shlex.quote(pattern)
+    return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+
+
+def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
+    output = result.output.rstrip("\n")
+    if result.exit_code is not None and result.exit_code != 0:
+        detail = output.strip() if output else f"exit code {result.exit_code}"
+        return GrepResult(error=f"Path '{path or '.'}': {detail}")
+    if not output:
+        return GrepResult(matches=[])
+    matches: list[GrepMatch] = []
+    parse_error: str | None = None
+    for line in output.split("\n"):
+        # Format is: path\0line_number:text
+        try:
+            file_path, rest = line.split("\0", 1)
+            line_num_str, text = rest.split(":", 1)
+            matches.append({"path": file_path, "line": int(line_num_str), "text": text})
+        except ValueError:
+            parse_error = line
+    if parse_error is not None and not matches:
+        return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
+    return GrepResult(matches=matches)
+
+
+def _build_glob_cmd(pattern: str, search_path: str) -> str:
+    pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+    path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
+    return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
+
+
+def _parse_glob_output(output: str, search_path: str) -> GlobResult:
+    output = output.strip()
+    if not output:
+        return GlobResult(matches=[])
+    file_infos: list[FileInfo] = []
+    error: str | None = None
+    for line in output.split("\n"):
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "error" in data:
+            error = data["error"]
+            continue
+        file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+    if error is not None:
+        return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
+    return GlobResult(matches=file_infos)
+
+
+def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, replace_all: bool) -> str:
+    payload = json.dumps({"path": file_path, "old": old_string, "new": new_string, "replace_all": replace_all})
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
+
+
+def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
+    """Map server-side error codes to `EditResult` objects."""
+    messages: dict[str, str] = {
+        "file_not_found": f"Error: File '{file_path}' not found",
+        "permission_denied": f"Error: Permission denied editing file '{file_path}'",
+        "not_a_file": f"Error: '{file_path}' is not a regular file",
+        "not_a_text_file": f"Error: File '{file_path}' is not a text file",
+        "string_not_found": f"Error: String not found in file: '{old_string}'",
+        "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
+    }
+    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+
+
+def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResult:
+    output = output.rstrip()
+    try:
+        data = json.loads(output)
+    except (json.JSONDecodeError, ValueError):
+        detail = output[:200] if output else "(empty)"
+        return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+    if not isinstance(data, dict):
+        detail = output[:200] if output else "(empty)"
+        return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+    if "error" in data:
+        return _map_edit_error(data["error"], file_path, old_string)
+    return EditResult(path=file_path, occurrences=data.get("count", 1))
+
+
+def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, replace_all: bool) -> str:
+    return _EDIT_TMPFILE_TEMPLATE.format(
+        old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
+        new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
+        target_b64=base64.b64encode(file_path.encode("utf-8")).decode("ascii"),
+        replace_all=replace_all,
+    )
+
+
 class BaseSandbox(SandboxBackendProtocol, ABC):
     """Base sandbox implementation with `execute()` as the core abstract method.
 
@@ -434,49 +626,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
-        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
-        cmd = f"""python3 -c "
-import os
-import json
-import base64
+        result = self.execute(_build_ls_cmd(path))
+        return _parse_ls_output(result.output, path)
 
-path = base64.b64decode('{path_b64}').decode('utf-8')
-
-try:
-    with os.scandir(path) as it:
-        for entry in it:
-            result = {{
-                'path': os.path.join(path, entry.name),
-                'is_dir': entry.is_dir(follow_symlinks=False)
-            }}
-            print(json.dumps(result))
-except FileNotFoundError:
-    print(json.dumps({{'error': 'path_not_found'}}))
-except NotADirectoryError:
-    print(json.dumps({{'error': 'not_a_directory'}}))
-except PermissionError:
-    print(json.dumps({{'error': 'permission_denied'}}))
-" 2>/dev/null"""
-
-        result = self.execute(cmd)
-
-        file_infos: list[FileInfo] = []
-        error: str | None = None
-        for line in result.output.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(data, dict) and "error" in data:
-                error = data["error"]
-                continue
-            file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
-
-        if error is not None:
-            return LsResult(entries=None, error=f"Path '{path}': {error}")
-        return LsResult(entries=file_infos)
+    async def als(self, path: str) -> LsResult:
+        """Async version of `ls`, delegating to `aexecute`."""
+        result = await self.aexecute(_build_ls_cmd(path))
+        return _parse_ls_output(result.output, path)
 
     def read(
         self,
@@ -509,38 +665,18 @@ except PermissionError:
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
         """
-        file_type = _get_file_type(file_path)
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        result = self.execute(_build_read_cmd(file_path, offset, limit))
+        return _parse_read_output(result.output, file_path)
 
-        # Defensive int coercion in case callers bypass type checking.
-        cmd = _READ_COMMAND_TEMPLATE.format(
-            path_b64=path_b64,
-            file_type=file_type,
-            offset=int(offset),
-            limit=int(limit),
-        )
-        result = self.execute(cmd)
-        output = result.output.rstrip()
-
-        try:
-            data = json.loads(output)
-        except (json.JSONDecodeError, ValueError):
-            detail = output[:200] if output else "(empty)"
-            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
-
-        if not isinstance(data, dict):
-            detail = output[:200] if output else "(empty)"
-            return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
-
-        if "error" in data:
-            return ReadResult(error=f"File '{file_path}': {data['error']}")
-
-        return ReadResult(
-            file_data=FileData(
-                content=data["content"],
-                encoding=data.get("encoding", "utf-8"),
-            )
-        )
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        """Async version of `read`, delegating to `aexecute`."""
+        result = await self.aexecute(_build_read_cmd(file_path, offset, limit))
+        return _parse_read_output(result.output, file_path)
 
     def _write_preflight(self, file_path: str) -> WriteResult | None:
         """Run the existence check + parent-directory creation for `write()`.
@@ -559,13 +695,13 @@ except PermissionError:
                 created); a populated `WriteResult` with `error` set if the
                 check fails.
         """
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
-        if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
-        return None
+        result = self.execute(_build_write_preflight_cmd(file_path))
+        return _check_preflight_result(result, file_path)
+
+    async def _awrite_preflight(self, file_path: str) -> WriteResult | None:
+        """Async version of `_write_preflight`, delegating to `aexecute`."""
+        result = await self.aexecute(_build_write_preflight_cmd(file_path))
+        return _check_preflight_result(result, file_path)
 
     def write(
         self,
@@ -594,6 +730,20 @@ except PermissionError:
         if response.error:
             return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
 
+        return WriteResult(path=file_path)
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """Async version of `write`, delegating to `aexecute` and `aupload_files`."""
+        preflight_error = await self._awrite_preflight(file_path)
+        if preflight_error is not None:
+            return preflight_error
+        responses = await self.aupload_files([(file_path, content.encode("utf-8"))])
+        if not responses:
+            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
+            raise AssertionError(msg)
+        response = responses[0]
+        if response.error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
         return WriteResult(path=file_path)
 
     def edit(
@@ -639,6 +789,19 @@ except PermissionError:
 
         return self._edit_via_upload(file_path, old_string, new_string, replace_all)
 
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,  # noqa: FBT001, FBT002
+    ) -> EditResult:
+        """Async version of `edit`, delegating to `aexecute` and `aupload_files`."""
+        payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
+        if payload_size <= _EDIT_INLINE_MAX_BYTES:
+            return await self._aedit_inline(file_path, old_string, new_string, replace_all)
+        return await self._aedit_via_upload(file_path, old_string, new_string, replace_all)
+
     def _edit_inline(
         self,
         file_path: str,
@@ -646,37 +809,20 @@ except PermissionError:
         new_string: str,
         replace_all: bool,  # noqa: FBT001
     ) -> EditResult:
-        """Server-side replace via `execute()` — single round-trip."""
-        payload = json.dumps(
-            {
-                "path": file_path,
-                "old": old_string,
-                "new": new_string,
-                "replace_all": replace_all,
-            }
-        )
-        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
-        result = self.execute(cmd)
-        output = result.output.rstrip()
+        """Server-side replace via `execute()` (single round-trip)."""
+        result = self.execute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
+        return _parse_edit_output(result.output, file_path, old_string)
 
-        try:
-            data = json.loads(output)
-        except (json.JSONDecodeError, ValueError):
-            detail = output[:200] if output else "(empty)"
-            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
-
-        if not isinstance(data, dict):
-            detail = output[:200] if output else "(empty)"
-            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
-
-        if "error" in data:
-            return self._map_edit_error(data["error"], file_path, old_string)
-
-        return EditResult(
-            path=file_path,
-            occurrences=data.get("count", 1),
-        )
+    async def _aedit_inline(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+    ) -> EditResult:
+        """Async version of `_edit_inline`, delegating to `aexecute`."""
+        result = await self.aexecute(_build_edit_inline_cmd(file_path, old_string, new_string, replace_all=replace_all))
+        return _parse_edit_output(result.output, file_path, old_string)
 
     def _edit_via_upload(
         self,
@@ -707,12 +853,7 @@ except PermissionError:
             if r.error:
                 return EditResult(error=f"Error editing file '{file_path}': {r.error}")
 
-        cmd = _EDIT_TMPFILE_TEMPLATE.format(
-            old_path_b64=base64.b64encode(old_tmp.encode("utf-8")).decode("ascii"),
-            new_path_b64=base64.b64encode(new_tmp.encode("utf-8")).decode("ascii"),
-            target_b64=base64.b64encode(file_path.encode("utf-8")).decode("ascii"),
-            replace_all=replace_all,
-        )
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
         result = self.execute(cmd)
         output = result.output.rstrip()
 
@@ -736,25 +877,62 @@ except PermissionError:
             return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
 
         if "error" in data:
-            return self._map_edit_error(data["error"], file_path, old_string)
+            return _map_edit_error(data["error"], file_path, old_string)
 
         return EditResult(
             path=file_path,
             occurrences=data.get("count", 1),
         )
 
-    @staticmethod
-    def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
-        """Map server-side error codes to `EditResult` objects."""
-        messages: dict[str, str] = {
-            "file_not_found": f"Error: File '{file_path}' not found",
-            "permission_denied": f"Error: Permission denied editing file '{file_path}'",
-            "not_a_file": f"Error: '{file_path}' is not a regular file",
-            "not_a_text_file": f"Error: File '{file_path}' is not a text file",
-            "string_not_found": f"Error: String not found in file: '{old_string}'",
-            "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
-        }
-        return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+    async def _aedit_via_upload(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool,  # noqa: FBT001
+    ) -> EditResult:
+        """Async version of `_edit_via_upload`, delegating to `aexecute` and `aupload_files`."""
+        uid = base64.b32encode(os.urandom(10)).decode("ascii").lower()
+        old_tmp = f"/tmp/.deepagents_edit_{uid}_old"  # noqa: S108
+        new_tmp = f"/tmp/.deepagents_edit_{uid}_new"  # noqa: S108
+
+        resps = await self.aupload_files(
+            [
+                (old_tmp, old_string.encode("utf-8")),
+                (new_tmp, new_string.encode("utf-8")),
+            ]
+        )
+        if len(resps) < 2:  # noqa: PLR2004
+            return EditResult(error=f"Error editing file '{file_path}': upload returned no response")
+        for r in resps:
+            if r.error:
+                return EditResult(error=f"Error editing file '{file_path}': {r.error}")
+
+        cmd = _build_edit_tmpfile_cmd(file_path, old_tmp, new_tmp, replace_all=replace_all)
+        result = await self.aexecute(cmd)
+        output = result.output.rstrip()
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            cleanup = await self.aexecute(f"rm -f {shlex.quote(old_tmp)} {shlex.quote(new_tmp)}")
+            if cleanup.exit_code != 0:
+                logger.warning(
+                    "Failed to clean up temp files for edit %s: %s",
+                    file_path,
+                    cleanup.output[:200],
+                )
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return EditResult(error=f"Error editing file '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            return _map_edit_error(data["error"], file_path, old_string)
+
+        return EditResult(path=file_path, occurrences=data.get("count", 1))
 
     def grep(
         self,
@@ -767,7 +945,6 @@ except PermissionError:
         Args:
             pattern: Literal string to search for (not a regex).
             path: Directory or file to search in.
-
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).
@@ -775,98 +952,45 @@ except PermissionError:
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
-        search_path = shlex.quote(path or ".")
+        result = self.execute(_build_grep_cmd(pattern, path, glob))
+        return _parse_grep_output(result, path)
 
-        # Build grep command to get structured output
-        # `-Z` separates the filename from line data with NUL, so filenames may
-        # contain `:` without making the output ambiguous.
-        grep_opts = "-rHnFZ"
-
-        # Add glob pattern if specified
-        glob_pattern = ""
-        if glob:
-            glob_pattern = f"--include={shlex.quote(glob)}"
-
-        # Escape pattern for shell
-        pattern_escaped = shlex.quote(pattern)
-
-        cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
-        result = self.execute(cmd)
-
-        output = result.output.rstrip("\n")
-        if result.exit_code is not None and result.exit_code != 0:
-            detail = output.strip() if output else f"exit code {result.exit_code}"
-            return GrepResult(error=f"Path '{path or '.'}': {detail}")
-        if not output:
-            return GrepResult(matches=[])
-
-        # Parse grep output into GrepMatch objects
-        matches: list[GrepMatch] = []
-        parse_error: str | None = None
-        for line in output.split("\n"):
-            # Format is: path\0line_number:text
-            parts = line.split("\0", 1)
-            if len(parts) != 2:  # noqa: PLR2004  # Grep output field count
-                parse_error = line
-                continue
-            line_parts = parts[1].split(":", 1)
-            if len(line_parts) != 2:  # noqa: PLR2004  # Grep output field count
-                parse_error = line
-                continue
-            try:
-                matches.append(
-                    {
-                        "path": parts[0],
-                        "line": int(line_parts[0]),
-                        "text": line_parts[1],
-                    }
-                )
-            except ValueError:
-                parse_error = line
-
-        if parse_error is not None and not matches:
-            return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
-
-        return GrepResult(matches=matches)
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> GrepResult:
+        """Async version of `grep`, delegating to `aexecute` with timeout guard."""
+        try:
+            result = await asyncio.wait_for(
+                self.aexecute(_build_grep_cmd(pattern, path, glob)),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+        return _parse_grep_output(result, path)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Structured glob matching returning `GlobResult`."""
         search_path = path or "/"
-        # Encode pattern and path as base64 to avoid escaping issues
-        pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
-        path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
+        result = self.execute(_build_glob_cmd(pattern, search_path))
+        return _parse_glob_output(result.output, search_path)
 
-        cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
-        result = self.execute(cmd)
-
-        output = result.output.strip()
-        if not output:
-            return GlobResult(matches=[])
-
-        # Parse JSON output into FileInfo dicts. Any error record (emitted when
-        # the search path itself is unreachable) wins over partial matches —
-        # mirrors read()/ls() convention: sandbox emits a short code, host wraps
-        # it with the search-path prefix.
-        file_infos: list[FileInfo] = []
-        error: str | None = None
-        for line in output.split("\n"):
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(data, dict) and "error" in data:
-                error = data["error"]
-                continue
-            file_infos.append(
-                {
-                    "path": data["path"],
-                    "is_dir": data["is_dir"],
-                }
-            )
-
-        if error is not None:
-            return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
-        return GlobResult(matches=file_infos)
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Async version of `glob`, delegating to `aexecute`."""
+        search_path = path or "/"
+        result = await self.aexecute(_build_glob_cmd(pattern, search_path))
+        return _parse_glob_output(result.output, search_path)
 
     @property
     @abstractmethod

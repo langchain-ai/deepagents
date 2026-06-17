@@ -21,10 +21,12 @@ from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
+    StreamState,
     ThreadUrlLookupState,
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
+    _process_ai_message,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
@@ -1625,6 +1627,53 @@ class TestRunStartupCommand:
 
         mock_spawn.assert_not_called()
         assert buf.getvalue() == ""
+
+
+class TestProcessAiMessageStats:
+    """`_process_ai_message` threads the active provider into usage stats.
+
+    Guards the wiring between `settings.model_provider` and
+    `SessionStats.record_request` — the per-model API is unit-tested in
+    isolation elsewhere, but these confirm the call site actually forwards the
+    configured provider.
+    """
+
+    def test_records_provider_from_settings(self, console: Console) -> None:
+        """Split input/output usage records the configured provider."""
+        state = StreamState()
+        message = AIMessage(
+            content="",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+            },
+        )
+        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            _process_ai_message(message, state, console)
+
+        assert state.stats.per_model["openai", "gpt-5.5"].input_tokens == 100
+        assert state.stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+
+    def test_records_provider_on_total_only_fallback(self, console: Console) -> None:
+        """Total-only usage (no split) still forwards the provider."""
+        state = StreamState()
+        message = AIMessage(
+            content="",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 150,
+            },
+        )
+        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            _process_ai_message(message, state, console)
+
+        assert state.stats.per_model["openai", "gpt-5.5"].input_tokens == 150
 
 
 async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa: RUF029

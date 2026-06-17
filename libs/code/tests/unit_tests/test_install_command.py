@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
 
@@ -642,6 +644,8 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
         assert any("Restart complete." in m for m in app_msgs)
+        # The transient progress status is cleared once the restart succeeds.
+        assert not any("Restarting server..." in m for m in app_msgs)
 
 
 async def test_install_restart_capable_extra_defer_skips_restart() -> None:
@@ -869,7 +873,7 @@ async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None
 
 
 async def test_install_restart_failure_omits_complete_message() -> None:
-    """A failed restart shows the attempt but never claims completion."""
+    """A failed restart removes the attempt and never claims completion."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -898,7 +902,43 @@ async def test_install_restart_failure_omits_complete_message() -> None:
         app_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
-        assert any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_install_restart_raising_removes_transient_and_propagates() -> None:
+    """A raising restart clears the transient before the exception propagates.
+
+    The transient "Restarting server..." status mounts before
+    `_restart_server_manual()` is awaited, so the `try/finally` in
+    `_restart_after_install` exists solely to remove it when the restart raises
+    (not merely returns `False`). On a raise the transient must be gone, the
+    completion banner must never mount, and the exception must propagate.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+
+        with (
+            patch("deepagents_code.config.settings.reload_from_environment", list),
+            patch("deepagents_code.model_config.clear_caches", lambda: None),
+            patch.object(
+                app,
+                "_restart_server_manual",
+                new=AsyncMock(side_effect=RuntimeError("respawn exploded")),
+            ) as restart,
+            pytest.raises(RuntimeError, match="respawn exploded"),
+        ):
+            await app._restart_after_install("fireworks")
+
+        await pilot.pause()
+        restart.assert_awaited_once()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert not any("Restarting server..." in m for m in app_msgs)
         assert not any("Restart complete." in m for m in app_msgs)
 
 

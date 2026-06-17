@@ -42,7 +42,10 @@ from deepagents_code import (
     theme,
 )
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
+from deepagents_code._constants import (
+    DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -3684,7 +3687,8 @@ class DeepAgentsApp(App):
                 self.notify(
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Restart dcode to install the update automatically.",
+                    "Quit and relaunch dcode to install the update "
+                    "automatically.",
                     severity="information",
                     timeout=12,
                     markup=False,
@@ -3924,7 +3928,9 @@ class DeepAgentsApp(App):
                 self._update_available = (False, None)
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Restart to use the new version."
+                        f"Updated to v{latest}. Quit and relaunch dcode to use "
+                        "the new version (`/restart` only restarts the server, "
+                        "not the CLI)."
                     ),
                 )
             else:
@@ -4726,6 +4732,35 @@ class DeepAgentsApp(App):
             else:
                 return
         await container.mount(widget)
+
+    async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
+        """Mount an `AppMessage` that is not tracked by the message store.
+
+        Use for status text that should disappear once the state it describes
+        resolves (e.g. "Restarting server..."). The returned widget can be
+        removed directly; nothing lingers in the store to re-hydrate later.
+
+        Args:
+            content: The message text to display.
+
+        Returns:
+            The mounted widget, or `None` when the messages container is
+                missing or detached.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except (NoMatches, ScreenStackError):
+            logger.debug(
+                "Messages container unavailable; skipping transient status %r",
+                content,
+                exc_info=True,
+            )
+            return None
+        if not messages.is_attached:
+            return None
+        widget = AppMessage(content)
+        await self._mount_before_queued(messages, widget)
+        return widget
 
     def _is_spinner_at_correct_position(self, container: Container) -> bool:
         """Check whether the loading spinner is already correctly positioned.
@@ -7528,7 +7563,7 @@ class DeepAgentsApp(App):
                 content = (
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
-                if content.startswith("[SYSTEM]"):
+                if content.startswith(SYSTEM_MESSAGE_PREFIX):
                     continue
 
                 # Detect skill invocations persisted via additional_kwargs
@@ -10058,7 +10093,8 @@ class DeepAgentsApp(App):
                     if not progress_modal_visible:
                         self.notify(
                             f"Updated to v{payload.latest}. "
-                            "Restart to use the new version.",
+                            "Quit and relaunch dcode to use the new version "
+                            "(/restart only restarts the server, not the CLI).",
                             severity="information",
                             timeout=10,
                             markup=False,
@@ -11081,8 +11117,15 @@ class DeepAgentsApp(App):
             return False
         if not await self._reload_configuration_for_restart():
             return False
-        await self._mount_message(AppMessage("Restarting server..."))
-        if not await self._restart_server_manual():
+        restarting = await self._mount_transient_app_message("Restarting server...")
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
+        if not restarted:
             return False
         await self._mount_message(AppMessage("Restart complete."))
         return True
@@ -11202,8 +11245,15 @@ class DeepAgentsApp(App):
                 )
             return
 
-        await self._mount_message(AppMessage("Restarting server..."))
-        if await self._restart_server_manual():
+        restarting = await self._mount_transient_app_message("Restarting server...")
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
+        if restarted:
             await self._mount_message(AppMessage("Restart complete."))
 
     async def _restart_server_manual(self) -> bool:

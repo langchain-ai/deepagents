@@ -1,0 +1,24 @@
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_71b30a36780454::t_f994855c7284eb 116-120,122
+  s_71b30a36780454::t_cb878ec0ba9470 121
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_71b30a36780454::t_b9bef45c1713aa 28,32-34
+.github/workflows/harbor.yml
+  s_71b30a36780454::t_f994855c7284eb 417-422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "e4c5d10808e4115339a3b750562f958655264f02",
+  "prompts": {},
+  "sessions": {
+    "s_71b30a36780454": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed6ae-ddf6-78c3-aaee-fa1651e94945",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

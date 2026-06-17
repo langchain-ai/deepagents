@@ -1,0 +1,19 @@
+libs/evals/tests/harbor_tasks/write-file-simple/README.md
+  s_0be8bec6b9bed6::t_1cc88b8763e89a 40-43,49-51,55-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "c283a656164b3985fb3fada45f559485e1b2097b",
+  "prompts": {},
+  "sessions": {
+    "s_0be8bec6b9bed6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f6463fc-a287-4877-ba5e-4c4a5838d106",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

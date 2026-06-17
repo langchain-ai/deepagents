@@ -1,0 +1,20 @@
+libs/code/tests/unit_tests/test_remote_client.py
+  s_18ce5355eb7c1a::t_d119b2a8cf8ef3 11
+  s_18ce5355eb7c1a::t_553d94871004b2 256-299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "ddd8f1baedfb825bf372858055d1c054ddd06374",
+  "prompts": {},
+  "sessions": {
+    "s_18ce5355eb7c1a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "802dba28-a4f7-4afc-98fd-7b4abba49895",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

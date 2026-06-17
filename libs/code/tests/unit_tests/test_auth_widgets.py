@@ -1012,7 +1012,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "groq"
             )
-            install_extras = dict(screen._install_extras)  # noqa: SLF001
+            install_extras = dict(screen._install_extras)
         assert "not installed" in label
         assert install_extras.get("groq") == "groq"
 
@@ -1059,7 +1059,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             app.show_manager()
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
-            screen._prompt_install_provider("groq", "groq")  # noqa: SLF001
+            screen._prompt_install_provider("groq", "groq")
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()

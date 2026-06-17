@@ -86,6 +86,10 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
     assert "HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}" in workflow
     assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
+    assert "INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
+    assert 'echo "| \\`include_tasks\\` | \\`${INCLUDE_TASKS}\\` |"' in workflow
+    assert 'echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"' in workflow
+    assert 'echo "- Included tasks: all"' in workflow
     assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in workflow
     assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow

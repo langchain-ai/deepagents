@@ -293,6 +293,22 @@ class TestAuthPromptScreen:
             assert "Keys and Endpoint page" in text
             assert "Sign in to Azure OpenAI" not in text
 
+    async def test_openai_instructions_name_minimum_key_permissions(self) -> None:
+        """OpenAI keys note the minimum Restricted scopes Deep Agents Code needs."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Sign in to OpenAI" in text
+            assert "create or copy an API key" in text
+            assert "Minimum permissions needed" in text
+            assert "under Model capabilities" in text
+            assert "Write access to Responses (/v1/responses)" in text
+            assert "For older models" in text
+            assert "Request access to Chat completions (/v1/chat/completions)" in text
+
     async def test_provider_instructions_use_config_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

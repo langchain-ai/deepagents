@@ -2932,6 +2932,18 @@ class TestPrintUsageTable:
         assert "gpt-4" in output
         assert "unknown" not in output
 
+    def test_shows_provider_name(self) -> None:
+        """The table should include the provider for each model."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "Provider" in output
+        assert "openai" in output
+        assert "gpt-4" in output
+
     def test_multi_model_shows_all_names_and_total(self) -> None:
         """Multi-model session should show each model and a Total row."""
         stats = SessionStats()

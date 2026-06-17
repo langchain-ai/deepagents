@@ -57,6 +57,7 @@ class TestModelStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
+        assert stats.provider == ""
 
 
 class TestSessionStats:
@@ -104,6 +105,11 @@ class TestSessionStats:
         assert stats.request_count == 2
         assert stats.input_tokens == 300
 
+    def test_record_request_records_provider(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, provider="openai")
+        assert stats.per_model["gpt-5.5"].provider == "openai"
+
     def test_record_request_empty_model_skips_per_model(self) -> None:
         stats = SessionStats()
         stats.record_request("", 100, 50)
@@ -142,6 +148,14 @@ class TestSessionStats:
         assert a.per_model["gpt-5.5"].input_tokens == 300
         assert a.per_model["gpt-5.5"].request_count == 2
         assert a.per_model["claude-sonnet-4-5"].input_tokens == 300
+
+    def test_merge_carries_provider(self) -> None:
+        a = SessionStats()
+        b = SessionStats()
+        b.record_request("gpt-5.5", 200, 75, provider="openai")
+
+        a.merge(b)
+        assert a.per_model["gpt-5.5"].provider == "openai"
 
     def test_merge_empty_into_populated(self) -> None:
         a = SessionStats(request_count=5, input_tokens=500)

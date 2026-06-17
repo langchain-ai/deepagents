@@ -23,11 +23,14 @@ class ModelStats:
         request_count: Number of LLM API requests made to this model.
         input_tokens: Cumulative input tokens sent to this model.
         output_tokens: Cumulative output tokens received from this model.
+        provider: Provider that served this model (e.g. `openai`), or `""`
+            when unknown.
     """
 
     request_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    provider: str = ""
 
 
 @dataclass
@@ -58,6 +61,7 @@ class SessionStats:
         model_name: str,
         input_toks: int,
         output_toks: int,
+        provider: str = "",
     ) -> None:
         """Accumulate token counts for one completed LLM request.
 
@@ -69,6 +73,8 @@ class SessionStats:
                 breakdown for this request.
             input_toks: Input tokens for this request.
             output_toks: Output tokens for this request.
+            provider: Provider that served the model (e.g. `openai`). Recorded
+                on the per-model entry for display alongside the model name.
         """
         self.request_count += 1
         self.input_tokens += input_toks
@@ -78,6 +84,8 @@ class SessionStats:
             entry.request_count += 1
             entry.input_tokens += input_toks
             entry.output_tokens += output_toks
+            if provider:
+                entry.provider = provider
 
     def merge(self, other: SessionStats) -> None:
         """Merge another `SessionStats` into this one (mutates *self*).
@@ -96,6 +104,8 @@ class SessionStats:
             entry.request_count += ms.request_count
             entry.input_tokens += ms.input_tokens
             entry.output_tokens += ms.output_tokens
+            if ms.provider:
+                entry.provider = ms.provider
 
 
 def format_token_count(count: int) -> str:

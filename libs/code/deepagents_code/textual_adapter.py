@@ -107,8 +107,9 @@ def print_usage_table(
 ) -> None:
     """Print a model-usage stats table to a Rich console.
 
-    When the session spans multiple models each gets its own row with a
-    totals row appended; single-model sessions show one row.
+    Each row shows the serving provider alongside the model name. When the
+    session spans multiple models each gets its own row with a totals row
+    appended; single-model sessions show one row.
 
     Args:
         stats: Cumulative session stats.
@@ -131,6 +132,7 @@ def print_usage_table(
             padding=(0, 2, 0, 0),
             show_edge=False,
         )
+        table.add_column("Provider", style="dim")
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
@@ -139,12 +141,14 @@ def print_usage_table(
         if multi_model:
             for model_name, ms in stats.per_model.items():
                 table.add_row(
+                    ms.provider,
                     model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
                 )
             table.add_row(
+                "",
                 "Total",
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
@@ -153,6 +157,7 @@ def print_usage_table(
         else:
             model_label = next(iter(stats.per_model))
             table.add_row(
+                stats.per_model[model_label].provider,
                 model_label,
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
@@ -768,17 +773,23 @@ async def execute_task_textual(
                             from deepagents_code.config import settings
 
                             active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(
-                                    active_model, input_toks, output_toks
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
                                 )
                             elif total_toks:
                                 # Fallback: model gives only total (no split)
-                                turn_stats.record_request(active_model, total_toks, 0)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )

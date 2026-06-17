@@ -10083,7 +10083,48 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             return
+        if action_id == ActionId.ENTER_API_KEY:
+            await self._enter_service_api_key(entry, payload)
+            return
         self._log_unknown_action(entry, action_id)
+
+    async def _enter_service_api_key(
+        self,
+        entry: PendingNotification,
+        payload: MissingDepPayload,
+    ) -> None:
+        """Open the API-key entry prompt (the one `/auth` uses) for a service.
+
+        Lets the user store a service API key inline instead of exporting an
+        env var before launch.
+
+        Args:
+            entry: The missing-dependency notification entry.
+            payload: Typed payload carrying the service (tool) name.
+        """
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV
+
+        service = payload.tool
+        # `env_var is None` covers any non-service tool, since `is_service` is
+        # exactly membership in `SERVICE_API_KEY_ENV`.
+        env_var = SERVICE_API_KEY_ENV.get(service)
+        if env_var is None:
+            self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(service, env_var),
+        )
+        if result == AuthResult.SAVED:
+            self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Saved {service} API key. Restart to apply.",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
 
     async def _handle_update_action(
         self,

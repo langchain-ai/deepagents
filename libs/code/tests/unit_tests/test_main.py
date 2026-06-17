@@ -1420,8 +1420,8 @@ class TestBuildMissingToolNotification:
         action_ids = [a.action_id for a in entry.actions]
         assert action_ids == [ActionId.OPEN_WEBSITE, ActionId.SUPPRESS]
 
-    def test_tavily_offers_website_and_suppress(self) -> None:
-        """Tavily entry links to tavily.com and offers suppression."""
+    def test_tavily_offers_enter_key_website_and_suppress(self) -> None:
+        """Tavily entry offers entering a key, the website, and suppression."""
         from deepagents_code.notifications import ActionId, MissingDepPayload
 
         entry = build_missing_tool_notification("tavily")
@@ -1431,8 +1431,13 @@ class TestBuildMissingToolNotification:
         assert entry.payload.url == "https://tavily.com"
         assert entry.payload.install_command is None
         action_ids = [a.action_id for a in entry.actions]
-        assert action_ids == [ActionId.OPEN_WEBSITE, ActionId.SUPPRESS]
-        assert "TAVILY_API_KEY" in entry.body
+        assert action_ids == [
+            ActionId.ENTER_API_KEY,
+            ActionId.OPEN_WEBSITE,
+            ActionId.SUPPRESS,
+        ]
+        assert entry.actions[0].primary is True
+        assert "Tavily API key" in entry.body
 
     def test_unknown_tool_only_suppresses_and_logs(
         self, caplog: pytest.LogCaptureFixture

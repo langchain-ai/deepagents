@@ -1,6 +1,8 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
 import asyncio
+import base64 as _base64
+import hashlib
 import inspect
 import re
 import time
@@ -475,9 +477,6 @@ class TestOffloadingBasic:
         rewrites the block to `<image url="…" />`. This covers all three base64
         shapes recognized by langchain_core.
         """
-        import base64 as _base64
-        import hashlib
-
         backend = MockBackend()
         mock_model = make_mock_model()
 
@@ -489,9 +488,7 @@ class TestOffloadingBasic:
         )
 
         # 1x1 transparent PNG — minimal valid PNG bytes
-        raw_png = _base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        )
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         b64 = _base64.b64encode(raw_png).decode()
         expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
         expected_path = f"/conversation_history/images/{expected_key}.png"
@@ -533,6 +530,131 @@ class TestOffloadingBasic:
         assert archive_write[1].count(expected_path) == 3
         # No raw base64 payload in the archive.
         assert b64 not in archive_write[1]
+
+    def test_externalize_per_block_upload_failure(self) -> None:
+        """A failed upload writes a placeholder; other images are still rewritten (issue #2873).
+
+        Per-block failure tracking means one bad upload does not poison the entire
+        batch.  The successfully uploaded image gets a URL ref in the archive; the
+        failed image is replaced with an `<image error="failed_to_offload" />` text
+        placeholder so the archive has an honest record.
+        """
+        raw_a = b"\x89PNG_FAKE_DATA_A"
+        raw_b = b"\x89PNG_FAKE_DATA_B"
+        b64_a = _base64.b64encode(raw_a).decode()
+        b64_b = _base64.b64encode(raw_b).decode()
+        key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+        key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+        expected_path_a = f"/conversation_history/images/{key_a}.png"
+        expected_path_b = f"/conversation_history/images/{key_b}.png"
+
+        class PartialUploadBackend(MockBackend):
+            """Backend that raises for any upload path containing key_b."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                responses = []
+                for path, _content in files:
+                    if key_b in path:
+                        msg = f"Simulated upload failure for {path}"
+                        raise RuntimeError(msg)
+                    self.write_calls.append((path, "<binary>"))
+                    responses.append(FileUploadResponse(path=path, error=None))
+                return responses
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = PartialUploadBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}],
+                id="img-a",
+            ),
+            HumanMessage(
+                content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}],
+                id="img-b",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Only image A was uploaded — B's upload raised.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path_a
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Image A gets a URL ref in the archive.
+        assert expected_path_a in archive_write[1]
+        # Image B gets an error placeholder (not a URL ref, not raw base64).
+        assert expected_path_b not in archive_write[1]
+        assert b64_b not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
+    def test_externalize_runs_once_before_offload_and_summary(self) -> None:
+        """Externalization runs once at the call site, shared by both offload and summary (unified approach).
+
+        `_create_summary` uses prefix format internally, so image blocks are
+        stripped from the summary prompt regardless — the key invariant is:
+        (1) raw base64 never reaches the summary model prompt,
+        (2) the archive gets the externalized URL ref,
+        (3) `upload_files` is called exactly once per unique image (not once
+            per consumer).
+        """
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/images/{expected_key}.png"
+
+        backend = MockBackend()
+        mock_model = make_mock_model()
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is an image:"},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="b64-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # upload_files called exactly once — externalization is not duplicated
+        # even though both offload and summary consume the result.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        # Archive has the URL ref (externalized path).
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path in archive_write[1]
+
+        # Raw base64 never reaches the summary model prompt.
+        invoke_prompt: str = mock_model.invoke.call_args[0][0]
+        assert b64 not in invoke_prompt
 
     def test_offload_appends_to_existing_content(self) -> None:
         """Test that second summarization appends to existing file."""
@@ -2964,3 +3086,64 @@ class TestTokenCounterToolsProbe:
         messages = make_conversation_messages()
         tools = [{"type": "function", "function": {"name": "noop"}}]
         assert middleware._count_tokens(messages, None, tools) == 7
+
+
+@pytest.mark.anyio
+async def test_async_externalizes_base64_images() -> None:
+    """Async path externalizes base64 images via aupload_files before gather (issue #2873).
+
+    `awrap_model_call` must serialize the externalization step before
+    `asyncio.gather(offload, summary)` so both coroutines see URL refs, not
+    raw base64.  This mirrors `test_offload_externalizes_base64_images` but
+    exercises the async code path end-to-end.
+    """
+    raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+    b64 = _base64.b64encode(raw_png).decode()
+    expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+    expected_path = f"/conversation_history/images/{expected_key}.png"
+
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        # Shape 1: explicit base64 field
+        HumanMessage(
+            content=[{"type": "image", "base64": b64, "mime_type": "image/png"}],
+            id="b64-field",
+        ),
+        # Shape 2: top-level data: URL
+        HumanMessage(
+            content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+            id="b64-url",
+        ),
+        # Shape 3: OpenAI-style image_url
+        HumanMessage(
+            content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+            id="b64-openai",
+        ),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        await call_awrap_model_call(middleware, state, runtime)
+
+    # aupload_files delegates to upload_files in MockBackend, so write_calls captures it.
+    # Identical images are deduped — only one upload despite three messages.
+    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/images/")]
+    assert len(image_uploads) == 1
+    assert image_uploads[0][0] == expected_path
+
+    # Archive markdown references the externalized path three times.
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert archive_write[1].count(expected_path) == 3
+    assert b64 not in archive_write[1]

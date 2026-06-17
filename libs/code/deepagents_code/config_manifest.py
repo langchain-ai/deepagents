@@ -780,8 +780,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="tracing.langsmith_replica_projects",
         group="Models",
         summary=(
-            "Extra LangSmith project names to also write agent traces to "
-            "(comma-separated)."
+            "Extra LangSmith project to also write agent traces to. "
+            "Comma-separated for forward-compatibility, but only the first "
+            "project is used; the server mirrors runs to one extra project."
         ),
         kind=OptionKind.STR,
         env_var=_env_vars.LANGSMITH_REPLICA_PROJECTS,

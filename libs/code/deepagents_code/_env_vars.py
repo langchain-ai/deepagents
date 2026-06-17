@@ -126,7 +126,12 @@ LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
 
 When set (and tracing is active), each agent run is dual-written to the primary
-deepagents-code project and every listed project via LangSmith write replicas.
+deepagents-code project *and* one extra project via LangSmith write replicas.
+
+Only the first listed project is used: the LangGraph server mirrors a run to a
+single extra project, so any additional entries are dropped (with a warning).
+The value is comma-separated for forward-compatibility, not because multiple
+destinations are written today.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

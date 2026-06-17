@@ -2420,10 +2420,12 @@ def get_langsmith_replica_project() -> str | None:
     way to mirror them to another project is the server's own replica path: the
     SDK forwards a `langsmith_tracing` project in the run-create request, and the
     server wraps the run in a `tracing_context` whose write replicas are that
-    project plus the server's primary project (see `langgraph_api.stream` and
-    `langgraph_api.models.run`). Client-side callbacks and
+    project plus the server's primary project. Client-side callbacks and
     `tracing_context(replicas=...)` cannot reach the run because it is created
     server-side, not in the app process.
+
+    Implementation detail (subject to change): as of `langgraph-api` 0.10.0 this
+    happens in `langgraph_api.stream` and `langgraph_api.models.run`.
 
     The server mirrors to exactly one extra project, so when
     `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` lists several, only the first is

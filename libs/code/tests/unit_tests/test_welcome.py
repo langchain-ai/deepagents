@@ -287,6 +287,39 @@ class TestBuildBannerThreadLink:
         )
         assert links == [f"{replica_url}?utm_source=deepagents-code"]
 
+    async def test_fetch_and_update_isolates_replica_resolution_failure(self) -> None:
+        """One project's fetch timeout must not block the others from resolving."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/main-id"
+
+        def _resolve(project: str) -> str:
+            if project == "mason-dual-trace":
+                msg = "timed out"
+                raise TimeoutError(msg)
+            return project_url
+
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="mason-dual-trace",
+        )
+
+        with (
+            patch(
+                "deepagents_code.widgets.welcome.fetch_langsmith_project_url",
+                side_effect=_resolve,
+            ),
+            patch.object(widget, "update") as update,
+        ):
+            await widget._fetch_and_update()
+
+        # Primary resolved and linked; the replica that timed out is absent from
+        # the cache and rendered as plain text rather than aborting the loop.
+        assert widget._project_urls == {"my-project": project_url}
+        assert update.call_count == 1
+        banner = update.call_args_list[0].args[0]
+        replica_start = banner.plain.index("mason-dual-trace")
+        replica_end = replica_start + len("mason-dual-trace")
+        assert not _extract_links(banner, replica_start, replica_end)
+
     def test_replica_projects_hidden_when_show_env_var_is_disabled(self) -> None:
         """Replica tracing splash details should be hidden when opted out."""
         widget = _make_banner(

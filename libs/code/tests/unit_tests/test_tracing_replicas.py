@@ -40,4 +40,31 @@ def test_replica_project_uses_first_and_warns_on_extras(monkeypatch, caplog) -> 
         result = config.get_langsmith_replica_project()
 
     assert result == "first-proj"
+    # The warning must name both the kept project and the dropped one, so a
+    # swapped-format-arg regression (claiming the wrong project is used) trips.
+    assert "first-proj" in caplog.text
     assert "second-proj" in caplog.text
+
+
+def test_replica_project_no_warning_on_duplicates(monkeypatch, caplog) -> None:
+    """Dedup runs before the count check: repeated names collapse to one, no warning."""
+    monkeypatch.setenv(LANGSMITH_REPLICA_PROJECTS, "dup, dup")
+
+    with caplog.at_level(logging.WARNING):
+        result = config.get_langsmith_replica_project()
+
+    assert result == "dup"
+    assert caplog.text == ""
+
+
+def test_replica_project_warns_only_about_distinct_extras(monkeypatch, caplog) -> None:
+    """Only genuinely-distinct extras (after dedup) are reported as dropped."""
+    monkeypatch.setenv(LANGSMITH_REPLICA_PROJECTS, "keep, keep, drop")
+
+    with caplog.at_level(logging.WARNING):
+        result = config.get_langsmith_replica_project()
+
+    assert result == "keep"
+    assert "drop" in caplog.text
+    # The duplicate "keep" is not double-counted as a dropped destination.
+    assert "lists 2 projects" in caplog.text

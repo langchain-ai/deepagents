@@ -316,9 +316,9 @@ class WelcomeBanner(Static):
         view.
 
         Args:
-            project_urls: LangSmith project URLs keyed by project name. Replica
-                project names with resolved URLs are rendered as links. When
-                `None`, cached widget state is used.
+            project_urls: LangSmith project URLs keyed by project name. Project
+                names with resolved URLs are rendered as links. When `None`,
+                cached widget state is used.
 
         Returns:
             Content object containing the formatted banner.
@@ -386,6 +386,9 @@ class WelcomeBanner(Static):
                 parts.append((f"'{self._project_name}'", accent))
             parts.append("\n")
             if self._replica_projects:
+                # `_replica_projects` holds at most one entry today (the server
+                # mirrors to a single extra project), but the loop renders any
+                # number so the splash stays correct if that limit is lifted.
                 parts.append(("  Also tracing to: ", "dim"))
                 for idx, name in enumerate(self._replica_projects):
                     if idx:

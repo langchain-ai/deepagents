@@ -278,6 +278,12 @@ class TestRemoteAgentReplicaForwarding:
     The server mirrors a run to an extra project only via the SDK's
     `langsmith_tracing` field, so these lock the exact kwarg name and payload
     shape `RemoteGraph.astream` (and thus `client.runs.stream`) expects.
+
+    `test_forwards_replica_project` / `test_no_kwarg_when_unset` assert the
+    payload against a mock graph that swallows any kwarg, so they verify only
+    the `RemoteAgent` side of the contract. `test_sdk_accepts_langsmith_tracing`
+    pins the *other* side — that the real SDK still accepts the kwarg and shape —
+    so a future SDK rename surfaces here rather than silently dropping replicas.
     """
 
     async def test_forwards_replica_project(self, monkeypatch) -> None:
@@ -295,6 +301,22 @@ class TestRemoteAgentReplicaForwarding:
         async for _ in agent.astream({"messages": []}, config=_config()):
             pass
         assert "langsmith_tracing" not in captured
+
+    def test_sdk_accepts_langsmith_tracing(self) -> None:
+        """The real SDK still accepts the kwarg name and `project_name` shape.
+
+        `RemoteGraph.astream` forwards unknown kwargs to `client.runs.stream`, so
+        a silent drop would happen if either the parameter or the payload key
+        were renamed upstream. This guards both.
+        """
+        import inspect
+
+        from langgraph_sdk.client import RunsClient
+        from langgraph_sdk.schema import LangSmithTracing
+
+        params = inspect.signature(RunsClient.stream).parameters
+        assert "langsmith_tracing" in params
+        assert "project_name" in LangSmithTracing.__annotations__
 
 
 # ---------------------------------------------------------------------------

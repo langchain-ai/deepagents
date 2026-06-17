@@ -199,7 +199,8 @@ class RemoteAgent:
         # its primary project. This is the only channel that reaches the run:
         # it executes in the server process, and reserved `configurable` keys
         # like `__langsmith_project__` are stripped from client input
-        # server-side, so they cannot be set directly here.
+        # server-side, so they cannot be set directly here. (Server internals
+        # verified against `langgraph-api` 0.10.0 and subject to change.)
         from deepagents_code.config import get_langsmith_replica_project
 
         extra_stream_kwargs: dict[str, Any] = {}

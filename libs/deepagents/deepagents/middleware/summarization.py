@@ -950,7 +950,7 @@ A condensed summary follows:
 
         # First pass: collect all unique images to upload.
         for msg in messages:
-            if not isinstance(msg.content, list):
+            if not isinstance(msg.content_blocks, list):
                 continue
             for block in msg.content:
                 decoded = _decode_base64_block(block)

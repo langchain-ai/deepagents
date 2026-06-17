@@ -10017,7 +10017,43 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             return
+        if action_id == ActionId.ENTER_API_KEY:
+            await self._enter_service_api_key(entry, payload)
+            return
         self._log_unknown_action(entry, action_id)
+
+    async def _enter_service_api_key(
+        self,
+        entry: PendingNotification,
+        payload: MissingDepPayload,
+    ) -> None:
+        """Open the `/auth` prompt so the user can store a service API key.
+
+        Args:
+            entry: The missing-dependency notification entry.
+            payload: Typed payload carrying the service (tool) name.
+        """
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV, is_service
+
+        service = payload.tool
+        env_var = SERVICE_API_KEY_ENV.get(service)
+        if not is_service(service) or env_var is None:
+            self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(service, env_var),
+        )
+        if result == AuthResult.SAVED:
+            self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Saved {service} API key. Restart to enable web search.",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
 
     async def _handle_update_action(
         self,

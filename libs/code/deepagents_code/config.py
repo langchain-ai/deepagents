@@ -549,6 +549,13 @@ def _ensure_bootstrap() -> None:
             # Tracing enabled without a key floods the TUI with 401 ingest
             # errors; disable it before any traced run starts.
             _disable_orphaned_tracing()
+
+            # Bridge stored service keys (e.g. Tavily web search, entered via
+            # `/auth`) onto their canonical env vars before settings detection,
+            # so a stored key activates the feature without exporting the var.
+            from deepagents_code.model_config import apply_stored_service_credentials
+
+            apply_stored_service_credentials()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "

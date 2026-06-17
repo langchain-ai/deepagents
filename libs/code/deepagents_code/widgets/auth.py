@@ -45,6 +45,7 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
+    SERVICE_API_KEY_ENV,
     ModelConfig,
     ProviderAuthSource,
     ProviderAuthState,
@@ -55,6 +56,8 @@ from deepagents_code.model_config import (
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
+    get_service_auth_status,
+    is_service,
     resolved_env_var_name,
 )
 from deepagents_code.widgets._links import open_style_link
@@ -107,6 +110,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "openrouter": "https://openrouter.ai/workspaces/default/keys",
     "perplexity": "https://www.perplexity.ai/settings/api",
+    "tavily": "https://app.tavily.com",
     "together": "https://api.together.ai/settings/api-keys",
     "xai": "https://console.x.ai/team/default/api-keys",
 }
@@ -481,7 +485,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cached instance instead of reloading outside this crash-safety guard.
         try:
             self._config = ModelConfig.load()
-            self._auth_status = get_provider_auth_status(provider)
+            self._auth_status = (
+                get_service_auth_status(provider)
+                if is_service(provider)
+                else get_provider_auth_status(provider)
+            )
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
             self._advanced_visible = bool(self._existing_base_url)
@@ -1049,9 +1057,9 @@ class AuthManagerScreen(ModalScreen[None]):
             )
         )
         return Content.assemble(
-            "Lists installed providers and any you've configured in "
-            "~/.deepagents/config.toml. Install more via "
-            "`/install <provider>`. ",
+            "Lists installed model providers, services like web search, and any "
+            "providers you've configured in ~/.deepagents/config.toml. Install "
+            "more via `/install <provider>`. ",
             ("Docs", link_style),
         )
 
@@ -1086,6 +1094,14 @@ class AuthManagerScreen(ModalScreen[None]):
             # users can still paste it manually) and run the loopback
             # callback wait on a worker.
             self._open_codex_screen()
+            return
+        if is_service(provider):
+            # Services (e.g. Tavily web search) use a plain API key, stored the
+            # same way as a model-provider key.
+            self.app.push_screen(
+                AuthPromptScreen(provider, SERVICE_API_KEY_ENV[provider]),
+                self._on_prompt_closed,
+            )
             return
         env_var = get_credential_env_var(provider)
         self.app.push_screen(
@@ -1216,6 +1232,14 @@ class AuthManagerScreen(ModalScreen[None]):
         options = [
             Option(self._format_label(provider), id=provider) for provider in providers
         ]
+        # Append non-model services (e.g. Tavily web search) after the model
+        # providers. These are always shown — their key is configurable here
+        # regardless of whether the backing package is installed — so users can
+        # enter it the same way they enter a model-provider key.
+        options.extend(
+            Option(self._format_label(service), id=service)
+            for service in sorted(SERVICE_API_KEY_ENV)
+        )
         return options, warning
 
     @staticmethod
@@ -1225,7 +1249,11 @@ class AuthManagerScreen(ModalScreen[None]):
         Returns:
             A composed `Content` with the provider label and a status badge.
         """
-        status = get_provider_auth_status(provider)
+        status = (
+            get_service_auth_status(provider)
+            if is_service(provider)
+            else get_provider_auth_status(provider)
+        )
         badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=_provider_display_name(provider)),

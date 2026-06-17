@@ -547,6 +547,22 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+SERVICE_API_KEY_ENV: dict[str, str] = {
+    "tavily": "TAVILY_API_KEY",
+}
+"""Non-model services configurable via `/auth`, mapped to their API-key env var.
+
+These are not LLM providers — they back features such as web search — but
+their credentials follow the same store-on-disk model as model providers, so
+they appear in the `/auth` manager and can be entered directly in the TUI
+instead of being exported as environment variables before launch.
+"""
+
+SERVICE_DOCS_URL: dict[str, str] = {
+    "tavily": "https://tavily.com",
+}
+"""Sign-up / docs URL for each service in `SERVICE_API_KEY_ENV`."""
+
 CODEX_PROVIDER = "openai_codex"
 """Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.
 
@@ -1994,6 +2010,55 @@ def get_default_base_url_env(provider: str) -> str | None:
         return None
     prefixed = f"{_ENV_PREFIX}{env_var}"
     return prefixed if os.environ.get(prefixed) else None
+
+
+def is_service(name: str) -> bool:
+    """Return whether `name` is a non-model service configurable via `/auth`."""
+    return name in SERVICE_API_KEY_ENV
+
+
+def get_service_auth_status(service: str) -> ProviderAuthStatus:
+    """Return credential readiness for a non-model service (e.g. `"tavily"`).
+
+    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
+    so a stored key beats the env var and the `/auth` manager can render the
+    same `[stored]` / `[env: ...]` / `[missing]` badges.
+
+    Args:
+        service: Service name (e.g. `"tavily"`).
+
+    Returns:
+        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+    """
+    env_var = SERVICE_API_KEY_ENV[service]
+    configured = _resolve_configured(service, env_var)
+    if configured:
+        return configured
+    return ProviderAuthStatus(
+        state=ProviderAuthState.MISSING,
+        provider=service,
+        env_var=env_var,
+        detail=f"{env_var} is not set or is empty",
+    )
+
+
+def apply_stored_service_credentials() -> None:
+    """Export every stored service key into `os.environ`.
+
+    Services (e.g. web search via Tavily) have no base URL to reconcile, so
+    this is a plain key copy onto the canonical env var name the underlying
+    SDK reads. A stored key takes precedence over an existing env var, matching
+    `apply_stored_credentials`. Only the unprefixed canonical name is written,
+    so a `DEEPAGENTS_CODE_`-prefixed override still wins via `resolve_env_var`.
+    """
+    for service, env_var in SERVICE_API_KEY_ENV.items():
+        try:
+            stored = auth_store.get_stored_key(service)
+        except RuntimeError:
+            logger.warning("Could not read stored credentials for service %s", service)
+            continue
+        if stored and os.environ.get(env_var) != stored:
+            os.environ[env_var] = stored
 
 
 def apply_stored_credentials(provider: str) -> bool:

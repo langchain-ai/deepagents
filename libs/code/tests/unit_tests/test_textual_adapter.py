@@ -822,6 +822,58 @@ def _tool_chunk(
     return ((), "messages", (message, {}))
 
 
+def _usage_chunk(*, input_tokens: int, output_tokens: int) -> tuple[Any, ...]:
+    """Build a `messages`-stream chunk carrying only `usage_metadata`."""
+    from langchain_core.messages import AIMessageChunk
+
+    message = AIMessageChunk(
+        content="",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+    return ((), "messages", (message, {}))
+
+
+class TestExecuteTaskTextualUsageStats:
+    """`execute_task_textual` forwards the active provider into usage stats.
+
+    The per-model recording API is unit-tested directly elsewhere; this guards
+    the call site actually reading `settings.model_provider` and threading it
+    through `record_request`.
+    """
+
+    async def test_records_provider_from_settings(self) -> None:
+        """A usage chunk records the configured provider on `turn_stats`."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        turn_stats = SessionStats()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
+        assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
+
+
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""
 
@@ -2997,6 +3049,12 @@ class TestPrintUsageTable:
         assert "openai" in output
         assert "azure" in output
         assert "Total" in output
+        # Two distinct rows, not a collapsed one: each provider's per-row token
+        # counts must appear (100/50 and 200/80), alongside the 300/130 totals.
+        assert "100" in output
+        assert "50" in output
+        assert "200" in output
+        assert "80" in output
 
     def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
         """Token table should print but timing line should be absent."""

@@ -36,6 +36,13 @@ class ModelStats:
 
 
 ModelStatsKey = tuple[str, str]
+"""Per-model dict key: the `(provider, model_name)` pair.
+
+Pairing the provider with the model name keeps the same model served by
+different providers (e.g. `gpt-5.5` via `openai` vs `azure`) in separate rows
+instead of collapsing them. The key is always built from the same values stored
+on the corresponding `ModelStats`, so key and fields never diverge.
+"""
 
 
 @dataclass
@@ -77,13 +84,14 @@ class SessionStats:
         Updates both the session totals and the per-model breakdown.
 
         Args:
-            model_name: The model that served this request (used as the
-                per-model key). Pass an empty string to skip the per-model
-                breakdown for this request.
+            model_name: The model that served this request. Combined with
+                `provider` to form the per-model key. Pass an empty string to
+                skip the per-model breakdown for this request.
             input_toks: Input tokens for this request.
             output_toks: Output tokens for this request.
-            provider: Provider that served the model (e.g. `openai`). Recorded
-                on the per-model entry for display alongside the model name.
+            provider: Provider that served the model (e.g. `openai`). Combined
+                with `model_name` to form the per-model key, so the same model
+                served by different providers is tracked separately.
         """
         self.request_count += 1
         self.input_tokens += input_toks

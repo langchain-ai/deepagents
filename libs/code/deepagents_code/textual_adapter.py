@@ -50,6 +50,7 @@ from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext  # noqa: TC001
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
+    ModelStatsKey as ModelStatsKey,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
@@ -139,10 +140,10 @@ def print_usage_table(
         table.add_column("OutputTok", justify="right", style="dim")
 
         if multi_model:
-            for (_provider, model_name), ms in stats.per_model.items():
+            for ms in stats.per_model.values():
                 table.add_row(
                     ms.provider,
-                    ms.model_name or model_name,
+                    ms.model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
@@ -155,10 +156,10 @@ def print_usage_table(
                 format_token_count(stats.output_tokens),
             )
         else:
-            (_provider, model_name), ms = next(iter(stats.per_model.items()))
+            ms = next(iter(stats.per_model.values()))
             table.add_row(
                 ms.provider,
-                ms.model_name or model_name,
+                ms.model_name,
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),

@@ -558,6 +558,10 @@ _UPGRADE_DIFF = (
     " - deepagents-code==0.1.18\n + deepagents-code==0.1.19\n + brand-new-dep==1.0.0"
 )
 
+_REMOVAL_DIFF = (
+    " - deepagents-code==0.1.18\n + deepagents-code==0.1.19\n - dropped-dep==2.0.0"
+)
+
 
 def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
     """A fresh install hides every dependency touched by uv."""
@@ -602,6 +606,22 @@ def test_install_script_upgrade_still_shows_diff(tmp_path: Path) -> None:
     assert "brand-new-dep" in proc.stderr
     assert "(new)" in proc.stderr
     assert "Installed 3 packages" not in proc.stderr
+
+
+def test_install_script_upgrade_marks_removed_packages(tmp_path: Path) -> None:
+    """An upgrade that drops a transitive dependency labels it `(removed)`."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _REMOVAL_DIFF},
+        installed_version="0.1.18",
+        latest_version="0.1.19",
+    )
+
+    assert proc.returncode == 0
+    assert "Updated packages:" in proc.stderr
+    assert "0.1.18 → 0.1.19" in proc.stderr
+    assert "dropped-dep" in proc.stderr
+    assert "(removed)" in proc.stderr
 
 
 def test_install_script_interactive_empty_answer_keeps_current(tmp_path: Path) -> None:

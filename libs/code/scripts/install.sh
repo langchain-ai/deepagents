@@ -538,9 +538,10 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if (order[i] in removed) any_removed = 1
       }
       if (!any_removed) {
-        # Fresh install: every row is a brand-new package, so listing all of
-        # the transitive dependencies is noise. Verbose mode keeps the full
-        # output available for debugging.
+        # No upgrades or removals — every touched package is a brand-new
+        # addition (a fresh install, or new extras pulled into an existing
+        # env). Listing the full transitive set is noise; verbose mode keeps
+        # the output available for debugging.
         exit
       }
       maxw = 0
@@ -549,7 +550,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if (length(p) > maxw) maxw = length(p)
       }
       # Upgrades touch only a handful of packages, so the diff stays compact and
-      # genuinely useful, so keep printing it. "(new)" disambiguates added rows
+      # genuinely useful — keep printing it. "(new)" disambiguates added rows
       # from upgraded/removed ones within this mixed list.
       print "Updated packages:"
       for (i = 1; i <= cnt; i++) {

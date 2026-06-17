@@ -9221,10 +9221,33 @@ class DeepAgentsApp(App):
         def handle_result(_result: None) -> None:
             if self._chat_input:
                 self._chat_input.focus_input()
+            # When the user selected a greyed-out (uninstalled) provider and
+            # confirmed installing it, install the extra and reopen the manager
+            # so they can add a key against the now-installed provider.
+            extra = screen.pending_install_extra
+            if extra:
+                from functools import partial
+
+                self.call_later(
+                    partial(self._install_provider_then_reopen_auth, extra),
+                )
+                return
             task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
             task.add_done_callback(_log_task_exception)
 
-        self.push_screen(AuthManagerScreen(), handle_result)
+        screen = AuthManagerScreen()
+        self.push_screen(screen, handle_result)
+
+    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+        """Install a provider's extra from `/auth`, then reopen the manager.
+
+        Args:
+            extra: The extra that installs the selected provider's integration.
+        """
+        # `_install_extra` already surfaced the reason on any failure.
+        if not await self._install_extra(extra, auto_restart=True):
+            return
+        await self._show_auth_manager()
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.

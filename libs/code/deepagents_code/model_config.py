@@ -558,11 +558,6 @@ they appear in the `/auth` manager and can be entered directly in the TUI
 instead of being exported as environment variables before launch.
 """
 
-SERVICE_DOCS_URL: dict[str, str] = {
-    "tavily": "https://tavily.com",
-}
-"""Sign-up / docs URL for each service in `SERVICE_API_KEY_ENV`."""
-
 CODEX_PROVIDER = "openai_codex"
 """Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.
 
@@ -2055,7 +2050,11 @@ def apply_stored_service_credentials() -> None:
         try:
             stored = auth_store.get_stored_key(service)
         except RuntimeError:
-            logger.warning("Could not read stored credentials for service %s", service)
+            logger.warning(
+                "Could not read stored credentials for service %s; the credential "
+                "file may be corrupt. Re-add the key via /auth.",
+                service,
+            )
             continue
         if stored and os.environ.get(env_var) != stored:
             os.environ[env_var] = stored

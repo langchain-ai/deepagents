@@ -499,6 +499,27 @@ class TestServiceCredentials:
         apply_stored_service_credentials()
         assert os.environ["TAVILY_API_KEY"] == "from-env"
 
+    def test_apply_stored_key_overrides_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key wins over a conflicting existing env var.
+
+        Guards the documented precedence (matching `apply_stored_credentials`):
+        a key entered via `/auth` must beat a plain `TAVILY_API_KEY` already in
+        the environment, otherwise the stored key would be silently ignored.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        auth_store.set_stored_key("tavily", "from-store")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-store"
+
 
 class TestSplitCredentialSource:
     """`warn_on_split_credential_source` flags key/endpoint env-tier mismatches."""

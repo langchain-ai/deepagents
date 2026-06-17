@@ -9238,6 +9238,59 @@ class TestNotificationCenterIntegration:
         mock_suppress.assert_called_once_with("ripgrep")
         assert app._notice_registry.get("dep:ripgrep") is None
 
+    async def test_enter_api_key_saved_removes_entry_and_notifies(self) -> None:
+        """Saving a service key clears the notice and confirms the restart."""
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("tavily", url="https://tavily.com")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+            messages: list[str] = []
+            app.notify = lambda message, **_: messages.append(message)  # ty: ignore
+            await app._dispatch_notification_action(entry.key, ActionId.ENTER_API_KEY)
+            await pilot.pause()
+
+        # The prompt is opened for the service's canonical env var ...
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert isinstance(screen, AuthPromptScreen)
+        assert screen._provider == "tavily"
+        assert screen._env_var == "TAVILY_API_KEY"
+        # ... and on save the stale notice is gone and the user is told to restart.
+        assert app._notice_registry.get("dep:tavily") is None
+        assert any("Restart to apply." in m for m in messages)
+
+    async def test_enter_api_key_unknown_service_is_a_noop(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """ENTER_API_KEY on a non-service tool logs and opens nothing."""
+        import logging
+
+        from deepagents_code.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("ripgrep")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock()  # ty: ignore
+            with caplog.at_level(logging.WARNING):
+                await app._dispatch_notification_action(
+                    entry.key, ActionId.ENTER_API_KEY
+                )
+            await pilot.pause()
+
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        # Non-service tool: nothing opened, entry untouched, dev-facing log only.
+        assert app._notice_registry.get("dep:ripgrep") is entry
+        assert "Unknown action_id" in caplog.text
+
     async def test_suppress_message_reloads_center_in_place(self) -> None:
         """Posting NotificationSuppressRequested refreshes the open center."""
         from deepagents_code.widgets.notification_center import (

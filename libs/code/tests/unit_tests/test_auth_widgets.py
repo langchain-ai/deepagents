@@ -978,6 +978,56 @@ api_key_env = "MY_GATEWAY_API_KEY"
         # Non-model services (e.g. Tavily) are always listed for key entry.
         assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
 
+    async def test_selecting_service_opens_prompt_for_its_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting a service routes to the key prompt bound to its env var.
+
+        Services must not fall through to the model-provider branch, which
+        would look up a credential env var the service doesn't have.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            event = SimpleNamespace(option=SimpleNamespace(id="tavily"))
+            screen.on_option_list_option_selected(cast("Any", event))
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, AuthPromptScreen)
+            assert prompt._provider == "tavily"
+            assert prompt._env_var == "TAVILY_API_KEY"
+
+    async def test_service_row_shows_stored_badge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored service key renders the `[stored]` badge on its row.
+
+        Confirms the service-aware status branch in `_format_label` is wired
+        up — a regression to `get_provider_auth_status` would `KeyError`.
+        """
+        auth_store.set_stored_key("tavily", "k")
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "tavily"
+            )
+        assert "stored" in label
+
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

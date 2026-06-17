@@ -1956,6 +1956,75 @@ class TestModelSelectorInstallRouting:
         assert spec in {model_spec for model_spec, _ in all_models}
         assert install_extras.get("baseten") == "baseten"
 
+    async def test_load_model_data_does_not_duplicate_profiled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recommended model already in profiles surfaces exactly once."""
+        from deepagents_code import config_manifest
+        from deepagents_code.widgets import model_selector
+
+        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        model = spec.split(":", 1)[1]
+        assert spec in model_selector._RECOMMENDED_MODELS
+
+        # The provider is installed and its profiles already surface the curated
+        # model, so the recommended-merge must not re-append it.
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"fireworks": [model]},
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider == "fireworks",
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = [model_spec for model_spec, _ in all_models]
+        assert specs.count(spec) == 1
+        assert "fireworks" not in install_extras
+
+    async def test_load_model_data_surfaces_multiple_unprofiled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every unprofiled recommended spec for one installed provider surfaces."""
+        from deepagents_code import config_manifest
+        from deepagents_code.widgets import model_selector
+
+        expected = {
+            spec
+            for spec in model_selector._RECOMMENDED_MODELS
+            if spec.startswith("fireworks:")
+        }
+        # Guard against the curated set shrinking below the multi-spec case the
+        # test is meant to exercise.
+        assert len(expected) > 1
+
+        # Provider installed/discoverable, but its profiles list none of the
+        # curated specs, so each must be added as a normal selectable row.
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"fireworks": ["accounts/fireworks/models/some-other-model"]},
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider == "fireworks",
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {model_spec for model_spec, _ in all_models}
+        assert expected <= specs
+        assert "fireworks" not in install_extras
+
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

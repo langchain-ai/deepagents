@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -12,11 +13,23 @@ from textual.containers import Container
 from textual.widgets import Input, OptionList, Static
 
 from deepagents_code import auth_store, model_config
-from deepagents_code.widgets.auth import AuthManagerScreen, AuthPromptScreen, AuthResult
+from deepagents_code.config import get_glyphs
+from deepagents_code.widgets.auth import (
+    PROVIDER_API_KEY_URLS,
+    PROVIDER_DISPLAY_NAMES,
+    AuthManagerScreen,
+    AuthPromptScreen,
+    AuthResult,
+    _is_safe_acquisition_url,
+    _provider_display_name,
+)
+from deepagents_code.widgets.codex_auth import CodexAuthScreen
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from textual.content import Content
 
 
 @pytest.fixture(autouse=True)
@@ -67,9 +80,112 @@ class _AuthHostApp(App[None]):
         self.push_screen(AuthManagerScreen())
 
 
+class TestCodexAuthScreen:
+    """Behavioral tests for ChatGPT sign-in modal helpers."""
+
+    def test_link_hover_uses_pointer(self) -> None:
+        """Hovering the inline authorize link sets a pointer cursor."""
+        screen = CodexAuthScreen()
+        link_event = SimpleNamespace(style=SimpleNamespace(link="https://example.com"))
+        screen.on_mouse_move(link_event)  # ty: ignore[invalid-argument-type]
+        assert screen.styles.pointer == "pointer"
+        screen.on_leave()
+        assert screen.styles.pointer == "default"
+
+
 @pytest.mark.usefixtures("fake_state_dir")
 class TestAuthPromptScreen:
     """Behavioral tests for the API-key prompt."""
+
+    def test_provider_key_urls_point_at_login_or_key_pages(self) -> None:
+        """Built-in key links route users directly to current provider key pages."""
+        assert (
+            PROVIDER_API_KEY_URLS["anthropic"]
+            == "https://platform.claude.com/login?returnTo=%2Fsettings%2Fkeys"
+        )
+        assert (
+            PROVIDER_API_KEY_URLS["cohere"]
+            == "https://dashboard.cohere.com/welcome/login?redirect_uri=%2Fapi-keys"
+        )
+        assert (
+            PROVIDER_API_KEY_URLS["baseten"]
+            == "https://docs.baseten.co/organization/api-keys"
+        )
+        assert (
+            PROVIDER_API_KEY_URLS["fireworks"]
+            == "https://app.fireworks.ai/settings/users/api-keys"
+        )
+        assert PROVIDER_API_KEY_URLS["google_genai"] == (
+            "https://aistudio.google.com/api-keys"
+        )
+        assert PROVIDER_API_KEY_URLS["huggingface"] == (
+            "https://huggingface.co/login?next=%2Fsettings%2Ftokens"
+        )
+        assert PROVIDER_API_KEY_URLS["ibm"] == "https://cloud.ibm.com/iam/apikeys"
+        assert (
+            PROVIDER_API_KEY_URLS["litellm"]
+            == "https://docs.litellm.ai/docs/proxy/virtual_keys"
+        )
+        assert (
+            PROVIDER_API_KEY_URLS["openrouter"]
+            == "https://openrouter.ai/workspaces/default/keys"
+        )
+
+    def test_provider_metadata_maps_reference_known_providers(self) -> None:
+        """Map keys stay in sync with real providers so none silently never resolve."""
+        known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
+        assert set(PROVIDER_DISPLAY_NAMES) <= known
+        # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
+        assert set(PROVIDER_API_KEY_URLS) <= set(model_config.PROVIDER_API_KEY_ENV)
+
+    def test_every_known_provider_has_a_display_name(self) -> None:
+        """A new provider can't ship without a branded `/auth` label.
+
+        The title-cased fallback would otherwise mask the omission silently, so
+        this pins the reverse direction: every canonical provider must appear in
+        `PROVIDER_DISPLAY_NAMES`.
+        """
+        assert set(model_config.PROVIDER_API_KEY_ENV) <= set(PROVIDER_DISPLAY_NAMES)
+
+    def test_providers_without_key_url_are_intentionally_omitted(self) -> None:
+        """Only providers with no self-serve key page may skip `PROVIDER_API_KEY_URLS`.
+
+        `azure_openai` keys live on a per-resource page (special-cased in the
+        instructions) and `google_vertexai` uses application-default
+        credentials rather than an API-key page. Any other omission is an
+        oversight that should fail here rather than ship a generic docs link.
+        """
+        no_self_serve_key_page = {"azure_openai", "google_vertexai"}
+        missing = set(model_config.PROVIDER_API_KEY_ENV) - set(PROVIDER_API_KEY_URLS)
+        assert missing == no_self_serve_key_page
+
+    def test_display_name_falls_back_to_title_cased_key(self) -> None:
+        """Unmapped provider keys degrade to a readable title-cased label."""
+        assert _provider_display_name("acme_gateway") == "Acme Gateway"
+
+    def test_config_display_name_overrides_builtin_map(self) -> None:
+        """A configured `display_name` wins over the built-in label.
+
+        Pins the resolution order (config > built-in map) so reordering the
+        `or` chain in `_provider_display_name` would fail a test instead of
+        silently shadowing user config.
+        """
+        config = model_config.ModelConfig(
+            providers={"openai": {"display_name": "Custom OpenAI"}}
+        )
+        assert _provider_display_name("openai", config) == "Custom OpenAI"
+        # Without the override, resolution falls through to the built-in map.
+        empty = model_config.ModelConfig()
+        builtin_label = PROVIDER_DISPLAY_NAMES["openai"]
+        assert _provider_display_name("openai", empty) == builtin_label
+
+    def test_is_safe_acquisition_url_rejects_non_http_schemes(self) -> None:
+        """Only http/https URLs are eligible to render as clickable links."""
+        assert _is_safe_acquisition_url("https://example.com/keys") is True
+        assert _is_safe_acquisition_url("http://example.com/keys") is True
+        assert _is_safe_acquisition_url("javascript:alert(1)") is False
+        assert _is_safe_acquisition_url("file:///etc/passwd") is False
+        assert _is_safe_acquisition_url("not a url") is False
 
     async def test_input_is_password_masked(self) -> None:
         """The key input is masked so the secret never echoes."""
@@ -78,6 +194,300 @@ class TestAuthPromptScreen:
             app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
             await pilot.pause()
             assert app.screen.query_one("#auth-prompt-input", Input).password is True
+
+    async def test_provider_instructions_precede_advanced_details(self) -> None:
+        """The default prompt starts with acquisition guidance, not env precedence."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            storage_note = app.screen.query_one("#auth-prompt-storage-note", Static)
+            key_meta = app.screen.query_one("#auth-prompt-key-meta", Static)
+            base_url_label = app.screen.query_one("#auth-prompt-base-url-label", Static)
+            base_url = app.screen.query_one("#auth-prompt-base-url", Input)
+            toggle = app.screen.query_one("#auth-prompt-advanced-toggle", Static)
+            assert "Sign in to Anthropic" in str(instructions.content)
+            assert "create or copy an API key" in str(instructions.content)
+            assert "Provider key page" in str(instructions.content)
+            assert "Deep Agents Code stores the above key locally" in str(
+                storage_note.content
+            )
+            assert "Advanced (F2)" in str(toggle.content)
+            assert base_url_label.display is False
+            assert "Base URL override" in str(base_url_label.content)
+            assert base_url.placeholder == "Base URL"
+            assert key_meta.display is False
+            assert base_url.display is False
+
+    async def test_env_resolved_key_is_called_out_in_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opening a provider with env auth shows the current credential source."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            title = app.screen.query_one(".auth-prompt-title", Static)
+            status = app.screen.query_one("#auth-prompt-env-status", Static)
+            assert get_glyphs().checkmark in str(title.content)
+            assert "Replace key for OpenAI" in str(title.content)
+            assert "set from environment variable OPENAI_API_KEY" in str(status.content)
+            assert "use a different key for Deep Agents Code" in str(status.content)
+            content = cast("Content", status.content)
+            assert any("$success" in str(span.style) for span in content.spans)
+
+    async def test_prefixed_env_key_status_notes_it_is_already_scoped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prefixed env auth doesn't invite users to scope the key again."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "from-prefixed")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            title = app.screen.query_one(".auth-prompt-title", Static)
+            status = app.screen.query_one("#auth-prompt-env-status", Static)
+            text = str(status.content)
+            assert get_glyphs().warning in str(title.content)
+            assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
+            assert "scoped env var takes priority" in text
+            assert "saved key will be used only when" in text
+            assert "DEEPAGENTS_CODE_OPENAI_API_KEY is unset" in text
+            assert "use a different key" not in text
+            content = cast("Content", status.content)
+            assert any("$warning" in str(span.style) for span in content.spans)
+
+    async def test_prefixed_env_key_status_shows_when_stored_key_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scoped env override is shown even when stored auth exists."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "from-prefixed")
+        auth_store.set_stored_key("openai", "from-store")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            title = app.screen.query_one(".auth-prompt-title", Static)
+            status = app.screen.query_one("#auth-prompt-env-status", Static)
+            text = str(status.content)
+            assert get_glyphs().warning in str(title.content)
+            assert "Replace key for OpenAI (stored)" in str(title.content)
+            assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
+            assert "scoped env var takes priority" in text
+            assert "saved key will be used only when" in text
+
+    async def test_azure_instructions_name_resource_keys_page(self) -> None:
+        """Azure keys live on a resource-specific Keys and Endpoint page."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("azure_openai", "AZURE_OPENAI_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Find your key in your Azure OpenAI resource" in text
+            assert "Keys and Endpoint page" in text
+            assert "Sign in to Azure OpenAI" not in text
+
+    async def test_provider_instructions_use_config_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured arbitrary providers can customize auth instructions."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "https://gateway.example/keys"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("my_gateway", "MY_GATEWAY_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            assert "Sign in to My Gateway" in str(instructions.content)
+            assert "Provider key page" in str(instructions.content)
+
+    async def test_unmapped_provider_links_to_setup_docs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Providers with no key page point at setup docs, not a key link."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("my_gateway", "MY_GATEWAY_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Sign in to My Gateway" in text
+            assert "Provider setup docs" in text
+            assert "Provider key page" not in text
+
+    async def test_unsafe_configured_key_url_is_not_rendered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-http `api_key_url` is dropped rather than rendered as a link."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "javascript:alert(1)"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("my_gateway", "MY_GATEWAY_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            content = cast("Content", instructions.content)
+            assert "javascript:" not in str(content)
+            # The malformed URL is dropped, so no clickable link survives.
+            assert not any("javascript" in str(span.style) for span in content.spans)
+            # With the configured URL rejected and no built-in entry, it falls
+            # back to the generic setup-docs link.
+            assert "Provider setup docs" in str(content)
+
+    async def test_unsafe_configured_key_url_surfaces_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected `api_key_url` is surfaced in the UI, not just the log."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "javascript:alert(1)"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("my_gateway", "MY_GATEWAY_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "configured api_key_url was ignored" in text
+            assert "unsupported URL scheme" in text
+
+    async def test_f2_toggles_advanced_details(self) -> None:
+        """Advanced endpoint and env-var details are hidden behind F2."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            assert app.screen.query_one("#auth-prompt-key-meta", Static).display is True
+            assert (
+                app.screen.query_one("#auth-prompt-base-url-label", Static).display
+                is True
+            )
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is True
+            await pilot.press("f2")
+            await pilot.pause()
+            key_meta = app.screen.query_one("#auth-prompt-key-meta", Static)
+            base_url_label = app.screen.query_one("#auth-prompt-base-url-label", Static)
+            base_url = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert key_meta.display is False
+            assert base_url_label.display is False
+            assert base_url.display is False
+
+    async def test_mouse_move_without_widget_does_not_crash(self) -> None:
+        """Mouse moves over empty modal space still reset the pointer safely."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            event = SimpleNamespace(style=SimpleNamespace(link=None), widget=None)
+            screen = app.screen
+            if not isinstance(screen, AuthPromptScreen):
+                pytest.fail(f"expected AuthPromptScreen, got {type(screen).__name__}")
+            screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
+            assert screen.styles.pointer == "default"
+
+    async def test_click_toggles_advanced_details(self) -> None:
+        """Clicking the disclosure row opens Advanced settings."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.click("#auth-prompt-advanced-toggle")
+            await pilot.pause()
+            assert app.screen.query_one("#auth-prompt-key-meta", Static).display is True
+            assert (
+                app.screen.query_one("#auth-prompt-base-url-label", Static).display
+                is True
+            )
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is True
+
+    async def test_collapsing_advanced_restores_key_input_focus(self) -> None:
+        """Collapsing Advanced returns focus to the key input for fast entry."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")  # expand
+            await pilot.pause()
+            await pilot.press("f2")  # collapse
+            await pilot.pause()
+            key_input = app.screen.query_one("#auth-prompt-input", Input)
+            assert app.screen.focused is key_input
+
+    async def test_link_and_toggle_hover_use_pointer(self) -> None:
+        """A pointer shows over links and the Advanced row; leaving resets it."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = app.screen
+            if not isinstance(screen, AuthPromptScreen):
+                pytest.fail(f"expected AuthPromptScreen, got {type(screen).__name__}")
+            toggle = screen.query_one("#auth-prompt-advanced-toggle", Static)
+            link_event = SimpleNamespace(
+                style=SimpleNamespace(link="https://example.com"), widget=None
+            )
+            screen.on_mouse_move(link_event)  # ty: ignore[invalid-argument-type]
+            assert screen.styles.pointer == "pointer"
+            toggle_event = SimpleNamespace(
+                style=SimpleNamespace(link=None), widget=toggle
+            )
+            screen.on_mouse_move(toggle_event)  # ty: ignore[invalid-argument-type]
+            assert screen.styles.pointer == "pointer"
+            screen.on_leave()
+            assert screen.styles.pointer == "default"
+
+    async def test_existing_base_url_expands_advanced_by_default(self) -> None:
+        """Stored endpoint values remain visible when replacing a key."""
+        auth_store.set_stored_key(
+            "openai", "sk-existing", base_url="https://proxy.example/v1"
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            base_url_label = app.screen.query_one("#auth-prompt-base-url-label", Static)
+            base_url = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert base_url_label.display is True
+            assert base_url.display is True
+            assert base_url.value == "https://proxy.example/v1"
 
     async def test_paste_and_submit_persists(self) -> None:
         """Submitting a non-empty value writes to the store and dismisses True."""
@@ -119,6 +529,8 @@ class TestAuthPromptScreen:
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
             await pilot.pause()
             app.screen.query_one("#auth-prompt-input", Input).value = "sk-key"
             base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
@@ -271,6 +683,14 @@ class TestAuthPromptScreen:
             error_widgets = app.screen.query(".auth-prompt-error")
             warning_text = " ".join(str(w.render()) for w in error_widgets)
             assert "unreadable" in warning_text
+            # The MISSING fallback renders no env-source block and an unprefixed
+            # title (no warning/checkmark glyph), confirming the cosmetic-only
+            # degradation the construction guard promises.
+            assert not app.screen.query("#auth-prompt-env-status")
+            title_text = str(app.screen.query_one(".auth-prompt-title", Static).content)
+            glyphs = get_glyphs()
+            assert glyphs.warning not in title_text
+            assert glyphs.checkmark not in title_text
 
     async def test_helper_text_describes_precedence(self) -> None:
         """Helper text names both env vars and their order vs the stored key.
@@ -285,10 +705,18 @@ class TestAuthPromptScreen:
             await pilot.pause()
             meta = app.screen.query_one("#auth-prompt-key-meta", Static)
             text = str(meta.content)
-            assert "OPENAI_API_KEY" in text
+            assert "Deep Agents Code stores" not in text
+            assert (
+                "Alternatively, environment variables can be used in place "
+                "of the key stored above." in text
+            )
             assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
-            # The prefixed var is described as overriding the stored key.
-            assert "takes priority" in text
+            assert "Deep Agents Code-only key" in text
+            assert "highest priority" in text
+            assert "OPENAI_API_KEY" in text
+            assert "share a key with other provider SDK tools" in text
+            assert "used only when no scoped or stored key exists" in text
+            assert "Configuration docs" in text
 
     async def test_base_url_hint_names_endpoint_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -302,7 +730,10 @@ class TestAuthPromptScreen:
             await pilot.pause()
             hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
             text = str(hint.content)
-            assert "endpoint var: OPENAI_BASE_URL" in text
+            assert "Override the provider endpoint for this stored key" in text
+            assert "Leave blank to use the provider default" in text
+            assert "Env override order" in text
+            assert "DEEPAGENTS_CODE_OPENAI_BASE_URL, then OPENAI_BASE_URL" in text
             # It must not claim blank *uses* the plain var (it gets cleared).
             assert "use OPENAI_BASE_URL" not in text
 
@@ -319,8 +750,9 @@ class TestAuthPromptScreen:
             await pilot.pause()
             hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
             text = str(hint.content)
-            assert "provider's default endpoint" in text
-            assert "endpoint var" not in text
+            assert "Override the provider endpoint for this stored key" in text
+            assert "Leave blank to use the provider default" in text
+            assert "Env override order" not in text
 
     async def test_base_url_hint_names_surviving_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -337,7 +769,9 @@ class TestAuthPromptScreen:
             await pilot.pause()
             hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
             text = str(hint.content)
-            assert "DEEPAGENTS_CODE_OPENAI_BASE_URL" in text
+            assert "Override the provider endpoint for this stored key" in text
+            assert "Leave blank to use DEEPAGENTS_CODE_OPENAI_BASE_URL" in text
+            assert "Env override order" in text
             # The URL value itself is not leaked into the hint.
             assert "scoped.example" not in text
 
@@ -373,6 +807,39 @@ class TestAuthManagerScreen:
             }
         assert "anthropic" in ids
         assert "openai" in ids
+        if "openai_codex" in ids:
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai_codex"
+            )
+            assert "OpenAI Codex (ChatGPT login)" in label
+
+    async def test_configured_provider_uses_display_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured display names appear in the auth manager list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "my_gateway"
+            )
+        assert "My Gateway" in label
+        assert "my_gateway" not in label
 
     async def test_stored_provider_shows_stored_badge(self) -> None:
         """Stored providers render a `[stored]` badge in their option label."""
@@ -407,7 +874,7 @@ class TestAuthManagerScreen:
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "openai"
             )
-        assert "[env: OPENAI_API_KEY]" in label
+        assert "[env set: OPENAI_API_KEY]" in label
 
     async def test_env_badge_shows_prefixed_when_prefixed_set(
         self, monkeypatch: pytest.MonkeyPatch
@@ -425,7 +892,7 @@ class TestAuthManagerScreen:
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "openai"
             )
-        assert "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]" in label
+        assert "[env set: DEEPAGENTS_CODE_OPENAI_API_KEY]" in label
 
     async def test_env_badge_prefers_prefixed_when_both_set(
         self, monkeypatch: pytest.MonkeyPatch
@@ -443,7 +910,7 @@ class TestAuthManagerScreen:
                 for i in range(options.option_count)
                 if options.get_option_at_index(i).id == "openai"
             )
-        assert "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]" in label
+        assert "[env set: DEEPAGENTS_CODE_OPENAI_API_KEY]" in label
 
     async def test_only_installed_well_known_providers_listed(
         self, monkeypatch: pytest.MonkeyPatch

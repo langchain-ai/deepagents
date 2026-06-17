@@ -2395,6 +2395,32 @@ class TestMountMessageNoMatches:
             # Should not raise
             await app._mount_message(ErrorMessage("Agent error: something"))
 
+    async def test_mount_transient_app_message_returns_none_when_missing(
+        self,
+    ) -> None:
+        """`_mount_transient_app_message` returns `None` without a #messages.
+
+        Callers gate transient removal on `if restarting is not None:`. When the
+        screen is torn down before the status can mount, the helper must report
+        the miss (so the gate skips removal) rather than crash or mount an
+        orphaned widget.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            messages_container = app.query_one("#messages", Container)
+            await messages_container.remove()
+            with pytest.raises(NoMatches):
+                app.query_one("#messages", Container)
+
+            before = len(app.query(AppMessage))
+            result = await app._mount_transient_app_message("Restarting server...")
+
+            assert result is None
+            # Nothing was mounted, so the gate has nothing to remove later.
+            assert len(app.query(AppMessage)) == before
+
 
 class TestQueuedMessage:
     """Test QueuedMessage dataclass."""
@@ -12828,18 +12854,21 @@ class TestRestartCommand:
             assert clear_called
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting server" in m for m in app_msgs)
+            # The transient "Restarting server..." status is removed once the
+            # restart succeeds; only the completion banner remains.
+            assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
-    async def test_failed_restart_suppresses_completion_message(
+    async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failed restart shows "Restarting..." but not "Restart complete.".
+        """A failed restart removes "Restarting..." without showing completion.
 
         Guards the conditional gate in `_handle_restart_command`: the success
         banner is only mounted when `_restart_server_manual()` returns `True`.
         On failure the recovery UI (via `ServerStartFailed`) is the user's
-        feedback, so the misleading "Restart complete." must stay suppressed.
+        feedback, so stale transient progress and the misleading completion
+        banner must stay suppressed.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12871,7 +12900,51 @@ class TestRestartCommand:
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting server" in m for m in app_msgs)
+            assert not any("Restarting server" in m for m in app_msgs)
+            assert not any("Restart complete" in m for m in app_msgs)
+
+    async def test_raising_restart_removes_transient_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising `_restart_server_manual()` clears the transient, then raises.
+
+        The transient "Restarting server..." status is mounted before
+        `_restart_server_manual()` is awaited, so the `try/finally` in
+        `_handle_restart_command` exists solely to remove it when the restart
+        raises (not merely returns `False`). On a raise the transient must be
+        gone, the misleading completion banner must never mount, and the
+        exception must propagate rather than be swallowed.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            restart_called = False
+
+            async def _boom() -> bool:  # noqa: RUF029  # awaited by handler
+                nonlocal restart_called
+                restart_called = True
+                msg = "respawn exploded"
+                raise RuntimeError(msg)
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _boom)
+
+            with pytest.raises(RuntimeError, match="respawn exploded"):
+                await app._handle_restart_command("/restart")
+            await pilot.pause()
+
+            assert restart_called
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(

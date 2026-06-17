@@ -9288,6 +9288,9 @@ class DeepAgentsApp(App):
         # real failure the user has already seen explained.
         ready = await asyncio.to_thread(_extra_is_ready, extra)
         if ready:
+            from deepagents_code.model_config import clear_caches
+
+            clear_caches()
             await self._show_auth_manager()
             return
         if ready is None:

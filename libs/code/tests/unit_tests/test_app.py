@@ -6715,10 +6715,14 @@ class TestInstallExtraAuthContinuation:
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
 
-        with patch("deepagents_code.app._extra_is_ready", return_value=True):
+        with (
+            patch("deepagents_code.app._extra_is_ready", return_value=True),
+            patch("deepagents_code.model_config.clear_caches") as clear_caches,
+        ):
             await app._install_provider_then_reopen_auth("baseten")
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        clear_caches.assert_called_once_with()
         app._show_auth_manager.assert_awaited_once()  # ty: ignore
 
     async def test_does_not_reopen_auth_when_install_failed(self) -> None:
@@ -7318,6 +7322,27 @@ class TestDispatchModelSwitch:
         app._agent_running = True
         app._shell_running = False
         app._connecting = False
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.notify.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
+
+    async def test_toasts_when_busy_and_connecting(self) -> None:
+        """In-flight work toasts even while also reconnecting.
+
+        Guards against collapsing the toast guard into `not self._connecting`:
+        a reconnect overlapping genuine work (the install-then-switch restart
+        landing mid-task) must still notify the user.
+        """
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._shell_running = False
+        app._connecting = True
         app._defer_action = MagicMock()  # ty: ignore
         app.call_later = MagicMock()  # ty: ignore
         app.notify = MagicMock()  # ty: ignore

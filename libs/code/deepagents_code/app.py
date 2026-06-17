@@ -6451,8 +6451,11 @@ class DeepAgentsApp(App):
                 with suppress(Exception):
                     await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
-                link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-                await self._mount_message(AppMessage(link))
+                msg = Content.assemble(
+                    f"Opening tracing project {project_name!r}:\n",
+                    (url, TStyle(dim=True, italic=True, link=url)),
+                )
+                await self._mount_message(AppMessage(msg))
 
             # Append directly — no dedup; each /trace invocation gets its own output.
             self._deferred_actions.append(
@@ -6461,8 +6464,11 @@ class DeepAgentsApp(App):
             return
 
         await self._mount_message(UserMessage(command))
-        link = Content.styled(url, TStyle(dim=True, italic=True, link=url))
-        await self._mount_message(AppMessage(link))
+        msg = Content.assemble(
+            f"Opening tracing project {project_name!r}:\n",
+            (url, TStyle(dim=True, italic=True, link=url)),
+        )
+        await self._mount_message(AppMessage(msg))
 
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.

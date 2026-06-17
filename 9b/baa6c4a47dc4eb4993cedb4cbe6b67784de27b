@@ -1,0 +1,27 @@
+libs/code/deepagents_code/model_config.py
+  s_cbe1bf6aa1b473::t_97041bd1ecdbdb 2053-2057
+libs/code/deepagents_code/app.py
+  s_cbe1bf6aa1b473::t_d52f24357de7b2 10096-10099,10105,10108-10109,10111,10123
+libs/code/tests/unit_tests/test_app.py
+  s_cbe1bf6aa1b473::t_17b9f922fb10a1 9241-9293
+libs/code/tests/unit_tests/test_auth_widgets.py
+  s_cbe1bf6aa1b473::t_5cace791c49d36 981-1030
+libs/code/tests/unit_tests/test_model_config.py
+  s_cbe1bf6aa1b473::t_9be866cc4a7063 502-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "9bbaa6c4a47dc4eb4993cedb4cbe6b67784de27b",
+  "prompts": {},
+  "sessions": {
+    "s_cbe1bf6aa1b473": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8cfcc89d-1fb4-46c4-83f3-d1e83ffd5599",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

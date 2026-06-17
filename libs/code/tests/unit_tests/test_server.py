@@ -247,6 +247,217 @@ class TestServerProcess:
         assert not config_dir.exists()
         assert not log_path.exists()
 
+    async def test_start_rescaffolds_when_config_missing(self, tmp_path: Path) -> None:
+        """A missing langgraph.json should be rebuilt via the scaffold hook."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        def scaffold(work_dir: Path) -> None:
+            (work_dir / "langgraph.json").write_text("{}")
+
+        scaffold_mock = MagicMock(side_effect=scaffold)
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with (
+            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_code.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+
+        scaffold_mock.assert_called_once_with(config_dir)
+        assert (config_dir / "langgraph.json").exists()
+
+    async def test_start_raises_when_scaffold_does_not_restore_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A scaffold hook that runs but produces no config still raises.
+
+        The error must report the failed rescaffold (not the misleading
+        "call generate_langgraph_json() first") and the hook must have run.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        scaffold_mock = MagicMock()
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with pytest.raises(RuntimeError, match=r"did not produce langgraph\.json"):
+            await server.start()
+
+        scaffold_mock.assert_called_once_with(config_dir)
+
+    async def test_start_raises_without_scaffold_when_config_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """With no scaffold hook, a missing config raises the original error."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        server = ServerProcess(config_dir=config_dir)
+
+        with pytest.raises(RuntimeError, match=r"langgraph\.json not found"):
+            await server.start()
+
+    async def test_start_wraps_scaffold_oserror(self, tmp_path: Path) -> None:
+        """An OSError raised mid-scaffold surfaces as RuntimeError, cause kept."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        boom = OSError("No space left on device")
+        server = ServerProcess(
+            config_dir=config_dir, scaffold=MagicMock(side_effect=boom)
+        )
+
+        with pytest.raises(RuntimeError, match=r"Failed to rescaffold") as exc_info:
+            await server.start()
+
+        assert exc_info.value.__cause__ is boom
+
+    async def test_start_creates_work_dir_when_purged(self, tmp_path: Path) -> None:
+        """A fully purged work dir is recreated before the scaffold runs.
+
+        Exercises the `mkdir(parents=True)` recovery: the directory itself —
+        not just `langgraph.json` — is gone (the OS tmp reaper removing the
+        whole temp dir), so the scaffold would fail without the mkdir.
+        """
+        # Deliberately not created: the directory is missing entirely.
+        config_dir = tmp_path / "runtime"
+
+        def scaffold(work_dir: Path) -> None:
+            (work_dir / "langgraph.json").write_text("{}")
+
+        scaffold_mock = MagicMock(side_effect=scaffold)
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with (
+            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_code.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+
+        scaffold_mock.assert_called_once_with(config_dir)
+        assert config_dir.is_dir()
+        assert (config_dir / "langgraph.json").exists()
+
+    async def test_start_does_not_rescaffold_when_config_present(
+        self, tmp_path: Path
+    ) -> None:
+        """The scaffold hook is a recovery path only; skip it when config exists."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        scaffold_mock = MagicMock()
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with (
+            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_code.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+
+        scaffold_mock.assert_not_called()
+
+    async def test_restart_rescaffolds_after_config_purged(
+        self, tmp_path: Path
+    ) -> None:
+        """restart() rebuilds a config purged between boot and the restart.
+
+        This is the motivating scenario: the server boots with config present,
+        the work dir is purged externally, and a later `/restart` recovers via
+        the scaffold hook rather than failing.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        config_path = config_dir / "langgraph.json"
+        config_path.write_text("{}")
+
+        def scaffold(work_dir: Path) -> None:
+            (work_dir / "langgraph.json").write_text("{}")
+
+        scaffold_mock = MagicMock(side_effect=scaffold)
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with (
+            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_code.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+            # Config present on boot: the scaffold hook must not have fired yet.
+            scaffold_mock.assert_not_called()
+
+            # Simulate the OS tmp reaper purging the work dir.
+            config_path.unlink()
+
+            await server.restart()
+
+        scaffold_mock.assert_called_once_with(config_dir)
+        assert config_path.exists()
+
     async def test_update_env_and_restart(self, tmp_path: Path) -> None:
         """update_env stages overrides that restart() applies."""
         config_dir = tmp_path / "runtime"

@@ -2378,6 +2378,7 @@ def get_langsmith_project_name() -> str | None:
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
@@ -2392,7 +2393,7 @@ def get_langsmith_project_name() -> str | None:
     return (
         _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
-        or "deepagents-code"
+        or LANGSMITH_PROJECT_DEFAULT
     )
 
 

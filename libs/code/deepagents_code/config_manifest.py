@@ -58,6 +58,12 @@ INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
+LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
+"""Project agent traces fall back to when no project env var is set.
+
+Single source of truth shared by the `tracing.langsmith_project` option and
+`config.get_langsmith_project_name`."""
+
 
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
@@ -161,6 +167,14 @@ class ConfigOption:
 
     For provider credentials this is the canonical name; the
     `DEEPAGENTS_CODE_` prefix override is applied dynamically at resolution time.
+    """
+
+    fallback_env_vars: tuple[str, ...] = ()
+    """Secondary env vars read (in order) when `env_var` is unset.
+
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
+    `LANGSMITH_PROJECT`.
     """
 
     toml_keys: tuple[str, ...] | None = None
@@ -510,15 +524,21 @@ def resolve_scalar(
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
 
-    if option.env_var:
+    if option.env_var or option.fallback_env_vars:
         from deepagents_code.model_config import resolved_env_var_name
 
-        name = resolved_env_var_name(option.env_var)
+        names: list[str] = []
+        if option.env_var:
+            names.append(resolved_env_var_name(option.env_var))
+        names.extend(option.fallback_env_vars)
         # An empty string counts as unset, matching `resolve_env_var`: this
         # keeps `config show`/`get` aligned with what the runtime reads (and
-        # lets a prefixed empty var suppress a canonical one).
-        raw = os.environ.get(name)
-        if raw:
+        # lets a prefixed empty var suppress a canonical one). Fallbacks are
+        # tried in order so a bare `LANGSMITH_PROJECT` still resolves.
+        for name in names:
+            raw = os.environ.get(name)
+            if not raw:
+                continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
                 return value, f"env ({name})"
@@ -819,7 +839,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Models",
         summary="LangSmith project name for deepagents agent traces.",
         kind=OptionKind.STR,
+        default=LANGSMITH_PROJECT_DEFAULT,
         env_var=_env_vars.LANGSMITH_PROJECT,
+        fallback_env_vars=("LANGSMITH_PROJECT",),
         settings_field="deepagents_langchain_project",
     ),
     ConfigOption(

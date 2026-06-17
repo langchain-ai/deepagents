@@ -284,6 +284,41 @@ def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> Non
     assert value is None
 
 
+def test_langsmith_project_prefers_prefixed_env(monkeypatch) -> None:
+    """The prefixed project env var wins over a bare `LANGSMITH_PROJECT`."""
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "prefixed")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("prefixed", "env (DEEPAGENTS_CODE_LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_falls_back_to_bare_env(monkeypatch) -> None:
+    """A bare `LANGSMITH_PROJECT` resolves when the prefixed var is unset.
+
+    Mirrors `get_langsmith_project_name`, so `config show`/`get` report the
+    project agent traces actually route to.
+    """
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_default_when_unset(monkeypatch) -> None:
+    """With no project env var set, the default project name is rendered."""
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+
+
 def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
     """The `config show` aggregate (separate path from `get`) never leaks a secret."""
     import json

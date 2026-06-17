@@ -14250,3 +14250,60 @@ class TestClearInputEscape:
         app._handle_clear_input_escape()
         assert app._clear_input_pending is False
         chat_input.discard_text.assert_not_called()
+
+
+class TestCopyFocusedInputText:
+    """Tests for the Ctrl+C copy-whole-input fallback (no active selection)."""
+
+    @staticmethod
+    def _make_app() -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore[invalid-assignment]
+        return app
+
+    def test_copies_whole_input_when_no_selection(self, monkeypatch) -> None:
+        """A focused, non-empty input with no selection is copied in full."""
+        import deepagents_code.clipboard as clipboard_module
+        from textual.widgets import TextArea
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        text_area = TextArea()
+        text_area.text = "whole input draft"
+        monkeypatch.setattr(type(app), "focused", property(lambda self: text_area))
+
+        assert app._copy_focused_input_text() is True
+        assert copied == ["whole input draft"]
+
+    def test_no_copy_when_input_empty(self, monkeypatch) -> None:
+        """An empty focused input is not copied."""
+        import deepagents_code.clipboard as clipboard_module
+        from textual.widgets import TextArea
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        text_area = TextArea()
+        monkeypatch.setattr(type(app), "focused", property(lambda self: text_area))
+
+        assert app._copy_focused_input_text() is False
+        assert copied == []
+
+    def test_no_copy_when_nothing_focused(self, monkeypatch) -> None:
+        """When the focused widget is not an input, nothing is copied."""
+        app = self._make_app()
+        monkeypatch.setattr(type(app), "focused", property(lambda self: None))
+        assert app._copy_focused_input_text() is False

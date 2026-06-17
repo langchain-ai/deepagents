@@ -8249,8 +8249,9 @@ class DeepAgentsApp(App):
         3. If approval menu is active, reject it
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
-        6. If double press (quit_pending), quit
-        7. Otherwise show quit hint
+        6. If a focused input has text, copy the whole draft (no selection)
+        7. If double press (quit_pending), quit
+        8. Otherwise show quit hint
         """
         # If a focused input widget has selected text, copy it instead of
         # quitting/interrupting so Ctrl+C matches standard terminal behavior.
@@ -8285,6 +8286,12 @@ class DeepAgentsApp(App):
             if self._active_user_message is not None:
                 self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
+            self._quit_pending = False
+            return
+
+        # No selection and nothing to interrupt: copy the whole input draft so
+        # Ctrl+C copies what was typed instead of arming quit.
+        if self._copy_focused_input_text():
             self._quit_pending = False
             return
 
@@ -8325,6 +8332,43 @@ class DeepAgentsApp(App):
                 f"Failed to copy selection: {error}"
                 if error
                 else "Failed to copy selection - no clipboard method available",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+        return success
+
+    def _copy_focused_input_text(self) -> bool:
+        """Copy the focused input's full text to the clipboard, if non-empty.
+
+        Ctrl+C fallback used when there is no active selection, so the whole
+        draft is copied instead of arming quit.
+
+        Returns:
+            `True` when non-empty text was copied to the clipboard.
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        text = widget.text if isinstance(widget, TextArea) else widget.value
+        if not text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self, text)
+        if success:
+            self.notify("Input copied to clipboard", timeout=3, markup=False)
+        else:
+            self.notify(
+                f"Failed to copy input: {error}"
+                if error
+                else "Failed to copy input - no clipboard method available",
                 severity="warning",
                 timeout=3,
                 markup=False,

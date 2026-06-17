@@ -433,6 +433,11 @@ if command -v gh >/dev/null 2>&1; then
       *) echo "- \`gh search prs --json\` does not expose \`mergedAt\`;"
          echo "  use \`gh pr view --json mergedAt\` per PR for merge timestamps." ;;
     esac
+    echo "- \`gh api\` field types: \`-f key=value\` sends a string;"
+    echo "  \`-F key=value\` sends typed JSON. Use \`-F\` for numeric fields"
+    echo "  (e.g. \`-F in_reply_to=<id>\`, \`-F issue_number=<n>\`);"
+    echo "  \`-f in_reply_to=<id>\` is rejected with HTTP 422"
+    echo "  (\`\"<id>\" is not a number\`)."
     echo ""
   fi
 fi"""

@@ -1164,6 +1164,8 @@ class TestSectionGhCli:
             in result.stdout
         )
         assert "does not expose `mergedAt`" in result.stdout
+        assert "-F in_reply_to=<id>" in result.stdout
+        assert '`"<id>" is not a number`' in result.stdout
 
 
 class TestSectionTestCommand:

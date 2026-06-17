@@ -454,13 +454,32 @@ class ServerProcess:
             # `/restart` (e.g. the OS tmp reaper purging the temp work dir).
             # Rebuild it rather than failing the restart.
             logger.info("langgraph.json missing in %s; rescaffolding", work_dir)
-            work_dir.mkdir(parents=True, exist_ok=True)
-            self._scaffold(work_dir)
+            try:
+                work_dir.mkdir(parents=True, exist_ok=True)
+                self._scaffold(work_dir)
+            except OSError as exc:
+                # Surface the failure with restart context instead of letting a
+                # bare OSError (e.g. ENOSPC/EACCES on a degraded temp fs) escape
+                # stripped of the recovery framing. Chained so the root cause
+                # stays in the traceback.
+                msg = f"Failed to rescaffold server workspace at {work_dir}: {exc}"
+                raise RuntimeError(msg) from exc
         if not config_path.exists():
-            msg = (
-                f"langgraph.json not found in {work_dir}. "
-                "Call generate_langgraph_json() first."
-            )
+            if self._scaffold is not None:
+                # The scaffold hook ran but produced no langgraph.json (a silent
+                # no-op or a write to the wrong path). The "call
+                # generate_langgraph_json() first" advice below would misdirect,
+                # since the scaffold is exactly that call run internally.
+                contents = sorted(p.name for p in work_dir.iterdir())
+                msg = (
+                    f"Rescaffolding {work_dir} did not produce langgraph.json "
+                    f"(directory contents: {contents})."
+                )
+            else:
+                msg = (
+                    f"langgraph.json not found in {work_dir}. "
+                    "Call generate_langgraph_json() first."
+                )
             raise RuntimeError(msg)
 
         if _port_in_use(self.host, self.port):

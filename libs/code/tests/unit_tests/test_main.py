@@ -31,6 +31,19 @@ from deepagents_code.main import (
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""
 
+    @pytest.fixture(autouse=True)
+    def _ack_auto_update_default(self) -> Iterator[None]:
+        """Treat the auto-update default as already acknowledged.
+
+        These tests exercise the install/restart path; the one-time migration
+        notice is covered in `TestAutoUpdateDefaultMigration`.
+        """
+        with patch(
+            "deepagents_code.update_check.should_announce_auto_update_default",
+            return_value=False,
+        ):
+            yield
+
     def test_successful_update_restarts_before_launch(self) -> None:
         """A successful startup auto-update should exec a fresh process."""
         console = MagicMock()
@@ -38,6 +51,10 @@ class TestStartupAutoUpdate:
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
             patch(
                 "deepagents_code.update_check.is_auto_update_enabled",
                 return_value=True,
@@ -83,6 +100,30 @@ class TestStartupAutoUpdate:
 
         check.assert_not_called()
         upgrade.assert_not_called()
+
+    def test_disabled_update_check_skips_cached_auto_update(self) -> None:
+        """Disabled update checks should block cached startup auto-updates."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.get_cached_update_available") as check,
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        check.assert_not_called()
+        upgrade.assert_not_called()
+        restart.assert_not_called()
 
     def test_restart_uses_module_entrypoint(self) -> None:
         """Restart should reload package code from the updated environment."""
@@ -345,6 +386,231 @@ class TestStartupAutoUpdate:
         """
         source = inspect.getsource(cli_main)
         assert "_run_startup_auto_update(console)" in source
+
+
+class TestAutoUpdateDefaultMigration:
+    """First-run consent/migration notice for the auto-update opt-out default."""
+
+    def test_first_run_announces_and_skips_install(self) -> None:
+        """An implicit (default) opt-in announces once and skips the install."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.should_announce_auto_update_default",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
+                return_value=True,
+            ) as mark,
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        mark.assert_called_once_with()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "updates automatically by default" in printed
+        # A successful persist must not warn about the notice repeating.
+        assert "could not be saved" not in printed
+
+    def test_first_run_persist_failure_warns_repeat(self) -> None:
+        """A failed acknowledgement persist surfaces that the notice may repeat."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.should_announce_auto_update_default",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
+                return_value=False,
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "updates automatically by default" in printed
+        assert "could not be saved" in printed
+
+    def test_debug_update_does_not_suppress_first_run_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The consent notice wins over the debug-skip branch on the first run.
+
+        `should_announce_auto_update_default` is checked before the
+        `DEBUG_UPDATE` short-circuit, so a first run in debug mode shows the
+        migration notice (and records the acknowledgement) rather than the
+        "Skipped update install (debug mode)" message.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_UPDATE", "1")
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.should_announce_auto_update_default",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_auto_update_default_acknowledged",
+                return_value=True,
+            ) as mark,
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        mark.assert_called_once_with()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "updates automatically by default" in printed
+        assert "debug mode" not in printed
+
+    def test_acknowledged_default_proceeds_with_install(self) -> None:
+        """Once acknowledged, the install proceeds normally on later launches."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.should_announce_auto_update_default",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+
+    def test_first_run_then_next_launch_end_to_end(self, tmp_path: Path) -> None:
+        """Drive the real consent state machine across two launches.
+
+        Unlike the other tests here, this does not patch
+        `should_announce_auto_update_default` / `mark_auto_update_default_acknowledged`
+        — it exercises the genuine implementations against temp config/state
+        files so the wiring (announce-and-skip, then proceed) is verified, not
+        just the orchestration around stubbed helpers.
+        """
+        config_path = tmp_path / "config.toml"
+        state_file = tmp_path / "update_state.json"
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_code.update_check.UPDATE_STATE_FILE", state_file),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+        ):
+            # First launch: no explicit choice and no recorded acknowledgement,
+            # so the migration notice fires and the install is skipped.
+            _run_startup_auto_update(console)
+            upgrade.assert_not_called()
+            printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+            assert "updates automatically by default" in printed
+            assert state_file.exists()  # acknowledgement persisted
+
+            # Second launch: the acknowledgement is now on disk, so the install
+            # proceeds and the process re-execs (simulated via SystemExit).
+            with (
+                patch(
+                    "deepagents_code.main._restart_current_process",
+                    side_effect=SystemExit(0),
+                ),
+                pytest.raises(SystemExit),
+            ):
+                _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
 
 
 class TestResumeHintLogic:

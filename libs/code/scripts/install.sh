@@ -13,6 +13,14 @@
 # DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
 # an exact pin already selects a single version, so setting both is an error.
 #
+# Already installed?
+#   Safe to re-run. If a newer version exists, it asks before upgrading — or
+#   upgrades on its own when run unattended (cron/CI/Docker). If you're already
+#   on the latest, it does nothing. To skip the prompt:
+#     - DEEPAGENTS_CODE_YES=1                     accept the upgrade
+#     - DEEPAGENTS_CODE_VERSION / _PRERELEASE     install that exact selection
+#     - DEEPAGENTS_CODE_EXTRAS / _PYTHON          rebuild with those options
+#
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
@@ -25,33 +33,32 @@
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
-#   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona". Valid extras
-#                             (see pyproject.toml for the authoritative list):
-#                               Model providers: anthropic, baseten, bedrock,
-#                                 cohere, deepseek, fireworks, google-genai,
-#                                 groq, huggingface, ibm, litellm, mistralai,
-#                                 nvidia, ollama, openai, openrouter,
-#                                 perplexity, together, vertex, xai,
-#                                 all-providers
-#                               Sandbox providers: agentcore, daytona, modal,
-#                                 runloop, vercel, all-sandboxes
-#                               Standalone integrations: quickjs
-#   DEEPAGENTS_CODE_VERSION — exact package version to install, e.g. "0.1.0rc1"
-#                             (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
-#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when resolving
-#                                the latest version: disallow, allow,
-#                                if-necessary, explicit, or
-#                                if-necessary-or-explicit
-#                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
-#   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
+#     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
+#     authoritative list):
+#       Model providers: anthropic, baseten, bedrock, cohere, deepseek,
+#         fireworks, google-genai, groq, huggingface, ibm, litellm, mistralai,
+#         nvidia, ollama, openai, openrouter, perplexity, together, vertex, xai,
+#         all-providers
+#       Sandbox providers: agentcore, daytona, modal, runloop, vercel,
+#         all-sandboxes
+#       Standalone integrations: quickjs
+#   DEEPAGENTS_CODE_VERSION — exact version to install, e.g. "0.1.0rc1"
+#     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
+#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
+#     resolving the latest version: disallow, allow, if-necessary, explicit,
+#     or if-necessary-or-explicit (mutually exclusive with
+#     DEEPAGENTS_CODE_VERSION)
+#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
+#     prompting (assume "yes"). Exists so automated runs that still attach a
+#     terminal (CI, wrapper scripts) update instead of stalling at the y/n
+#     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
-#                             lines, unfiltered package diff) and the
-#                             quiet-by-default status lines (optional-tool
-#                             checks, post-install footer); useful when
-#                             debugging
-#   UV_BIN                  — path to uv binary (auto-detected if unset)
+#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
+#     unfiltered package diff) and the quiet-by-default status lines
+#     (optional-tool checks, post-install footer); useful when debugging
+#   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install
@@ -222,15 +229,35 @@ prompt_yn() {
   return 1
 }
 
+# Whether an interactive y/n prompt can actually be answered. IS_INTERACTIVE
+# trusts `[ -r /dev/tty ]`, which only access-checks the device — opening it
+# still fails when there is no controlling terminal (cron, systemd, some CI).
+# Confirm the channel is usable so callers can fall back instead of blocking
+# or silently treating an unanswerable prompt as "no".
+can_prompt() {
+  [ "$IS_INTERACTIVE" = true ] || return 1
+  [ -t 0 ] && return 0
+  { : < /dev/tty; } 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
 PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PYTHON_REQUESTED=false
+if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
+  PYTHON_REQUESTED=true
+fi
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
+ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+
+# PyPI JSON endpoint used to discover the latest published release so we can
+# tell whether an existing install is out of date before upgrading it.
+PYPI_JSON_URL="https://pypi.org/pypi/deepagents-code/json"
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -327,6 +354,35 @@ if [ -z "${UV_BIN:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Latest-version lookup
+# ---------------------------------------------------------------------------
+# Print the latest published deepagents-code version from PyPI, or nothing on
+# any failure (offline, transient error, missing downloader). PyPI nests the
+# latest release at "info.version"; that key appears first in the response (the
+# "info" object leads), so taking the first "version" match selects it without
+# depending on a JSON parser. The pattern tolerates whitespace around the colon
+# so a switch to pretty-printed JSON wouldn't silently break the probe.
+# This relies on PyPI's current (not contractually guaranteed) key ordering; if
+# it ever changed, the worst case is a wrong/empty match, which the caller
+# already treats as "unknown latest" and recovers from — never a bad install.
+fetch_latest_version() {
+  local json="" ua="deepagents-code-install"
+  if command -v curl >/dev/null 2>&1; then
+    json=$(curl -fsSL -H "User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  elif command -v wget >/dev/null 2>&1; then
+    json=$(wget -qO- --header="User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  else
+    return 0
+  fi
+  # `|| true` keeps a no-match (grep exit 1 under `pipefail`) from aborting the
+  # script; an empty result is handled by the caller as "unknown latest".
+  printf '%s' "$json" \
+    | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' || true
+}
+
+# ---------------------------------------------------------------------------
 # Install deepagents-code
 # ---------------------------------------------------------------------------
 PACKAGE="deepagents-code${EXTRAS}${VERSION_SPEC}"
@@ -373,6 +429,48 @@ if [ "$IS_EDITABLE" = true ]; then
     log_info "deepagents-code ${pre_label} found (editable install from local source)."
   fi
   log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
+  # Default path with an existing install: probe PyPI and prompt before
+  # upgrading, rather than silently pulling the latest version every run.
+  # A pinned version or pre-release strategy (handled by the branches above and
+  # below) expresses explicit intent, so those install directly.
+  #
+  # The up-to-date check below is plain string equality, so it relies on
+  # PRE_VERSION (the raw `dcode -v` literal) and LATEST_VERSION (PyPI's
+  # PEP 440-normalized `info.version`) being identically canonical. release-please
+  # keeps `_version.py` to clean `X.Y.Z`, so they match today; a non-canonical
+  # release literal would merely re-prompt an up-to-date user, never silently
+  # skip a real upgrade. A shell installer can't import `packaging` to compare
+  # semantically the way `update_check.py` does.
+  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  LATEST_VERSION=$(fetch_latest_version)
+  if [ -z "$LATEST_VERSION" ]; then
+    log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
+  elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
+    if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
+    else
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
+    fi
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+    log_success "deepagents-code ${PRE_VERSION} is already up to date."
+    exit 0
+  elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+  elif can_prompt; then
+    if prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?"; then
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    else
+      log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
+      exit 0
+    fi
+  else
+    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
+    # ask, and an installer's job is to make the current version present, so
+    # complete the upgrade rather than silently no-op. Callers that want a fixed
+    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
+    log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
+  fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
 else

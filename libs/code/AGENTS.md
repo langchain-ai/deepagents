@@ -115,7 +115,7 @@ dcode-dev --version
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
 - Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
 - When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
-- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Features that run shell commands must never do so *silently* by default. Either gate them behind an explicit env var or config key (opt-in), or — if default-enabled — announce the action before running it and offer a documented opt-out. Auto-update is the sole default-enabled exception: it shows a one-time migration notice and skips the first install when enabled only by the opt-out default, prints the upgrade it is about to perform, is overridable via `DEEPAGENTS_CODE_AUTO_UPDATE` / `[update].auto_update`, and is always disabled for editable installs.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
 ## Logging
@@ -148,7 +148,8 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
 3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
 4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
-5. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+5. `deepagents_code/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
+6. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
 
 ### `PROVIDER_BASE_URL_ENV` guidelines
 

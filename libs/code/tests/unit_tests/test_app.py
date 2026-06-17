@@ -1790,6 +1790,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1829,6 +1830,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1873,6 +1875,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -1928,6 +1931,7 @@ class TestModalScreenCtrlDHandling:
                 screen = ThreadSelectorScreen(
                     current_thread=None,
                     initial_threads=mock_threads,
+                    filter_cwd=None,
                 )
                 app.push_screen(screen)
                 await pilot.pause()
@@ -2066,6 +2070,8 @@ class TestModalScreenCtrlDHandling:
             assert app.focused is not None
             assert app.focused.id == "auth-prompt-input"
 
+            await pilot.press("f2")
+            await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
             assert app.focused is not None
@@ -2132,6 +2138,7 @@ class TestModalScreenShiftTabHandling:
                         "initial_prompt": "prompt",
                     }
                 ],
+                filter_cwd=None,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -2139,6 +2146,7 @@ class TestModalScreenShiftTabHandling:
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
             scope_select = screen.query_one("#thread-scope-select", Select)
+            agent_select = screen.query_one("#thread-agent-select", Select)
             sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
             await pilot.press("tab")
@@ -2147,7 +2155,15 @@ class TestModalScreenShiftTabHandling:
 
             await pilot.press("tab")
             await pilot.pause()
+            assert agent_select.has_focus
+
+            await pilot.press("tab")
+            await pilot.pause()
             assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert agent_select.has_focus
 
             await pilot.press("shift+tab")
             await pilot.pause()
@@ -2219,6 +2235,7 @@ class TestModalScreenCtrlCHandling:
                         "initial_prompt": "prompt",
                     }
                 ],
+                filter_cwd=None,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -2377,6 +2394,32 @@ class TestMountMessageNoMatches:
 
             # Should not raise
             await app._mount_message(ErrorMessage("Agent error: something"))
+
+    async def test_mount_transient_app_message_returns_none_when_missing(
+        self,
+    ) -> None:
+        """`_mount_transient_app_message` returns `None` without a #messages.
+
+        Callers gate transient removal on `if restarting is not None:`. When the
+        screen is torn down before the status can mount, the helper must report
+        the miss (so the gate skips removal) rather than crash or mount an
+        orphaned widget.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            messages_container = app.query_one("#messages", Container)
+            await messages_container.remove()
+            with pytest.raises(NoMatches):
+                app.query_one("#messages", Container)
+
+            before = len(app.query(AppMessage))
+            result = await app._mount_transient_app_message("Restarting server...")
+
+            assert result is None
+            # Nothing was mounted, so the gate has nothing to remove later.
+            assert len(app.query(AppMessage)) == before
 
 
 class TestQueuedMessage:
@@ -3066,9 +3109,8 @@ class TestTraceCommand:
             )
             mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
-                expected_url in str(w._content) for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
@@ -3285,10 +3327,11 @@ class TestTraceCommand:
             # Queued widget replaced by real UserMessage + AppMessage with link
             assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(
-                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
-                for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert (
+                "Opening tracing project 'proj':\n"
+                "https://smith.langchain.com/t/test-thread-123"
+            ) in rendered
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when the URL fetch raises."""
@@ -6658,6 +6701,530 @@ class TestDefaultAgentNameDrift:
         assert agent.DEFAULT_AGENT_NAME is canonical
         assert _server_config.DEFAULT_ASSISTANT_ID is canonical
         assert app.DEFAULT_ASSISTANT_ID is canonical
+
+
+class TestInstallExtraModelSwitch:
+    """Test switching after installing model-provider extras."""
+
+    async def test_install_extra_prompts_for_missing_auth_before_switch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Freshly installed providers should use the normal auth prompt flow."""
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=True)  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var="BASETEN_API_KEY",
+            ),
+        )
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert isinstance(screen, AuthPromptScreen)
+        dispatch.assert_called_once_with(
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
+
+    async def test_install_extra_failed_restart_does_not_prompt_auth_or_switch(
+        self,
+    ) -> None:
+        """A model-selection install only continues after the server restarts."""
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=False)  # ty: ignore
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+        )
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        dispatch.assert_not_called()
+
+    async def test_install_extra_cancelled_auth_does_not_switch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancelling the post-install auth prompt leaves the model unchanged."""
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+        from deepagents_code.widgets.auth import AuthResult
+
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=True)  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var="BASETEN_API_KEY",
+            ),
+        )
+
+        await app._install_extra_then_switch(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+        )
+
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        dispatch.assert_not_called()
+        # The switch is abandoned, but the message confirms the extra stayed
+        # installed and points the user at how to switch later — not a silent
+        # no-op after the install + restart.
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Installed" in mounted
+        assert "/auth" in mounted
+        assert "/model" in mounted
+
+    async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Deferred startup loads installed provider extras on its first launch."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._reload_configuration_for_restart = AsyncMock(return_value=True)  # ty: ignore
+        app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+        app._server_proc = None
+        app._server_kwargs = {"model_name": "openai:gpt-5.5"}
+        app._server_startup_deferred = True
+
+        result = await app._install_extra("baseten", auto_restart=True)
+
+        assert result is True
+        app._reload_configuration_for_restart.assert_awaited_once()  # ty: ignore
+        app._restart_after_install.assert_not_awaited()  # ty: ignore
+        mounted = [
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        ]
+        assert not any("couldn't restart" in text.lower() for text in mounted)
+
+    async def test_install_extra_auto_restart_no_owned_server_recommends_relaunch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A remote server cannot be loaded with `/restart` after install."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+        app._server_proc = None
+        app._server_kwargs = None
+
+        result = await app._install_extra("baseten", auto_restart=True)
+
+        assert result is False
+        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Relaunch dcode" in mounted
+        assert "/restart" not in mounted
+
+    async def test_install_extra_auto_restart_fallback_on_failed_restart(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A successful install that cannot auto-restart guides the user."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+        app._server_kwargs = {"model_name": "openai:gpt-5.5"}
+
+        result = await app._install_extra("baseten", auto_restart=True)
+
+        assert result is False
+        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        mounted = [
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        ]
+        assert any("couldn't restart the server" in text.lower() for text in mounted)
+
+    async def test_install_extra_auto_restart_success_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A successful install + auto-restart returns True with no fallback copy."""
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(True, "")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._restart_after_install = AsyncMock(return_value=True)  # ty: ignore
+
+        result = await app._install_extra("baseten", auto_restart=True)
+
+        assert result is True
+        app._restart_after_install.assert_awaited_once_with("baseten")  # ty: ignore
+        mounted = [
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        ]
+        assert not any("couldn't restart" in text.lower() for text in mounted)
+
+    async def test_prompt_model_auth_not_needed_when_credentials_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-blocking provider switches without showing the auth prompt."""
+        from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
+
+        app = DeepAgentsApp()
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider=provider,
+                detail="local provider",
+            ),
+        )
+
+        result = await app._prompt_model_auth_if_needed("ollama:llama3")
+
+        assert result is True
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+
+    async def test_prompt_model_auth_skips_when_provider_unresolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unresolvable provider proceeds without prompting for credentials."""
+        from deepagents_code import config as config_mod
+        from deepagents_code.model_config import ModelSpec
+
+        app = DeepAgentsApp()
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        monkeypatch.setattr(ModelSpec, "try_parse", staticmethod(lambda _spec: None))
+        monkeypatch.setattr(config_mod, "detect_provider", lambda _spec: None)
+
+        result = await app._prompt_model_auth_if_needed("not-a-real-spec")
+
+        assert result is True
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+
+    async def test_install_extra_editable_install_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An editable install can't be upgraded, so `_install_extra` returns False."""
+        from deepagents_code import config as config_mod
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: True)
+
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._install_extra("baseten") is False
+
+    async def test_install_extra_failed_resolution_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failed `uv` resolution surfaces an error and returns False.
+
+        `_install_extra_then_switch` gates the model switch on this `bool`, so
+        the contract is locked here rather than only through mocked callers.
+        """
+        from deepagents_code import config as config_mod, update_check
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "perform_install_extra",
+            AsyncMock(return_value=(False, "resolver: conflict")),
+        )
+
+        app = DeepAgentsApp()
+        app._ensure_restart_prompt_loaded = MagicMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._install_extra("baseten", auto_restart=True) is False
+        mounted = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "Install failed" in mounted
+
+
+class TestHandleModelSelection:
+    """Tests for the model-selector result router."""
+
+    async def test_install_extra_then_switch_when_pending_extra(self) -> None:
+        """A confirmed install routes through install-then-switch."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            extra_kwargs={"temperature": 0},
+        )
+
+        dispatch.assert_not_called()
+        app.call_later.assert_called_once()  # ty: ignore
+        scheduled = app.call_later.call_args.args[0]  # ty: ignore
+        # Bound methods compare equal (same instance + function) but each
+        # attribute access yields a fresh object, so `==`, not `is`.
+        assert scheduled.func == app._install_extra_then_switch
+        assert scheduled.args == ("baseten", "baseten:moonshotai/Kimi-K2.6")
+        assert scheduled.keywords == {"extra_kwargs": {"temperature": 0}}
+
+    async def test_plain_switch_when_no_pending_extra(self) -> None:
+        """No pending extra dispatches a normal model switch."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra=None)
+
+        app._handle_model_selection(screen, ("openai:gpt-5.5", "openai"))  # ty: ignore
+
+        app.call_later.assert_not_called()  # ty: ignore
+        dispatch.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
+
+    async def test_cancelled_selection_is_noop(self) -> None:
+        """A `None` result neither switches nor installs."""
+        app = DeepAgentsApp()
+        app.call_later = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(screen, None)  # ty: ignore
+
+        app.call_later.assert_not_called()  # ty: ignore
+        dispatch.assert_not_called()
+
+
+class TestRestartAfterInstall:
+    """Tests for the shared post-install server restart helper."""
+
+    async def test_no_owned_server_returns_false_silently(self) -> None:
+        """Remote/not-yet-started servers cannot auto-restart."""
+        app = DeepAgentsApp()
+        app._server_proc = None
+        app._server_kwargs = None
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._restart_after_install("baseten") is False
+        app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_busy_server_returns_false(self) -> None:
+        """An in-flight agent run blocks auto-restart."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = True
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._restart_after_install("baseten") is False
+        app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_successful_restart_returns_true_and_reports(self) -> None:
+        """A reload + respawn that both succeed returns True and confirms."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        app._reload_configuration_for_restart = AsyncMock(return_value=True)  # ty: ignore
+        app._restart_server_manual = AsyncMock(return_value=True)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._restart_after_install("baseten") is True
+        mounted = [
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        ]
+        assert any("Restart complete." in text for text in mounted)
+
+    async def test_failed_respawn_returns_false(self) -> None:
+        """A respawn failure returns False so callers don't switch into it."""
+        app = DeepAgentsApp()
+        app._server_proc = object()
+        app._server_kwargs = {}
+        app._agent_running = False
+        app._connecting = False
+        app._reload_configuration_for_restart = AsyncMock(return_value=True)  # ty: ignore
+        app._restart_server_manual = AsyncMock(return_value=False)  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+
+        assert await app._restart_after_install("baseten") is False
+
+    @pytest.mark.parametrize(
+        ("proc", "kwargs", "deferred", "error", "expected"),
+        [
+            # No server yet + a pending spawn: a fresh startup loads the extra.
+            (None, {"model_name": "x"}, True, None, True),
+            (None, {"model_name": "x"}, False, "startup failed", True),
+            # No pending spawn to ride on.
+            (None, {"model_name": "x"}, False, None, False),
+            # A live server exists, so a real restart is needed (not "unneeded").
+            (object(), {"model_name": "x"}, True, None, False),
+            # Remote server (no kwargs): nothing local to spawn.
+            (None, None, True, None, False),
+        ],
+    )
+    def test_restart_after_install_is_unneeded(
+        self,
+        proc: object | None,
+        kwargs: dict[str, str] | None,
+        deferred: bool,
+        error: str | None,
+        expected: bool,
+    ) -> None:
+        """The predicate is true only when a pending fresh startup will load it."""
+        app = DeepAgentsApp()
+        app._server_proc = proc  # ty: ignore
+        app._server_kwargs = kwargs  # ty: ignore
+        app._server_startup_deferred = deferred
+        app._server_startup_error = error
+
+        assert app._restart_after_install_is_unneeded() is expected
+
+
+class TestDispatchModelSwitch:
+    """Tests for the defer-vs-immediate model switch dispatcher."""
+
+    @pytest.mark.parametrize(
+        "flag", ["_agent_running", "_shell_running", "_connecting"]
+    )
+    async def test_defers_for_each_busy_flag(self, flag: str) -> None:
+        """Each busy signal independently defers the switch."""
+        app = DeepAgentsApp()
+        app._agent_running = False
+        app._shell_running = False
+        app._connecting = False
+        setattr(app, flag, True)
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
+
+    async def test_switches_immediately_when_idle(self) -> None:
+        """An idle app schedules the switch directly."""
+        app = DeepAgentsApp()
+        app._agent_running = False
+        app._shell_running = False
+        app._connecting = False
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_not_called()  # ty: ignore
+        app.call_later.assert_called_once()  # ty: ignore
+
+    async def test_defers_switch_while_busy(self) -> None:
+        """A busy app queues the switch and notifies the user."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._shell_running = False
+        app._connecting = False
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.notify.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
 
 
 class TestDeferredActions:
@@ -12287,18 +12854,21 @@ class TestRestartCommand:
             assert clear_called
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting server" in m for m in app_msgs)
+            # The transient "Restarting server..." status is removed once the
+            # restart succeeds; only the completion banner remains.
+            assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
-    async def test_failed_restart_suppresses_completion_message(
+    async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failed restart shows "Restarting..." but not "Restart complete.".
+        """A failed restart removes "Restarting..." without showing completion.
 
         Guards the conditional gate in `_handle_restart_command`: the success
         banner is only mounted when `_restart_server_manual()` returns `True`.
         On failure the recovery UI (via `ServerStartFailed`) is the user's
-        feedback, so the misleading "Restart complete." must stay suppressed.
+        feedback, so stale transient progress and the misleading completion
+        banner must stay suppressed.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12330,7 +12900,51 @@ class TestRestartCommand:
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting server" in m for m in app_msgs)
+            assert not any("Restarting server" in m for m in app_msgs)
+            assert not any("Restart complete" in m for m in app_msgs)
+
+    async def test_raising_restart_removes_transient_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raising `_restart_server_manual()` clears the transient, then raises.
+
+        The transient "Restarting server..." status is mounted before
+        `_restart_server_manual()` is awaited, so the `try/finally` in
+        `_handle_restart_command` exists solely to remove it when the restart
+        raises (not merely returns `False`). On a raise the transient must be
+        gone, the misleading completion banner must never mount, and the
+        exception must propagate rather than be swallowed.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            restart_called = False
+
+            async def _boom() -> bool:  # noqa: RUF029  # awaited by handler
+                nonlocal restart_called
+                restart_called = True
+                msg = "respawn exploded"
+                raise RuntimeError(msg)
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _boom)
+
+            with pytest.raises(RuntimeError, match="respawn exploded"):
+                await app._handle_restart_command("/restart")
+            await pilot.pause()
+
+            assert restart_called
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(
@@ -14144,3 +14758,57 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
         app._notify_interpreter_tools_without_interpreter()
 
         notify_mock.assert_not_called()
+
+
+class TestNotifyOrphanedTracingDisabled:
+    """Tests for `_notify_orphaned_tracing_disabled` (TUI advisory)."""
+
+    def test_toasts_when_notice_pending(self) -> None:
+        """A pending notice is surfaced as a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value="tracing disabled, set LANGSMITH_API_KEY",
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_called_once()
+        assert (
+            notify_mock.call_args.args[0] == "tracing disabled, set LANGSMITH_API_KEY"
+        )
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_when_no_notice(self) -> None:
+        """No pending notice means no toast fires."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+            return_value=None,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        notify_mock.assert_not_called()
+
+    def test_render_failure_is_swallowed_and_logged(self) -> None:
+        """A failed toast render is logged rather than escaping the callback."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        notify_mock = MagicMock(side_effect=RuntimeError("render boom"))
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config.consume_orphaned_tracing_disabled_notice",
+                return_value="tracing disabled",
+            ),
+            patch("deepagents_code.app.logger.exception") as log_mock,
+        ):
+            app._notify_orphaned_tracing_disabled()
+
+        log_mock.assert_called_once()

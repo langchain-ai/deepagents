@@ -2,6 +2,42 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.19](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.18...deepagents-code==0.1.19) (2026-06-17)
+
+### Features
+
+* Add latest frontier models to recommended list ([#4045](https://github.com/langchain-ai/deepagents/issues/4045)) ([1145356](https://github.com/langchain-ai/deepagents/commit/114535637eaee383c64eac5282bc9ac57007c83f))
+* Dual-write agent traces to extra LangSmith projects ([#3998](https://github.com/langchain-ai/deepagents/issues/3998)) ([1b94cf3](https://github.com/langchain-ai/deepagents/commit/1b94cf322949e0cafd6f2bacf343fb0044ec5a8c))
+* Prompt to install provider when selecting an uninstalled model ([#3981](https://github.com/langchain-ai/deepagents/issues/3981)) ([619207c](https://github.com/langchain-ai/deepagents/commit/619207c8d4d4308a9a3ab9d2d039506feeaf8a67))
+* Note minimum OpenAI key permissions in `/auth` ([#4040](https://github.com/langchain-ai/deepagents/issues/4040)) ([14be63d](https://github.com/langchain-ai/deepagents/commit/14be63d476ed8dece75e20fff05016122c258be8))
+
+### Bug Fixes
+
+* Exclude prompt prefix from `UserMessage` selection ([#4002](https://github.com/langchain-ai/deepagents/issues/4002)) ([8ee6ba6](https://github.com/langchain-ai/deepagents/commit/8ee6ba6e64895d3d36a5957627221ed7667bc1d4))
+
+## [0.1.18](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.17...deepagents-code==0.1.18) (2026-06-16)
+
+### Features
+
+* Add provider-specific auth guidance ([#4004](https://github.com/langchain-ai/deepagents/issues/4004)) ([6a39247](https://github.com/langchain-ai/deepagents/commit/6a392471ba30089b1a63135494873d55209bb081))
+
+## [0.1.17](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.16...deepagents-code==0.1.17) (2026-06-16)
+
+### Features
+
+* Make auto-update opt-out by default ([#3994](https://github.com/langchain-ai/deepagents/issues/3994)) ([7ff6e22](https://github.com/langchain-ai/deepagents/commit/7ff6e2224d7ba8462c073333da937c35831f9b34))
+* Warn on `--interpreter-tools` without `--interpreter` ([#3976](https://github.com/langchain-ai/deepagents/issues/3976)) ([e68e720](https://github.com/langchain-ai/deepagents/commit/e68e720e2c3caa4e4e7c5e937faf718db7ad2e98))
+* Add pre-release update support ([#3960](https://github.com/langchain-ai/deepagents/issues/3960)) ([341a5cc](https://github.com/langchain-ai/deepagents/commit/341a5cc55a30d808dbb366b396923c7801c431d2))
+* Add agent filter dropdown to `/threads` picker ([#3677](https://github.com/langchain-ai/deepagents/issues/3677)) ([f8193df](https://github.com/langchain-ai/deepagents/commit/f8193df41d7c47626d94252039217f4079d117cd))
+* Non-interactive `deepagents auth` subcommands ([#3910](https://github.com/langchain-ai/deepagents/issues/3910)) ([11a71bb](https://github.com/langchain-ai/deepagents/commit/11a71bbf00c4e6c1f989e70fb3472a65c8d39662))
+* Prompt before updating an out-of-date dcode install ([#3995](https://github.com/langchain-ai/deepagents/issues/3995)) ([a5ec6dd](https://github.com/langchain-ai/deepagents/commit/a5ec6dd0fec66ad321c1cc0f5e2f990c9026e03f))
+
+### Bug Fixes
+
+* Guard against misconfigured LangSmith tracing ([#3993](https://github.com/langchain-ai/deepagents/issues/3993)) ([81acc2e](https://github.com/langchain-ai/deepagents/commit/81acc2ecdada55a98e512f96b0caf8cb0f2c6d29))
+* Guard restart-prompt import against in-place self-upgrade ([#3980](https://github.com/langchain-ai/deepagents/issues/3980)) ([7af13f6](https://github.com/langchain-ai/deepagents/commit/7af13f6ec2440c2e3eb63bad2ff31e809f772804))
+* Skip startup auto-update when already updated in-session ([#3915](https://github.com/langchain-ai/deepagents/issues/3915)) ([3ba3471](https://github.com/langchain-ai/deepagents/commit/3ba347138ac61a474bad58365fdeaa0d00cc1a42))
+
 ## [0.1.16](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.15...deepagents-code==0.1.16) (2026-06-13)
 
 ### Features

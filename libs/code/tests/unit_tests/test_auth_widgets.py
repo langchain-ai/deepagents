@@ -136,7 +136,11 @@ class TestAuthPromptScreen:
         known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
         assert set(PROVIDER_DISPLAY_NAMES) <= known
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
-        assert set(PROVIDER_API_KEY_URLS) <= set(model_config.PROVIDER_API_KEY_ENV)
+        # Services (e.g. Tavily) carry a key URL but live in SERVICE_API_KEY_ENV.
+        assert set(PROVIDER_API_KEY_URLS) <= (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.SERVICE_API_KEY_ENV)
+        )
 
     def test_every_known_provider_has_a_display_name(self) -> None:
         """A new provider can't ship without a branded `/auth` label.
@@ -950,7 +954,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        assert ids == {"openai", "openai_codex", "anthropic"}
+        # Non-model services (e.g. Tavily) are always listed for key entry.
+        assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
 
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -984,7 +989,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             copy = app.screen.query_one(".auth-manager-copy", Static)
             content = str(copy.content)
-        assert "Lists installed providers" in content
+        assert "Lists installed model providers" in content
         assert "Docs" in content
         # URL is embedded as a Textual link style — assert the link target
         # surfaces in the rendered span representation.

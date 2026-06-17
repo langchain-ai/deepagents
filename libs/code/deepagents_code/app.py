@@ -164,6 +164,25 @@ def _create_model_with_deepagents_import_lock(
         )
 
 
+def _extra_is_ready(extra: str) -> bool:
+    """Return whether all dependencies for `extra` are installed."""
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        get_optional_dependency_status,
+    )
+
+    try:
+        statuses = get_optional_dependency_status(strict=True)
+    except ExtrasIntrospectionError:
+        logger.warning(
+            "Could not verify whether extra %r is installed",
+            extra,
+            exc_info=True,
+        )
+        return False
+    return any(status.name == extra and status.ready for status in statuses)
+
+
 @dataclass(frozen=True)
 class _ConfigWriteResult:
     """Result of a config write with TUI-facing failure context."""
@@ -9244,8 +9263,9 @@ class DeepAgentsApp(App):
         Args:
             extra: The extra that installs the selected provider's integration.
         """
-        # `_install_extra` already surfaced the reason on any failure.
-        if not await self._install_extra(extra, auto_restart=True):
+        installed = await self._install_extra(extra, auto_restart=True)
+        if not installed and not await asyncio.to_thread(_extra_is_ready, extra):
+            # `_install_extra` already surfaced the reason on any failure.
             return
         await self._show_auth_manager()
 

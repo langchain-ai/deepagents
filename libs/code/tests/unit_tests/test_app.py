@@ -6703,6 +6703,36 @@ class TestDefaultAgentNameDrift:
         assert app.DEFAULT_ASSISTANT_ID is canonical
 
 
+class TestInstallExtraAuthContinuation:
+    """Test `/auth` reopening after installing provider extras."""
+
+    async def test_reopens_auth_after_installed_extra_even_when_restart_fails(
+        self,
+    ) -> None:
+        """`/auth` only needs the install to land before reopening the manager."""
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=False)  # ty: ignore
+        app._show_auth_manager = AsyncMock()  # ty: ignore
+
+        with patch("deepagents_code.app._extra_is_ready", return_value=True):
+            await app._install_provider_then_reopen_auth("baseten")
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._show_auth_manager.assert_awaited_once()  # ty: ignore
+
+    async def test_does_not_reopen_auth_when_install_failed(self) -> None:
+        """A failed install still leaves the user in chat with the surfaced error."""
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=False)  # ty: ignore
+        app._show_auth_manager = AsyncMock()  # ty: ignore
+
+        with patch("deepagents_code.app._extra_is_ready", return_value=False):
+            await app._install_provider_then_reopen_auth("baseten")
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._show_auth_manager.assert_not_awaited()  # ty: ignore
+
+
 class TestInstallExtraModelSwitch:
     """Test switching after installing model-provider extras."""
 

@@ -1,0 +1,23 @@
+.github/scripts/models.py
+  s_0d650ca1e6949f::t_5e37cca8c68e07 307-318
+.github/workflows/evals.yml
+  s_0d650ca1e6949f::t_8dcec89b392212 88
+.github/workflows/harbor.yml
+  s_0d650ca1e6949f::t_5e37cca8c68e07 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "eae0da2ee8a3aa287d018879eb684800bb41c5b8",
+  "prompts": {},
+  "sessions": {
+    "s_0d650ca1e6949f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecca5-97dc-7843-8de7-19d44b52cd43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -569,7 +569,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                         continue
                     if not config.is_provider_enabled(provider):
                         continue
-                    if provider in available:
+                    extra = provider_install_extra(provider)
+                    provider_installed = is_provider_package_installed(provider)
+                    if provider in available and provider_installed:
                         # Provider is installed and discoverable, but its
                         # upstream profiles don't surface this curated model
                         # (missing entry or filtered out). Add it as a normal
@@ -578,8 +580,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                         all_models.append((spec, provider))
                         existing_specs.add(spec)
                         continue
-                    extra = provider_install_extra(provider)
-                    if extra is None or is_provider_package_installed(provider):
+                    if extra is None or provider_installed:
                         continue
                     install_extras[provider] = extra
                     all_models.append((spec, provider))

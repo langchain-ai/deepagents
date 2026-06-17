@@ -1900,6 +1900,7 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Recommended models missing from an installed provider's profiles surface."""
+        from deepagents_code import config_manifest
         from deepagents_code.widgets import model_selector
 
         spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
@@ -1912,6 +1913,11 @@ class TestModelSelectorInstallRouting:
             "get_available_models",
             lambda: {"fireworks": ["accounts/fireworks/models/some-other-model"]},
         )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider == "fireworks",
+        )
 
         all_models, _default, _profiles, _recent, install_extras = (
             ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
@@ -1921,6 +1927,34 @@ class TestModelSelectorInstallRouting:
         assert spec in specs
         # Surfaced as a normal selectable row, not an install-required one.
         assert "fireworks" not in install_extras
+
+    async def test_load_model_data_marks_config_listed_missing_provider_uninstalled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config-listed models do not make a missing provider look installed."""
+        from deepagents_code import config_manifest
+        from deepagents_code.widgets import model_selector
+
+        spec = "baseten:moonshotai/Kimi-K2.6"
+        assert spec in model_selector._RECOMMENDED_MODELS
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"baseten": ["moonshotai/config-listed-model"]},
+        )
+        monkeypatch.setattr(
+            config_manifest,
+            "is_provider_package_installed",
+            lambda provider: provider != "baseten",
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        assert spec in {model_spec for model_spec, _ in all_models}
+        assert install_extras.get("baseten") == "baseten"
 
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch

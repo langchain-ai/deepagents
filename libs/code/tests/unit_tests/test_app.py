@@ -7178,10 +7178,20 @@ class TestDispatchModelSwitch:
     """Tests for the defer-vs-immediate model switch dispatcher."""
 
     @pytest.mark.parametrize(
-        "flag", ["_agent_running", "_shell_running", "_connecting"]
+        ("flag", "should_notify"),
+        [
+            ("_agent_running", True),
+            ("_shell_running", True),
+            # A bare reconnect (e.g. the transient restart during
+            # install-then-switch) defers but stays silent — the toast would be
+            # misleading since the switch drains automatically once ready.
+            ("_connecting", False),
+        ],
     )
-    async def test_defers_for_each_busy_flag(self, flag: str) -> None:
-        """Each busy signal independently defers the switch."""
+    async def test_defers_for_each_busy_flag(
+        self, flag: str, should_notify: bool
+    ) -> None:
+        """Each busy signal defers the switch; only real work toasts."""
         app = DeepAgentsApp()
         app._agent_running = False
         app._shell_running = False
@@ -7195,6 +7205,7 @@ class TestDispatchModelSwitch:
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.call_later.assert_not_called()  # ty: ignore
+        assert app.notify.call_count == (1 if should_notify else 0)  # ty: ignore
 
     async def test_switches_immediately_when_idle(self) -> None:
         """An idle app schedules the switch directly."""
@@ -7224,6 +7235,22 @@ class TestDispatchModelSwitch:
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
+
+    async def test_defers_silently_while_only_connecting(self) -> None:
+        """A reconnect-only defer queues the switch without a toast."""
+        app = DeepAgentsApp()
+        app._agent_running = False
+        app._shell_running = False
+        app._connecting = True
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.notify.assert_not_called()  # ty: ignore
         app.call_later.assert_not_called()  # ty: ignore
 
 

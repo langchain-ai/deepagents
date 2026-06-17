@@ -20,6 +20,7 @@ from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.widgets.thread_selector import (
     DeleteThreadConfirmScreen,
+    ThreadScopeSelect,
     ThreadScopeSelectOverlay,
     ThreadSelectorScreen,
 )
@@ -204,6 +205,20 @@ class AppWithEscapeBinding(App):
 
         screen = ThreadSelectorScreen(current_thread="abc12345", filter_cwd=None)
         self.push_screen(screen, handle_result)
+
+
+class TestThreadScopeSelect:
+    """Tests for the custom thread filter select."""
+
+    def test_open_before_overlay_mount_noops(self) -> None:
+        """Opening before composition should not leave the select expanded."""
+        select = ThreadScopeSelect(
+            [("All", "all")], value="all", allow_blank=False, compact=True
+        )
+
+        select.action_show_overlay()
+
+        assert not select.expanded
 
 
 class TestThreadSelectorEscapeKey:

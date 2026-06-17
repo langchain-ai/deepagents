@@ -9012,6 +9012,13 @@ class DeepAgentsApp(App):
     ) -> None:
         """Switch to `model_spec` now, or defer until in-flight work finishes.
 
+        The deferral toast is shown only for genuine in-flight user work
+        (`_agent_running`/`_shell_running`). A switch deferred solely because the
+        server is reconnecting (`_connecting` — e.g. the transient restart during
+        install-then-switch) drains automatically once the server is ready and is
+        already confirmed by the following "Switched to ..." message, so the
+        "after current task completes" toast there is misleading noise.
+
         Args:
             model_spec: The `provider:model` spec to switch to.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
@@ -9029,10 +9036,11 @@ class DeepAgentsApp(App):
                     ),
                 ),
             )
-            self.notify(
-                "Model will switch after current task completes.",
-                timeout=3,
-            )
+            if self._agent_running or self._shell_running:
+                self.notify(
+                    "Model will switch after current task completes.",
+                    timeout=3,
+                )
         else:
             self.call_later(
                 partial(
@@ -9280,6 +9288,9 @@ class DeepAgentsApp(App):
         # real failure the user has already seen explained.
         ready = await asyncio.to_thread(_extra_is_ready, extra)
         if ready:
+            from deepagents_code.model_config import clear_caches
+
+            clear_caches()
             await self._show_auth_manager()
             return
         if ready is None:

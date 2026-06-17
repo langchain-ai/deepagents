@@ -3083,9 +3083,8 @@ class TestTraceCommand:
             )
             mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
-            assert any(  # not a URL check—just verifying the link was rendered
-                expected_url in str(w._content) for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
@@ -3302,10 +3301,11 @@ class TestTraceCommand:
             # Queued widget replaced by real UserMessage + AppMessage with link
             assert len(app.query(QueuedUserMessage)) == 0
             app_msgs = app.query(AppMessage)
-            assert any(
-                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
-                for w in app_msgs
-            )
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert (
+                "Opening tracing project 'proj':\n"
+                "https://smith.langchain.com/t/test-thread-123"
+            ) in rendered
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when the URL fetch raises."""

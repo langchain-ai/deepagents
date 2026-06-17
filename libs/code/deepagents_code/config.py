@@ -2396,6 +2396,59 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+def get_langsmith_replica_projects() -> list[str]:
+    """Extra LangSmith project names to dual-write agent traces to.
+
+    Parses `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` (comma-separated) into a
+    de-duplicated, order-preserving list.
+
+    Returns:
+        Project names, or `[]` when the env var is unset or empty.
+    """
+    from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
+
+    raw = os.environ.get(LANGSMITH_REPLICA_PROJECTS)
+    if not raw:
+        return []
+    return list(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+
+
+def get_langsmith_replica_project() -> str | None:
+    """The single extra LangSmith project to mirror agent runs to, if configured.
+
+    dcode agent runs execute inside the LangGraph server subprocess, so the only
+    way to mirror them to another project is the server's own replica path: the
+    SDK forwards a `langsmith_tracing` project in the run-create request, and the
+    server wraps the run in a `tracing_context` whose write replicas are that
+    project plus the server's primary project. Client-side callbacks and
+    `tracing_context(replicas=...)` cannot reach the run because it is created
+    server-side, not in the app process.
+
+    Implementation detail (subject to change): as of `langgraph-api` 0.10.0 this
+    happens in `langgraph_api.stream` and `langgraph_api.models.run`.
+
+    The server mirrors to exactly one extra project, so when
+    `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` lists several, only the first is
+    used and the rest are dropped with a warning.
+
+    Returns:
+        The first configured replica project name, or `None` when none are set.
+    """
+    extras = get_langsmith_replica_projects()
+    if not extras:
+        return None
+    if len(extras) > 1:
+        logger.warning(
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS lists %d projects, but the "
+            "LangGraph server mirrors runs to only one extra project; tracing to "
+            "%r and ignoring %s.",
+            len(extras),
+            extras[0],
+            extras[1:],
+        )
+    return extras[0]
+
+
 class LangSmithLookupError(Exception):
     """Base class for typed LangSmith project URL lookup failures.
 

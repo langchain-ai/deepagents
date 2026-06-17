@@ -714,6 +714,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.HIDE_LANGSMITH_TRACING,
     ),
     ConfigOption(
+        key="display.show_langsmith_replica_tracing",
+        group="Display",
+        summary="Show LangSmith replica project info in the startup splash.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
+    ),
+    ConfigOption(
         key="display.hide_splash_tips",
         group="Display",
         summary="Hide rotating tips in the startup splash.",
@@ -767,6 +775,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="User identifier attached to LangSmith trace metadata.",
         kind=OptionKind.STR,
         env_var=_env_vars.USER_ID,
+    ),
+    ConfigOption(
+        key="tracing.langsmith_replica_projects",
+        group="Models",
+        summary=(
+            "Extra LangSmith project to also write agent traces to. "
+            "Comma-separated for forward-compatibility, but only the first "
+            "project is used; the server mirrors runs to one extra project."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.LANGSMITH_REPLICA_PROJECTS,
     ),
     # --- Tools / Features ----------------------------------------------
     ConfigOption(

@@ -11,7 +11,7 @@ regenerate after editing the registry.
 | Command | Aliases | Description |
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
-| `/auth` | `/connect` | Manage stored API keys for model providers |
+| `/auth` | `/connect` | Manage stored API keys for model providers and services |
 | `/auto-update` |  | Toggle automatic updates on or off |
 | `/changelog` |  | Open changelog in browser |
 | `/clear` |  | Clear chat and start new thread |

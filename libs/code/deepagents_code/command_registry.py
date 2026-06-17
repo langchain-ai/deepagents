@@ -80,9 +80,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auth",
-        description="Manage stored API keys for model providers",
+        description="Manage stored API keys for model providers and services",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="key keys credential credentials login token api",
+        hidden_keywords=(
+            "key keys credential credentials login token api tavily web search service"
+        ),
         aliases=("/connect",),
     ),
     SlashCommand(

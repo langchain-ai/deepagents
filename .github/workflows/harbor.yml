@@ -138,6 +138,11 @@ on:
         required: true
         default: "0"
         type: string
+      include_tasks:
+        description: "Space-separated task-name globs to include (e.g. re-run a subset). Empty = all tasks."
+        required: false
+        default: ""
+        type: string
       concurrency:
         description: "Number of concurrent trials (parallel sandbox slots)"
         required: true
@@ -169,6 +174,7 @@ jobs:
           AGENT_IMPL: ${{ inputs.agent_impl }}
           DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
           N_TASKS: ${{ inputs.n_tasks }}
+          INCLUDE_TASKS: ${{ inputs.include_tasks }}
           CONCURRENCY: ${{ inputs.concurrency }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
@@ -187,6 +193,11 @@ jobs:
             echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "| \`n_tasks\` | \`${N_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "${INCLUDE_TASKS}" ]; then
+            echo "| \`include_tasks\` | \`${INCLUDE_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`include_tasks\` | (empty) |" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -216,6 +227,7 @@ jobs:
     env:
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
+      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -337,6 +349,18 @@ jobs:
           if [ "$HARBOR_N_TASKS" != "0" ]; then
             n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
           fi
+
+          include_args=()
+          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+            read -r -a include_tasks <<< "$HARBOR_INCLUDE_TASKS"
+            for t in "${include_tasks[@]}"; do
+              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
+                echo "::error::Invalid Harbor include task filter: $t"
+                exit 1
+              fi
+              include_args+=(--include-task-name "$t")
+            done
+          fi
           if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
@@ -397,6 +421,7 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             $n_tasks_flag \
+            "${include_args[@]}" \
             "${agent_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
@@ -441,6 +466,11 @@ jobs:
               echo "- Max tasks: all"
             else
               echo "- Max tasks: ${HARBOR_N_TASKS}"
+            fi
+            if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+              echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"
+            else
+              echo "- Included tasks: all"
             fi
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"

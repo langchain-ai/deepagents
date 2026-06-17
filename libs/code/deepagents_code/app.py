@@ -11108,11 +11108,15 @@ class DeepAgentsApp(App):
         if not await self._reload_configuration_for_restart():
             return False
         restarting = await self._mount_transient_app_message("Restarting server...")
-        if not await self._restart_server_manual():
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
+        if not restarted:
             return False
-        if restarting is not None:
-            with suppress(NoMatches, ScreenStackError):
-                await restarting.remove()
         await self._mount_message(AppMessage("Restart complete."))
         return True
 
@@ -11232,10 +11236,14 @@ class DeepAgentsApp(App):
             return
 
         restarting = await self._mount_transient_app_message("Restarting server...")
-        if await self._restart_server_manual():
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
             if restarting is not None:
                 with suppress(NoMatches, ScreenStackError):
                     await restarting.remove()
+        if restarted:
             await self._mount_message(AppMessage("Restart complete."))
 
     async def _restart_server_manual(self) -> bool:

@@ -871,7 +871,7 @@ async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None
 
 
 async def test_install_restart_failure_omits_complete_message() -> None:
-    """A failed restart shows the attempt but never claims completion."""
+    """A failed restart removes the attempt and never claims completion."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -900,7 +900,7 @@ async def test_install_restart_failure_omits_complete_message() -> None:
         app_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
-        assert any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restarting server..." in m for m in app_msgs)
         assert not any("Restart complete." in m for m in app_msgs)
 
 

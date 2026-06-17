@@ -12833,15 +12833,16 @@ class TestRestartCommand:
             assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
 
-    async def test_failed_restart_suppresses_completion_message(
+    async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A failed restart shows "Restarting..." but not "Restart complete.".
+        """A failed restart removes "Restarting..." without showing completion.
 
         Guards the conditional gate in `_handle_restart_command`: the success
         banner is only mounted when `_restart_server_manual()` returns `True`.
         On failure the recovery UI (via `ServerStartFailed`) is the user's
-        feedback, so the misleading "Restart complete." must stay suppressed.
+        feedback, so stale transient progress and the misleading completion
+        banner must stay suppressed.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12873,7 +12874,7 @@ class TestRestartCommand:
 
             assert restart_called
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
-            assert any("Restarting server" in m for m in app_msgs)
+            assert not any("Restarting server" in m for m in app_msgs)
             assert not any("Restart complete" in m for m in app_msgs)
 
     async def test_reload_failure_skips_restart(

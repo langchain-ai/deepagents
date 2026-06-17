@@ -112,7 +112,6 @@ override-dependencies = [
 deepagents-code = { path = "../code" }
 deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
-harbor = { git = "https://github.com/nick-hollon-lc/harbor.git", rev = "3052cef9e72654dfde1b0c8397b8bf6e31065394" }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../code"]

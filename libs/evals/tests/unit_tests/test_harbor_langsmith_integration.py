@@ -9,13 +9,11 @@ ROOT = Path(__file__).parents[4]
 EVALS = ROOT / "libs" / "evals"
 
 
-def test_evals_uses_harbor_langsmith_fork_source() -> None:
+def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert pyproject["tool"]["uv"]["sources"]["harbor"] == {
-        "git": "https://github.com/nick-hollon-lc/harbor.git",
-        "rev": "3052cef9e72654dfde1b0c8397b8bf6e31065394",
-    }
+    assert "harbor[langsmith]>=0.13.2,<0.14.0" in pyproject["project"]["dependencies"]
+    assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 
 def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:

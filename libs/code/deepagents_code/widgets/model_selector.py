@@ -1306,6 +1306,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 auth_status=old_widget.auth_status,
                 is_default=old_widget.model_spec == self._default_spec,
                 status=self._get_model_status(old_widget.model_spec),
+                install_required=old_widget.provider in self._install_extras,
             )
         )
 
@@ -1320,6 +1321,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 auth_status=new_widget.auth_status,
                 is_default=new_widget.model_spec == self._default_spec,
                 status=self._get_model_status(new_widget.model_spec),
+                install_required=new_widget.provider in self._install_extras,
             )
         )
 

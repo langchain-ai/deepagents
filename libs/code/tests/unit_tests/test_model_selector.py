@@ -2080,3 +2080,46 @@ enabled = false
             assert "openai" in providers
             assert "baseten" in providers
             assert providers.index("openai") < providers.index("baseten")
+
+    async def test_navigation_preserves_install_required_dim(self) -> None:
+        """Cursoring onto then off an install-required row keeps it dimmed.
+
+        Regression: `_move_selection` re-rendered the deselected row without
+        the `install_required` flag, so uninstalled rows turned bright after
+        the cursor passed over them and never reverted.
+        """
+        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._install_extras = {"baseten": "baseten"}
+            screen._unfiltered_models = [
+                ("openai:gpt-5.5", "openai"),
+                (install_spec, "baseten"),
+            ]
+            screen._all_models = list(screen._unfiltered_models)
+            screen._filtered_models = list(screen._unfiltered_models)
+            screen._filter_text = ""
+            screen._selected_index = 0
+            await screen._update_display()
+            await pilot.pause()
+
+            install_widget = next(
+                w for w in screen._option_widgets if w.model_spec == install_spec
+            )
+            assert "dim" in install_widget.content.markup
+
+            # Move the cursor onto the install-required row, then back off it.
+            screen._move_selection(1)
+            await pilot.pause()
+            assert screen._selected_index == 1
+            screen._move_selection(-1)
+            await pilot.pause()
+
+            assert "dim" in install_widget.content.markup

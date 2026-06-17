@@ -535,10 +535,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         Args:
             cli_override: Extra profile fields from `--profile-override`.
-            include_uninstalled: When `True`, append recommended models whose
-                provider integration is not installed so they stay
-                discoverable. Onboarding sets this `False` because it has a
-                dedicated dependency-install step.
+            include_uninstalled: When `True`, append recommended models that
+                aren't already surfaced: those whose provider integration is
+                not installed (as greyed-out install-required rows) and those
+                whose installed provider doesn't list them in its upstream
+                profiles (as normal selectable rows). Onboarding sets this
+                `False` because it has a dedicated dependency-install step.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -559,18 +561,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 provider_install_extra,
             )
 
+            existing_specs = {spec for spec, _ in all_models}
             for spec in sorted(_RECOMMENDED_MODELS):
                 provider = spec.split(":", 1)[0]
                 try:
-                    if provider in available:
+                    if spec in existing_specs:
                         continue
                     if not config.is_provider_enabled(provider):
+                        continue
+                    if provider in available:
+                        # Provider is installed and discoverable, but its
+                        # upstream profiles don't surface this curated model
+                        # (missing entry or filtered out). Add it as a normal
+                        # selectable row so the hardcoded recommendation isn't
+                        # silently dropped when the profile list lags.
+                        all_models.append((spec, provider))
+                        existing_specs.add(spec)
                         continue
                     extra = provider_install_extra(provider)
                     if extra is None or is_provider_package_installed(provider):
                         continue
                     install_extras[provider] = extra
                     all_models.append((spec, provider))
+                    existing_specs.add(spec)
                 except Exception:
                     # Isolate per-provider failures so one bad recommended
                     # provider can't take down the entire model list (the

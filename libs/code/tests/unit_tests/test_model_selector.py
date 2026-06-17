@@ -1896,6 +1896,32 @@ class TestModelSelectorInstallRouting:
         assert install_extras.get("baseten") == "baseten"
         assert install_extras.get("ollama") == "ollama"
 
+    async def test_load_model_data_surfaces_installed_unprofiled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recommended models missing from an installed provider's profiles surface."""
+        from deepagents_code.widgets import model_selector
+
+        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        assert spec in model_selector._RECOMMENDED_MODELS
+
+        # Provider is installed/discoverable but its profiles omit the curated
+        # model, mirroring an upstream profile list that lags the hardcoded set.
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"fireworks": ["accounts/fireworks/models/some-other-model"]},
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = {model_spec for model_spec, _ in all_models}
+        assert spec in specs
+        # Surfaced as a normal selectable row, not an install-required one.
+        assert "fireworks" not in install_extras
+
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

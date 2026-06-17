@@ -221,9 +221,24 @@ class ConfigOption:
         `resolve_scalar`. Catching it here fails the import (and the test suite).
 
         Raises:
-            TypeError: When `default` is mutable, a `STRUCTURED` option declares
-                a default, or a scalar option's default has the wrong type.
+            TypeError: When `fallback_env_vars` is not a tuple of non-empty
+                strings, `default` is mutable, a `STRUCTURED` option declares a
+                default, or a scalar option's default has the wrong type.
         """
+        # Guard `fallback_env_vars` independently of `default` (which has its own
+        # early-return path below): like `default`, it is shared by reference
+        # through the `get_config_options` `lru_cache`, so a mutable value (a
+        # `list`) would reintroduce the aliasing hazard the default guard exists
+        # to prevent. Empty names never match any env var, so reject those too.
+        if not isinstance(self.fallback_env_vars, tuple) or any(
+            not isinstance(name, str) or not name for name in self.fallback_env_vars
+        ):
+            msg = (
+                f"{self.key}: fallback_env_vars must be a tuple of non-empty "
+                f"strings, got {self.fallback_env_vars!r}"
+            )
+            raise TypeError(msg)
+
         default = self.default
         if default is None:
             if self.invert_toml_bool:
@@ -512,14 +527,19 @@ def resolve_scalar(
         option: The option to resolve.
         toml_data: Parsed `config.toml` mapping (see `load_config_toml`).
 
+    Resolution order is: the prefixed primary `env_var`, then each
+    `fallback_env_vars` name in declaration order, then `config.toml`, then the
+    typed `default`.
+
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
         treated as unset (mirroring `resolve_env_var`), so it falls through to
-        `config.toml`/`default` rather than counting as set. Theme resolution
-        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
+        the next env var, then `config.toml`/`default`, rather than counting as
+        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
+        `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -531,10 +551,12 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string counts as unset, matching `resolve_env_var`: this
-        # keeps `config show`/`get` aligned with what the runtime reads (and
-        # lets a prefixed empty var suppress a canonical one). Fallbacks are
-        # tried in order so a bare `LANGSMITH_PROJECT` still resolves.
+        # An empty string counts as unset, matching `resolve_env_var`, so it is
+        # skipped and the loop continues to the next name. This keeps
+        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
+        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
+        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
+        # tried in order, so the primary `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
             if not raw:

@@ -319,6 +319,82 @@ def test_langsmith_project_default_when_unset(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
 
 
+def test_langsmith_project_empty_prefixed_falls_through_to_bare(monkeypatch) -> None:
+    """An empty prefixed var is skipped, so a set bare `LANGSMITH_PROJECT` wins.
+
+    This is the opposite of the single-name credential path
+    (`test_resolve_empty_env_is_unset_matching_resolve_env_var`): with a
+    fallback declared, an empty prefixed var does not suppress resolution — it
+    falls through to the next name, matching `get_langsmith_project_name`.
+    """
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
+    """An empty bare `LANGSMITH_PROJECT` is unset, so the default applies."""
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.setenv("LANGSMITH_PROJECT", "")
+    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+
+
+def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
+    """A synthetic option exercises the empty-fallback → `config.toml` path.
+
+    No shipping option both declares `fallback_env_vars` and has `toml_keys`,
+    so this guards the generic resolver: an empty fallback env var must fall
+    through to `config.toml`, while a set one still wins over it.
+    """
+    opt = ConfigOption(
+        key="synthetic.fallback_toml",
+        group="Synthetic",
+        summary="Synthetic option for fallback + TOML precedence.",
+        kind=OptionKind.STR,
+        env_var=_env_vars.LANGSMITH_PROJECT,
+        fallback_env_vars=("SYNTHETIC_FALLBACK",),
+        toml_keys=("synthetic", "value"),
+    )
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    toml_data = {"synthetic": {"value": "from-toml"}}
+
+    monkeypatch.setenv("SYNTHETIC_FALLBACK", "")
+    assert resolve_scalar(opt, toml_data=toml_data) == ("from-toml", "config.toml")
+
+    monkeypatch.setenv("SYNTHETIC_FALLBACK", "from-env")
+    assert resolve_scalar(opt, toml_data=toml_data) == (
+        "from-env",
+        "env (SYNTHETIC_FALLBACK)",
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_fallback",
+    [
+        ["LANGSMITH_PROJECT"],  # mutable list reintroduces the lru_cache hazard
+        ("",),  # empty name never matches any env var
+        ("LANGSMITH_PROJECT", ""),  # one valid, one empty
+    ],
+)
+def test_fallback_env_vars_rejects_invalid(bad_fallback) -> None:
+    """`__post_init__` rejects non-tuple or empty/non-str `fallback_env_vars`."""
+    with pytest.raises(TypeError, match="fallback_env_vars must be a tuple"):
+        ConfigOption(
+            key="synthetic.bad_fallback",
+            group="Synthetic",
+            summary="Synthetic option with an invalid fallback.",
+            kind=OptionKind.STR,
+            fallback_env_vars=bad_fallback,
+        )
+
+
 def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
     """The `config show` aggregate (separate path from `get`) never leaks a secret."""
     import json

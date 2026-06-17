@@ -3067,7 +3067,7 @@ class TestTraceCommand:
             mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert f"opening tracing project 'proj':\n{expected_url}" in rendered
+            assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
@@ -3286,7 +3286,7 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
             assert (
-                "opening tracing project 'proj':\n"
+                "Opening tracing project 'proj':\n"
                 "https://smith.langchain.com/t/test-thread-123"
             ) in rendered
 

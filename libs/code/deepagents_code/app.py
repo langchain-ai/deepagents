@@ -6430,7 +6430,7 @@ class DeepAgentsApp(App):
                     await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
                 msg = Content.assemble(
-                    f"opening tracing project {project_name!r}:\n",
+                    f"Opening tracing project {project_name!r}:\n",
                     (url, TStyle(dim=True, italic=True, link=url)),
                 )
                 await self._mount_message(AppMessage(msg))
@@ -6443,7 +6443,7 @@ class DeepAgentsApp(App):
 
         await self._mount_message(UserMessage(command))
         msg = Content.assemble(
-            f"opening tracing project {project_name!r}:\n",
+            f"Opening tracing project {project_name!r}:\n",
             (url, TStyle(dim=True, italic=True, link=url)),
         )
         await self._mount_message(AppMessage(msg))

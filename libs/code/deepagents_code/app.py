@@ -4727,6 +4727,29 @@ class DeepAgentsApp(App):
                 return
         await container.mount(widget)
 
+    async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
+        """Mount an `AppMessage` that is not tracked by the message store.
+
+        Use for status text that should disappear once the state it describes
+        resolves (e.g. "Restarting server..."). The returned widget can be
+        removed directly; nothing lingers in the store to re-hydrate later.
+
+        Args:
+            content: The message text to display.
+
+        Returns:
+            The mounted widget, or `None` when the messages container is gone.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except (NoMatches, ScreenStackError):
+            return None
+        if not messages.is_attached:
+            return None
+        widget = AppMessage(content)
+        await self._mount_before_queued(messages, widget)
+        return widget
+
     def _is_spinner_at_correct_position(self, container: Container) -> bool:
         """Check whether the loading spinner is already correctly positioned.
 
@@ -11081,9 +11104,12 @@ class DeepAgentsApp(App):
             return False
         if not await self._reload_configuration_for_restart():
             return False
-        await self._mount_message(AppMessage("Restarting server..."))
+        restarting = await self._mount_transient_app_message("Restarting server...")
         if not await self._restart_server_manual():
             return False
+        if restarting is not None:
+            with suppress(NoMatches, ScreenStackError):
+                await restarting.remove()
         await self._mount_message(AppMessage("Restart complete."))
         return True
 
@@ -11202,8 +11228,11 @@ class DeepAgentsApp(App):
                 )
             return
 
-        await self._mount_message(AppMessage("Restarting server..."))
+        restarting = await self._mount_transient_app_message("Restarting server...")
         if await self._restart_server_manual():
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
             await self._mount_message(AppMessage("Restart complete."))
 
     async def _restart_server_manual(self) -> bool:

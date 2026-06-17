@@ -642,6 +642,8 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
         assert any("Restart complete." in m for m in app_msgs)
+        # The transient progress status is cleared once the restart succeeds.
+        assert not any("Restarting server..." in m for m in app_msgs)
 
 
 async def test_install_restart_capable_extra_defer_skips_restart() -> None:

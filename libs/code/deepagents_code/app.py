@@ -164,6 +164,32 @@ def _create_model_with_deepagents_import_lock(
         )
 
 
+def _extra_is_ready(extra: str) -> bool | None:
+    """Return whether all dependencies for `extra` are installed.
+
+    Returns:
+        `True` when every package declared by `extra` is importable, `False`
+            when one or more are missing, or `None` when the extra metadata
+            can't be introspected — an unknown state, distinct from a negative
+            one, so callers don't treat "couldn't check" as "not installed".
+    """
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        get_optional_dependency_status,
+    )
+
+    try:
+        statuses = get_optional_dependency_status(strict=True)
+    except ExtrasIntrospectionError:
+        logger.warning(
+            "Could not verify whether extra %r is installed",
+            extra,
+            exc_info=True,
+        )
+        return None
+    return any(status.name == extra and status.ready for status in statuses)
+
+
 @dataclass(frozen=True)
 class _ConfigWriteResult:
     """Result of a config write with TUI-facing failure context."""
@@ -9229,10 +9255,50 @@ class DeepAgentsApp(App):
         def handle_result(_result: None) -> None:
             if self._chat_input:
                 self._chat_input.focus_input()
+            # When the user selected a greyed-out (uninstalled) provider and
+            # confirmed installing it, install the extra and reopen the manager
+            # so they can add a key against the now-installed provider.
+            extra = screen.pending_install_extra
+            if extra is not None:
+                from functools import partial
+
+                self.call_later(
+                    partial(self._install_provider_then_reopen_auth, extra),
+                )
+                return
             task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
             task.add_done_callback(_log_task_exception)
 
-        self.push_screen(AuthManagerScreen(), handle_result)
+        screen = AuthManagerScreen()
+        self.push_screen(screen, handle_result)
+
+    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+        """Install a provider's extra from `/auth`, then reopen the manager.
+
+        Args:
+            extra: The extra that installs the selected provider's integration.
+        """
+        if await self._install_extra(extra, auto_restart=True):
+            await self._show_auth_manager()
+            return
+        # `_install_extra` returns `False` both when the install genuinely
+        # failed (it already surfaced the reason) and when the package landed
+        # but the server restart didn't. Adding a key doesn't need the restart,
+        # so reopen whenever the extra is importable; only stay in chat on a
+        # real failure the user has already seen explained.
+        ready = await asyncio.to_thread(_extra_is_ready, extra)
+        if ready:
+            await self._show_auth_manager()
+            return
+        if ready is None:
+            # Introspection couldn't confirm the state (rare). Don't dead-end
+            # silently after a multi-step flow — point the user back to `/auth`.
+            await self._mount_message(
+                AppMessage(
+                    f"Couldn't verify whether '{extra}' finished installing. "
+                    "Reopen `/auth` to add a key once it has.",
+                ),
+            )
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.

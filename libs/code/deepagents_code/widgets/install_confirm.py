@@ -168,13 +168,18 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, provider: str, extra: str, model_spec: str) -> None:
+    def __init__(
+        self, provider: str, extra: str, model_spec: str | None = None
+    ) -> None:
         """Initialize the prompt.
 
         Args:
             provider: The provider whose integration is missing.
             extra: The `deepagents-code` extra that installs the provider.
-            model_spec: The selected `provider:model` spec, surfaced in the body.
+            model_spec: The selected `provider:model` spec, surfaced in the body
+                by the model selector. Omitted by the `/auth` manager, which
+                installs a provider so a key can be added rather than to switch
+                to a specific model.
         """
         super().__init__()
         self._provider = provider
@@ -196,6 +201,22 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         provider = PROVIDER_DISPLAY_NAMES.get(
             self._provider, self._provider.replace("_", " ").title()
         )
+        if self._model_spec is not None:
+            body = Content.from_markup(
+                "To use [bold]$model[/bold], Deep Agents Code needs to "
+                "install the [bold]$extra[/bold] integration. This will add "
+                "the provider package to your dcode environment.",
+                model=self._model_spec,
+                extra=self._extra,
+            )
+        else:
+            body = Content.from_markup(
+                "To add a key for [bold]$provider[/bold], Deep Agents Code "
+                "needs to install the [bold]$extra[/bold] integration. This "
+                "will add the provider package to your dcode environment.",
+                provider=provider,
+                extra=self._extra,
+            )
         with Vertical():
             yield Static(
                 f"Install {provider} support?",
@@ -203,13 +224,7 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
                 markup=False,
             )
             yield Static(
-                Content.from_markup(
-                    "To use [bold]$model[/bold], Deep Agents Code needs to "
-                    "install the [bold]$extra[/bold] integration. This will add "
-                    "the provider package to your dcode environment.",
-                    model=self._model_spec,
-                    extra=self._extra,
-                ),
+                body,
                 classes="install-confirm-body",
                 markup=False,
             )

@@ -4741,11 +4741,17 @@ class DeepAgentsApp(App):
             content: The message text to display.
 
         Returns:
-            The mounted widget, or `None` when the messages container is gone.
+            The mounted widget, or `None` when the messages container is
+                missing or detached.
         """
         try:
             messages = self.query_one("#messages", Container)
         except (NoMatches, ScreenStackError):
+            logger.debug(
+                "Messages container unavailable; skipping transient status %r",
+                content,
+                exc_info=True,
+            )
             return None
         if not messages.is_attached:
             return None

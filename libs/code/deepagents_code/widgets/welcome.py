@@ -33,7 +33,7 @@ from deepagents_code.config import (
     get_banner,
     get_glyphs,
     get_langsmith_project_name,
-    get_langsmith_replica_projects,
+    get_langsmith_replica_project,
 )
 from deepagents_code.widgets._links import open_style_link
 
@@ -172,11 +172,12 @@ class WelcomeBanner(Static):
             SHOW_LANGSMITH_REPLICA_TRACING,
             default=True,
         )
-        self._replica_projects: list[str] = (
-            get_langsmith_replica_projects()
+        replica_project = (
+            get_langsmith_replica_project()
             if self._project_name and show_replica_tracing
-            else []
+            else None
         )
+        self._replica_projects: list[str] = [replica_project] if replica_project else []
         self._project_urls: dict[str, str] = {}
         self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
 

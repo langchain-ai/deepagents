@@ -205,8 +205,8 @@ class TestBuildBannerThreadLink:
         assert "Thread:" not in banner.plain
         assert "77777" not in banner.plain
 
-    def test_replica_projects_show_by_default_when_configured(self) -> None:
-        """Replica projects should show in the splash unless explicitly disabled."""
+    def test_replica_project_shows_by_default_when_configured(self) -> None:
+        """The forwarded replica project should show unless explicitly disabled."""
         widget = _make_banner(
             project_name="my-project",
             replica_projects="replica-a, replica-b",
@@ -214,10 +214,11 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner()
 
         assert "LangSmith tracing: 'my-project'" in banner.plain
-        assert "Also tracing to: 'replica-a', 'replica-b'" in banner.plain
+        assert "Also tracing to: 'replica-a'" in banner.plain
+        assert "replica-b" not in banner.plain
 
-    def test_replica_projects_plain_when_urls_are_unresolved(self) -> None:
-        """Replica projects should not be linked before URLs are resolved."""
+    def test_replica_project_plain_when_url_is_unresolved(self) -> None:
+        """The forwarded replica project should be plain until its URL resolves."""
         widget = _make_banner(
             project_name="my-project",
             replica_projects="replica-a, replica-b",
@@ -228,9 +229,10 @@ class TestBuildBannerThreadLink:
         replica_end = replica_start + len("replica-a")
         links = _extract_links(banner, replica_start, replica_end)
         assert not links
+        assert "replica-b" not in banner.plain
 
-    def test_replica_projects_linked_when_urls_are_resolved(self) -> None:
-        """Replica projects should link to their LangSmith project URLs."""
+    def test_replica_project_linked_when_url_is_resolved(self) -> None:
+        """The forwarded replica project should link to its LangSmith project URL."""
         widget = _make_banner(
             project_name="my-project",
             replica_projects="replica-a, replica-b",
@@ -243,10 +245,7 @@ class TestBuildBannerThreadLink:
         links = _extract_links(banner, replica_start, replica_end)
         assert links == [f"{replica_url}?utm_source=deepagents-code"]
 
-        unresolved_start = banner.plain.index("replica-b")
-        unresolved_end = unresolved_start + len("replica-b")
-        unresolved_links = _extract_links(banner, unresolved_start, unresolved_end)
-        assert not unresolved_links
+        assert "replica-b" not in banner.plain
 
     async def test_fetch_and_update_refreshes_each_resolved_project(self) -> None:
         """Resolved replica URLs should update the splash as they arrive."""

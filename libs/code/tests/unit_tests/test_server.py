@@ -247,6 +247,54 @@ class TestServerProcess:
         assert not config_dir.exists()
         assert not log_path.exists()
 
+    async def test_start_rescaffolds_when_config_missing(self, tmp_path: Path) -> None:
+        """A missing langgraph.json should be rebuilt via the scaffold hook."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        def scaffold(work_dir: Path) -> None:
+            (work_dir / "langgraph.json").write_text("{}")
+
+        scaffold_mock = MagicMock(side_effect=scaffold)
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
+
+        with (
+            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch(
+                "deepagents_code.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+
+        scaffold_mock.assert_called_once_with(config_dir)
+        assert (config_dir / "langgraph.json").exists()
+
+    async def test_start_raises_when_scaffold_does_not_restore_config(
+        self, tmp_path: Path
+    ) -> None:
+        """If the scaffold hook fails to recreate the config, start still raises."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+
+        server = ServerProcess(config_dir=config_dir, scaffold=MagicMock())
+
+        with pytest.raises(RuntimeError, match=r"langgraph\.json not found"):
+            await server.start()
+
     async def test_update_env_and_restart(self, tmp_path: Path) -> None:
         """update_env stages overrides that restart() applies."""
         config_dir = tmp_path / "runtime"

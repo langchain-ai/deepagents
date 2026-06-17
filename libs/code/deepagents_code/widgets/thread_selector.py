@@ -560,6 +560,19 @@ class ThreadScopeSelectOverlay(SelectOverlay):
 class ThreadScopeSelect(Select[str]):
     """Scope dropdown that keeps focus contained while its menu is open."""
 
+    def action_show_overlay(self) -> None:
+        """Show the overlay when it has finished mounting."""
+        try:
+            select_current = self.query_one(SelectCurrent)
+            select_overlay = self.query_one(ThreadScopeSelectOverlay)
+        except NoMatches:
+            return
+
+        select_current.has_value = True
+        self.expanded = True
+        if select_overlay.highlighted is None:
+            select_overlay.action_first()
+
     def compose(self) -> ComposeResult:
         """Compose the select with a scope-specific overlay.
 

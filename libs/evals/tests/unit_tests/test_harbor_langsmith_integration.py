@@ -113,6 +113,13 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '../code/ "$local_deps_dir/deepagents-code/"' in workflow
     assert "agent_env_args=(" in workflow
     assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
+    assert (
+        "fireworks)\n"
+        "              agent_env_args+=(\n"
+        "                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'\n"
+        "                --agent-env UV_PRERELEASE=allow\n"
+        "              )" in workflow
+    )
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
     assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow

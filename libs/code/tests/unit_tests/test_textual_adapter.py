@@ -2807,10 +2807,10 @@ class TestSessionStats:
         assert stats.request_count == 1
         assert stats.input_tokens == 100
         assert stats.output_tokens == 50
-        assert "gpt-4" in stats.per_model
-        assert stats.per_model["gpt-4"].request_count == 1
-        assert stats.per_model["gpt-4"].input_tokens == 100
-        assert stats.per_model["gpt-4"].output_tokens == 50
+        assert ("", "gpt-4") in stats.per_model
+        assert stats.per_model["", "gpt-4"].request_count == 1
+        assert stats.per_model["", "gpt-4"].input_tokens == 100
+        assert stats.per_model["", "gpt-4"].output_tokens == 50
 
     def test_record_request_empty_model(self) -> None:
         """record_request with empty model skips per_model entry."""
@@ -2832,23 +2832,36 @@ class TestSessionStats:
         assert stats.input_tokens == 300
         assert stats.output_tokens == 130
         assert len(stats.per_model) == 2
-        assert stats.per_model["gpt-4"].request_count == 1
-        assert stats.per_model["claude-opus-4-6"].request_count == 1
+        assert stats.per_model["", "gpt-4"].request_count == 1
+        assert stats.per_model["", "claude-opus-4-6"].request_count == 1
+
+    def test_record_request_splits_same_model_by_provider(self) -> None:
+        """Provider-specific model names should not collapse into one entry."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        stats.record_request("gpt-4", 200, 80, provider="azure")
+
+        assert len(stats.per_model) == 2
+        assert stats.per_model["openai", "gpt-4"].request_count == 1
+        assert stats.per_model["azure", "gpt-4"].request_count == 1
 
     def test_merge(self) -> None:
         """merge() folds another SessionStats into self."""
         a = SessionStats(
             request_count=1, input_tokens=100, output_tokens=50, wall_time_seconds=1.0
         )
-        a.per_model["gpt-4"] = ModelStats(
-            request_count=1, input_tokens=100, output_tokens=50
+        a.per_model["", "gpt-4"] = ModelStats(
+            request_count=1, input_tokens=100, output_tokens=50, model_name="gpt-4"
         )
 
         b = SessionStats(
             request_count=2, input_tokens=300, output_tokens=120, wall_time_seconds=2.5
         )
-        b.per_model["claude-opus-4-6"] = ModelStats(
-            request_count=2, input_tokens=300, output_tokens=120
+        b.per_model["", "claude-opus-4-6"] = ModelStats(
+            request_count=2,
+            input_tokens=300,
+            output_tokens=120,
+            model_name="claude-opus-4-6",
         )
 
         a.merge(b)
@@ -2858,7 +2871,7 @@ class TestSessionStats:
         assert a.output_tokens == 170
         assert a.wall_time_seconds == pytest.approx(3.5)
         assert len(a.per_model) == 2
-        assert a.per_model["claude-opus-4-6"].request_count == 2
+        assert a.per_model["", "claude-opus-4-6"].request_count == 2
 
     def test_merge_overlapping_models(self) -> None:
         """merge() combines per_model entries for the same model."""
@@ -2873,9 +2886,23 @@ class TestSessionStats:
         assert a.request_count == 2
         assert a.input_tokens == 300
         assert a.output_tokens == 130
-        assert a.per_model["gpt-4"].request_count == 2
-        assert a.per_model["gpt-4"].input_tokens == 300
-        assert a.per_model["gpt-4"].output_tokens == 130
+        assert a.per_model["", "gpt-4"].request_count == 2
+        assert a.per_model["", "gpt-4"].input_tokens == 300
+        assert a.per_model["", "gpt-4"].output_tokens == 130
+
+    def test_merge_splits_same_model_by_provider(self) -> None:
+        """merge() preserves provider-specific entries for the same model."""
+        a = SessionStats()
+        a.record_request("gpt-4", 100, 50, provider="openai")
+
+        b = SessionStats()
+        b.record_request("gpt-4", 200, 80, provider="azure")
+
+        a.merge(b)
+
+        assert len(a.per_model) == 2
+        assert a.per_model["openai", "gpt-4"].input_tokens == 100
+        assert a.per_model["azure", "gpt-4"].input_tokens == 200
 
 
 # ---------------------------------------------------------------------------
@@ -2957,6 +2984,19 @@ class TestPrintUsageTable:
         assert "claude-opus-4-6" in output
         assert "Total" in output
         assert "unknown" not in output
+
+    def test_same_model_with_different_providers_shows_separate_rows(self) -> None:
+        """Same-name models from different providers should render separately."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        stats.record_request("gpt-4", 200, 80, provider="azure")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "openai" in output
+        assert "azure" in output
+        assert "Total" in output
 
     def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
         """Token table should print but timing line should be absent."""

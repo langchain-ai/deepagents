@@ -139,10 +139,10 @@ def print_usage_table(
         table.add_column("OutputTok", justify="right", style="dim")
 
         if multi_model:
-            for model_name, ms in stats.per_model.items():
+            for (_provider, model_name), ms in stats.per_model.items():
                 table.add_row(
                     ms.provider,
-                    model_name,
+                    ms.model_name or model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
@@ -155,10 +155,10 @@ def print_usage_table(
                 format_token_count(stats.output_tokens),
             )
         else:
-            model_label = next(iter(stats.per_model))
+            (_provider, model_name), ms = next(iter(stats.per_model.items()))
             table.add_row(
-                stats.per_model[model_label].provider,
-                model_label,
+                ms.provider,
+                ms.model_name or model_name,
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),

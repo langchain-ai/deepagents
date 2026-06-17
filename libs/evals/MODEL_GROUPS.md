@@ -96,12 +96,13 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 - `openrouter:z-ai/glm-5.1`
 
-### `open-fireworks` (5 models)
+### `open-fireworks` (6 models)
 
 - `fireworks:accounts/fireworks/models/deepseek-v4-pro`
 - `fireworks:accounts/fireworks/models/glm-5p1`
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 
 ### `docs` (7 models)
@@ -134,7 +135,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:zai-org/GLM-5`
 
-### `fireworks` (11 models)
+### `fireworks` (12 models)
 
 - `fireworks:accounts/fireworks/models/deepseek-v3-0324`
 - `fireworks:accounts/fireworks/models/deepseek-v3p2`
@@ -145,6 +146,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 
@@ -198,7 +200,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-3-mini-fast`
 - `xai:grok-4`
 
-## `all` (53 models)
+## `all` (54 models)
 
 - `anthropic:claude-haiku-4-5`
 - `anthropic:claude-opus-4-5-20251101`
@@ -221,6 +223,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `fireworks:accounts/fireworks/models/kimi-k2p6`
 - `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/minimax-m3`
 - `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
 - `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-flash`

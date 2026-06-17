@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -30,9 +32,6 @@ _initial_prompt_cache: dict[str, tuple[str | None, str | None]] = {}
 _MAX_INITIAL_PROMPT_CACHE = 4096
 _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
-_SYSTEM_MESSAGE_PREFIX = "[SYSTEM]"
-"""Prefix for synthetic human messages (e.g. interrupt cancellation notices)
-that should never be displayed as a thread's initial prompt."""
 
 
 def _patch_aiosqlite() -> None:
@@ -1141,7 +1140,7 @@ def _initial_prompt_from_messages(messages: list[object]) -> str | None:
     agent, which is preserved verbatim as a dict; subsequent writes are
     serialized `BaseMessage` instances produced after the model runs.
 
-    Synthetic `[SYSTEM]`-prefixed human messages (e.g. the interrupt
+    Synthetic `[SYSTEM]`-prefixed human messages (e.g. an interrupt
     cancellation notice) are skipped so they never surface as a thread's prompt.
     """
     for msg in messages:
@@ -1156,7 +1155,7 @@ def _initial_prompt_from_messages(messages: list[object]) -> str | None:
             prompt = _coerce_prompt_text(msg_dict.get("content"))
         else:
             continue
-        if prompt is not None and prompt.startswith(_SYSTEM_MESSAGE_PREFIX):
+        if prompt is not None and prompt.startswith(SYSTEM_MESSAGE_PREFIX):
             continue
         return prompt
     return None

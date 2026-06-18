@@ -1253,6 +1253,13 @@ async def execute_task_textual(
 
                             if decision_type == "auto_approve_all":
                                 session_state.auto_approve = True
+                                # Carry the flag into the run context so the
+                                # `interrupt_on` `when` predicate suppresses
+                                # interrupts on the remaining tool calls in this
+                                # turn — keeping it a single run instead of
+                                # resuming after each call.
+                                if context is not None:
+                                    context["auto_approve"] = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
                                 decisions = [

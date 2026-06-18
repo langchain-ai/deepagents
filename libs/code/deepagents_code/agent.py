@@ -1008,6 +1008,45 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
+def _runtime_auto_approve(runtime: Runtime | None) -> bool:
+    """Read the run-scoped `auto_approve` flag from the runtime context.
+
+    Tolerates both the coerced `CLIContextSchema` dataclass and a raw dict so
+    the predicate works regardless of how the context was supplied.
+
+    Args:
+        runtime: The node-level runtime passed to the interrupt predicate.
+
+    Returns:
+        `True` when the active run opted into "approve always".
+    """
+    if runtime is None:
+        return False
+    ctx = getattr(runtime, "context", None)
+    if isinstance(ctx, CLIContextSchema):
+        return bool(ctx.auto_approve)
+    if isinstance(ctx, dict):
+        return bool(ctx.get("auto_approve"))
+    return bool(getattr(ctx, "auto_approve", False))
+
+
+def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
+    """Decide whether a gated tool call should pause for human approval.
+
+    Returns `False` once the run carries the `auto_approve` flag so
+    `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
+    interrupt-then-auto-resolve pattern that previously split each turn into a
+    separate run after every tool call, producing noisy traces.
+
+    Args:
+        request: The pending tool call under review.
+
+    Returns:
+        `True` to interrupt for approval, `False` to auto-approve.
+    """
+    return not _runtime_auto_approve(getattr(request, "runtime", None))
+
+
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
@@ -1016,42 +1055,53 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     delegation) is gated behind an approval prompt unless auto-approve
     is enabled.
 
+    Each config carries a `when` predicate so that enabling "approve always"
+    mid-session (recorded in the run context) suppresses the interrupt itself
+    instead of relying on the client to auto-resolve it.
+
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_write_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_edit_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": "Launch, update, or cancel a remote async subagent.",
+        "when": _should_interrupt_tool_call,
     }
 
     interrupt_map: dict[str, InterruptOnConfig] = {
@@ -1075,6 +1125,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
                 "window space. Recent messages are kept as-is. "
                 "Full history remains available for retrieval."
             ),
+            "when": _should_interrupt_tool_call,
         }
 
     return interrupt_map

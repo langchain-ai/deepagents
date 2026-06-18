@@ -682,6 +682,10 @@ class AgentServerACP(ACPAgent):
         active_tool_calls = {}
         tool_call_accumulator = {}  # index -> {id, name, args_str}
 
+        # Track subagent namespaces and their parent task tool call IDs
+        namespace_to_task_id: dict[str, str] = {}
+        latest_task_id: str | None = None
+
         current_state = None
         user_decisions = []
 
@@ -708,6 +712,26 @@ class AgentServerACP(ACPAgent):
                 if self._cancelled:
                     self._cancelled = False  # Reset for next prompt
                     return PromptResponse(stop_reason="cancelled")
+
+                # Track task tool calls for subagent namespace mapping
+                if stream_mode == "messages":
+                    message_chunk, _metadata = data
+                    if hasattr(message_chunk, "tool_calls"):
+                        tool_calls = message_chunk.tool_calls or []
+                        for tc in tool_calls:
+                            if tc.get("name") == "task":
+                                task_id = tc.get("id")
+                                if task_id:
+                                    latest_task_id = task_id
+
+                if stream_mode == "updates":
+                    updates = data
+                    # Map subagent namespace to parent task tool call ID
+                    if isinstance(updates, dict) and "PatchToolCallsMiddleware.before_agent" in updates:
+                        if _namespace and isinstance(_namespace, tuple) and len(_namespace) > 0:
+                            namespace_key = _namespace[0]
+                            if namespace_key and latest_task_id:
+                                namespace_to_task_id[namespace_key] = latest_task_id
 
                 if stream_mode == "updates":
                     updates = data
@@ -736,9 +760,20 @@ class AgentServerACP(ACPAgent):
                                     )
 
                             current_state = await agent.aget_state(config)
+
+                            # Determine parent task tool call ID for subagent interrupt remapping
+                            parent_tool_call_id = None
+                            if _namespace:
+                                if isinstance(_namespace, tuple):
+                                    namespace_key = _namespace[0] if _namespace else None
+                                else:
+                                    namespace_key = str(_namespace)
+                                parent_tool_call_id = namespace_to_task_id.get(namespace_key)
+
                             user_decisions = await self._handle_interrupts(
                                 current_state=current_state,
                                 session_id=session_id,
+                                parent_tool_call_id=parent_tool_call_id,
                             )
                             break
 
@@ -827,14 +862,25 @@ class AgentServerACP(ACPAgent):
         *,
         current_state: StateSnapshot,
         session_id: str,
+        parent_tool_call_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Handle agent interrupts by requesting permission from the client."""
+        """Handle agent interrupts by requesting permission from the client.
+
+        Args:
+            current_state: The current state snapshot with interrupts
+            session_id: The session ID
+            parent_tool_call_id: Optional parent task tool call ID for subagent interrupt remapping
+
+        Returns:
+            List of user decision dictionaries
+        """
         user_decisions: list[dict[str, Any]] = []
         if current_state.next and current_state.interrupts:
             # Agent is interrupted, request permission from user
             for interrupt in current_state.interrupts:
-                # Get the tool call info from the interrupt
-                tool_call_id = interrupt.id
+                # Use parent tool call ID if available (for subagent interrupts),
+                # otherwise use the interrupt's own ID
+                tool_call_id = parent_tool_call_id or interrupt.id
                 interrupt_value = interrupt.value
 
                 # Extract action requests from interrupt_value

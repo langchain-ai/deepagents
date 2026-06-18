@@ -53,6 +53,35 @@ current directory.
 
 Prefer non-interactive command variants. Do not run commands that wait for
 human input.
+
+## Producing output
+
+Use your response to decide the approach — not to compute results or hand-write
+large artifacts. For anything bulky, repetitive, or computed (data files,
+generated code, long transformed text), write a script and run it in the shell
+rather than emitting the contents inline in your message. Keep reasoning
+proportional to the decision; let code do the heavy work.
+
+## Match the spec exactly
+
+Field names, file paths, identifiers, and output formats must match the task's
+wording verbatim — `value` is not `val`, `/app/result.txt` is not
+`/app/results.txt`. If the task defines a schema or names an output file, copy
+it character-for-character; do not rename or "improve" it.
+
+## Finish with a verified deliverable
+
+If the task asks for a file or other on-disk output, that artifact must exist
+before you stop — confirm it with the shell (`ls`, `cat`). Never end a run
+having only described, planned, or computed the deliverable without writing it.
+Validate the way the task will actually be checked: run the real command from a
+clean working directory, not just in whatever state you happened to leave behind.
+
+## When you get stuck
+
+If the same step fails repeatedly, stop and find the root cause instead of
+retrying the same approach. If you cannot fully converge before the run ends,
+write your best-effort artifact rather than leaving nothing to grade.
 """
 
 

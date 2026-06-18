@@ -183,7 +183,7 @@ def make_eval_graph(config: dict[str, object] | None = None) -> object:
     Reads ``configurable["eval_name"]`` to look up the corresponding
     :class:`~deepagents_evals.eval_registry.EvalSpec` and delegates to its
     ``build()`` method. This is the dispatcher entry point that lets a single
-    ``langgraph.json`` graph serve every eval in the suite — each Harbor task
+    ``eval_langgraph.json`` graph serve every eval in the suite — each Harbor task
     just passes its eval name via ``--agent-kwarg configurable='{"eval_name":
     "test_write_file_simple"}'``.
 

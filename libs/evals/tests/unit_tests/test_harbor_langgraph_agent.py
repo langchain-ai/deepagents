@@ -21,9 +21,19 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
         "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
-        "eval_deepagent": "./langgraph_agent.py:make_eval_graph",
     }
     assert not (project_path / "langsmith.py").exists()
+
+
+def test_eval_langgraph_config_points_to_eval_factory() -> None:
+    project_path = Path("deepagents_harbor/langgraph_project")
+    langgraph_config = json.loads((project_path / "langgraph.json").read_text())
+    eval_config = json.loads((project_path / "eval_langgraph.json").read_text())
+
+    assert eval_config["dependencies"] == langgraph_config["dependencies"]
+    assert eval_config["graphs"] == {
+        "eval_deepagent": "./langgraph_agent.py:make_eval_graph",
+    }
 
 
 def test_make_graph_scrubs_credentials_from_shell_backend_env(

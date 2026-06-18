@@ -34,9 +34,6 @@ if TYPE_CHECKING:
 
 PTCOption = list[str | BaseTool]
 
-# The subagent dispatch tool. It is reserved: it is always available as the
-# top-level `task()` global in the REPL, so it must never be exposed through
-# the `tools.*` PTC namespace (see `filter_tools_for_ptc`).
 _RESERVED_SUBAGENT_TASK_NAME = "task"
 
 _TASK_IN_PTC_MSG = (

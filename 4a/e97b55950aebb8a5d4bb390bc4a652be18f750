@@ -1,0 +1,33 @@
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  s_55bb2e5cb9e884::t_7e5530dcfd53f9 31-38,42
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_55bb2e5cb9e884::t_0c8026da67e4eb 389
+  s_55bb2e5cb9e884::t_ef082521dfc765 390
+  s_55bb2e5cb9e884::t_6202eaf3698e37 14
+  s_55bb2e5cb9e884::t_ec8cd4023eb35b 13
+  s_55bb2e5cb9e884::t_65247d46a2b652 454-456,459-471
+  s_55bb2e5cb9e884::t_f67070c598deee 457-458
+libs/partners/quickjs/tests/unit_tests/test_ptc.py
+  s_55bb2e5cb9e884::t_fe38314c20078e 330-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "4ae97b55950aebb8a5d4bb390bc4a652be18f750",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_55bb2e5cb9e884": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d8eefc-b814-4369-9677-981c907ab665",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

@@ -1372,10 +1372,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
     )
-    parser.add_argument(
+    extra_group = parser.add_mutually_exclusive_group()
+    extra_group.add_argument(
         "--install",
         metavar="NAME",
         help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+    )
+    extra_group.add_argument(
+        "--uninstall",
+        metavar="NAME",
+        help="Remove an installed optional extra, then exit",
     )
     parser.add_argument(
         "--package",
@@ -2700,6 +2706,116 @@ def cli_main() -> None:
                 log_line = f"\nLog: {log_path}" if log_path else ""
                 fallback_cmd = (
                     manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
+                )
+                console.print(
+                    f"[bold red]Error:[/bold red] "
+                    f"{type(exc).__name__}: {escape(str(exc))}"
+                    f"{escape(log_line)}\n"
+                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+
+        # Handle --uninstall <extra> flag (headless, no session)
+        if args.uninstall:
+            from rich.markup import escape
+
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import (
+                ExtrasIntrospectionError,
+                installed_extra_names,
+            )
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                editable_extra_removal_hint,
+                is_valid_extra_name,
+                perform_uninstall_extra,
+                uninstall_extra_command,
+            )
+
+            uninstall_extra: str = args.uninstall
+            uninstall_log_path: Path | None = None
+            uninstall_manual_cmd: str | None = None
+            try:
+                if not is_valid_extra_name(uninstall_extra):
+                    # Defense in depth — the extra is interpolated into a
+                    # shell command. Reject malformed names before any uv call.
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"Invalid extra name '{escape(uninstall_extra)}'. "
+                        "Extra names must be alphanumeric with `-`, `_`, "
+                        "or `.` (PEP 508).",
+                        highlight=False,
+                    )
+                    sys.exit(2)
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "--uninstall is not supported on editable installs.\n"
+                        + escape(editable_extra_removal_hint(uninstall_extra)),
+                        highlight=False,
+                    )
+                    sys.exit(1)
+
+                # The absent-extra case is a no-op: report it clearly and never
+                # invoke uv.
+                try:
+                    installed = installed_extra_names("deepagents-code", strict=True)
+                except ExtrasIntrospectionError as exc:
+                    console.print(
+                        f"[bold red]Error:[/bold red] "
+                        f"{type(exc).__name__}: {escape(str(exc))}",
+                        markup=True,
+                        highlight=False,
+                    )
+                    sys.exit(1)
+                if uninstall_extra not in installed:
+                    console.print(
+                        f"Extra '{escape(uninstall_extra)}' is not installed.",
+                        highlight=False,
+                    )
+                    sys.exit(0)
+
+                uninstall_manual_cmd = uninstall_extra_command(uninstall_extra)
+                console.print(f"Uninstalling extra '{uninstall_extra}'...")
+                uninstall_log_path = create_update_log_path()
+                console.print(
+                    f"Uninstall log: {uninstall_log_path}\n"
+                    f"Tail progress: tail -f {uninstall_log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(
+                    perform_uninstall_extra(
+                        uninstall_extra, log_path=uninstall_log_path
+                    )
+                )
+                if success:
+                    console.print(
+                        f"[green]Uninstalled extra '{uninstall_extra}'.[/green]"
+                    )
+                    sys.exit(0)
+                # Tail the last 200 chars — uv resolver prints the resolved
+                # error at the end, not the beginning.
+                detail = f": {output[-200:]}" if output else ""
+                console.print(
+                    f"[bold red]Uninstall failed[/bold red]{escape(detail)}\n"
+                    f"Log: {uninstall_log_path}\n"
+                    f"Run manually: [cyan]{uninstall_manual_cmd}[/cyan]",
+                    markup=True,
+                    highlight=False,
+                )
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\nAborted.", style="dim")
+                sys.exit(130)
+            except Exception as exc:
+                logger.warning("--uninstall failed", exc_info=True)
+                log_line = f"\nLog: {uninstall_log_path}" if uninstall_log_path else ""
+                fallback_cmd = uninstall_manual_cmd or (
+                    "uv tool install -U deepagents-code"
                 )
                 console.print(
                     f"[bold red]Error:[/bold red] "

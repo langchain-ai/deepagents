@@ -203,6 +203,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="<extra> [--force]",
     ),
     SlashCommand(
+        name="/uninstall",
+        description="Remove an installed optional extra",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras remove delete provider sandbox dependency",
+        argument_hint="<extra>",
+    ),
+    SlashCommand(
         name="/auto-update",
         description="Toggle automatic updates on or off",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

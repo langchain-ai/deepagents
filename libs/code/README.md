@@ -21,6 +21,19 @@ curl -LsSf https://langch.in/dcode | bash
 DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
+Add or remove an optional extra after installing, from the shell or inside the
+TUI:
+
+```bash
+dcode --install ollama     # or /install ollama in the TUI
+dcode --uninstall ollama   # or /uninstall ollama in the TUI
+```
+
+`--uninstall` rebuilds the tool environment with your remaining extras (and
+reinstalls plain `deepagents-code` once none are left). The default OpenAI,
+Anthropic, and Gemini providers are base dependencies, so they can't be removed
+via extras.
+
 Run:
 
 ```bash

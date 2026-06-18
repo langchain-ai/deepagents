@@ -4210,6 +4210,170 @@ class DeepAgentsApp(App):
         await self._offer_restart_after_install(extra)
         return True
 
+    async def _handle_uninstall_command(self, command: str) -> None:
+        """Handle the `/uninstall <extra>` slash command.
+
+        Removes an installed optional extra by rebuilding the uv tool
+        environment with the remaining extras (`uv tool install -U
+        'deepagents-code[<remaining>]'`). When no extras remain, plain
+        `deepagents-code` is reinstalled. Absent extras are reported without
+        invoking uv.
+
+        Args:
+            command: The full slash command line (e.g. `'/uninstall ollama'`).
+        """
+        parts = command.split()
+        names = [p for p in parts[1:] if not p.startswith("-")]
+        if not names:
+            from deepagents_code.extras_info import installed_extra_names
+
+            try:
+                installed = await asyncio.to_thread(
+                    installed_extra_names, "deepagents-code", strict=False
+                )
+            except Exception:  # noqa: BLE001  # display-only; degrade gracefully
+                installed = set()
+            listing = (
+                f"Installed extras: {', '.join(sorted(installed))}"
+                if installed
+                else "No optional extras are currently installed."
+            )
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /uninstall <extra>\n"
+                    "Example: /uninstall ollama\n\n" + listing,
+                ),
+            )
+            return
+        if len(names) > 1:
+            await self._mount_message(
+                AppMessage(
+                    "Only one extra may be uninstalled per /uninstall command. "
+                    f"Got: {', '.join(names)}",
+                ),
+            )
+            return
+        await self._mount_message(UserMessage(command))
+
+        extra = names[0].lower()
+
+        try:
+            from deepagents_code.config import _is_editable_install
+            from deepagents_code.extras_info import (
+                MODEL_PROVIDER_EXTRAS,
+                SANDBOX_EXTRAS,
+                ExtrasIntrospectionError,
+                installed_extra_names,
+            )
+            from deepagents_code.update_check import (
+                ExtraNotInstalledError,
+                create_update_log_path,
+                editable_extra_removal_hint,
+                is_valid_extra_name,
+                perform_uninstall_extra,
+                uninstall_extra_command,
+            )
+        except ImportError as exc:
+            logger.warning("/uninstall command import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if not is_valid_extra_name(extra):
+            await self._mount_message(
+                AppMessage(
+                    "Invalid extra name. Extra names must be "
+                    "alphanumeric with `-`, `_`, or `.` (PEP 508).",
+                ),
+            )
+            return
+
+        if await asyncio.to_thread(_is_editable_install):
+            await self._mount_message(
+                AppMessage(
+                    "Editable install detected — cannot remove extras.\n"
+                    + editable_extra_removal_hint(extra),
+                ),
+            )
+            return
+
+        try:
+            installed = await asyncio.to_thread(
+                installed_extra_names, "deepagents-code", strict=True
+            )
+        except ExtrasIntrospectionError as exc:
+            logger.warning("/uninstall command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if extra not in installed:
+            await self._mount_message(
+                AppMessage(f"Extra '{extra}' is not installed."),
+            )
+            return
+
+        log_path = create_update_log_path()
+        # Load the restart modal before the reinstall rewrites our own package
+        # tree; the post-uninstall import then hits the in-memory cache.
+        self._ensure_restart_prompt_loaded()
+        await self._mount_message(
+            AppMessage(f"Uninstalling extra '{extra}'..."),
+        )
+        try:
+            manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)
+        except (ExtrasIntrospectionError, ExtraNotInstalledError, ValueError) as exc:
+            logger.warning("/uninstall command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
+                ),
+            )
+            return
+        try:
+            success, output = await perform_uninstall_extra(extra, log_path=log_path)
+        except (OSError, asyncio.CancelledError) as exc:
+            logger.warning("/uninstall command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall failed: {type(exc).__name__}: {exc}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        if not success:
+            # Tail the last 200 chars — uv resolver prints the resolved
+            # error at the end, not the beginning.
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                ErrorMessage(
+                    f"Uninstall failed{detail}\n"
+                    f"Log: {log_path}\n"
+                    f"Run manually: {manual_cmd}",
+                ),
+            )
+            return
+
+        # Mirror /install: provider/sandbox extras are imported by the langgraph
+        # server subprocess, so `/restart` picks up their removal without exiting
+        # the TUI. Other extras (e.g. quickjs) are wired into the parent process
+        # at startup, so a full relaunch is required.
+        restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
+        if restart_capable:
+            next_step = "Run `/restart` to apply now, or relaunch dcode."
+        else:
+            next_step = "Exit and relaunch dcode to apply the change."
+
+        await self._mount_message(
+            AppMessage(f"Uninstalled extra '{extra}'. {next_step}"),
+        )
+        if restart_capable:
+            await self._offer_restart_after_install(extra)
+
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
 
@@ -6615,8 +6779,8 @@ class DeepAgentsApp(App):
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
-                "/update, /auto-update, /install, /changelog, /docs, "
-                "/feedback, /help\n\n"
+                "/update, /auto-update, /install, /uninstall, /changelog, "
+                "/docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
@@ -6729,6 +6893,8 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/uninstall" or cmd.startswith("/uninstall "):
+            await self._handle_uninstall_command(command)
         elif cmd == "/timestamps":
             await self._mount_message(UserMessage(command))
             await self._toggle_message_timestamp_footers()

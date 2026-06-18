@@ -1248,6 +1248,60 @@ def install_extra_command(
     return install_extras_command(extras)
 
 
+class ExtraNotInstalledError(RuntimeError):
+    """Raised when an uninstall targets an extra that is not installed."""
+
+
+def uninstall_extra_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the shell command that removes `extra` from the installed dcode tool.
+
+    Rebuilds the uv tool environment with the remaining installed extras (the
+    inverse of `install_extra_command`). When no optional extras remain, the
+    command reinstalls plain `deepagents-code`.
+
+    Args:
+        extra: The extra name to remove. Validated internally against PEP 508
+            grammar before any metadata read.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for display in error messages and
+            for execution via `perform_uninstall_extra`.
+
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata.
+        ExtraNotInstalledError: If `extra` is not currently installed.
+        ValueError: If `extra` or any remaining extra fails PEP 508 validation.
+    """
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
+
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    try:
+        extras = installed_extra_names(distribution_name, strict=True)
+    except ExtrasIntrospectionError as exc:
+        msg = str(exc)
+        raise ExtrasIntrospectionError(msg) from exc
+    if extra not in extras:
+        msg = f"Extra {extra!r} is not installed."
+        raise ExtraNotInstalledError(msg)
+    extras.discard(extra)
+    return install_extras_command(extras)
+
+
 def editable_extra_hint(extra: str) -> str:
     """Return the canonical action hint for editable installs missing an extra.
 
@@ -1259,6 +1313,20 @@ def editable_extra_hint(extra: str) -> str:
     return (
         "Rerun your `uv tool install --editable` command with "
         f"`--with 'deepagents-code[{extra}]'` added so the extra is "
+        "resolved against the editable source."
+    )
+
+
+def editable_extra_removal_hint(extra: str) -> str:
+    """Return the canonical action hint for removing an extra on editable installs.
+
+    Mirrors `editable_extra_hint` for the uninstall direction: editable installs
+    can't have extras rebuilt automatically, so point the user at re-running
+    their own `uv tool install --editable` command without the extra.
+    """
+    return (
+        "Rerun your `uv tool install --editable` command without "
+        f"`--with 'deepagents-code[{extra}]'` so the extra is no longer "
         "resolved against the editable source."
     )
 
@@ -1339,6 +1407,74 @@ async def perform_install_extra(
 
     try:
         cmd = install_extra_command(extra)
+    except (ExtrasIntrospectionError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+async def perform_uninstall_extra(
+    extra: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
+    """Remove `extra` from the installed dcode tool environment.
+
+    Rebuilds the tool with `uv tool install -U 'deepagents-code[<remaining>]'`,
+    dropping only `extra` and preserving the other installed extras. When no
+    optional extras remain, plain `deepagents-code` is reinstalled. Editable,
+    Homebrew, and unrecognized installs are refused — the same set of methods
+    `perform_install_extra` refuses — because the running environment can't be
+    rebuilt safely.
+
+    Args:
+        extra: The extra name to remove. Must satisfy `is_valid_extra_name`;
+            invalid names are rejected without invoking uv (defense in depth
+            against shell injection).
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr, or an
+            explanatory error message when the install method is unsupported,
+            `extra` is malformed, or `extra` is not installed.
+    """
+    if not is_valid_extra_name(extra):
+        return False, (
+            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}"
+        )
+    method = detect_install_method()
+    if method == "unknown":
+        return False, (
+            "Editable install detected — cannot remove extras automatically.\n"
+            + editable_extra_removal_hint(extra)
+        )
+    if method == "brew":
+        return False, (
+            "Homebrew install detected — extras are not managed via brew. "
+            "Reinstall with `uv tool install -U deepagents-code` to switch to a "
+            "uv-managed tool install whose extras can be rebuilt."
+        )
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot remove extras without "
+            "knowing which environment provides `dcode`. Reinstall with "
+            "`uv tool install -U deepagents-code` to switch to a uv-managed "
+            "tool install whose extras can be rebuilt."
+        )
+
+    if not shutil.which("uv"):
+        return False, (
+            "`uv` not found on PATH. Reinstall dcode following the docs, or "
+            "install uv (https://docs.astral.sh/uv/) so extras can be removed."
+        )
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = uninstall_extra_command(extra)
+    except ExtraNotInstalledError as exc:
+        return False, str(exc)
     except (ExtrasIntrospectionError, ValueError) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)

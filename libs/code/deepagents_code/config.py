@@ -968,11 +968,11 @@ in `tool_display`.
 """
 
 config: RunnableConfig = {
-    "recursion_limit": 1000,
+    "recursion_limit": 2000,
 }
 """Default LangGraph runnable config.
 
-Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
+Sets `recursion_limit` to 2000 to accommodate deeply nested agent graphs without
 hitting the default LangGraph ceiling.
 """
 

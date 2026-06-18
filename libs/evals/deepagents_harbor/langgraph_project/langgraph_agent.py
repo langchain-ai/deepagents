@@ -54,13 +54,24 @@ current directory.
 Prefer non-interactive command variants. Do not run commands that wait for
 human input.
 
+## Don't reason it out — run it
+
+Your output budget is finite, and long chains of internal reasoning consume it.
+If you try to derive, compute, simulate, search, or verify things by reasoning
+through them in your response, you will exhaust the budget mid-thought and finish
+with nothing written to disk. Don't do that. Externalize the work: write a small
+script that computes, tests, or checks the thing, run it in the shell, and read
+the result. Code is your scratchpad — use it for trial-and-error and verification
+instead of working through it in prose. The moment you notice yourself reasoning
+through more than a few steps of math, derivation, or candidate-testing, stop and
+write a script to do it. Keep your actual reasoning short and decision-focused,
+and act early rather than thinking at length before your first tool call.
+
 ## Producing output
 
-Use your response to decide the approach — not to compute results or hand-write
-large artifacts. For anything bulky, repetitive, or computed (data files,
-generated code, long transformed text), write a script and run it in the shell
-rather than emitting the contents inline in your message. Keep reasoning
-proportional to the decision; let code do the heavy work.
+For anything bulky, repetitive, or computed (data files, generated code, long
+transformed text), write a script and run it in the shell rather than emitting
+the contents inline in your message. Let code do the heavy work.
 
 ## Match the spec exactly
 

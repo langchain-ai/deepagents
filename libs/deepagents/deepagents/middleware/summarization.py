@@ -45,8 +45,9 @@ Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.
 
 Each summarization event appends a new section to this file, creating a running
 log of all evicted messages. Base64 media in evicted messages is written
-separately under `/conversation_history/media/` and referenced by path from the
-markdown, so the history file stays text-only (see `_offload_base64_images`).
+separately under `<artifacts_root>/conversation_history/media/` and referenced
+by path from the markdown, so the history file stays text-only (see
+`_offload_base64_images` for the exact path).
 
 ## Summary prompt
 
@@ -104,6 +105,10 @@ When the media could be important for future context, preserve the media referen
 The model consuming the summary can call `read_file` on the referenced path if it needs to inspect the media.
 </media_reference_information>"""
 
+# NOTE: This splices the media-reference addendum in just before the
+# `<messages>` marker that `DEFAULT_SUMMARY_PROMPT` exposes. That marker is a
+# load-bearing contract -- see the `DEFAULT_SUMMARY_PROMPT` docstring in
+# langchain for the downstream-dependency note.
 DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
     "\n<messages>\n",
     f"\n{_MEDIA_REFERENCE_SUMMARY_PROMPT}\n\n<messages>\n",
@@ -355,8 +360,9 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
 
     Returns:
         A `(raw_bytes, extension, mime_type)` tuple, or `None` if decoding fails.
-            A failure is logged rather than swallowed silently, since the caller
-            still marks the block as a failed offload.
+            A failure is logged here and, like an upload failure, surfaces as a
+            failed-offload placeholder that counts toward the caller's aggregate
+            warning -- it is never swallowed silently.
     """
     try:
         header, payload = data_url.split(",", 1)
@@ -392,7 +398,7 @@ def _media_reference_block(path: str, mime: str) -> dict[str, Any]:
 def _rewrite_base64_blocks(
     messages: list[AnyMessage],
     path_map: dict[str, str],
-) -> list[AnyMessage]:
+) -> tuple[list[AnyMessage], int]:
     """Rewrite base64 blocks using uploaded media paths.
 
     Each base64 block whose content hash appears in `path_map` becomes a typed
@@ -406,10 +412,15 @@ def _rewrite_base64_blocks(
         path_map: Mapping of `sha256[:16]` to backend paths for uploaded media.
 
     Returns:
-        Messages with base64 blocks replaced. Messages without base64 content
-            are returned without copying.
+        A `(messages, failed_block_count)` tuple. `messages` has base64 blocks
+            replaced (messages without base64 content are returned without
+            copying). `failed_block_count` is the number of blocks rewritten to a
+            failed-offload placeholder -- covering both upload failures (key not
+            in `path_map`) and decode failures -- so the caller can report how
+            much media is unrecoverable.
     """
     rewritten: list[AnyMessage] = []
+    failed_blocks = 0
     for msg in messages:
         new_blocks: list[Any] = []
         modified = False
@@ -426,6 +437,7 @@ def _rewrite_base64_blocks(
                 if key in path_map:
                     new_blocks.append(_media_reference_block(path_map[key], mime))
                     continue
+            failed_blocks += 1
             new_blocks.append({"type": "text", "text": _OFFLOAD_FAILED_PLACEHOLDER})
         if modified:
             new_msg = msg.model_copy()
@@ -433,7 +445,7 @@ def _rewrite_base64_blocks(
             rewritten.append(new_msg)
         else:
             rewritten.append(msg)
-    return rewritten
+    return rewritten, failed_blocks
 
 
 def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
@@ -1052,7 +1064,7 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-    ) -> list[AnyMessage]:
+    ) -> tuple[list[AnyMessage], int]:
         """Decode base64 media blocks to files and replace them with path references.
 
         The caller uploads media before both `_offload_to_backend` and
@@ -1066,18 +1078,23 @@ A condensed summary follows:
         prefix follows the backend's `artifacts_root`, defaulting to `/`).
         Identical media across messages are deduped by content hash.
 
-        Upload failures are tracked per block. A failed block is replaced with
-        an `<image error="failed_to_offload" />` text placeholder; a successfully
-        uploaded block is rewritten to a typed media reference block.
+        Failures are tracked per block. A block whose upload failed -- or whose
+        payload could not be decoded -- is replaced with an
+        `<image error="failed_to_offload" />` text placeholder; a successfully
+        uploaded block is rewritten to a typed media reference block. The caller
+        receives the count of failed blocks so it can warn that those media are
+        unrecoverable.
 
         Args:
             backend: Backend to write media files to.
             messages: Messages to process.
 
         Returns:
-            Messages with base64 blocks replaced by path-reference media blocks
-                or error placeholders. Messages without base64 content are
-                returned unchanged.
+            A `(messages, failed_block_count)` tuple. `messages` has base64
+                blocks replaced by path-reference media blocks or error
+                placeholders; messages without base64 content are returned
+                unchanged. `failed_block_count` is the number of media blocks
+                that became failed-offload placeholders.
         """
         path_map: dict[str, str] = {}  # key -> backend path (successfully uploaded)
         failed_keys: set[str] = set()  # keys whose upload failed
@@ -1119,15 +1136,7 @@ A condensed summary follows:
                     failed_keys.add(key)
 
         if not saw_base64:
-            return messages  # no base64 media present, return original messages unchanged
-
-        if failed_keys:
-            warnings.warn(
-                f"{len(failed_keys)} media block(s) could not be offloaded to the backend during "
-                "summarization; they are marked as failed in the saved history and the original "
-                "media is not recoverable.",
-                stacklevel=2,
-            )
+            return messages, 0  # no base64 media present; return originals unchanged
 
         return _rewrite_base64_blocks(messages, path_map)
 
@@ -1135,10 +1144,11 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-    ) -> list[AnyMessage]:
+    ) -> tuple[list[AnyMessage], int]:
         """Async twin of `_offload_base64_images` using `aupload_files`.
 
-        See `_offload_base64_images` for full documentation.
+        See `_offload_base64_images` for full documentation, including the
+        `(messages, failed_block_count)` return contract.
         """
         path_map: dict[str, str] = {}
         failed_keys: set[str] = set()
@@ -1179,15 +1189,7 @@ A condensed summary follows:
                     failed_keys.add(key)
 
         if not saw_base64:
-            return messages
-
-        if failed_keys:
-            warnings.warn(
-                f"{len(failed_keys)} media block(s) could not be offloaded to the backend during "
-                "summarization; they are marked as failed in the saved history and the original "
-                "media is not recoverable.",
-                stacklevel=2,
-            )
+            return messages, 0
 
         return _rewrite_base64_blocks(messages, path_map)
 
@@ -1427,7 +1429,7 @@ A condensed summary follows:
             )
 
         # Upload base64 images once so both offload and summary see path references.
-        offloaded_image_messages = self._offload_base64_images(backend, messages_to_summarize)
+        offloaded_image_messages, failed_media = self._offload_base64_images(backend, messages_to_summarize)
 
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
@@ -1435,6 +1437,16 @@ A condensed summary follows:
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
+            warnings.warn(msg, stacklevel=2)
+        elif failed_media:
+            # History was saved, but some media became failed-offload placeholders.
+            # Tie the warning to the saved file so the recovery pointer is honest.
+            msg = (
+                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders in the saved "
+                "history; the original media is not recoverable."
+            )
+            logger.warning(msg)
             warnings.warn(msg, stacklevel=2)
 
         # Generate summary
@@ -1552,7 +1564,7 @@ A condensed summary follows:
 
         # Upload base64 images once so both offload and summary see path references.
         # This must complete before the gather since both methods consume the result.
-        offloaded_image_messages = await self._aoffload_base64_images(backend, messages_to_summarize)
+        offloaded_image_messages, failed_media = await self._aoffload_base64_images(backend, messages_to_summarize)
 
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
@@ -1563,6 +1575,16 @@ A condensed summary follows:
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
+            warnings.warn(msg, stacklevel=2)
+        elif failed_media:
+            # History was saved, but some media became failed-offload placeholders.
+            # Tie the warning to the saved file so the recovery pointer is honest.
+            msg = (
+                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders in the saved "
+                "history; the original media is not recoverable."
+            )
+            logger.warning(msg)
             warnings.warn(msg, stacklevel=2)
 
         # Build summary message with file path reference

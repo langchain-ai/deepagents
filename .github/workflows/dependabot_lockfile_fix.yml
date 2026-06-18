@@ -261,7 +261,5 @@ jobs:
           git diff --cached --stat
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit \
-            -m "chore: update Dependabot lockfiles" \
-            -m "Co-authored-by: open-swe[bot] <open-swe@users.noreply.github.com>"
+          git commit -m "chore: update Dependabot lockfiles"
           git push origin "HEAD:$HEAD_REF"

@@ -1,0 +1,213 @@
+# Regenerate uv.lock files on Dependabot PRs when Dependabot's textual
+# lockfile update leaves sibling editable/path package metadata out of sync.
+
+name: "🤖 Dependabot Lockfile Fix"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  fix-lockfiles:
+    if: >
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout trusted base code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Set up Python and uv from trusted action
+        uses: ./trusted-source/.github/actions/uv_setup
+        with:
+          python-version: "3.14"
+
+      - name: Checkout PR head read-only for preflight
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          path: pr-preflight
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Dependabot changed only uv package manifests and lockfiles
+        working-directory: pr-preflight
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only "$BASE_SHA...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import sys
+          from pathlib import Path
+
+          repo = Path.cwd().parent / "trusted-source"
+          changed_path = Path(os.environ["RUNNER_TEMP"]) / "changed-files.txt"
+          changed = [
+              line.strip()
+              for line in changed_path.read_text().splitlines()
+              if line.strip()
+          ]
+          changed_path.write_text("\n".join(changed) + ("\n" if changed else ""))
+
+          dependabot_config = repo / ".github" / "dependabot.yml"
+          uv_dirs: set[str] = set()
+          in_uv_update = False
+          in_directories = False
+          for line in dependabot_config.read_text().splitlines():
+              stripped = line.strip()
+              if line.startswith("  - package-ecosystem:"):
+                  in_uv_update = '"uv"' in stripped or "'uv'" in stripped or stripped.endswith(": uv")
+                  in_directories = False
+                  continue
+              if not in_uv_update:
+                  continue
+              if stripped == "directories:":
+                  in_directories = True
+                  continue
+              if in_directories and line.startswith("      - "):
+                  value = stripped.removeprefix("- ").strip().strip('"').strip("'")
+                  uv_dirs.add(value.removeprefix("/"))
+                  continue
+              if in_directories and stripped and not line.startswith("      "):
+                  in_directories = False
+
+          allowed_names = {"pyproject.toml", "uv.lock"}
+          rejected = []
+          for path in changed:
+              package = next(
+                  (directory for directory in uv_dirs if path.startswith(f"{directory}/")),
+                  None,
+              )
+              if package is None or Path(path).name not in allowed_names:
+                  rejected.append(path)
+
+          if rejected:
+              print("::error title=Unexpected Dependabot changes::Refusing to run with write credentials because this PR changes files outside Dependabot uv package pyproject.toml/uv.lock files.")
+              for path in rejected:
+                  print(f"Rejected path: {path}")
+              sys.exit(1)
+
+          print("Changed files:")
+          for path in changed:
+              print(f"- {path}")
+          PY
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.ORG_MEMBERSHIP_APP_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout PR head with push credentials
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ env.HEAD_REF }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify checked-out commit
+        working-directory: pr
+        run: |
+          actual_sha=$(git rev-parse HEAD)
+          if [ "$actual_sha" != "$HEAD_SHA" ]; then
+            echo "::error::Expected HEAD_SHA=$HEAD_SHA but checked out $actual_sha"
+            exit 1
+          fi
+
+      - name: Regenerate affected lockfiles
+        working-directory: pr
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import os
+          import shlex
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path.cwd()
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          script = repo.parent / "trusted-source" / ".github" / "scripts" / "check_lockfiles_pre_commit.py"
+          spec = importlib.util.spec_from_file_location("lockfile_check", script)
+          if spec is None or spec.loader is None:
+              raise RuntimeError(f"Unable to load {script}")
+          lockfile_check = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(lockfile_check)
+
+          lockfile_check.REPO_ROOT = repo
+          lockfile_check.LIBS_ROOT = repo / "libs"
+          lockfile_check.EXAMPLES_ROOT = repo / "examples"
+
+          changed = [
+              line.strip()
+              for line in (runner_temp / "changed-files.txt").read_text().splitlines()
+              if line.strip()
+          ]
+          lockfiles_path = runner_temp / "lockfiles-to-stage.txt"
+          packages = lockfile_check._packages_for_paths(changed)
+          if not packages:
+              lockfiles_path.write_text("")
+              print("No package lockfiles need regenerating.")
+              sys.exit(0)
+
+          lockfiles = []
+          for package in packages:
+              command = lockfile_check._lock_command(package, check=False)
+              print(f"Regenerating {lockfile_check._repo_path(package)} with {shlex.join(command)}")
+              subprocess.run(command, cwd=repo, check=True)
+              lockfiles.append(lockfile_check._repo_path(package / "uv.lock"))
+
+          lockfiles_path.write_text("\n".join(lockfiles) + "\n")
+          PY
+
+      - name: Commit and push lockfile changes
+        working-directory: pr
+        run: |
+          while IFS= read -r lockfile; do
+            if [ -n "$lockfile" ] && [ -f "$lockfile" ]; then
+              git add -- "$lockfile"
+            fi
+          done < "$RUNNER_TEMP/lockfiles-to-stage.txt"
+
+          if git diff --cached --quiet; then
+            echo "No lockfile changes to commit."
+            exit 0
+          fi
+
+          git diff --cached --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit \
+            -m "chore: update Dependabot lockfiles" \
+            -m "Co-authored-by: open-swe[bot] <open-swe@users.noreply.github.com>"
+          git push origin "HEAD:$HEAD_REF"

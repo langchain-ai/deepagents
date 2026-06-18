@@ -28,12 +28,13 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
@@ -2124,11 +2125,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires, uses `Overwrite` to atomically replace
-        the messages channel with a fully-identified list. A plain append of
-        the tagged message would not survive DeltaChannel replay: the original
-        `HumanMessage(id=None)` write gets a fresh UUID on replay that
-        doesn't match the eviction Command's ID, producing a duplicate.
+        When a new eviction fires, emits a `RemoveMessage(REMOVE_ALL_MESSAGES)`
+        sentinel followed by the fully-identified list to atomically replace
+        the messages channel. A plain append of the tagged message would not
+        survive DeltaChannel replay: the original `HumanMessage(id=None)`
+        write gets a fresh UUID on replay that doesn't match the eviction
+        Command's ID, producing a duplicate.
 
         Args:
             messages: The message list (may be modified if write succeeded).
@@ -2152,8 +2154,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
-            messages = [*messages[:-1], tagged]
+            replacement: list[AnyMessage] = [*messages[:-1], tagged]
+            state_command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *replacement]})
+            messages = replacement
 
         processed: list[AnyMessage] = []
         for msg in messages:
@@ -2223,18 +2226,28 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     @staticmethod
     def _unwrap_command_messages(update: Mapping[str, Any]) -> tuple[Any, bool]:
-        """Return a Command messages update and whether it used Overwrite."""
+        """Return the message list from a Command update and whether it was prefixed with a `REMOVE_ALL_MESSAGES` sentinel.
+
+        Tools that want to atomically replace the messages channel emit
+        `[RemoveMessage(REMOVE_ALL_MESSAGES), *messages]`. Detect that
+        sentinel so we can preserve it after processing.
+        """
         command_messages = update.get("messages", [])
-        if isinstance(command_messages, Overwrite):
-            return command_messages.value, True
+        if (
+            isinstance(command_messages, list)
+            and command_messages
+            and isinstance(command_messages[0], RemoveMessage)
+            and command_messages[0].id == REMOVE_ALL_MESSAGES
+        ):
+            return command_messages[1:], True
         return command_messages, False
 
     @staticmethod
-    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage] | Overwrite:
-        """Restore Overwrite semantics when the original messages update used them."""
+    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage | RemoveMessage]:
+        """Restore the `REMOVE_ALL_MESSAGES` sentinel when the original update used one."""
         if wrapped:
-            return Overwrite(messages)
-        return messages
+            return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
+        return list(messages)
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.

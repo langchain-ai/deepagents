@@ -20,16 +20,16 @@ class _FakeModel:
 
     name = "fake"
 
-    def bind_tools(self, *args, **kwargs):
+    def bind_tools(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
 
-    def with_structured_output(self, *args, **kwargs):
+    def with_structured_output(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
 
-    def invoke(self, messages, config=None, **kw):
+    def invoke(self, messages, config=None, **kw):  # noqa: ANN003
         return AIMessage(content="ok")
 
-    async def ainvoke(self, messages, config=None, **kw):
+    async def ainvoke(self, messages, config=None, **kw):  # noqa: ANN003
         return AIMessage(content="ok")
 
 
@@ -46,7 +46,7 @@ def _build_agent():
         middleware=[middleware],
         checkpointer=checkpointer,
     )
-    return agent
+    return agent  # noqa: RET504  # clearer than inlining the create_agent call
 
 
 def _state_messages(agent, thread_id):

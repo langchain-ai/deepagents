@@ -327,6 +327,29 @@ def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
         render_ptc_prompt([_echo_tool("123bad")])
 
 
+def test_render_ptc_prompt_camelcases_task_subagent_type() -> None:
+    """The `task` signature must use `subagentType` (what the JS bridge reads).
+
+    The Pydantic schema field is `subagent_type`, but the REPL `task()` bridge
+    only accepts the camelCase key, so the rendered signature must match.
+    """
+
+    class _TaskInput(BaseModel):
+        description: str = Field(description="Task prompt")
+        subagent_type: str = Field(description="Subagent name")
+
+    task_tool = StructuredTool.from_function(
+        func=lambda description, subagent_type: "ok",
+        name="task",
+        description="Launch a subagent",
+        args_schema=_TaskInput,
+    )
+
+    prompt = render_ptc_prompt([task_tool])
+    assert "subagentType: string" in prompt
+    assert "subagent_type" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # In-REPL invocation
 # ---------------------------------------------------------------------------

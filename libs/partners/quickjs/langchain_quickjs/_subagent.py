@@ -28,13 +28,18 @@ _SCHEMA_MAX_PROPERTIES = 32
 _SUBAGENT_TASK_TOOL_FIELDS = frozenset({"description", "subagent_type"})
 
 
+def is_subagent_task_tool(tool: BaseTool) -> bool:
+    """Return whether `tool` is the Deep Agents task tool backing `task()`."""
+    return (
+        getattr(tool, "name", None) == "task"
+        and _tool_input_field_names(tool) >= _SUBAGENT_TASK_TOOL_FIELDS
+    )
+
+
 def find_subagent_task_tool(tools: Sequence[BaseTool]) -> BaseTool | None:
     """Return the Deep Agents task tool that backs top-level `task()`."""
     for tool in tools:
-        if (
-            getattr(tool, "name", None) == "task"
-            and _tool_input_field_names(tool) >= _SUBAGENT_TASK_TOOL_FIELDS
-        ):
+        if is_subagent_task_tool(tool):
             return tool
     return None
 

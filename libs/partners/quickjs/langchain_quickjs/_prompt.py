@@ -455,7 +455,7 @@ def _render_signature(
 ) -> str:
     return_clause = f"Promise<{return_type}>"
     default_signature = (
-        f"async function {fn_name}(input: Record<string, unknown>): {return_clause}"
+        f"tools.{fn_name}(input: Record<string, unknown>): {return_clause}"
     )
     if not schema or not isinstance(schema.get("properties"), dict):
         return default_signature
@@ -471,7 +471,7 @@ def _render_signature(
     body = "\n".join(fields) if fields else ""
     if not body:
         return default_signature
-    return f"async function {fn_name}(input: {{\n{body}\n}}): {return_clause}"
+    return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
 # Return types come from the tool's underlying function annotation. We feed

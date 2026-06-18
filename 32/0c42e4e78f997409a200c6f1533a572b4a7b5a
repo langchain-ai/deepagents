@@ -1,0 +1,25 @@
+libs/partners/quickjs/langchain_quickjs/_ptc.py
+  s_55bb2e5cb9e884::t_9fea2c917a42a9 37-49
+  s_55bb2e5cb9e884::t_fb0690b53421e6 74-78
+  s_55bb2e5cb9e884::t_08627182c4d628 89-90,95-96
+libs/partners/quickjs/tests/unit_tests/test_thread_affinity.py
+  s_55bb2e5cb9e884::t_e052bed3a201a8 106-111,131,134,138-144,146,152
+libs/partners/quickjs/tests/unit_tests/test_ptc.py
+  s_55bb2e5cb9e884::t_391cf12019b5c2 255-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "320c42e4e78f997409a200c6f1533a572b4a7b5a",
+  "prompts": {},
+  "sessions": {
+    "s_55bb2e5cb9e884": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d8eefc-b814-4369-9677-981c907ab665",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

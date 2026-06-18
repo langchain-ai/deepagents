@@ -252,6 +252,28 @@ def test_filter_list_include() -> None:
     assert [t.name for t in out] == ["a", "c"]
 
 
+def test_filter_rejects_task_by_name() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([task], ["task"], self_tool_name="eval")
+
+
+def test_filter_rejects_task_by_instance() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([], [task], self_tool_name="eval")
+
+
+def test_filter_allows_non_task_tools() -> None:
+    # Sanity: the reservation is specific to the name "task".
+    out = filter_tools_for_ptc(
+        [_echo_tool("tasks"), _echo_tool("subtask")],
+        ["tasks", "subtask"],
+        self_tool_name="eval",
+    )
+    assert [t.name for t in out] == ["tasks", "subtask"]
+
+
 def test_filter_list_of_tools_uses_them_directly() -> None:
     """`list[BaseTool]` ignores agent tools and uses the supplied list."""
     greet = _greet_tool()
@@ -314,7 +336,7 @@ def test_render_ptc_prompt_uses_signatures() -> None:
     prompt = render_ptc_prompt([_greet_tool()])
     assert "`tools` namespace" in prompt
     assert "globalThis.tools" in prompt
-    assert "async function greet(input:" in prompt
+    assert "tools.greet(input:" in prompt
     # Fields come through
     assert "name: string" in prompt
     assert "times?: number" in prompt
@@ -583,7 +605,7 @@ def test_middleware_ptc_list_includes_prompt_block() -> None:
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     prompt = mw._prepare_for_call(req)
     # Greet included
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
     # The REPL's own tool never appears
     assert "tools.eval(" not in prompt
 
@@ -595,7 +617,7 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
     req = SimpleNamespace(tools=[])
     prompt = mw._prepare_for_call(req)
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:

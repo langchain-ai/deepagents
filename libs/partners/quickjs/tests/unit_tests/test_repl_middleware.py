@@ -1124,9 +1124,17 @@ async def test_async_task_global_invokes_runner(repl: _ThreadREPL) -> None:
     runnable = RunnableLambda(_sync, afunc=_async)
 
     outcome = await repl.eval_async(
-        "globalThis.task = null;"
-        "delete globalThis.task;"
-        "task.extra = 1;"
+        # The `task` global is bound writable:false / configurable:false, so under
+        # strict-mode eval every tamper attempt must THROW (a stronger guarantee
+        # than the old sloppy-mode silent no-op). Each attempt is required to
+        # raise, and `task` must survive intact and remain callable afterwards.
+        "const mustThrow = (label, fn) => {"
+        "  try { fn(); } catch (e) { return; }"
+        "  throw new Error('task binding is mutable: ' + label);"
+        "};"
+        "mustThrow('assign', () => { globalThis.task = null; });"
+        "mustThrow('delete', () => { delete globalThis.task; });"
+        "mustThrow('addProp', () => { task.extra = 1; });"
         "if (!Object.isFrozen(task) || task.extra !== undefined) {"
         "  throw new Error('task binding is mutable');"
         "}"

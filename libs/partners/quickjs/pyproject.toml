@@ -24,7 +24,7 @@ keywords = ["deepagents", "langchain", "langgraph", "repl", "javascript", "quick
 
 dependencies = [
     "deepagents>=0.6.8,<0.7.0",
-    "quickjs-rs>=0.1.2,<0.2.0",
+    "quickjs-rs>=0.2.0,<0.3.0",
     "langchain>=1.3.9,<2.0.0",
     "langchain-core>=1.4.7,<2.0.0",
     "langgraph>=1.2.5,<2.0.0",
@@ -60,6 +60,7 @@ test = [
 
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
+quickjs-rs = { path = "/Users/hunter/Projects/github/langchain-ai/worktrees/quickjs-wasm/hearty-palm/quickjs-wasm", editable = true }
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]

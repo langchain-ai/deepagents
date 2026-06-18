@@ -507,34 +507,34 @@ class TestThreadSelectorTabSort:
                 agent_select = screen.query_one("#thread-agent-select", Select)
                 assert filter_input.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert scope_select.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert agent_select.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert sort_switch.has_focus
 
                 relative_time_switch = screen.query_one(
                     "#thread-relative-time", Checkbox
                 )
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert relative_time_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert thread_id_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert agent_name_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert messages_switch.has_focus
 

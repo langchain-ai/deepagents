@@ -469,6 +469,40 @@ class TestOffloadingBasic:
         _, content = backend.write_calls[0]
         assert image_url in content
 
+    def test_non_base64_data_url_is_not_offloaded(self) -> None:
+        """URL-encoded `data:` URLs are not treated as base64 media."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        svg_url = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E"
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is the inline SVG"},
+                    {"type": "image", "url": svg_url},
+                ],
+                id="svg-data-url",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert "Here is the inline SVG" in archive_write[1]
+        assert 'error="failed_to_offload"' not in archive_write[1]
+
     def test_offload_rewrites_base64_images(self) -> None:
         """Base64 image data is decoded to files and referenced by path in the archive (issue #2873).
 

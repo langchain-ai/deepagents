@@ -296,6 +296,14 @@ silently omitting it.
 """
 
 
+def _is_base64_data_url(url: str) -> bool:
+    """Return whether `url` is a `data:` URL with a base64 payload."""
+    if not url.startswith("data:"):
+        return False
+    header, separator, _ = url.partition(",")
+    return bool(separator) and "base64" in header.lower().split(";")
+
+
 def _extract_base64_data_url(block: Any) -> str | None:  # noqa: ANN401
     """Return the embedded `data:` URL for a base64-carrying content block.
 
@@ -324,16 +332,16 @@ def _extract_base64_data_url(block: Any) -> str | None:  # noqa: ANN401
         mime = block.get("mime_type") or "application/octet-stream"
         return f"data:{mime};base64,{raw_b64}"
 
-    # 2. Top-level data: URL.
+    # 2. Top-level base64 data: URL.
     url = block.get("url", "")
-    if isinstance(url, str) and url.startswith("data:"):
+    if isinstance(url, str) and _is_base64_data_url(url):
         return url
 
-    # 3. OpenAI-style image_url with a data: URL.
+    # 3. OpenAI-style image_url with a base64 data: URL.
     image_url = block.get("image_url")
     if isinstance(image_url, dict):
         inner = image_url.get("url", "")
-        if isinstance(inner, str) and inner.startswith("data:"):
+        if isinstance(inner, str) and _is_base64_data_url(inner):
             return inner
 
     return None

@@ -454,7 +454,7 @@ _register(
 )
 _register(
     _default(
-        "test_edit_correct_skill_from_multiple_sources",
+        "test_find_skill_in_correct_path",
         _UNIT_TEST,
         _BASELINE,
         skills=["/skills/base/", "/skills/project/"],

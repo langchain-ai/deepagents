@@ -47,6 +47,14 @@ def test_registry_keys_are_test_names() -> None:
         assert name.startswith("test_"), f"Unexpected registry key: {name!r}"
 
 
+def test_skill_path_eval_registered_with_pytest_name() -> None:
+    """The multi-path skill eval is registered under its pytest eval name."""
+    spec = EVALS["test_find_skill_in_correct_path"]
+
+    assert "test_edit_correct_skill_from_multiple_sources" not in EVALS
+    assert spec.skills == ["/skills/base/", "/skills/project/"]
+
+
 # ---------------------------------------------------------------------------
 # Mock tool exports
 # ---------------------------------------------------------------------------

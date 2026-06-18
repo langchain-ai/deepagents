@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
@@ -22,6 +22,7 @@ from langchain_core._api import beta
 from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.channels import DeltaChannel
 from langgraph.config import get_config
 from pydantic import BaseModel, Field
 
@@ -52,10 +53,45 @@ _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 
 
+def _replace_snapshot_payload(
+    state: bytes | None,
+    writes: Sequence[bytes | None],
+) -> bytes | None:
+    """Bulk reducer that keeps only the most recent snapshot payload.
+
+    The QuickJS snapshot is a full serialization of the REPL heap, rewritten
+    in its entirety on every `after_agent`. Persisting it through the default
+    `LastValue` channel re-serializes the whole payload into each checkpoint,
+    so checkpoint size grows with thread length. Pairing this reducer with a
+    `DeltaChannel` stores only the per-step write, while reconstruction always
+    collapses to the latest snapshot.
+
+    Last write wins: the final element of `writes` replaces the prior value
+    entirely (including a `None`, which clears the stored snapshot). With no
+    writes the existing `state` is preserved. This is associative as
+    `DeltaChannel` requires — batching the writes differently yields the same
+    materialized value:
+
+        reduce(reduce(state, [xs]), [ys]) == reduce(state, [xs, ys])
+
+    The function is pure (no side effects, randomness, or clock reads), so it
+    is safe to re-run on every reconstruction/replay.
+    """
+    if not writes:
+        return state
+    return writes[-1]
+
+
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
+    _quickjs_snapshot_payload: NotRequired[
+        Annotated[
+            bytes,
+            DeltaChannel(_replace_snapshot_payload),
+            PrivateStateAttr,
+        ]
+    ]
 
 
 class EvalSchema(BaseModel):
@@ -381,7 +417,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if self._reset_between_calls or not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
@@ -405,7 +441,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if self._reset_between_calls or not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)

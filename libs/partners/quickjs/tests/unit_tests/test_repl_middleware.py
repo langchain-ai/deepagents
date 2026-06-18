@@ -845,6 +845,37 @@ def test_before_agent_clears_payload_on_restore_failure() -> None:
         mw._registry.close()
 
 
+def test_before_agent_ignores_empty_delta_channel_seed() -> None:
+    """The `DeltaChannel` seeds a never-written channel to `b""` (its value
+    type is `bytes`). `before_agent` must treat that empty seed like a missing
+    payload — not attempt to restore it (which would fail "shorter than
+    header") and not spuriously clear it."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": b""},
+            runtime=MagicMock(),
+        )
+        assert update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
+async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
+    """Async variant: empty `b""` seed is a no-op restore."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        update = await mw.abefore_agent(
+            state={"_quickjs_snapshot_payload": b""},
+            runtime=MagicMock(),
+        )
+        assert update is None
+        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+    finally:
+        mw._registry.close()
+
+
 def test_after_agent_clears_payload_on_snapshot_failure() -> None:
     mw = CodeInterpreterMiddleware()
     try:

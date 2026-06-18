@@ -1,0 +1,25 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_00b9b666f95bae::t_166eb20c49632e 186
+libs/evals/deepagents_harbor/langgraph_project/eval_langgraph.json
+  s_00b9b666f95bae::t_166eb20c49632e 1-22
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_00b9b666f95bae::t_166eb20c49632e 21
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_00b9b666f95bae::t_6ba4ca2a84a8c7 28-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "82fac663de4fb6689caf40a9cf7e5403cd0ec826",
+  "prompts": {},
+  "sessions": {
+    "s_00b9b666f95bae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019edb49-19f6-7773-950c-63704b90abbd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

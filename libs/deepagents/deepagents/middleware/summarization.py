@@ -29,7 +29,7 @@ from deepagents.backends import FilesystemBackend
 backend = FilesystemBackend(root_dir="/data")
 
 summ = SummarizationMiddleware(
-    model="gpt-5.4-mini",
+    model="gpt-5.5-mini",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),
@@ -44,14 +44,27 @@ agent = create_deep_agent(middleware=[summ, tool_mw])
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
 Each summarization event appends a new section to this file, creating a running
-log of all evicted messages.
+log of all evicted messages. Base64 media in evicted messages is written
+separately under `/conversation_history/media/` and referenced by path from the
+markdown, so the history file stays text-only (see `_offload_base64_images`).
+
+## Summary prompt
+
+`DEEPAGENTS_DEFAULT_SUMMARY_PROMPT` augments LangChain's `DEFAULT_SUMMARY_PROMPT`
+with a deepagents-specific addendum explaining the media reference tags that the
+offloading behavior introduces, so the summarizing model knows to preserve them.
+It is the default `summary_prompt` for `SummarizationMiddleware` and both
+factories.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import inspect
 import logging
+import mimetypes
 import uuid
 import warnings
 from collections.abc import Mapping
@@ -81,6 +94,21 @@ from deepagents.backends import CompositeBackend
 from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
+
+_MEDIA_REFERENCE_SUMMARY_PROMPT = """<media_reference_information>
+Conversation history may include XML media reference tags, for example:
+<image url=\"/conversation_history/media/{{hash}}.png\" />
+These tags mean the original message included media that was preserved at the referenced backend path.
+Treat the tag and path as part of the conversation context. Do not infer visual details that are not available from surrounding text.
+When the media could be important for future context, preserve the media reference in your summary.
+The model consuming the summary can call `read_file` on the referenced path if it needs to inspect the media.
+</media_reference_information>"""
+
+DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
+    "\n<messages>\n",
+    f"\n{_MEDIA_REFERENCE_SUMMARY_PROMPT}\n\n<messages>\n",
+    1,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -260,102 +288,137 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     }
 
 
-def _decode_base64_block(block: Any) -> tuple[bytes, str] | None:  # noqa: ANN401
-    """Decode a base64-carrying content block to raw bytes and a file extension.
+_OFFLOAD_FAILED_PLACEHOLDER = '<image error="failed_to_offload" />'
+"""Text placeholder written when a media block cannot be offloaded.
 
-    Mirrors the three shapes recognized by
-    `langchain_core.messages.utils._has_base64_data`:
+Marks the spot so the saved history shows a block was present rather than
+silently omitting it.
+"""
+
+
+def _extract_base64_data_url(block: Any) -> str | None:  # noqa: ANN401
+    """Return the embedded `data:` URL for a base64-carrying content block.
+
+    Detects the three base64 content-block shapes used across LangChain
+    messages (kept in sync with the message utilities' own base64 detection):
 
     1. A standard content block with an explicit `base64` field.
     2. A top-level `data:` URL on the `url` field.
     3. An OpenAI-style `image_url` block whose `url` is a `data:` URL.
 
+    This is pure detection and never raises: it reports *whether* a block
+    carries base64 data, leaving decoding (which can fail) to `_decode_data_url`.
+
     Args:
         block: A single content block (usually a dict).
 
     Returns:
-        A `(raw_bytes, extension)` tuple, or `None` if the block carries no
-            base64 data or decoding fails.
+        The block's `data:` URL, or `None` if the block carries no base64 data.
     """
-    import base64 as _base64  # noqa: PLC0415
-
     if not isinstance(block, dict):
         return None
-
-    data_url: str | None = None
 
     # 1. Standard content block with an explicit base64 field.
     raw_b64 = block.get("base64")
     if raw_b64:
         mime = block.get("mime_type") or "application/octet-stream"
-        data_url = f"data:{mime};base64,{raw_b64}"
+        return f"data:{mime};base64,{raw_b64}"
 
     # 2. Top-level data: URL.
-    if data_url is None:
-        url = block.get("url", "")
-        if isinstance(url, str) and url.startswith("data:"):
-            data_url = url
+    url = block.get("url", "")
+    if isinstance(url, str) and url.startswith("data:"):
+        return url
 
     # 3. OpenAI-style image_url with a data: URL.
-    if data_url is None:
-        image_url = block.get("image_url")
-        if isinstance(image_url, dict):
-            inner = image_url.get("url", "")
-            if isinstance(inner, str) and inner.startswith("data:"):
-                data_url = inner
+    image_url = block.get("image_url")
+    if isinstance(image_url, dict):
+        inner = image_url.get("url", "")
+        if isinstance(inner, str) and inner.startswith("data:"):
+            return inner
 
-    if data_url is None:
-        return None
+    return None
 
-    # Parse data:<mime>;base64,<payload>.
+
+def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
+    """Decode a `data:` URL to raw bytes, a file extension, and a MIME type.
+
+    Args:
+        data_url: A `data:<mime>;base64,<payload>` URL.
+
+    Returns:
+        A `(raw_bytes, extension, mime_type)` tuple, or `None` if decoding fails.
+            A failure is logged rather than swallowed silently, since the caller
+            still marks the block as a failed offload.
+    """
     try:
-        import mimetypes  # noqa: PLC0415
-
         header, payload = data_url.split(",", 1)
         mime = header.split(":")[1].split(";")[0] if ":" in header else "application/octet-stream"
         ext = (mimetypes.guess_extension(mime) or ".bin").lstrip(".")
-        return _base64.b64decode(payload), ext
-    except Exception:  # noqa: BLE001
+        return base64.b64decode(payload), ext, mime
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to decode base64 content block (%s): %s", type(e).__name__, e)
         return None
+
+
+def _media_reference_block(path: str, mime: str) -> dict[str, Any]:
+    """Build a content block referencing offloaded media by backend path.
+
+    The block type is chosen so the XML history renderer serializes the
+    reference: `image`, `audio`, and `video` map to their typed blocks, while
+    any other MIME type falls back to a text block (the renderer has no generic
+    file block and would otherwise drop it).
+
+    Args:
+        path: Backend path where the media was stored.
+        mime: MIME type of the original media, used to pick the block type.
+
+    Returns:
+        A content block carrying the path reference.
+    """
+    major = mime.split("/", 1)[0]
+    if major in {"image", "audio", "video"}:
+        return {"type": major, "url": path}
+    return {"type": "text", "text": f'<file url="{path}" />'}
 
 
 def _rewrite_base64_blocks(
     messages: list[AnyMessage],
     path_map: dict[str, str],
 ) -> list[AnyMessage]:
-    """Rewrite base64 blocks using uploaded image paths.
+    """Rewrite base64 blocks using uploaded media paths.
 
-    Each base64 block whose hash appears in `path_map` becomes an image URL
-    block. Blocks without a matching upload become an
-    `<image error="failed_to_offload" />` text placeholder. Non-base64 blocks
-    pass through unchanged.
+    Each base64 block whose content hash appears in `path_map` becomes a typed
+    media reference block. Blocks whose upload failed -- or whose payload could
+    not be decoded -- become an `<image error="failed_to_offload" />` text
+    placeholder so the saved history records that media was present rather than
+    silently dropping it. Non-base64 blocks pass through unchanged.
 
     Args:
         messages: Messages whose base64 blocks should be rewritten.
-        path_map: Mapping of `sha256[:16]` to backend paths for uploaded images.
+        path_map: Mapping of `sha256[:16]` to backend paths for uploaded media.
 
     Returns:
         Messages with base64 blocks replaced. Messages without base64 content
             are returned without copying.
     """
-    import hashlib  # noqa: PLC0415
-
     rewritten: list[AnyMessage] = []
     for msg in messages:
         new_blocks: list[Any] = []
         modified = False
         for block in msg.content_blocks:
-            decoded = _decode_base64_block(block)
-            if decoded is None:
+            data_url = _extract_base64_data_url(block)
+            if data_url is None:
                 new_blocks.append(block)
                 continue
-            raw, _ext = decoded
-            key = hashlib.sha256(raw).hexdigest()[:16]
-            if key in path_map:
-                new_blocks.append({"type": "image", "url": path_map[key]})
-            else:
-                new_blocks.append({"type": "text", "text": '<image error="failed_to_offload" />'})
             modified = True
+            decoded = _decode_data_url(data_url)
+            if decoded is not None:
+                raw, _ext, mime = decoded
+                key = hashlib.sha256(raw).hexdigest()[:16]
+                if key in path_map:
+                    new_blocks.append(_media_reference_block(path_map[key], mime))
+                    continue
+            new_blocks.append({"type": "text", "text": _OFFLOAD_FAILED_PLACEHOLDER})
         if modified:
             new_msg = msg.model_copy()
             new_msg.content = new_blocks
@@ -415,7 +478,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
-        summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
+        summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
@@ -457,7 +520,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             from deepagents.backends import StateBackend
 
             middleware = SummarizationMiddleware(
-                model="gpt-5.4-mini",
+                model="gpt-5.5",
                 backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
@@ -982,32 +1045,32 @@ A condensed summary follows:
         backend: BackendProtocol,
         messages: list[AnyMessage],
     ) -> list[AnyMessage]:
-        """Decode base64 image blocks to files and replace them with path references.
+        """Decode base64 media blocks to files and replace them with path references.
 
-        The caller uploads images before both `_offload_to_backend` and
-        `_create_summary`, so both paths receive URL-only messages. The archive
-        keeps addressable `<image url="..." />` references, and the summary prompt
-        does not receive raw base64 bytes.
+        The caller uploads media before both `_offload_to_backend` and
+        `_create_summary`, so both paths receive messages with base64 replaced
+        by path references (or error placeholders when an upload fails). The
+        archive keeps addressable `<image url="..." />` references, and the
+        summary prompt does not receive raw base64 bytes.
 
         Each unique image is uploaded once to
-        `/conversation_history/media/{sha256}.{ext}`. Identical images across
-        messages are deduped by content hash.
+        `{artifacts_root}/conversation_history/media/{sha256[:16]}.{ext}` (the
+        prefix follows the backend's `artifacts_root`, defaulting to `/`).
+        Identical media across messages are deduped by content hash.
 
         Upload failures are tracked per block. A failed block is replaced with
         an `<image error="failed_to_offload" />` text placeholder; a successfully
-        uploaded block is rewritten to `{"type": "image", "url": path}`.
+        uploaded block is rewritten to a typed media reference block.
 
         Args:
-            backend: Backend to write image files to.
+            backend: Backend to write media files to.
             messages: Messages to process.
 
         Returns:
-            Messages with base64 blocks replaced by path-reference image blocks
+            Messages with base64 blocks replaced by path-reference media blocks
                 or error placeholders. Messages without base64 content are
                 returned unchanged.
         """
-        import hashlib  # noqa: PLC0415
-
         path_map: dict[str, str] = {}  # key -> backend path (successfully uploaded)
         failed_keys: set[str] = set()  # keys whose upload failed
         saw_base64 = False
@@ -1015,11 +1078,14 @@ A condensed summary follows:
         # First pass: upload each unique image individually for per-block failure tracking.
         for msg in messages:
             for block in msg.content_blocks:
-                decoded = _decode_base64_block(block)
-                if decoded is None:
+                data_url = _extract_base64_data_url(block)
+                if data_url is None:
                     continue
                 saw_base64 = True
-                raw, ext = decoded
+                decoded = _decode_data_url(data_url)
+                if decoded is None:
+                    continue  # undecodable; rewrite emits a failed-offload placeholder
+                raw, ext, _mime = decoded
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
@@ -1045,7 +1111,15 @@ A condensed summary follows:
                     failed_keys.add(key)
 
         if not saw_base64:
-            return messages  # nothing uploaded, return original messages unchanged
+            return messages  # no base64 media present, return original messages unchanged
+
+        if failed_keys:
+            warnings.warn(
+                f"{len(failed_keys)} media block(s) could not be offloaded to the backend during "
+                "summarization; they are marked as failed in the saved history and the original "
+                "media is not recoverable.",
+                stacklevel=2,
+            )
 
         return _rewrite_base64_blocks(messages, path_map)
 
@@ -1058,19 +1132,20 @@ A condensed summary follows:
 
         See `_offload_base64_images` for full documentation.
         """
-        import hashlib  # noqa: PLC0415
-
         path_map: dict[str, str] = {}
         failed_keys: set[str] = set()
         saw_base64 = False
 
         for msg in messages:
             for block in msg.content_blocks:
-                decoded = _decode_base64_block(block)
-                if decoded is None:
+                data_url = _extract_base64_data_url(block)
+                if data_url is None:
                     continue
                 saw_base64 = True
-                raw, ext = decoded
+                decoded = _decode_data_url(data_url)
+                if decoded is None:
+                    continue  # undecodable; rewrite emits a failed-offload placeholder
+                raw, ext, _mime = decoded
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
@@ -1097,6 +1172,14 @@ A condensed summary follows:
 
         if not saw_base64:
             return messages
+
+        if failed_keys:
+            warnings.warn(
+                f"{len(failed_keys)} media block(s) could not be offloaded to the backend during "
+                "summarization; they are marked as failed in the saved history and the original "
+                "media is not recoverable.",
+                stacklevel=2,
+            )
 
         return _rewrite_base64_blocks(messages, path_map)
 
@@ -1513,7 +1596,7 @@ def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
     *,
-    summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
+    summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
     token_counter: TokenCounter = count_tokens_approximately,
 ) -> _DeepAgentsSummarizationMiddleware:
@@ -1638,7 +1721,7 @@ def create_summarization_tool_middleware(
             create_summarization_tool_middleware,
         )
 
-        model = "openai:gpt-5.4"
+        model = "openai:gpt-5.5"
         agent = create_deep_agent(
             model=model,
             middleware=[
@@ -1659,7 +1742,7 @@ def create_summarization_tool_middleware(
 
         sandbox = Daytona().create()
         backend = DaytonaSandbox(sandbox=sandbox)
-        model = "openai:gpt-5.4"
+        model = "openai:gpt-5.5"
         agent = create_deep_agent(
             model=model,
             backend=backend,
@@ -1705,7 +1788,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             SummarizationToolMiddleware,
         )
 
-        summ = SummarizationMiddleware(model="gpt-5.4-mini", backend=backend)
+        summ = SummarizationMiddleware(model="gpt-5.5", backend=backend)
         tool_mw = SummarizationToolMiddleware(summ)
 
         agent = create_deep_agent(middleware=[summ, tool_mw])

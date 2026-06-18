@@ -693,6 +693,82 @@ class TestOffloadingBasic:
         assert b64 not in archive_write[1]
         assert 'error="failed_to_offload"' in archive_write[1]
 
+    def test_offload_rewrites_non_image_media(self) -> None:
+        """Non-image base64 media is offloaded and referenced with its own block type.
+
+        The offload path is media-generic: an audio block is decoded to
+        `/conversation_history/media/{sha256}.{ext}` and rewritten so the XML
+        archive renders an `<audio url="..." />` reference rather than
+        mislabeling it as an image.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_audio = b"ID3_FAKE_MP3_DATA"
+        b64 = _base64.b64encode(raw_audio).decode()
+        expected_key = hashlib.sha256(raw_audio).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.mp3"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "audio", "base64": b64, "mime_type": "audio/mpeg"}],
+                id="audio-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert image_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Rendered as an audio reference, not an image, and not raw base64.
+        assert f'<audio url="{expected_path}" />' in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_offload_decode_failure_writes_placeholder(self) -> None:
+        """A detected-but-undecodable base64 block becomes a placeholder, not a silent drop.
+
+        A malformed `data:` URL is recognized as media but fails to decode. The
+        block must still surface as an `<image error="failed_to_offload" />`
+        placeholder so the archive records that media was present.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # Missing the comma separator -> _decode_data_url raises and returns None.
+        malformed = "data:image/png;base64"
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "url": malformed}], id="bad-img"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Nothing was uploaded (decode failed before any upload).
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert 'error="failed_to_offload"' in archive_write[1]
+        assert malformed not in archive_write[1]
+
     def test_upload_runs_once_before_offload_and_summary(self) -> None:
         """Image upload runs once and the result is shared by offload and summary.
 

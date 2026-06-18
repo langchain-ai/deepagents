@@ -6715,10 +6715,14 @@ class TestInstallExtraAuthContinuation:
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
 
-        with patch("deepagents_code.app._extra_is_ready", return_value=True):
+        with (
+            patch("deepagents_code.app._extra_is_ready", return_value=True),
+            patch("deepagents_code.model_config.clear_caches") as clear_caches,
+        ):
             await app._install_provider_then_reopen_auth("baseten")
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        clear_caches.assert_called_once_with()
         app._show_auth_manager.assert_awaited_once()  # ty: ignore
 
     async def test_does_not_reopen_auth_when_install_failed(self) -> None:
@@ -7269,10 +7273,20 @@ class TestDispatchModelSwitch:
     """Tests for the defer-vs-immediate model switch dispatcher."""
 
     @pytest.mark.parametrize(
-        "flag", ["_agent_running", "_shell_running", "_connecting"]
+        ("flag", "should_notify"),
+        [
+            ("_agent_running", True),
+            ("_shell_running", True),
+            # A bare reconnect (e.g. the transient restart during
+            # install-then-switch) defers but stays silent — the toast would be
+            # misleading since the switch drains automatically once ready.
+            ("_connecting", False),
+        ],
     )
-    async def test_defers_for_each_busy_flag(self, flag: str) -> None:
-        """Each busy signal independently defers the switch."""
+    async def test_defers_for_each_busy_flag(
+        self, flag: str, should_notify: bool
+    ) -> None:
+        """Each busy signal defers the switch; only real work toasts."""
         app = DeepAgentsApp()
         app._agent_running = False
         app._shell_running = False
@@ -7286,6 +7300,7 @@ class TestDispatchModelSwitch:
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.call_later.assert_not_called()  # ty: ignore
+        assert app.notify.call_count == (1 if should_notify else 0)  # ty: ignore
 
     async def test_switches_immediately_when_idle(self) -> None:
         """An idle app schedules the switch directly."""
@@ -7315,6 +7330,43 @@ class TestDispatchModelSwitch:
 
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
+
+    async def test_toasts_when_busy_and_connecting(self) -> None:
+        """In-flight work toasts even while also reconnecting.
+
+        Guards against collapsing the toast guard into `not self._connecting`:
+        a reconnect overlapping genuine work (the install-then-switch restart
+        landing mid-task) must still notify the user.
+        """
+        app = DeepAgentsApp()
+        app._agent_running = True
+        app._shell_running = False
+        app._connecting = True
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.notify.assert_called_once()  # ty: ignore
+        app.call_later.assert_not_called()  # ty: ignore
+
+    async def test_defers_silently_while_only_connecting(self) -> None:
+        """A reconnect-only defer queues the switch without a toast."""
+        app = DeepAgentsApp()
+        app._agent_running = False
+        app._shell_running = False
+        app._connecting = True
+        app._defer_action = MagicMock()  # ty: ignore
+        app.call_later = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        app._dispatch_model_switch("openai:gpt-5.5")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        app.notify.assert_not_called()  # ty: ignore
         app.call_later.assert_not_called()  # ty: ignore
 
 
@@ -9237,6 +9289,59 @@ class TestNotificationCenterIntegration:
 
         mock_suppress.assert_called_once_with("ripgrep")
         assert app._notice_registry.get("dep:ripgrep") is None
+
+    async def test_enter_api_key_saved_removes_entry_and_notifies(self) -> None:
+        """Saving a service key clears the notice and confirms the restart."""
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("tavily", url="https://tavily.com")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+            messages: list[str] = []
+            app.notify = lambda message, **_: messages.append(message)  # ty: ignore
+            await app._dispatch_notification_action(entry.key, ActionId.ENTER_API_KEY)
+            await pilot.pause()
+
+        # The prompt is opened for the service's canonical env var ...
+        app._push_screen_wait.assert_awaited_once()  # ty: ignore
+        screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
+        assert isinstance(screen, AuthPromptScreen)
+        assert screen._provider == "tavily"
+        assert screen._env_var == "TAVILY_API_KEY"
+        # ... and on save the stale notice is gone and the user is told to restart.
+        assert app._notice_registry.get("dep:tavily") is None
+        assert any("Restart to apply." in m for m in messages)
+
+    async def test_enter_api_key_unknown_service_is_a_noop(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """ENTER_API_KEY on a non-service tool logs and opens nothing."""
+        import logging
+
+        from deepagents_code.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _missing_dep_entry("ripgrep")
+        app._notice_registry.add(entry)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock()  # ty: ignore
+            with caplog.at_level(logging.WARNING):
+                await app._dispatch_notification_action(
+                    entry.key, ActionId.ENTER_API_KEY
+                )
+            await pilot.pause()
+
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        # Non-service tool: nothing opened, entry untouched, dev-facing log only.
+        assert app._notice_registry.get("dep:ripgrep") is entry
+        assert "Unknown action_id" in caplog.text
 
     async def test_suppress_message_reloads_center_in_place(self) -> None:
         """Posting NotificationSuppressRequested refreshes the open center."""

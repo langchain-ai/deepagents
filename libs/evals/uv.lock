@@ -475,7 +475,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.19"
+version = "0.1.20"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1567,7 +1567,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "../partners/quickjs" }
 dependencies = [
     { name = "deepagents", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1583,7 +1583,7 @@ requires-dist = [
     { name = "langchain", specifier = ">=1.3.9,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.5,<2.0.0" },
-    { name = "quickjs-rs", specifier = ">=0.1.2,<0.2.0" },
+    { name = "quickjs-rs", specifier = ">=0.2.0,<0.3.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -2616,14 +2616,14 @@ wheels = [
 
 [[package]]
 name = "quickjs-rs"
-version = "0.1.2"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/96/59/4c596144ee2dfe49024cd3abf32a97ba62c34cd9f0f72e6fe23021a73181/quickjs_rs-0.1.2.tar.gz", hash = "sha256:95c42dcb40f067ae3b95eb3f79836cc8bcab62d4fd4cb276970ca2a211e687c7", size = 155522, upload-time = "2026-05-05T04:32:48.315Z" }
+dependencies = [
+    { name = "wasmtime", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3f/59/263e19bcff54b7e7993de3f79da25c23b7d7296d84c13d31a3e38ea0ec7f/quickjs_rs-0.2.0.tar.gz", hash = "sha256:db1a8d72ddfc0e766772622adb510f91aa8626d87afd843893c1e2a360ee1ce8", size = 483392, upload-time = "2026-06-18T00:08:53.928Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/32/6f2c18a39388b1f45fecbc8639053b15b5a7d8d5345dba1886e7ae120dc7/quickjs_rs-0.1.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:68bb46c3909bd40768da20f0ffbdd1e0da70702e0638711f5e2bb31d778dd92a", size = 1272808, upload-time = "2026-05-05T04:32:32.176Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/cb/ee09b2d9797d248ca9c492e88ded527798693bb013f5d921c9fb07229f8f/quickjs_rs-0.1.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a7dc9d446b00c24437ae22ba0acefc238abfbdca223716bd8c2ce4223b836d14", size = 1394148, upload-time = "2026-05-05T04:32:35.662Z" },
-    { url = "https://files.pythonhosted.org/packages/5c/55/f5fc4bf2c237a8570ce57ee8f9ddd76bc34b8c4e0013d408bc3a697dea0e/quickjs_rs-0.1.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2af1fa9cca2009e8ab69d39d5b4579b59ec69607fb2cf4394cccfab14bd89caa", size = 1273427, upload-time = "2026-05-05T04:32:41.254Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/b9/7f0aef4047a7a2469a9945cdb493b5e8937249b036c8b53699c84eed9e0b/quickjs_rs-0.1.2-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fed6aa295b80f5ebc7b077af37895a70234c566961735ca9c803a3fe8be511ec", size = 1394390, upload-time = "2026-05-05T04:32:45.052Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/22/7caf4552a7880f205c95099c3c3e6d36f146af4e34a0b3baa12d49c47ea1/quickjs_rs-0.2.0-py3-none-any.whl", hash = "sha256:cb661d40ee3ba6d3673a75729223315fd4f0b22087373156425fa4227fa2adc6", size = 454517, upload-time = "2026-06-18T00:08:52.445Z" },
 ]
 
 [[package]]
@@ -3200,6 +3200,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/89/8c/182a2a593195bfd39842ea68ebc084e20c850806117213f5a299dfc513d9/uvloop-0.22.1-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:561577354eb94200d75aca23fbde86ee11be36b00e52a4eaf8f50fb0c86b7705", size = 1358611, upload-time = "2025-10-16T22:16:36.833Z" },
     { url = "https://files.pythonhosted.org/packages/15/c0/0be24758891ef825f2065cd5db8741aaddabe3e248ee6acc5e8a80f04005/uvloop-0.22.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0530a5fbad9c9e4ee3f2b33b148c6a64d47bbad8000ea63704fa8260f4cf728e", size = 4366890, upload-time = "2025-10-16T22:16:40.547Z" },
     { url = "https://files.pythonhosted.org/packages/f8/ba/d69adbe699b768f6b29a5eec7b47dd610bd17a69de51b251126a801369ea/uvloop-0.22.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:1f38ec5e3f18c8a10ded09742f7fb8de0108796eb673f30ce7762ce1b8550cad", size = 4239051, upload-time = "2025-10-16T22:16:43.224Z" },
+]
+
+[[package]]
+name = "wasmtime"
+version = "45.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/ff/db9cfc61d988bc15303134bb174176a29839976876dfd18c3a12548ad291/wasmtime-45.0.0.tar.gz", hash = "sha256:2ad4bf7ca286ceea35c1e420d10b368d7f83faf9a5ffde87b4ee334a9b7f55f3", size = 128297, upload-time = "2026-05-26T17:57:39.131Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/c7/7594da7fa8a3bc5e765733ad57aac9b7b27262c4afa47521bd500e4a4574/wasmtime-45.0.0-py3-none-any.whl", hash = "sha256:6251ee5074a8b8bfaa98e6e99cb5d49d6d0f2320b3265d5aa6c2ee5df5fb4519", size = 8019034, upload-time = "2026-05-26T17:57:20.138Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/0b/a81b5daf5adea482ecb68d9615f6a348486ab4d8e980a915d4420e57ee4d/wasmtime-45.0.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:31d10f25c330cebcfb364e9a357123deeec96c41725ff2bba91b705587f38a93", size = 8255954, upload-time = "2026-05-26T17:57:24.769Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/8c/e9019a28e908214031310aefd78e4755221d02303190b54b2c85cb69573e/wasmtime-45.0.0-py3-none-manylinux1_x86_64.whl", hash = "sha256:5d1416ec6da8cd87c29e2e9eb074358c91839c2fff971fe428c8921eaae68e73", size = 9681185, upload-time = "2026-05-26T17:57:26.641Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/63/49d8317706a108d9ed1d4166d0fc710796da1b20e591a98a96575dec367a/wasmtime-45.0.0-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:a0b6ca14b4628a5d1ffa91ccf2c0f2c58fa171f126ec085d564b09d5795395dd", size = 9712524, upload-time = "2026-05-26T17:57:33.839Z" },
 ]
 
 [[package]]

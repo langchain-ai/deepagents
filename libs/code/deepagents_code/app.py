@@ -9012,6 +9012,13 @@ class DeepAgentsApp(App):
     ) -> None:
         """Switch to `model_spec` now, or defer until in-flight work finishes.
 
+        The deferral toast is shown only for genuine in-flight user work
+        (`_agent_running`/`_shell_running`). A switch deferred solely because the
+        server is reconnecting (`_connecting` — e.g. the transient restart during
+        install-then-switch) drains automatically once the server is ready and is
+        already confirmed by the following "Switched to ..." message, so the
+        "after current task completes" toast there is misleading noise.
+
         Args:
             model_spec: The `provider:model` spec to switch to.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
@@ -9029,10 +9036,11 @@ class DeepAgentsApp(App):
                     ),
                 ),
             )
-            self.notify(
-                "Model will switch after current task completes.",
-                timeout=3,
-            )
+            if self._agent_running or self._shell_running:
+                self.notify(
+                    "Model will switch after current task completes.",
+                    timeout=3,
+                )
         else:
             self.call_later(
                 partial(
@@ -9280,6 +9288,9 @@ class DeepAgentsApp(App):
         # real failure the user has already seen explained.
         ready = await asyncio.to_thread(_extra_is_ready, extra)
         if ready:
+            from deepagents_code.model_config import clear_caches
+
+            clear_caches()
             await self._show_auth_manager()
             return
         if ready is None:
@@ -10083,7 +10094,48 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             return
+        if action_id == ActionId.ENTER_API_KEY:
+            await self._enter_service_api_key(entry, payload)
+            return
         self._log_unknown_action(entry, action_id)
+
+    async def _enter_service_api_key(
+        self,
+        entry: PendingNotification,
+        payload: MissingDepPayload,
+    ) -> None:
+        """Open the API-key entry prompt (the one `/auth` uses) for a service.
+
+        Lets the user store a service API key inline instead of exporting an
+        env var before launch.
+
+        Args:
+            entry: The missing-dependency notification entry.
+            payload: Typed payload carrying the service (tool) name.
+        """
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV
+
+        service = payload.tool
+        # `env_var is None` covers any non-service tool, since `is_service` is
+        # exactly membership in `SERVICE_API_KEY_ENV`.
+        env_var = SERVICE_API_KEY_ENV.get(service)
+        if env_var is None:
+            self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(service, env_var),
+        )
+        if result == AuthResult.SAVED:
+            self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Saved {service} API key. Restart to apply.",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
 
     async def _handle_update_action(
         self,

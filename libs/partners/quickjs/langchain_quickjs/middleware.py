@@ -282,12 +282,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
         )
-        self._base_system_prompt = render_repl_system_prompt(
-            tool_name=tool_name,
-            timeout=timeout,
-            memory_limit_mb=memory_limit // (1024 * 1024),
-            mode=self._mode,
-        )
+        self._memory_limit_mb = memory_limit // (1024 * 1024)
+        self._base_prompt_cache: dict[bool, str] = {}
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         self._ptc_tools_by_thread: dict[str, tuple[BaseTool, ...]] = {}
         # Stable fallback thread id — used when `thread_id` isn't in
@@ -452,6 +448,25 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             ),
         )
 
+    def _base_prompt(self, *, ptc_attached: bool) -> str:
+        """Return the base REPL system prompt, rendered lazily and memoized.
+
+        The text depends only on construction-time config and ``ptc_attached``,
+        so it's computed on first use per boolean and cached. Avoids rendering
+        the ``tools.*`` variant at all when PTC is disabled.
+        """
+        cached = self._base_prompt_cache.get(ptc_attached)
+        if cached is None:
+            cached = render_repl_system_prompt(
+                tool_name=self._tool_name,
+                timeout=self._timeout,
+                memory_limit_mb=self._memory_limit_mb,
+                mode=self._mode,
+                ptc_attached=ptc_attached,
+            )
+            self._base_prompt_cache[ptc_attached] = cached
+        return cached
+
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
         """Install PTC bindings for this turn and return the prompt addendum.
 
@@ -461,24 +476,20 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         and renders matching API-reference text.
         """
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
-        prompt = self._base_system_prompt
 
+        subagent_section = ""
         if self._subagents and find_subagent_task_tool(request_tools) is not None:
-            prompt += render_subagent_system_prompt(tool_name=self._tool_name)
+            subagent_section = render_subagent_system_prompt(tool_name=self._tool_name)
 
         if self._ptc is None:
-            return prompt
+            return self._base_prompt(ptc_attached=False) + subagent_section
 
         exposed = filter_tools_for_ptc(
             request_tools,
             self._ptc,
             self_tool_name=self._tool_name,
         )
-        # Install on the current thread's REPL. If the thread hasn't
-        # evaluated anything yet, this creates the context lazily — which
-        # is fine: PTC bindings must be in place *before* the first eval
-        # that references them, and the next eval on this thread is the
-        # earliest that could matter.
+        prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
         repl.install_tools(exposed)

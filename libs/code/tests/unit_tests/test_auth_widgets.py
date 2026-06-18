@@ -136,7 +136,11 @@ class TestAuthPromptScreen:
         known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
         assert set(PROVIDER_DISPLAY_NAMES) <= known
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
-        assert set(PROVIDER_API_KEY_URLS) <= set(model_config.PROVIDER_API_KEY_ENV)
+        # Services (e.g. Tavily) carry a key URL but live in SERVICE_API_KEY_ENV.
+        assert set(PROVIDER_API_KEY_URLS) <= (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.SERVICE_API_KEY_ENV)
+        )
 
     def test_every_known_provider_has_a_display_name(self) -> None:
         """A new provider can't ship without a branded `/auth` label.
@@ -874,6 +878,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert label is not None
         assert "stored" in str(label)
 
+    async def test_stored_service_is_not_duplicated(self) -> None:
+        """Stored non-model services appear once in the manager list."""
+        auth_store.set_stored_key("tavily", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.count("tavily") == 1
+
     async def test_env_badge_shows_canonical_when_only_canonical_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -958,7 +975,58 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        assert ids == {"openai", "openai_codex", "anthropic"}
+        # Non-model services (e.g. Tavily) are always listed for key entry.
+        assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
+
+    async def test_selecting_service_opens_prompt_for_its_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting a service routes to the key prompt bound to its env var.
+
+        Services must not fall through to the model-provider branch, which
+        would look up a credential env var the service doesn't have.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            event = SimpleNamespace(option=SimpleNamespace(id="tavily"))
+            screen.on_option_list_option_selected(cast("Any", event))
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, AuthPromptScreen)
+            assert prompt._provider == "tavily"
+            assert prompt._env_var == "TAVILY_API_KEY"
+
+    async def test_service_row_shows_stored_badge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored service key renders the `[stored]` badge on its row.
+
+        Confirms the service-aware status branch in `_format_label` is wired
+        up — a regression to `get_provider_auth_status` would `KeyError`.
+        """
+        auth_store.set_stored_key("tavily", "k")
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "tavily"
+            )
+        assert "stored" in label
 
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1168,7 +1236,7 @@ enabled = false
             await pilot.pause()
             copy = app.screen.query_one(".auth-manager-copy", Static)
             content = str(copy.content)
-        assert "Lists installed providers" in content
+        assert "Lists installed model providers" in content
         assert "Docs" in content
         # URL is embedded as a Textual link style — assert the link target
         # surfaces in the rendered span representation.

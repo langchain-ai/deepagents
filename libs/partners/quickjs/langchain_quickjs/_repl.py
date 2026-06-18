@@ -514,14 +514,16 @@ class _ThreadREPL:
             msg = "task() requires non-empty string field `description`"
             raise ValueError(msg)
 
-        subagent_type = payload.get("subagent_type")
+        # JS callers use camelCase keys (`subagentType`, `responseSchema`) as
+        # documented in the system prompt.
+        subagent_type = payload.get("subagentType")
         if not isinstance(subagent_type, str) or not subagent_type:
-            msg = "task() requires non-empty string field `subagent_type`"
+            msg = "task() requires non-empty string field `subagentType`"
             raise ValueError(msg)
 
-        response_schema = payload.get("response_schema")
+        response_schema = payload.get("responseSchema")
         if response_schema is not None and not isinstance(response_schema, dict):
-            msg = "task() field `response_schema` must be an object when provided"
+            msg = "task() field `responseSchema` must be an object when provided"
             raise ValueError(msg)
 
         async def _call() -> Any:

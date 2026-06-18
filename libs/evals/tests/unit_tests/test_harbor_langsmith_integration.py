@@ -34,6 +34,8 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     assert "stage-harbor-local-deps:" in makefile
     assert "../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/" in makefile
     assert "../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/" in makefile
+    assert "./ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-evals/" in makefile
+    assert "--exclude 'deepagents_harbor/langgraph_project/.local_deps'" in makefile
     assert "HARBOR_AGENT_ENV_ARGS ?=" in makefile
     assert "HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2" in makefile
     assert "--agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'" in makefile

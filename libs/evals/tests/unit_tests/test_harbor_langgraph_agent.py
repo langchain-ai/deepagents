@@ -30,7 +30,12 @@ def test_eval_langgraph_config_points_to_eval_factory() -> None:
     langgraph_config = json.loads((project_path / "langgraph.json").read_text())
     eval_config = json.loads((project_path / "eval_langgraph.json").read_text())
 
-    assert eval_config["dependencies"] == langgraph_config["dependencies"]
+    assert eval_config["dependencies"] == [
+        *langgraph_config["dependencies"],
+        "./.local_deps/deepagents-evals",
+    ]
+    assert "./.local_deps/deepagents-evals" in eval_config["dependencies"]
+    assert "./.local_deps/deepagents-evals" not in langgraph_config["dependencies"]
     assert eval_config["graphs"] == {
         "eval_deepagent": "./langgraph_agent.py:make_eval_graph",
     }

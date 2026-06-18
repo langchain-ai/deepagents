@@ -56,6 +56,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' --exclude 'deepagents_harbor/langgraph_project/.local_deps' ./ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-evals/
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)

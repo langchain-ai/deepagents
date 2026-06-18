@@ -41,6 +41,32 @@ def _seed_provider_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     )
 
 
+_FILTER_TEST_MODELS: list[tuple[str, str]] = [
+    ("anthropic:claude-sonnet-4-5", "anthropic"),
+    ("anthropic:claude-opus-4-7", "anthropic"),
+    ("anthropic:claude-haiku-4-5", "anthropic"),
+    ("openai:gpt-4", "openai"),
+    ("openai:gpt-5.5", "openai"),
+    ("openrouter:anthropic/claude-sonnet-4.7", "openrouter"),
+]
+
+
+def _model_selector_for_filtering() -> ModelSelectorScreen:
+    """Create a selector with deterministic model data for filter unit tests."""
+    screen = ModelSelectorScreen(
+        current_model="claude-sonnet-4-5",
+        current_provider="anthropic",
+    )
+    screen._recommended_only = False
+    screen._unfiltered_models = list(_FILTER_TEST_MODELS)
+    screen._all_models = list(_FILTER_TEST_MODELS)
+    screen._filtered_models = list(_FILTER_TEST_MODELS)
+    screen._recent_specs = []
+    screen._install_extras = {}
+    screen._selected_index = screen._find_current_model_index()
+    return screen
+
+
 class ModelSelectorTestApp(App):
     """Test app for ModelSelectorScreen."""
 
@@ -845,53 +871,50 @@ class TestModelSelectorFiltering:
 
             assert screen._filter_text == "claude"
 
-    async def test_custom_model_spec_entry(self) -> None:
+    def test_custom_model_spec_entry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """User can enter a custom provider:model spec."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        result: tuple[str, str] | None = None
 
-            # Type a custom model spec
-            for char in "custom:my-model":
-                await pilot.press(char)
-            await pilot.pause()
+        class FakeInput:
+            value = "custom:my-model"
 
-            # Press enter to select
-            await pilot.press("enter")
-            await pilot.pause()
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
 
-            assert app.dismissed is True
-            assert app.result == ("custom:my-model", "custom")
+        def record(value: tuple[str, str] | None) -> None:
+            nonlocal result
+            result = value
 
-    async def test_enter_selects_highlighted_model_not_filter_text(self) -> None:
+        monkeypatch.setattr(screen, "_dismiss_with_result", record)
+
+        screen.action_select()
+
+        assert result == ("custom:my-model", "custom")
+
+    def test_enter_selects_highlighted_model_not_filter_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Enter selects highlighted model, not raw filter text."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        selected: tuple[str, str] | None = None
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        def record(model_spec: str, provider: str) -> None:
+            nonlocal selected
+            selected = (model_spec, provider)
 
-            # Type a partial spec with colon that matches existing models
-            for char in "anthropic:claude":
-                await pilot.press(char)
-            await pilot.pause()
+        screen._filter_text = "anthropic:claude"
+        screen._update_filtered_list()
+        monkeypatch.setattr(screen, "_select_with_auth_check", record)
 
-            # Should have filtered results
-            assert len(screen._filtered_models) > 0
+        assert len(screen._filtered_models) > 0
 
-            # Press enter - should select the highlighted model, not raw text
-            await pilot.press("enter")
-            await pilot.pause()
+        screen.action_select()
 
-            assert app.dismissed is True
-            assert app.result is not None
-            # Result should be a full model spec from the list, not "anthropic:claude"
-            model_spec, provider = app.result
-            assert model_spec != "anthropic:claude"
-            assert provider == "anthropic"
+        assert selected is not None
+        model_spec, provider = selected
+        assert model_spec != "anthropic:claude"
+        assert provider == "anthropic"
 
 
 class TestModelSelectorCurrentModelPreselection:
@@ -959,214 +982,127 @@ class TestModelSelectorCurrentModelPreselection:
 class TestModelSelectorFuzzyMatching:
     """Tests for fuzzy search filtering."""
 
-    async def test_fuzzy_exact_substring_still_works(self) -> None:
+    def test_fuzzy_exact_substring_still_works(self) -> None:
         """Exact substring matches should still work with fuzzy matching."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "claude"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert any("claude" in s for s in specs), (
+            f"'claude' substring should match. Got: {specs}"
+        )
 
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert any("claude" in s for s in specs), (
-                f"'claude' substring should match. Got: {specs}"
-            )
-
-    async def test_fuzzy_subsequence_match(self) -> None:
+    def test_fuzzy_subsequence_match(self) -> None:
         """Subsequence queries like 'cs45' should match 'claude-sonnet-4-5'."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "cs45"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert any("claude-sonnet-4-5" in s for s in specs), (
+            f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
+        )
 
-            for char in "cs45":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert any("claude-sonnet-4-5" in s for s in specs), (
-                f"'cs45' should fuzzy-match claude-sonnet-4-5. Got: {specs}"
-            )
-
-    async def test_fuzzy_across_hyphen(self) -> None:
+    def test_fuzzy_across_hyphen(self) -> None:
         """Queries should match across hyphens (e.g., 'gpt4' matches 'gpt-5.5')."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "gpt4"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert any("gpt-4" in s for s in specs), (
+            f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
+        )
 
-            for char in "gpt4":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert any("gpt-4" in s for s in specs), (
-                f"'gpt4' should fuzzy-match gpt-4 models. Got: {specs}"
-            )
-
-    async def test_fuzzy_case_insensitive(self) -> None:
+    def test_fuzzy_case_insensitive(self) -> None:
         """Fuzzy matching should be case-insensitive."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "CLAUDE"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert any("claude" in s for s in specs), (
+            f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
+        )
 
-            # Type uppercase "CLAUDE"
-            for char in "CLAUDE":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert any("claude" in s for s in specs), (
-                f"'CLAUDE' should case-insensitively match claude models. Got: {specs}"
-            )
-
-    async def test_fuzzy_no_match(self) -> None:
+    def test_fuzzy_no_match(self) -> None:
         """A query that matches nothing should produce an empty filtered list."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "xyz999qqq"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        assert len(screen._filtered_models) == 0
 
-            for char in "xyz999qqq":
-                await pilot.press(char)
-            await pilot.pause()
-
-            assert len(screen._filtered_models) == 0
-
-    async def test_fuzzy_ranking_better_match_first(self) -> None:
+    def test_fuzzy_ranking_better_match_first(self) -> None:
         """Better fuzzy matches should rank higher than weaker matches."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "claude"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert len(specs) > 0
+        assert "claude" in specs[0].lower()
 
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert len(specs) > 0
-            # First result should be a strong match containing the query
-            assert "claude" in specs[0].lower()
-
-    async def test_empty_filter_shows_all(self) -> None:
+    def test_empty_filter_shows_all(self) -> None:
         """Empty filter should show all models in original order."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = ""
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        assert len(screen._filtered_models) == len(screen._all_models)
 
-            total = len(screen._filtered_models)
-            assert total == len(screen._all_models)
-
-    async def test_whitespace_filter_shows_all(self) -> None:
+    def test_whitespace_filter_shows_all(self) -> None:
         """Whitespace-only filter should be treated as empty."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "   "
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        assert len(screen._filtered_models) == len(screen._all_models)
 
-            await pilot.press("space", "space", "space")
-            await pilot.pause()
-
-            assert len(screen._filtered_models) == len(screen._all_models)
-
-    async def test_selection_clamped_on_filter(self) -> None:
+    def test_selection_clamped_on_filter(self) -> None:
         """Selected index should stay valid when filter results shrink."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._selected_index = 5
+        screen._filter_text = "claude"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        assert screen._filtered_models, "Filter should match claude models"
+        assert screen._selected_index == 0, (
+            "Fuzzy filter should reset selection to best match (index 0)"
+        )
 
-            # Move selection down several times
-            for _ in range(5):
-                await pilot.press("down")
-            await pilot.pause()
-
-            # Now type a filter that produces fewer results
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
-
-            assert screen._filtered_models, "Filter should match claude models"
-            assert screen._selected_index == 0, (
-                "Fuzzy filter should reset selection to best match (index 0)"
-            )
-
-    async def test_enter_selects_fuzzy_result(self) -> None:
+    def test_enter_selects_fuzzy_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Pressing Enter after fuzzy filtering should select the top result."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        selected: tuple[str, str] | None = None
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
+        def record(model_spec: str, provider: str) -> None:
+            nonlocal selected
+            selected = (model_spec, provider)
 
-            for char in "claude":
-                await pilot.press(char)
-            await pilot.pause()
+        screen._filter_text = "claude"
+        screen._update_filtered_list()
+        monkeypatch.setattr(screen, "_select_with_auth_check", record)
 
-            assert len(screen._filtered_models) > 0
+        assert len(screen._filtered_models) > 0
 
-            await pilot.press("enter")
-            await pilot.pause()
+        screen.action_select()
 
-            assert app.dismissed is True
-            assert app.result is not None
-            model_spec, _ = app.result
-            assert "claude" in model_spec.lower()
+        assert selected is not None
+        model_spec, _ = selected
+        assert "claude" in model_spec.lower()
 
-    async def test_fuzzy_space_separated_tokens(self) -> None:
+    def test_fuzzy_space_separated_tokens(self) -> None:
         """Space-separated tokens should each fuzzy-match independently."""
-        app = ModelSelectorTestApp()
-        async with app.run_test() as pilot:
-            app.show_selector()
-            await pilot.pause()
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "claude sonnet"
+        screen._update_filtered_list()
 
-            screen = app.screen
-            assert isinstance(screen, ModelSelectorScreen)
-
-            # "claude sonnet" should match models containing both subsequences
-            for char in "claude sonnet":
-                await pilot.press(char)
-            await pilot.pause()
-
-            specs = [spec for spec, _ in screen._filtered_models]
-            assert any("claude" in s and "sonnet" in s for s in specs), (
-                f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
-            )
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert any("claude" in s and "sonnet" in s for s in specs), (
+            f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
+        )
 
     async def test_tab_noop_when_no_matches(self) -> None:
         """Tab should do nothing when filter matches no models."""

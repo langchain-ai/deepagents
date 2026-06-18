@@ -67,6 +67,16 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
     raise AssertionError(msg)
 
 
+def _closing_run_worker_mock(
+    work: object, *args: object, **kwargs: object
+) -> MagicMock:
+    """Close coroutine work swallowed by a `run_worker` mock."""
+    del args, kwargs
+    if inspect.iscoroutine(work):
+        work.close()
+    return MagicMock()
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 
@@ -8571,6 +8581,7 @@ class TestRestartServerForAgentSwap:
             thread_id="old-thread",
             server_kwargs={"assistant_id": "coder"},
             server_proc=server_proc,
+            defer_server_start=True,
         )
         return app, server_proc
 
@@ -8671,7 +8682,7 @@ class TestRestartServerForAgentSwap:
                     return_value=True,
                 ),
                 patch.object(app, "_mount_message", side_effect=mounted.append),
-                patch.object(app, "run_worker"),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
             ):
                 await app._restart_server_for_agent_swap("researcher")
 
@@ -8700,7 +8711,7 @@ class TestRestartServerForAgentSwap:
                     return_value=True,
                 ),
                 patch.object(app, "_mount_message", side_effect=mounted.append),
-                patch.object(app, "run_worker"),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
             ):
                 await app._restart_server_for_agent_swap("researcher")
 
@@ -8720,6 +8731,7 @@ class TestRestartServerForAgentSwap:
             thread_id=None,
             server_kwargs={"assistant_id": "coder"},
             server_proc=server_proc,
+            defer_server_start=True,
         )
         mounted: list[object] = []
         async with app.run_test() as pilot:
@@ -8730,7 +8742,7 @@ class TestRestartServerForAgentSwap:
                     return_value=True,
                 ),
                 patch.object(app, "_mount_message", side_effect=mounted.append),
-                patch.object(app, "run_worker"),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
             ):
                 await app._restart_server_for_agent_swap("researcher")
 
@@ -8780,7 +8792,7 @@ class TestRestartServerForAgentSwap:
                 patch.object(
                     app, "_mount_message", AsyncMock(side_effect=record_mount)
                 ),
-                patch.object(app, "run_worker"),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
                 patch.object(app, "notify", side_effect=record_notify) as notify_mock,
             ):
                 await app._restart_server_for_agent_swap("researcher")

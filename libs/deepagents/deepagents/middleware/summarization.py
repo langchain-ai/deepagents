@@ -29,7 +29,7 @@ from deepagents.backends import FilesystemBackend
 backend = FilesystemBackend(root_dir="/data")
 
 summ = SummarizationMiddleware(
-    model="gpt-5.5-mini",
+    model="gpt-5.5",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),

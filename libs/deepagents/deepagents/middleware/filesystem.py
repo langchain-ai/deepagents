@@ -2125,12 +2125,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires, emits a `RemoveMessage(REMOVE_ALL_MESSAGES)`
-        sentinel followed by the fully-identified list to atomically replace
-        the messages channel. A plain append of the tagged message would not
-        survive DeltaChannel replay: the original `HumanMessage(id=None)`
-        write gets a fresh UUID on replay that doesn't match the eviction
-        Command's ID, producing a duplicate.
+        When a new eviction fires, emits a `Command` whose messages update
+        contains only the tagged `HumanMessage`. Because `ensure_message_ids`
+        stamps a stable UUID onto the original write before it is checkpointed,
+        the tagged copy (which reuses that ID) is deduped in-place by the
+        `DeltaChannel` reducer — no `REMOVE_ALL_MESSAGES` sentinel is needed.
+        Using a sentinel would also clobber the `AIMessage` that the model node
+        writes in the same super-step.
 
         Args:
             messages: The message list (may be modified if write succeeded).
@@ -2154,9 +2155,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            replacement: list[AnyMessage] = [*messages[:-1], tagged]
-            state_command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *replacement]})
-            messages = replacement
+            state_command = Command(update={"messages": [tagged]})
+            messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
         for msg in messages:

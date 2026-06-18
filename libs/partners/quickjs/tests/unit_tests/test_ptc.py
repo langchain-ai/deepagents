@@ -252,6 +252,28 @@ def test_filter_list_include() -> None:
     assert [t.name for t in out] == ["a", "c"]
 
 
+def test_filter_rejects_task_by_name() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([task], ["task"], self_tool_name="eval")
+
+
+def test_filter_rejects_task_by_instance() -> None:
+    task = _echo_tool("task")
+    with pytest.raises(ValueError, match="task` tool cannot be exposed"):
+        filter_tools_for_ptc([], [task], self_tool_name="eval")
+
+
+def test_filter_allows_non_task_tools() -> None:
+    # Sanity: the reservation is specific to the name "task".
+    out = filter_tools_for_ptc(
+        [_echo_tool("tasks"), _echo_tool("subtask")],
+        ["tasks", "subtask"],
+        self_tool_name="eval",
+    )
+    assert [t.name for t in out] == ["tasks", "subtask"]
+
+
 def test_filter_list_of_tools_uses_them_directly() -> None:
     """`list[BaseTool]` ignores agent tools and uses the supplied list."""
     greet = _greet_tool()

@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 
 PTCOption = list[str | BaseTool]
 
+# The subagent dispatch tool. It is reserved: it is always available as the
+# top-level `task()` global in the REPL, so it must never be exposed through
+# the `tools.*` PTC namespace (see `filter_tools_for_ptc`).
+_RESERVED_SUBAGENT_TASK_NAME = "task"
+
+_TASK_IN_PTC_MSG = (
+    "The subagent `task` tool cannot be exposed via `ptc`. It is always "
+    "available as the top-level `task()` global inside the REPL (with "
+    "`subagentType` and `responseSchema` support); exposing it through the "
+    "`tools.*` namespace would create a second, conflicting dispatch path "
+    'that drops `responseSchema`. Remove "task" from `ptc`.'
+)
+
 
 def filter_tools_for_ptc(
     tools: Sequence[BaseTool],
@@ -58,6 +71,11 @@ def filter_tools_for_ptc(
     are included first, then name-matched agent tools are appended.
     Duplicate tool names are deduplicated.
 
+    The subagent ``task`` tool is reserved and may not appear in ``config``
+    (by name or instance) — it is always available as the ``task()`` global,
+    so a ``tools.task`` PTC variant would be a conflicting, degraded duplicate.
+    A ``"task"`` entry raises ``ValueError``.
+
     Warning:
         PTC tool calls execute through the REPL bridge and currently do
         not respect `interrupt_on` / HITL approval hooks for each
@@ -68,10 +86,14 @@ def filter_tools_for_ptc(
         allow_names: set[str] = set()
         for entry in config:
             if isinstance(entry, BaseTool):
+                if entry.name == _RESERVED_SUBAGENT_TASK_NAME:
+                    raise ValueError(_TASK_IN_PTC_MSG)
                 if entry.name != self_tool_name:
                     explicit_tools.append(entry)
                 continue
             if isinstance(entry, str):
+                if entry == _RESERVED_SUBAGENT_TASK_NAME:
+                    raise ValueError(_TASK_IN_PTC_MSG)
                 allow_names.add(entry)
                 continue
             msg = "ptc list entries must be str or BaseTool"

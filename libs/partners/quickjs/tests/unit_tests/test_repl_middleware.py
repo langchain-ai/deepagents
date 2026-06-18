@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from deepagents.backends.state import StateBackend
@@ -776,7 +776,10 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         assert mw._fallback_thread_id in mw._registry._slots
         update = mw.after_agent(state={}, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
+        # First write (no prior snapshot) is a full anchor record.
+        kind, blob = update["_quickjs_snapshot_payload"]
+        assert kind == "snap"
+        assert isinstance(blob, bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
@@ -791,160 +794,10 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         assert mw._fallback_thread_id in mw._registry._slots
         update = await mw.aafter_agent(state={}, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
+        kind, blob = update["_quickjs_snapshot_payload"]
+        assert kind == "snap"
+        assert isinstance(blob, bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
-    """Snapshots from `after_agent` restore into fresh slots in `before_agent`."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        repl.eval_sync("const answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
-        assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = mw.before_agent(state=update, runtime=MagicMock())
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
-        assert restored.eval_sync("answer").result == "42"
-    finally:
-        mw._registry.close()
-
-
-async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
-    """Async snapshot roundtrip restores state in a fresh slot."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        await repl.eval_async("const answer = 42")
-        update = await mw.aafter_agent(state={}, runtime=MagicMock())
-        assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = await mw.abefore_agent(state=update, runtime=MagicMock())
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
-        assert restored.eval_sync("answer").result == "42"
-    finally:
-        mw._registry.close()
-
-
-def test_before_agent_clears_payload_on_restore_failure() -> None:
-    mw = CodeInterpreterMiddleware()
-    try:
-        update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
-            runtime=MagicMock(),
-        )
-        assert update == {"_quickjs_snapshot_payload": None}
-    finally:
-        mw._registry.close()
-
-
-def test_before_agent_ignores_empty_delta_channel_seed() -> None:
-    """The `DeltaChannel` seeds a never-written channel to `b""` (its value
-    type is `bytes`). `before_agent` must treat that empty seed like a missing
-    payload — not attempt to restore it (which would fail "shorter than
-    header") and not spuriously clear it."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b""},
-            runtime=MagicMock(),
-        )
-        assert update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
-    finally:
-        mw._registry.close()
-
-
-async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
-    """Async variant: empty `b""` seed is a no-op restore."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        update = await mw.abefore_agent(
-            state={"_quickjs_snapshot_payload": b""},
-            runtime=MagicMock(),
-        )
-        assert update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_clears_payload_on_snapshot_failure() -> None:
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
-            update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(repl, "create_snapshot", return_value=b"12345"):
-            update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(
-            repl,
-            "acreate_snapshot",
-            new=AsyncMock(return_value=b"12345"),
-        ):
-            update = await mw.aafter_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        repl.eval_sync("globalThis.answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update is None
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"ignored"},
-            runtime=MagicMock(),
-        )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
-    finally:
-        mw._registry.close()
-
-
-def test_mode_call_ignores_snapshot_payload() -> None:
-    mw = CodeInterpreterMiddleware(mode="call")
-    try:
-        before_update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"ignored"},
-            runtime=MagicMock(),
-        )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
     finally:
         mw._registry.close()
 

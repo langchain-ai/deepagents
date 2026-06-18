@@ -7,7 +7,7 @@ don't break when evals are added, removed, or reconfigured.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +21,9 @@ from deepagents_evals.mock_tools import (
     get_weather_fake,
     incident_graph_tool_error_middleware,
 )
+
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
 
 # ---------------------------------------------------------------------------
 # Registry shape (not contents)
@@ -159,8 +162,8 @@ def test_build_with_builder_overrides_fields(fake_model: Any) -> None:
     """When a builder is set, it takes precedence over field-based config."""
     sentinel = object()
 
-    def _builder(model: Any, **kwargs: Any) -> object:
-        return sentinel
+    def _builder(model: Any, **kwargs: Any) -> CompiledStateGraph[Any, Any]:
+        return cast("CompiledStateGraph[Any, Any]", sentinel)
 
     spec = EvalSpec(name="synthetic", builder=_builder)
     result = spec.build(fake_model)
@@ -171,9 +174,9 @@ def test_build_repl_name_passed_to_builder(fake_model: Any) -> None:
     """build() forwards repl_name to the builder."""
     captured: dict[str, Any] = {}
 
-    def _builder(model: Any, **kwargs: Any) -> object:
+    def _builder(model: Any, **kwargs: Any) -> CompiledStateGraph[Any, Any]:
         captured.update(kwargs)
-        return object()
+        return cast("CompiledStateGraph[Any, Any]", object())
 
     spec = EvalSpec(name="synthetic", builder=_builder, supports_repl=True)
     spec.build(fake_model, repl_name="quickjs")
@@ -184,9 +187,9 @@ def test_build_repl_name_defaults_to_none(fake_model: Any) -> None:
     """build() defaults repl_name to None when not provided."""
     captured: dict[str, Any] = {}
 
-    def _builder(model: Any, **kwargs: Any) -> object:
+    def _builder(model: Any, **kwargs: Any) -> CompiledStateGraph[Any, Any]:
         captured.update(kwargs)
-        return object()
+        return cast("CompiledStateGraph[Any, Any]", object())
 
     spec = EvalSpec(name="synthetic", builder=_builder, supports_repl=True)
     spec.build(fake_model)

@@ -216,10 +216,7 @@ def make_eval_graph(config: dict[str, object] | None = None) -> object:
 
     spec = EVALS.get(eval_name)
     if spec is None:
-        msg = (
-            f"Unknown eval_name {eval_name!r}. "
-            f"Registered evals: {sorted(EVALS)}"
-        )
+        msg = f"Unknown eval_name {eval_name!r}. Registered evals: {sorted(EVALS)}"
         raise ValueError(msg)
 
     repl_name = configurable.get("repl_name")

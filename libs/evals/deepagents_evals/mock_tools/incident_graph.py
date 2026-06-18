@@ -10,7 +10,7 @@ pytest suite and the Harbor sandbox dispatcher share the same tool definitions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from langchain.agents.middleware.types import ToolCallRequest, wrap_tool_call
 from langchain_core.messages import ToolMessage
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 class Engineer(TypedDict):
     """Engineer record."""
+
     id: int
     name: str
     email: str
@@ -37,6 +38,7 @@ class Engineer(TypedDict):
 
 class Team(TypedDict):
     """Team record."""
+
     id: int
     name: str
     oncall_engineer_id: int
@@ -44,6 +46,7 @@ class Team(TypedDict):
 
 class Repo(TypedDict):
     """Repository record."""
+
     id: int
     name: str
     default_branch: str
@@ -51,6 +54,7 @@ class Repo(TypedDict):
 
 class Runbook(TypedDict):
     """Runbook record."""
+
     id: int
     title: str
     url: str
@@ -58,6 +62,7 @@ class Runbook(TypedDict):
 
 class Environment(TypedDict):
     """Deployment environment record."""
+
     id: int
     name: str
     region: str
@@ -65,6 +70,7 @@ class Environment(TypedDict):
 
 class Service(TypedDict):
     """Service record."""
+
     id: int
     name: str
     team_id: int
@@ -76,6 +82,7 @@ class Service(TypedDict):
 
 class Incident(TypedDict):
     """Incident record."""
+
     id: int
     title: str
     service_id: int
@@ -86,6 +93,7 @@ class Incident(TypedDict):
 
 class Alert(TypedDict):
     """Alert record."""
+
     id: int
     service_id: int
     name: str
@@ -94,6 +102,7 @@ class Alert(TypedDict):
 
 class Deploy(TypedDict):
     """Deployment record."""
+
     id: int
     service_id: int
     repo_id: int
@@ -103,6 +112,7 @@ class Deploy(TypedDict):
 
 class MetricSnapshot(TypedDict):
     """Metric snapshot record."""
+
     service_id: int
     metric_name: Literal["error_rate", "latency_p95", "auth_failure_rate", "queue_depth"]
     value: str
@@ -110,24 +120,28 @@ class MetricSnapshot(TypedDict):
 
 class IncidentSearchResult(TypedDict):
     """Search result for incidents."""
+
     id: int
     title: str
 
 
 class ServiceSearchResult(TypedDict):
     """Search result for services."""
+
     id: int
     name: str
 
 
 class EngineerSearchResult(TypedDict):
     """Search result for engineers."""
+
     id: int
     name: str
 
 
 class TeamSearchResult(TypedDict):
     """Search result for teams."""
+
     id: int
     name: str
 
@@ -317,38 +331,43 @@ CURRENT_INCIDENT_ID = 41017
 # ---------------------------------------------------------------------------
 
 
-@overload
-def _similarity_search(
-    data: list[Incident], query: str, key: Literal["title"]
-) -> list[IncidentSearchResult]: ...
-
-
-@overload
-def _similarity_search(
-    data: list[Service], query: str, key: Literal["name"]
-) -> list[ServiceSearchResult]: ...
-
-
-@overload
-def _similarity_search(
-    data: list[Engineer], query: str, key: Literal["name"]
-) -> list[EngineerSearchResult]: ...
-
-
-@overload
-def _similarity_search(
-    data: list[Team], query: str, key: Literal["name"]
-) -> list[TeamSearchResult]: ...
-
-
-def _similarity_search(
-    data: list[dict[str, object]], query: str, key: str
-) -> list[dict[str, object]]:
+def _rank_by_similarity[ItemT](
+    data: list[ItemT], query: str, value: Callable[[ItemT], str]
+) -> list[ItemT]:
     def _score(x: str) -> float:
         return len(set(x.lower()) & set(query.lower())) / len(set(x.lower()) | set(query.lower()))
 
-    ranked = sorted(data, key=lambda item: _score(item[key]), reverse=True)
-    return [{"id": item["id"], key: item[key]} for item in ranked]
+    return sorted(data, key=lambda item: _score(value(item)), reverse=True)
+
+
+def _search_incidents_by_title(title: str) -> list[dict]:
+    return [
+        {"id": incident["id"], "title": incident["title"]}
+        for incident in _rank_by_similarity(
+            INCIDENT_DATA, title, lambda incident: incident["title"]
+        )
+    ]
+
+
+def _search_services_by_name(name: str) -> list[ServiceSearchResult]:
+    return [
+        {"id": service["id"], "name": service["name"]}
+        for service in _rank_by_similarity(SERVICE_DATA, name, lambda service: service["name"])
+    ]
+
+
+def _search_engineers_by_name(name: str) -> list[EngineerSearchResult]:
+    return [
+        {"id": engineer["id"], "name": engineer["name"]}
+        for engineer in _rank_by_similarity(ENGINEER_DATA, name, lambda engineer: engineer["name"])
+    ]
+
+
+def _search_teams_by_name(name: str) -> list[dict]:
+    return [
+        {"id": team["id"], "name": team["name"]}
+        for team in _rank_by_similarity(TEAM_DATA, name, lambda team: team["name"])
+    ]
 
 
 def _get_by_id[
@@ -392,7 +411,7 @@ def find_incidents_by_title(title: str) -> list[dict]:
     Args:
         title: The incident title to search for.
     """
-    return _similarity_search(INCIDENT_DATA, title, "title")
+    return _search_incidents_by_title(title)
 
 
 @tool
@@ -402,7 +421,7 @@ def find_services_by_name(name: str) -> list[ServiceSearchResult]:
     Args:
         name: The service name to search for.
     """
-    return _similarity_search(SERVICE_DATA, name, "name")
+    return _search_services_by_name(name)
 
 
 @tool
@@ -412,7 +431,7 @@ def find_engineers_by_name(name: str) -> list[EngineerSearchResult]:
     Args:
         name: The engineer name to search for.
     """
-    return _similarity_search(ENGINEER_DATA, name, "name")
+    return _search_engineers_by_name(name)
 
 
 @tool
@@ -422,7 +441,7 @@ def find_teams_by_name(name: str) -> list[dict]:
     Args:
         name: The team name to search for.
     """
-    return _similarity_search(TEAM_DATA, name, "name")
+    return _search_teams_by_name(name)
 
 
 @tool

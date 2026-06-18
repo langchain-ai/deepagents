@@ -10,8 +10,13 @@ suite and the Harbor sandbox dispatcher share the same tool definitions.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from langchain_core.tools import ToolException, tool
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
 # Static relational data
@@ -20,6 +25,7 @@ from typing_extensions import TypedDict
 
 class UserRecord(TypedDict):
     """User record."""
+
     id: int
     name: str
     email: str
@@ -30,6 +36,7 @@ class UserRecord(TypedDict):
 
 class LocationRecord(TypedDict):
     """Location record."""
+
     id: int
     city: str
     current_time: str
@@ -38,6 +45,7 @@ class LocationRecord(TypedDict):
 
 class FoodRecord(TypedDict):
     """Food record."""
+
     id: int
     name: str
     calories: int
@@ -46,18 +54,21 @@ class FoodRecord(TypedDict):
 
 class UserSearchResult(TypedDict):
     """Search result for users."""
+
     id: int
     name: str
 
 
 class LocationSearchResult(TypedDict):
     """Search result for locations."""
+
     id: int
     city: str
 
 
 class FoodSearchResult(TypedDict):
     """Search result for foods."""
+
     id: int
     name: str
 
@@ -197,18 +208,36 @@ FOOD_DATA: list[FoodRecord] = [
 # ---------------------------------------------------------------------------
 
 
-def _similarity_search(
-    data: list[UserRecord] | list[LocationRecord] | list[FoodRecord],
-    query: str,
-    key: str,
-) -> list[UserSearchResult] | list[LocationSearchResult] | list[FoodSearchResult]:
+def _rank_by_similarity[ItemT](
+    data: list[ItemT], query: str, value: Callable[[ItemT], str]
+) -> list[ItemT]:
     """Jaccard-similarity search over a string field."""
 
     def _score(x: str) -> float:
         return len(set(x) & set(query)) / len(set(x) | set(query))
 
-    ranked = sorted(data, key=lambda x: _score(x[key]), reverse=True)
-    return [{"id": d["id"], key: d[key]} for d in ranked]
+    return sorted(data, key=lambda item: _score(value(item)), reverse=True)
+
+
+def _search_users_by_name(name: str) -> list[UserSearchResult]:
+    return [
+        {"id": user["id"], "name": user["name"]}
+        for user in _rank_by_similarity(USER_DATA, name, lambda user: user["name"])
+    ]
+
+
+def _search_locations_by_city(city: str) -> list[LocationSearchResult]:
+    return [
+        {"id": location["id"], "city": location["city"]}
+        for location in _rank_by_similarity(LOCATION_DATA, city, lambda location: location["city"])
+    ]
+
+
+def _search_foods_by_name(name: str) -> list[FoodSearchResult]:
+    return [
+        {"id": food["id"], "name": food["name"]}
+        for food in _rank_by_similarity(FOOD_DATA, name, lambda food: food["name"])
+    ]
 
 
 def _get_user(user_id: int) -> UserRecord:
@@ -263,7 +292,7 @@ def find_users_by_name(name: str) -> list[UserSearchResult]:
     Args:
         name: The name to search for.
     """
-    return _similarity_search(USER_DATA, name, "name")
+    return _search_users_by_name(name)
 
 
 @tool
@@ -273,7 +302,7 @@ def find_locations_by_name(city: str) -> list[LocationSearchResult]:
     Args:
         city: The city name to search for.
     """
-    return _similarity_search(LOCATION_DATA, city, "city")
+    return _search_locations_by_city(city)
 
 
 @tool
@@ -283,7 +312,7 @@ def find_foods_by_name(food: str) -> list[FoodSearchResult]:
     Args:
         food: The food name to search for.
     """
-    return _similarity_search(FOOD_DATA, food, "name")
+    return _search_foods_by_name(food)
 
 
 @tool

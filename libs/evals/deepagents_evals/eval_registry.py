@@ -60,7 +60,8 @@ def _relational_builder(
     if repl_name == "quickjs":
         from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
 
-        middleware = [CodeInterpreterMiddleware(ptc=RELATIONAL_TOOLS)]
+        ptc: list[str | BaseTool] = [*RELATIONAL_TOOLS]
+        middleware = [CodeInterpreterMiddleware(ptc=ptc)]
     elif repl_name is None:
         tools = RELATIONAL_TOOLS
     else:
@@ -83,7 +84,8 @@ def _incident_graph_builder(
     if repl_name == "quickjs":
         from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
 
-        middleware.append(CodeInterpreterMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
+        ptc: list[str | BaseTool] = [*INCIDENT_GRAPH_TOOLS]
+        middleware.append(CodeInterpreterMiddleware(ptc=ptc))
     elif repl_name is None:
         tools = INCIDENT_GRAPH_TOOLS
     else:
@@ -93,7 +95,9 @@ def _incident_graph_builder(
 
 
 def _composite_backend_builder(
-    model: BaseChatModel, *, repl_name: str | None = None  # noqa: ARG001
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
 ) -> CompiledStateGraph[Any, Any]:
     """Build the composite-backend memory agent.
 
@@ -114,7 +118,9 @@ def _composite_backend_builder(
 
 
 def _weather_subagent_builder(
-    model: BaseChatModel, *, repl_name: str | None = None  # noqa: ARG001
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
 ) -> CompiledStateGraph[Any, Any]:
     """Build the agent with a named weather subagent."""
     return create_deep_agent(
@@ -132,7 +138,9 @@ def _weather_subagent_builder(
 
 
 def _general_purpose_subagent_builder(
-    model: BaseChatModel, *, repl_name: str | None = None  # noqa: ARG001
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
 ) -> CompiledStateGraph[Any, Any]:
     """Build the agent with the weather tool and general-purpose subagent."""
     return create_deep_agent(model=model, tools=[get_weather_fake])
@@ -266,17 +274,11 @@ _HILLCLIMB = "hillclimb"
 
 _register(_default("test_read_file_seeded_state_backend_file", _FILE_OPS, _BASELINE))
 _register(
-    _default(
-        "test_write_file_simple", _FILE_OPS, _BASELINE, system_prompt="Your name is Foo Bar."
-    )
+    _default("test_write_file_simple", _FILE_OPS, _BASELINE, system_prompt="Your name is Foo Bar.")
 )
 _register(_default("test_write_files_in_parallel", _FILE_OPS, _BASELINE))
-_register(
-    _default("test_write_files_in_parallel_confirm_with_verification", _FILE_OPS, _BASELINE)
-)
-_register(
-    _default("test_write_files_in_parallel_ambiguous_confirmation", _FILE_OPS, _BASELINE)
-)
+_register(_default("test_write_files_in_parallel_confirm_with_verification", _FILE_OPS, _BASELINE))
+_register(_default("test_write_files_in_parallel_ambiguous_confirmation", _FILE_OPS, _BASELINE))
 _register(_default("test_ls_directory_contains_file_yes_no", _FILE_OPS, _BASELINE))
 _register(_default("test_ls_directory_missing_file_yes_no", _FILE_OPS, _BASELINE))
 _register(_default("test_edit_file_replace_text", _FILE_OPS, _BASELINE))
@@ -287,9 +289,7 @@ _register(_default("test_grep_finds_matching_paths", _RETRIEVAL, _BASELINE))
 _register(_default("test_glob_lists_markdown_files", _RETRIEVAL, _BASELINE))
 _register(_default("test_find_magic_phrase_deep_nesting", _RETRIEVAL, _BASELINE))
 _register(
-    _default(
-        "test_identify_quote_author_from_directory_parallel_reads", _RETRIEVAL, _BASELINE
-    )
+    _default("test_identify_quote_author_from_directory_parallel_reads", _RETRIEVAL, _BASELINE)
 )
 _register(
     _default(
@@ -298,9 +298,7 @@ _register(
         _BASELINE,
     )
 )
-_register(
-    _default("test_read_file_truncation_recovery_with_pagination", _FILE_OPS, _BASELINE)
-)
+_register(_default("test_read_file_truncation_recovery_with_pagination", _FILE_OPS, _BASELINE))
 _register(_default("test_read_file_empty_file_reports_empty", _FILE_OPS, _BASELINE))
 
 # --- memory (test_memory.py) -----------------------------------------------
@@ -337,7 +335,10 @@ _register(
 )
 _register(
     _default(
-        "test_memory_prevents_unnecessary_file_reads", _MEMORY, _BASELINE, memory=["/docs/AGENTS.md"]
+        "test_memory_prevents_unnecessary_file_reads",
+        _MEMORY,
+        _BASELINE,
+        memory=["/docs/AGENTS.md"],
     )
 )
 _register(
@@ -517,11 +518,16 @@ for _name in (
     "test_chain_search_then_email",
     "test_chain_create_issue_then_notify",
 ):
-    _tier = _BASELINE if _name in (
-        "test_direct_request_multiple_tools",
-        "test_indirect_schedule_meeting",
-        "test_chain_search_then_email",
-    ) else _HILLCLIMB
+    _tier = (
+        _BASELINE
+        if _name
+        in (
+            "test_direct_request_multiple_tools",
+            "test_indirect_schedule_meeting",
+            "test_chain_search_then_email",
+        )
+        else _HILLCLIMB
+    )
     _register(
         EvalSpec(
             name=_name,
@@ -553,9 +559,7 @@ for _name in (
     "test_four_steps_find_user_city_weather_time_and_food_details",
     "test_four_steps_find_user_email_city_foods_calories_and_allergies",
 ):
-    _register(
-        _builder_eval(_name, _TOOL_USE, _BASELINE, _relational_builder, supports_repl=True)
-    )
+    _register(_builder_eval(_name, _TOOL_USE, _BASELINE, _relational_builder, supports_repl=True))
 
 # --- tool_usage_incident_graph (test_tool_usage_incident_graph.py) ----------
 

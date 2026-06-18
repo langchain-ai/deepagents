@@ -1,6 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
@@ -11,6 +12,7 @@ from langchain_core.messages import AIMessage
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -24,7 +26,9 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _runtime_auto_approve,
     _sanitize_agent_message_name,
+    _should_interrupt_tool_call,
     build_model_identity_section,
     create_cli_agent,
     get_available_agent_names,
@@ -49,6 +53,49 @@ def test_add_interrupt_on_gates_async_task_tools() -> None:
 
     for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
         assert tool_name in interrupt_on
+
+
+def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
+    """Every gated tool carries the `when` predicate that honors auto-approve."""
+    interrupt_on = _add_interrupt_on()
+
+    assert interrupt_on
+    for config in interrupt_on.values():
+        assert config.get("when") is _should_interrupt_tool_call
+
+
+def _request_with_context(context: object) -> "ToolCallRequest":
+    return cast(
+        "ToolCallRequest",
+        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+    )
+
+
+def test_should_interrupt_tool_call_respects_auto_approve() -> None:
+    """The predicate suppresses interrupts once auto-approve is in context."""
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=False))
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=True))
+    )
+
+
+def test_should_interrupt_tool_call_handles_dict_and_missing_context() -> None:
+    """Dict context and absent runtime/context default to interrupting."""
+    assert not _should_interrupt_tool_call(
+        _request_with_context({"auto_approve": True})
+    )
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
+    assert _should_interrupt_tool_call(_request_with_context(None))
+    assert _should_interrupt_tool_call(
+        cast("ToolCallRequest", SimpleNamespace(runtime=None))
+    )
+
+
+def test_runtime_auto_approve_handles_none_runtime() -> None:
+    """A missing runtime never auto-approves."""
+    assert _runtime_auto_approve(None) is False
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:

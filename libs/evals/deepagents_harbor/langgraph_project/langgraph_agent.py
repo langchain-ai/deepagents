@@ -175,3 +175,60 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         system_prompt=_SYSTEM_PROMPT,
     )
+
+
+def make_eval_graph(config: dict[str, object] | None = None) -> object:
+    """Create a Deep Agents graph for a specific eval.
+
+    Reads ``configurable["eval_name"]`` to look up the corresponding
+    :class:`~deepagents_evals.eval_registry.EvalSpec` and delegates to its
+    ``build()`` method. This is the dispatcher entry point that lets a single
+    ``langgraph.json`` graph serve every eval in the suite — each Harbor task
+    just passes its eval name via ``--agent-kwarg configurable='{"eval_name":
+    "test_write_file_simple"}'``.
+
+    For evals that support the ``repl_name`` parameter (relational /
+    incident-graph suites), pass ``configurable["repl_name"]`` (``"quickjs"``
+    or omit for direct tool binding).
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the selected model in
+            ``configurable.model``, optional provider kwargs in
+            ``configurable.model_kwargs``, the eval name in
+            ``configurable.eval_name``, and optionally ``configurable.repl_name``.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no eval name or model name is provided.
+    """
+    from deepagents_evals.eval_registry import EVALS  # noqa: PLC0415
+
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+
+    eval_name = configurable.get("eval_name")
+    if not isinstance(eval_name, str) or not eval_name.strip():
+        msg = "`configurable.eval_name` must provide an eval name"
+        raise ValueError(msg)
+
+    spec = EVALS.get(eval_name)
+    if spec is None:
+        msg = (
+            f"Unknown eval_name {eval_name!r}. "
+            f"Registered evals: {sorted(EVALS)}"
+        )
+        raise ValueError(msg)
+
+    repl_name = configurable.get("repl_name")
+    if repl_name is not None and not isinstance(repl_name, str):
+        msg = "`configurable.repl_name` must be a string or omitted"
+        raise TypeError(msg)
+
+    if repl_name is not None and not spec.supports_repl:
+        msg = f"Eval {eval_name!r} does not support repl_name"
+        raise ValueError(msg)
+
+    return spec.build(model, repl_name=repl_name)

@@ -11,13 +11,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from langchain_core.tools import tool
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from deepagents import create_deep_agent
 
+from deepagents_evals.mock_tools.subagents import get_weather_fake
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
@@ -27,12 +27,6 @@ from tests.evals.utils import (
 
 pytestmark = [pytest.mark.eval_category("unit_test"), pytest.mark.eval_tier("baseline")]
 """Apply unit_test category and baseline tier to all tests in this module."""
-
-
-@tool
-def get_weather_fake(location: str) -> str:  # noqa: ARG001
-    """Return a fixed weather response for eval scenarios."""
-    return "It's sunny at 89 degrees F"
 
 
 @pytest.mark.langsmith

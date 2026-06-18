@@ -18,6 +18,7 @@
   ],
   "graphs": {
     "deepagent": "./langgraph_agent.py:make_graph",
-    "bare_deepagent": "./langgraph_agent.py:make_bare_graph"
+    "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
+    "eval_deepagent": "./langgraph_agent.py:make_eval_graph"
   }
 }

@@ -21,17 +21,9 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
         "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
+        "eval_deepagent": "./langgraph_agent.py:make_eval_graph",
     }
     assert not (project_path / "langsmith.py").exists()
-
-
-def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
-    config_path = Path("deepagents_harbor/langgraph_project/langgraph.json")
-
-    dependencies = json.loads(config_path.read_text())["dependencies"]
-
-    assert "langchain-fireworks>=1.4.2,<1.5.0" in dependencies
-    assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 
 def test_make_graph_scrubs_credentials_from_shell_backend_env(

@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents import create_deep_agent
-from langchain_core.tools import tool
+
+from deepagents_evals.mock_tools import TOOL_SELECTION_TOOLS as ALL_TOOLS
 
 if TYPE_CHECKING:
     from typing import Any
@@ -31,75 +32,6 @@ from tests.evals.utils import (
 
 pytestmark = [pytest.mark.eval_category("tool_use")]
 """Apply tool_use category to all tests in this module. Tier is set per-test."""
-
-# ---------------------------------------------------------------------------
-# Mock tools — lightweight stubs that return a fixed string
-# ---------------------------------------------------------------------------
-
-
-@tool
-def slack_send_dm(user_id: str, message: str) -> str:
-    """Send a direct message to a user on Slack."""
-    return f"Sent DM to {user_id}: {message}"
-
-
-@tool
-def slack_post_channel(channel: str, message: str) -> str:
-    """Post a message to a Slack channel."""
-    return f"Posted to #{channel}: {message}"
-
-
-@tool
-def github_create_issue(repo: str, title: str, body: str) -> str:
-    """Create a new GitHub issue."""
-    return f"Created issue '{title}' in {repo} — {body}"
-
-
-@tool
-def github_create_pr(repo: str, title: str, head: str, base: str) -> str:
-    """Create a pull request on GitHub."""
-    return f"Created PR '{title}' in {repo} ({head} -> {base})"
-
-
-@tool
-def linear_create_issue(team: str, title: str, description: str) -> str:
-    """Create a new issue in Linear."""
-    return f"Created Linear issue '{title}' in {team} — {description}"
-
-
-@tool
-def gmail_send_email(to: str, subject: str, body: str) -> str:
-    """Send an email via Gmail."""
-    return f"Sent email to {to}: {subject} — {body}"
-
-
-@tool
-def web_search(query: str) -> str:
-    """Search the web for information."""
-    return (
-        f"Top 3 results for {query!r}:\n"
-        f"1. Official documentation page covering the topic.\n"
-        f"2. Recent blog post discussing updates and features.\n"
-        f"3. Community discussion thread with examples."
-    )
-
-
-@tool
-def calendar_create_event(title: str, date: str, attendees: list[str]) -> str:
-    """Create a calendar event."""
-    return f"Created event '{title}' on {date} with {', '.join(attendees)}"
-
-
-ALL_TOOLS = [
-    slack_send_dm,
-    slack_post_channel,
-    github_create_issue,
-    github_create_pr,
-    linear_create_issue,
-    gmail_send_email,
-    web_search,
-    calendar_create_event,
-]
 
 
 def _make_agent(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:

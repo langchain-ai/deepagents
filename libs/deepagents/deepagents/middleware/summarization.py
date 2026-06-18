@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +363,27 @@ def _rewrite_base64_blocks(
         else:
             rewritten.append(msg)
     return rewritten
+
+
+def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
+    """Extract an error from a single-file batch upload result.
+
+    Args:
+        responses: Backend upload responses. `upload_files`/`aupload_files`
+            are batch APIs that return one `FileUploadResponse` per input file
+            in order. Image offloading passes exactly one file at a time, so the
+            expected length is 1 and `responses[0]` maps to that file.
+
+    Returns:
+        The upload error, `"missing_upload_response"` if the backend returned
+            no response, or `None` when the upload succeeded.
+    """
+    if not responses:
+        return "missing_upload_response"
+    error = responses[0].error
+    if error is None:
+        return None
+    return str(error)
 
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
@@ -989,6 +1010,7 @@ A condensed summary follows:
 
         path_map: dict[str, str] = {}  # key -> backend path (successfully uploaded)
         failed_keys: set[str] = set()  # keys whose upload failed
+        saw_base64 = False
 
         # First pass: upload each unique image individually for per-block failure tracking.
         for msg in messages:
@@ -996,13 +1018,22 @@ A condensed summary follows:
                 decoded = _decode_base64_block(block)
                 if decoded is None:
                     continue
+                saw_base64 = True
                 raw, ext = decoded
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
                 img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
-                    backend.upload_files([(img_path, raw)])
+                    responses = backend.upload_files([(img_path, raw)])
+                    if error := _upload_response_error(responses):
+                        logger.warning(
+                            "Failed to upload base64 image %s to backend: %s",
+                            img_path,
+                            error,
+                        )
+                        failed_keys.add(key)
+                        continue
                     path_map[key] = img_path
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -1013,7 +1044,7 @@ A condensed summary follows:
                     )
                     failed_keys.add(key)
 
-        if not path_map:
+        if not saw_base64:
             return messages  # nothing uploaded, return original messages unchanged
 
         return _rewrite_base64_blocks(messages, path_map)
@@ -1031,19 +1062,29 @@ A condensed summary follows:
 
         path_map: dict[str, str] = {}
         failed_keys: set[str] = set()
+        saw_base64 = False
 
         for msg in messages:
             for block in msg.content_blocks:
                 decoded = _decode_base64_block(block)
                 if decoded is None:
                     continue
+                saw_base64 = True
                 raw, ext = decoded
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
                 img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
-                    await backend.aupload_files([(img_path, raw)])
+                    responses = await backend.aupload_files([(img_path, raw)])
+                    if error := _upload_response_error(responses):
+                        logger.warning(
+                            "Failed to upload base64 image %s to backend: %s",
+                            img_path,
+                            error,
+                        )
+                        failed_keys.add(key)
+                        continue
                     path_map[key] = img_path
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
@@ -1054,7 +1095,7 @@ A condensed summary follows:
                     )
                     failed_keys.add(key)
 
-        if not path_map:
+        if not saw_base64:
             return messages
 
         return _rewrite_base64_blocks(messages, path_map)

@@ -601,6 +601,98 @@ class TestOffloadingBasic:
         assert b64_b not in archive_write[1]
         assert 'error="failed_to_offload"' in archive_write[1]
 
+    def test_offload_upload_response_error_writes_placeholder(self) -> None:
+        """Upload responses with errors are treated as failed image offloads."""
+        raw_a = b"\x89PNG_RESPONSE_OK"
+        raw_b = b"\x89PNG_RESPONSE_DENIED"
+        b64_a = _base64.b64encode(raw_a).decode()
+        b64_b = _base64.b64encode(raw_b).decode()
+        key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+        key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+        expected_path_a = f"/conversation_history/media/{key_a}.png"
+        expected_path_b = f"/conversation_history/media/{key_b}.png"
+
+        class ResponseErrorBackend(MockBackend):
+            """Backend that reports one image upload failure in the response."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                responses = []
+                for path, _content in files:
+                    if key_b in path:
+                        responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                    else:
+                        self.write_calls.append((path, "<binary>"))
+                        responses.append(FileUploadResponse(path=path, error=None))
+                return responses
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = ResponseErrorBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}], id="img-a"),
+            HumanMessage(content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}], id="img-b"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert image_uploads == [(expected_path_a, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path_a in archive_write[1]
+        assert expected_path_b not in archive_write[1]
+        assert b64_b not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
+    def test_offload_all_uploads_raise_writes_placeholders(self) -> None:
+        """All-raised upload failures still rewrite raw base64 to placeholders."""
+        raw_png = b"\x89PNG_ALL_RAISE"
+        b64 = _base64.b64encode(raw_png).decode()
+
+        class RaisingUploadBackend(MockBackend):
+            """Backend that raises for every image upload."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                msg = f"Simulated upload failure for {files[0][0]}"
+                raise RuntimeError(msg)
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = RaisingUploadBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": b64, "mime_type": "image/png"}], id="img"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert b64 not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
     def test_upload_runs_once_before_offload_and_summary(self) -> None:
         """Image upload runs once and the result is shared by offload and summary.
 
@@ -3144,3 +3236,97 @@ async def test_async_offloads_base64_images() -> None:
     archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
     assert archive_write[1].count(expected_path) == 3
     assert b64 not in archive_write[1]
+
+
+@pytest.mark.anyio
+async def test_async_upload_response_error_writes_placeholder() -> None:
+    """Async upload responses with errors are treated as failed image offloads."""
+    raw_a = b"\x89PNG_ASYNC_RESPONSE_OK"
+    raw_b = b"\x89PNG_ASYNC_RESPONSE_DENIED"
+    b64_a = _base64.b64encode(raw_a).decode()
+    b64_b = _base64.b64encode(raw_b).decode()
+    key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+    key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+    expected_path_a = f"/conversation_history/media/{key_a}.png"
+    expected_path_b = f"/conversation_history/media/{key_b}.png"
+
+    class ResponseErrorBackend(MockBackend):
+        """Backend that reports one async image upload failure in the response."""
+
+        async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            responses = []
+            for path, _content in files:
+                if key_b in path:
+                    responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                else:
+                    self.write_calls.append((path, "<binary>"))
+                    responses.append(FileUploadResponse(path=path, error=None))
+            return responses
+
+    backend = ResponseErrorBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}], id="img-a"),
+        HumanMessage(content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}], id="img-b"),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        await call_awrap_model_call(middleware, state, runtime)
+
+    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+    assert image_uploads == [(expected_path_a, "<binary>")]
+
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert expected_path_a in archive_write[1]
+    assert expected_path_b not in archive_write[1]
+    assert b64_b not in archive_write[1]
+    assert 'error="failed_to_offload"' in archive_write[1]
+
+
+@pytest.mark.anyio
+async def test_async_all_uploads_raise_writes_placeholders() -> None:
+    """Async all-raised upload failures still rewrite raw base64 to placeholders."""
+    raw_png = b"\x89PNG_ASYNC_ALL_RAISE"
+    b64 = _base64.b64encode(raw_png).decode()
+
+    class RaisingUploadBackend(MockBackend):
+        """Backend that raises for every async image upload."""
+
+        async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            msg = f"Simulated upload failure for {files[0][0]}"
+            raise RuntimeError(msg)
+
+    backend = RaisingUploadBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content=[{"type": "image", "base64": b64, "mime_type": "image/png"}], id="img"),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        await call_awrap_model_call(middleware, state, runtime)
+
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert b64 not in archive_write[1]
+    assert 'error="failed_to_offload"' in archive_write[1]

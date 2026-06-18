@@ -1,0 +1,21 @@
+libs/evals/tests/unit_tests/test_eval_registry.py
+  s_00b9b666f95bae::t_f400b5fe29ddf7 50-57
+libs/evals/deepagents_evals/eval_registry.py
+  s_00b9b666f95bae::t_0e5bcdfff2f2f6 457
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "bb505c6866138dc91b758efb153768d9c2dbe4e0",
+  "prompts": {},
+  "sessions": {
+    "s_00b9b666f95bae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019edb49-19f6-7773-950c-63704b90abbd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

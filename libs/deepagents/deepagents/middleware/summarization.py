@@ -319,9 +319,12 @@ def _extract_base64_data_url(block: Any) -> str | None:  # noqa: ANN401
     2. A base64 `data:` URL on the `url` field.
     3. An OpenAI-style `image_url` block whose `url` is a base64 `data:` URL.
 
-    Shape 3 is defensive: iterating `content_blocks` normalizes `image_url`
-    into shape 1, but raw (un-normalized) blocks can still arrive in shape 3, so
-    the branch is kept rather than relying on normalization upstream.
+    Shape 3 is defensive: when iterating `content_blocks`, an `image_url` that
+    carries a base64 `data:` URL is normalized into shape 1, so this branch
+    never fires for normalized input. (An `image_url` with an `https` URL
+    normalizes to a plain `url` image block, which is not base64 and is left
+    untouched.) Raw, un-normalized blocks can still arrive in shape 3, so the
+    branch is kept rather than relying on normalization upstream.
 
     This is pure detection and never raises: it reports *whether* a block
     carries base64 data, leaving decoding (which can fail) to `_decode_data_url`.

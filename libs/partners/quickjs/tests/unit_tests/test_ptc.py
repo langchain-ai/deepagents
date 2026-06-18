@@ -314,7 +314,7 @@ def test_render_ptc_prompt_uses_signatures() -> None:
     prompt = render_ptc_prompt([_greet_tool()])
     assert "`tools` namespace" in prompt
     assert "globalThis.tools" in prompt
-    assert "async function greet(input:" in prompt
+    assert "tools.greet(input:" in prompt
     # Fields come through
     assert "name: string" in prompt
     assert "times?: number" in prompt
@@ -325,29 +325,6 @@ def test_render_ptc_prompt_uses_signatures() -> None:
 def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
     with pytest.raises(ValueError, match="cannot be exposed as JavaScript identifier"):
         render_ptc_prompt([_echo_tool("123bad")])
-
-
-def test_render_ptc_prompt_camelcases_task_subagent_type() -> None:
-    """The `task` signature must use `subagentType` (what the JS bridge reads).
-
-    The Pydantic schema field is `subagent_type`, but the REPL `task()` bridge
-    only accepts the camelCase key, so the rendered signature must match.
-    """
-
-    class _TaskInput(BaseModel):
-        description: str = Field(description="Task prompt")
-        subagent_type: str = Field(description="Subagent name")
-
-    task_tool = StructuredTool.from_function(
-        func=lambda description, subagent_type: "ok",
-        name="task",
-        description="Launch a subagent",
-        args_schema=_TaskInput,
-    )
-
-    prompt = render_ptc_prompt([task_tool])
-    assert "subagentType: string" in prompt
-    assert "subagent_type" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +583,7 @@ def test_middleware_ptc_list_includes_prompt_block() -> None:
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     prompt = mw._prepare_for_call(req)
     # Greet included
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
     # The REPL's own tool never appears
     assert "tools.eval(" not in prompt
 
@@ -618,7 +595,7 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
     req = SimpleNamespace(tools=[])
     prompt = mw._prepare_for_call(req)
-    assert "async function greet(" in prompt
+    assert "tools.greet(" in prompt
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:

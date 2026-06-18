@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from pydantic import TypeAdapter
 
-from langchain_quickjs._subagent import is_subagent_task_tool
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -386,8 +384,6 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     for tool in tools:
         camel = to_camel_case(tool.name)
         schema = _safe_json_schema(tool)
-        if is_subagent_task_tool(tool):
-            schema = _camelize_schema_fields(schema)
         return_type = _render_return_type(tool)
         signature = _render_signature(camel, schema, return_type=return_type)
         description = (
@@ -451,24 +447,6 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     return None
 
 
-def _camelize_schema_fields(schema: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Return a copy of `schema` with property keys camelCased.
-
-    Only top-level keys are remapped: the bridge reads the top-level keys and
-    passes nested values through unchanged, so nested keys must stay verbatim.
-    """
-    if not schema or not isinstance(schema.get("properties"), dict):
-        return schema
-    camelized = dict(schema)
-    camelized["properties"] = {
-        to_camel_case(key): prop for key, prop in schema["properties"].items()
-    }
-    required = schema.get("required")
-    if isinstance(required, list):
-        camelized["required"] = [to_camel_case(key) for key in required]
-    return camelized
-
-
 def _render_signature(
     fn_name: str,
     schema: dict[str, Any] | None,
@@ -477,7 +455,7 @@ def _render_signature(
 ) -> str:
     return_clause = f"Promise<{return_type}>"
     default_signature = (
-        f"async function {fn_name}(input: Record<string, unknown>): {return_clause}"
+        f"tools.{fn_name}(input: Record<string, unknown>): {return_clause}"
     )
     if not schema or not isinstance(schema.get("properties"), dict):
         return default_signature
@@ -493,7 +471,7 @@ def _render_signature(
     body = "\n".join(fields) if fields else ""
     if not body:
         return default_signature
-    return f"async function {fn_name}(input: {{\n{body}\n}}): {return_clause}"
+    return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
 # Return types come from the tool's underlying function annotation. We feed

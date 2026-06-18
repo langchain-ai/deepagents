@@ -468,14 +468,13 @@ class TestOffloadingBasic:
         _, content = backend.write_calls[0]
         assert image_url in content
 
-    def test_offload_externalizes_base64_images(self) -> None:
+    def test_offload_rewrites_base64_images(self) -> None:
         """Base64 image data is decoded to files and referenced by path in the archive (issue #2873).
 
         `get_buffer_string(format="xml")` drops base64 blocks, so the middleware
-        externalizes each one: decodes it to a binary file at
-        `/conversation_history/media/{sha256}.{ext}` via `upload_files`, then
-        rewrites the block to `<image url="…" />`. This covers all three base64
-        shapes recognized by langchain_core.
+        decodes each one to `/conversation_history/media/{sha256}.{ext}` with
+        `upload_files`, then rewrites the block to `<image url="…" />`. This
+        covers all three base64 shapes recognized by langchain_core.
         """
         backend = MockBackend()
         mock_model = make_mock_model()
@@ -531,13 +530,13 @@ class TestOffloadingBasic:
         # No raw base64 payload in the archive.
         assert b64 not in archive_write[1]
 
-    def test_externalize_per_block_upload_failure(self) -> None:
-        """A failed upload writes a placeholder; other images are still rewritten (issue #2873).
+    def test_offload_per_block_upload_failure(self) -> None:
+        """A failed upload writes a placeholder while other images are still rewritten (issue #2873).
 
-        Per-block failure tracking means one bad upload does not poison the entire
-        batch.  The successfully uploaded image gets a URL ref in the archive; the
-        failed image is replaced with an `<image error="failed_to_offload" />` text
-        placeholder so the archive has an honest record.
+        Per-block failure tracking ensures one failed upload does not discard the
+        entire batch. The successfully uploaded image gets a path reference in the
+        archive; the failed image is replaced with an
+        `<image error="failed_to_offload" />` text placeholder.
         """
         raw_a = b"\x89PNG_FAKE_DATA_A"
         raw_b = b"\x89PNG_FAKE_DATA_B"
@@ -595,22 +594,20 @@ class TestOffloadingBasic:
         assert image_uploads[0][0] == expected_path_a
 
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
-        # Image A gets a URL ref in the archive.
+        # Image A is referenced by path in the archive.
         assert expected_path_a in archive_write[1]
-        # Image B gets an error placeholder (not a URL ref, not raw base64).
+        # Image B gets an error placeholder, not a path reference or raw base64.
         assert expected_path_b not in archive_write[1]
         assert b64_b not in archive_write[1]
         assert 'error="failed_to_offload"' in archive_write[1]
 
-    def test_externalize_runs_once_before_offload_and_summary(self) -> None:
-        """Externalization runs once at the call site, shared by both offload and summary (unified approach).
+    def test_upload_runs_once_before_offload_and_summary(self) -> None:
+        """Image upload runs once and the result is shared by offload and summary.
 
         `_create_summary` uses prefix format internally, so image blocks are
-        stripped from the summary prompt regardless — the key invariant is:
-        (1) raw base64 never reaches the summary model prompt,
-        (2) the archive gets the externalized URL ref,
-        (3) `upload_files` is called exactly once per unique image (not once
-            per consumer).
+        stripped from the summary prompt regardless. This test verifies that raw
+        base64 never reaches the summary model prompt, the archive gets the
+        uploaded image path, and each unique image is uploaded only once.
         """
         raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         b64 = _base64.b64encode(raw_png).decode()
@@ -642,13 +639,13 @@ class TestOffloadingBasic:
         with mock_get_config():
             call_wrap_model_call(middleware, state, runtime)
 
-        # upload_files called exactly once — externalization is not duplicated
-        # even though both offload and summary consume the result.
+        # upload_files is called exactly once even though both offload and
+        # summary consume the result.
         image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path
 
-        # Archive has the URL ref (externalized path).
+        # Archive has the uploaded image path.
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
         assert expected_path in archive_write[1]
 
@@ -3089,12 +3086,12 @@ class TestTokenCounterToolsProbe:
 
 
 @pytest.mark.anyio
-async def test_async_externalizes_base64_images() -> None:
-    """Async path externalizes base64 images via aupload_files before gather (issue #2873).
+async def test_async_offloads_base64_images() -> None:
+    """Async path offloads base64 images via aupload_files before gather (issue #2873).
 
-    `awrap_model_call` must serialize the externalization step before
-    `asyncio.gather(offload, summary)` so both coroutines see URL refs, not
-    raw base64.  This mirrors `test_offload_externalizes_base64_images` but
+    `awrap_model_call` must upload image data before
+    `asyncio.gather(offload, summary)` so both coroutines see path references,
+    not raw base64. This mirrors `test_offload_rewrites_base64_images` but
     exercises the async code path end-to-end.
     """
     raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
@@ -3143,7 +3140,7 @@ async def test_async_externalizes_base64_images() -> None:
     assert len(image_uploads) == 1
     assert image_uploads[0][0] == expected_path
 
-    # Archive markdown references the externalized path three times.
+    # Archive markdown references the offloaded path three times.
     archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
     assert archive_write[1].count(expected_path) == 3
     assert b64 not in archive_write[1]

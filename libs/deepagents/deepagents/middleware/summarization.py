@@ -307,7 +307,7 @@ def _decode_base64_block(block: Any) -> tuple[bytes, str] | None:  # noqa: ANN40
     if data_url is None:
         return None
 
-    # Parse  data:<mime>;base64,<payload>
+    # Parse data:<mime>;base64,<payload>.
     try:
         import mimetypes  # noqa: PLC0415
 
@@ -323,19 +323,20 @@ def _rewrite_base64_blocks(
     messages: list[AnyMessage],
     path_map: dict[str, str],
 ) -> list[AnyMessage]:
-    """Rewrite base64 blocks in messages using an already-built upload path_map.
+    """Rewrite base64 blocks using uploaded image paths.
 
-    For each base64 block: if its hash key is in `path_map` it becomes an image
-    URL block; otherwise it becomes an `<image error="failed_to_offload" />`
-    text placeholder. Non-base64 blocks pass through unchanged.
+    Each base64 block whose hash appears in `path_map` becomes an image URL
+    block. Blocks without a matching upload become an
+    `<image error="failed_to_offload" />` text placeholder. Non-base64 blocks
+    pass through unchanged.
 
     Args:
         messages: Messages whose base64 blocks should be rewritten.
-        path_map: Mapping of ``sha256[:16]`` → backend path for uploaded images.
+        path_map: Mapping of `sha256[:16]` to backend paths for uploaded images.
 
     Returns:
-        Messages with base64 blocks replaced. Identity-returns a message when
-        none of its blocks were base64 (no copy made).
+        Messages with base64 blocks replaced. Messages without base64 content
+            are returned without copying.
     """
     import hashlib  # noqa: PLC0415
 
@@ -955,26 +956,25 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
-    def _externalize_base64_images(
+    def _offload_base64_images(
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
     ) -> list[AnyMessage]:
-        """Decode base64 image blocks to files and rewrite blocks to path references.
+        """Decode base64 image blocks to files and replace them with path references.
 
-        Externalizing at the call site (before both `_offload_to_backend` and
-        `_create_summary`) means both methods see the same URL-only messages:
-        the archive gets addressable `<image url="…" />` refs, and the summary
-        prompt does not receive raw base64 bytes.
+        The caller uploads images before both `_offload_to_backend` and
+        `_create_summary`, so both paths receive URL-only messages. The archive
+        keeps addressable `<image url="..." />` references, and the summary prompt
+        does not receive raw base64 bytes.
 
         Each unique image is uploaded once to
         `/conversation_history/media/{sha256}.{ext}`. Identical images across
         messages are deduped by content hash.
 
-        Upload failures are tracked per-block. A failed block is replaced with
-        an `<image error="failed_to_offload" />` text placeholder so the archive
-        has an honest record; a successfully uploaded block is rewritten to
-        `{"type": "image", "url": path}`.
+        Upload failures are tracked per block. A failed block is replaced with
+        an `<image error="failed_to_offload" />` text placeholder; a successfully
+        uploaded block is rewritten to `{"type": "image", "url": path}`.
 
         Args:
             backend: Backend to write image files to.
@@ -1018,14 +1018,14 @@ A condensed summary follows:
 
         return _rewrite_base64_blocks(messages, path_map)
 
-    async def _aexternalize_base64_images(
+    async def _aoffload_base64_images(
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
     ) -> list[AnyMessage]:
-        """Async twin of `_externalize_base64_images` using `aupload_files`.
+        """Async twin of `_offload_base64_images` using `aupload_files`.
 
-        See `_externalize_base64_images` for full documentation.
+        See `_offload_base64_images` for full documentation.
         """
         import hashlib  # noqa: PLC0415
 
@@ -1085,7 +1085,7 @@ A condensed summary follows:
         path = self._get_history_path()
 
         # Filter out previous summary messages to avoid redundant storage.
-        # Base64 images are already externalized by the caller before this point.
+        # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
@@ -1160,7 +1160,7 @@ A condensed summary follows:
         path = self._get_history_path()
 
         # Filter out previous summary messages to avoid redundant storage.
-        # Base64 images are already externalized by the caller before this point.
+        # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
@@ -1294,19 +1294,19 @@ A condensed summary follows:
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
 
-        # Externalize base64 images once so both offload and summary see URL refs.
-        externalized_messages = self._externalize_base64_images(backend, messages_to_summarize)
+        # Upload base64 images once so both offload and summary see path references.
+        offloaded_image_messages = self._offload_base64_images(backend, messages_to_summarize)
 
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
-        file_path = self._offload_to_backend(backend, externalized_messages)
+        file_path = self._offload_to_backend(backend, offloaded_image_messages)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)
 
         # Generate summary
-        summary = self._create_summary(externalized_messages)
+        summary = self._create_summary(offloaded_image_messages)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
@@ -1418,15 +1418,15 @@ A condensed summary follows:
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
 
-        # Externalize base64 images once so both offload and summary see URL refs.
+        # Upload base64 images once so both offload and summary see path references.
         # This must complete before the gather since both methods consume the result.
-        externalized_messages = await self._aexternalize_base64_images(backend, messages_to_summarize)
+        offloaded_image_messages = await self._aoffload_base64_images(backend, messages_to_summarize)
 
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
         file_path, summary = await asyncio.gather(
-            self._aoffload_to_backend(backend, externalized_messages),
-            self._acreate_summary(externalized_messages),
+            self._aoffload_to_backend(backend, offloaded_image_messages),
+            self._acreate_summary(offloaded_image_messages),
         )
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."

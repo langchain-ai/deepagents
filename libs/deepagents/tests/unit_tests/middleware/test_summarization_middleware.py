@@ -470,8 +470,15 @@ class TestOffloadingBasic:
         _, content = backend.write_calls[0]
         assert image_url in content
 
-    def test_non_base64_data_url_is_not_offloaded(self) -> None:
-        """URL-encoded `data:` URLs are not treated as base64 media."""
+    def test_offload_rewrites_non_base64_data_url(self) -> None:
+        """Non-base64 inline `data:` media (e.g. a URL-encoded SVG) is offloaded too.
+
+        `get_buffer_string(format="xml")` drops *any* `data:` URL block, not just
+        base64 ones, so a percent-encoded/plaintext `data:` URL must also be
+        decoded (here via percent-decoding) to a file and rewritten to a path
+        reference -- otherwise the inline media silently disappears from the
+        archive (PR #3990 review).
+        """
         backend = MockBackend()
         mock_model = make_mock_model()
 
@@ -483,6 +490,10 @@ class TestOffloadingBasic:
         )
 
         svg_url = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E"
+        raw_svg = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'  # percent-decoded payload
+        expected_key = hashlib.sha256(raw_svg).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.svg"
+
         messages: list[BaseMessage] = [
             HumanMessage(
                 content=[
@@ -499,9 +510,14 @@ class TestOffloadingBasic:
         with mock_get_config():
             call_wrap_model_call(middleware, state, runtime)
 
-        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
         assert "Here is the inline SVG" in archive_write[1]
+        # Referenced by path; the raw inline data: URL is gone and nothing failed.
+        assert f'<image url="{expected_path}" />' in archive_write[1]
+        assert svg_url not in archive_write[1]
         assert 'error="failed_to_offload"' not in archive_write[1]
 
     def test_offload_rewrites_base64_images(self) -> None:
@@ -890,10 +906,10 @@ class TestOffloadingBasic:
         assert f'&lt;file url="{expected_path}" /&gt;' in archive_write[1]
         assert b64 not in archive_write[1]
 
-    def test_offload_no_base64_returns_messages_unchanged(self) -> None:
-        """With no base64 media, offload returns the original list and uploads nothing.
+    def test_offload_no_inline_media_returns_messages_unchanged(self) -> None:
+        """With no inline media, offload returns the original list and uploads nothing.
 
-        Guards the `saw_base64` short-circuit: text-only messages must skip the
+        Guards the `saw_inline_media` short-circuit: text-only messages must skip the
         copy/rewrite path entirely (identity return) so no media files are written.
         """
         backend = MockBackend()
@@ -905,9 +921,9 @@ class TestOffloadingBasic:
         )
 
         messages = make_conversation_messages(num_old=5, num_recent=2)
-        result, failed = middleware._offload_base64_images(backend, messages)
+        result, failed = middleware._offload_inline_media(backend, messages)
 
-        assert result is messages  # identity: no copy when there is no base64
+        assert result is messages  # identity: no copy when there is no inline media
         assert failed == 0
         assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
 

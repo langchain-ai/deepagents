@@ -379,6 +379,7 @@ class TestSummarizationMiddlewareInit:
             )
 
         assert middleware._history_path_prefix == "/custom/history"
+        assert middleware._media_prefix == "/custom/history/media"
 
     def test_deprecated_history_path_prefix_overrides_default(self) -> None:
         """Deprecated history_path_prefix takes precedence over the default."""

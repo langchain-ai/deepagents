@@ -565,10 +565,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
-        self._media_prefix = f"{_root}/conversation_history/media"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
+        self._media_prefix = f"{self._history_path_prefix}/media"
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:

@@ -172,12 +172,12 @@ their runnable is already compiled.
 
 #### Approval model
 
-`task` dispatches from inside the already-running `{` call. It
+`task` dispatches from inside the already-running `eval` call. It
 does not route through the parent agent's `ToolNode`-managed `task` tool and
 does not trigger parent-level `interrupt_on` / HITL approval for each dispatch.
 Declarative subagents still honor approval middleware configured inside their
 own spec. If you need approval before launching a subagent from the parent, use
-the normal `task` tool outside JavaScript or ensure the `{` call
+the normal `task` tool outside JavaScript or ensure the `eval` call
 itself is approval-gated.
 
 #### Mental model
@@ -186,7 +186,7 @@ Hold your work in JS: an array of items in, an array of results out. Merge each
 dispatch result back onto its item. Multi-stage analysis means: run a pass,
 filter or regroup the array in JS, then run another pass over the survivors.
 
-You can run the whole workflow in one `{` call or split it across
+You can run the whole workflow in one `eval` call or split it across
 several — both are fine. A single end-to-end script (generate, compare, pick a
 winner; or review every item, then synthesize) is clean when you can write it
 in one go; splitting is also fine when you want to inspect results between
@@ -239,10 +239,10 @@ for (let i = 0; i < files.length; i += batchSize) {
 You already have your normal tools for reading, listing, globbing, and
 grepping files. Use them to explore and understand the task BEFORE you write
 the orchestration script. These are ordinary tool calls, separate from the
-`{` tool: read the data file, list or glob the directory, grep for
+`eval` tool: read the data file, list or glob the directory, grep for
 what matters, then decide how to split the work.
 
-Never write `{` code that spawns a subagent just to read or parse a
+Never write `eval` code that spawns a subagent just to read or parse a
 file or list a directory. That is a deterministic step you do yourself with a
 direct tool call; spending a whole agent loop on it is wasteful.
 
@@ -255,7 +255,7 @@ you split it:
 - A cheap classification pass first, then deeper dispatches only for the items
   that warrant them.
 
-Then write JavaScript in the `{` tool that distributes the heavy,
+Then write JavaScript in the `eval` tool that distributes the heavy,
 agentic work to subagents with `task()`: analyzing file contents, exploring a
 codebase, making judgment calls, rewriting code, or synthesizing a report.
 
@@ -299,7 +299,7 @@ const deepReviews = await Promise.all(riskyHandlers.map((it) =>
 
 #### Return results via the last expression, not `console.log`
 
-The value of the last expression in an `{` call (or a resolved
+The value of the last expression in an `eval` call (or a resolved
 top-level `await`) is returned to you as the result. Make that final
 expression the variable holding your result and read it from there.
 `console.log` is only for incidental debugging: its output is capped and
@@ -309,12 +309,12 @@ actual results.
 Keep large intermediate sets in JS variables and return only a compact
 summary or a small slice, not the entire dataset. To persist full output,
 have a subagent write it, or write it with your own file tool outside the
-`{` call.
+`eval` call.
 
 #### Reuse what earlier evals left in scope
 
 The REPL is persistent within a turn: every top-level variable, function, and
-class you declare is kept and is available in your next `{` call
+class you declare is kept and is available in your next `eval` call
 (each is hoisted to global scope). So if a later step needs something an
 earlier eval produced or bound, **reference that variable by name** — do not
 write a new literal that re-types data a previous eval already returned or

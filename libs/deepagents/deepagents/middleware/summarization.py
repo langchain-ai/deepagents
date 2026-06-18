@@ -312,12 +312,16 @@ def _is_base64_data_url(url: str) -> bool:
 def _extract_base64_data_url(block: Any) -> str | None:  # noqa: ANN401
     """Return the embedded `data:` URL for a base64-carrying content block.
 
-    Detects the three base64 content-block shapes used across LangChain
-    messages (kept in sync with the message utilities' own base64 detection):
+    Detects the three base64 content-block shapes that appear across LangChain
+    messages:
 
     1. A standard content block with an explicit `base64` field.
-    2. A top-level `data:` URL on the `url` field.
-    3. An OpenAI-style `image_url` block whose `url` is a `data:` URL.
+    2. A base64 `data:` URL on the `url` field.
+    3. An OpenAI-style `image_url` block whose `url` is a base64 `data:` URL.
+
+    Shape 3 is defensive: iterating `content_blocks` normalizes `image_url`
+    into shape 1, but raw (un-normalized) blocks can still arrive in shape 3, so
+    the branch is kept rather than relying on normalization upstream.
 
     This is pure detection and never raises: it reports *whether* a block
     carries base64 data, leaving decoding (which can fail) to `_decode_data_url`.

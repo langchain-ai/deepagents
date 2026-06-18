@@ -20,6 +20,7 @@ from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownlo
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     _token_counter_accepts_tools,
+    _upload_response_error,
 )
 
 if TYPE_CHECKING:
@@ -660,7 +661,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         # Only image A was uploaded — B's upload raised.
@@ -813,9 +814,11 @@ class TestOffloadingBasic:
     def test_offload_decode_failure_writes_placeholder(self) -> None:
         """A detected-but-undecodable base64 block becomes a placeholder, not a silent drop.
 
-        A malformed `data:` URL is recognized as media but fails to decode. The
-        block must still surface as an `<image error="failed_to_offload" />`
-        placeholder so the archive records that media was present.
+        A base64 `data:` URL with an undecodable payload is recognized as media
+        but fails to decode. The block must still surface as an
+        `<image error="failed_to_offload" />` placeholder so the archive records
+        that media was present, and the failure must count toward the user-facing
+        warning -- decode failures are as unrecoverable as upload failures.
         """
         backend = MockBackend()
         middleware = SummarizationMiddleware(
@@ -825,8 +828,9 @@ class TestOffloadingBasic:
             keep=("messages", 2),
         )
 
-        # Missing the comma separator -> _decode_data_url raises and returns None.
-        malformed = "data:image/png;base64"
+        # Detected as a base64 data URL (has the comma + "base64" header), but the
+        # single-character payload is undecodable -> _decode_data_url returns None.
+        malformed = "data:image/png;base64,a"
         messages: list[BaseMessage] = [
             HumanMessage(content=[{"type": "image", "url": malformed}], id="bad-img"),
             *make_conversation_messages(num_old=5, num_recent=2),
@@ -834,7 +838,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config():
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
             call_wrap_model_call(middleware, state, runtime)
 
         # Nothing was uploaded (decode failed before any upload).
@@ -843,6 +847,114 @@ class TestOffloadingBasic:
         archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
         assert 'error="failed_to_offload"' in archive_write[1]
         assert malformed not in archive_write[1]
+
+    def test_offload_non_av_media_uses_file_reference(self) -> None:
+        """Non-(image/audio/video) media falls back to an XML-escaped `<file>` reference.
+
+        A PDF has no typed XML block, so `_media_reference_block` emits a text
+        block `<file url="..." />`. The XML renderer escapes text blocks, so the
+        archive contains the escaped form `&lt;file url="..." /&gt;` -- the
+        reference is preserved (not dropped) but rendered as literal text.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_pdf = b"%PDF-1.4 fake pdf bytes"
+        b64 = _base64.b64encode(raw_pdf).decode()
+        expected_key = hashlib.sha256(raw_pdf).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.pdf"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "file", "base64": b64, "mime_type": "application/pdf"}],
+                id="pdf-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Text-block fallback renders XML-escaped, and raw base64 is absent.
+        assert f'&lt;file url="{expected_path}" /&gt;' in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_offload_no_base64_returns_messages_unchanged(self) -> None:
+        """With no base64 media, offload returns the original list and uploads nothing.
+
+        Guards the `saw_base64` short-circuit: text-only messages must skip the
+        copy/rewrite path entirely (identity return) so no media files are written.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=5, num_recent=2)
+        result, failed = middleware._offload_base64_images(backend, messages)
+
+        assert result is messages  # identity: no copy when there is no base64
+        assert failed == 0
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+
+    def test_offload_base64_alongside_non_standard_block(self) -> None:
+        """Base64 media offloads cleanly even when a non-standard block shares the message.
+
+        A provider-specific `tool_use` block normalizes to a `non_standard`
+        content block when rewritten. This must not corrupt the archive: the
+        image is still referenced by path and no raw base64 leaks, regardless of
+        the sibling block.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_png = b"\x89PNG_WITH_TOOL_USE"
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "calling a tool with an image"},
+                    {"type": "tool_use", "id": "t1", "name": "lookup", "input": {"q": 1}},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="ai-tool-img",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path in archive_write[1]
+        assert b64 not in archive_write[1]
 
     def test_upload_runs_once_before_offload_and_summary(self) -> None:
         """Image upload runs once and the result is shared by offload and summary.
@@ -3388,6 +3500,10 @@ async def test_async_offloads_base64_images() -> None:
     assert archive_write[1].count(expected_path) == 3
     assert b64 not in archive_write[1]
 
+    # Raw base64 never reaches the async summary model prompt (symmetric with the
+    # sync `test_upload_runs_once_before_offload_and_summary` guard).
+    assert b64 not in str(mock_model.ainvoke.call_args)
+
 
 @pytest.mark.anyio
 async def test_async_upload_response_error_writes_placeholder() -> None:
@@ -3475,9 +3591,23 @@ async def test_async_all_uploads_raise_writes_placeholders() -> None:
     state = cast("AgentState[Any]", {"messages": messages})
     runtime = make_mock_runtime()
 
-    with mock_get_config():
+    with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
         await call_awrap_model_call(middleware, state, runtime)
 
     archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
     assert b64 not in archive_write[1]
     assert 'error="failed_to_offload"' in archive_write[1]
+
+
+def test_upload_response_error_classifies_batch_result() -> None:
+    """`_upload_response_error` distinguishes empty, error, and success responses.
+
+    Covers the defensive empty-list branch (a backend that returns no response
+    for a requested upload), which the integration tests don't exercise.
+    """
+    # Empty list: backend returned no response for the single requested file.
+    assert _upload_response_error([]) == "missing_upload_response"
+    # Populated error is surfaced as a string.
+    assert _upload_response_error([FileUploadResponse(path="/m.png", error="permission_denied")]) == "permission_denied"
+    # Success (error is None) returns None.
+    assert _upload_response_error([FileUploadResponse(path="/m.png", error=None)]) is None

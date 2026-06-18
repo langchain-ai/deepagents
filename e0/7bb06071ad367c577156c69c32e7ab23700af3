@@ -1,0 +1,19 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_d0bd6a6d316f92::t_d68dc5295da654 57-69,72-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "e07bb06071ad367c577156c69c32e7ab23700af3",
+  "prompts": {},
+  "sessions": {
+    "s_d0bd6a6d316f92": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e1aa3c66-8009-4336-b3c5-9503b7f89e26",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from langchain_agent_sandbox import (
+from langchain_k8s_agent_sandbox import (
     AgentSandboxBackend,
     SandboxPolicyWrapper,
     create_sandbox_backend_factory,
@@ -412,7 +412,7 @@ def test_glob_prefix_double_star_pattern():
 
 
 def _match(pattern: str, path: str) -> bool:
-    from langchain_agent_sandbox.backend import _compile_glob
+    from langchain_k8s_agent_sandbox.backend import _compile_glob
 
     return _compile_glob(pattern)(path)
 
@@ -876,7 +876,7 @@ def test_factory_finalizer_logs_non_404_failures(caplog):
     factory = create_sandbox_backend_factory(template_name="t", client=mock_sdk)
     backend = factory(MagicMock())
 
-    with caplog.at_level(logging.ERROR, logger="langchain_agent_sandbox.backend"):
+    with caplog.at_level(logging.ERROR, logger="langchain_k8s_agent_sandbox.backend"):
         backend._finalizer()
 
     _require(
@@ -1686,7 +1686,7 @@ def test_default_audit_failure_does_not_block_write_edit_upload(operation, call)
         edit_calls.append((a, kw))
         return real_edit.__class__  # placeholder; not used
     if operation == "edit":
-        from langchain_agent_sandbox.backend import EditResult
+        from langchain_k8s_agent_sandbox.backend import EditResult
         backend.edit = lambda *a, **kw: (  # type: ignore[assignment]
             edit_calls.append((a, kw)) or EditResult(error=None, path=a[0], occurrences=1)
         )
@@ -1751,7 +1751,7 @@ def test_exit_logs_cleanup_error_when_masked_by_user_exception(caplog):
     backend.__enter__()
 
     user_exc = ValueError("the original problem")
-    with caplog.at_level(logging.ERROR, logger="langchain_agent_sandbox.backend"):
+    with caplog.at_level(logging.ERROR, logger="langchain_k8s_agent_sandbox.backend"):
         # __exit__ on the user-exception path should bundle both via
         # ExceptionGroup and also log. We don't assert no-raise here
         # because the new behavior IS to raise an ExceptionGroup —

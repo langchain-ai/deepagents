@@ -3,35 +3,30 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "langchain-agent-sandbox"
-version = "0.1.0"
+name = "langchain-k8s-agent-sandbox"
 description = "LangChain DeepAgents backend for Kubernetes agent-sandbox."
 readme = "README.md"
-requires-python = ">=3.11"
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
+version = "0.1.0"
+requires-python = ">=3.11,<4.0"
 dependencies = [
+    "deepagents>=0.5.0,<0.6.0",
     "k8s-agent-sandbox",
-    "deepagents>=0.5.0",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/kubernetes-sigs/agent-sandbox"
-"Bug Tracker" = "https://github.com/kubernetes-sigs/agent-sandbox/issues"
-
-[tool.setuptools]
-packages = ["langchain_agent_sandbox"]
-
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21.0",
-]
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/k8s-agent-sandbox"
+Repository = "https://github.com/langchain-ai/deepagents"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/k8s-agent-sandbox"
 
 [dependency-groups]
 dev = [
@@ -39,14 +34,15 @@ dev = [
     "pytest-asyncio>=0.21.0",
 ]
 
+[tool.uv.sources]
+deepagents = { path = "../../deepagents", editable = true }
+
 [tool.ruff]
 target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-[tool.uv.sources]
-k8s-agent-sandbox = { path = "../agentic-sandbox-client", editable = true }
 
 [tool.mypy]
 python_version = "3.11"

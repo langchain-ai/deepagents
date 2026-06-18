@@ -1,0 +1,24 @@
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_55bb2e5cb9e884::t_bb2bc16cc1726c 458
+  s_55bb2e5cb9e884::t_7aeb7039c1c2ac 474
+libs/partners/quickjs/tests/unit_tests/test_ptc.py
+  s_55bb2e5cb9e884::t_9525e5bdde7a61 317
+  s_55bb2e5cb9e884::t_65a9e93848a100 598
+  s_55bb2e5cb9e884::t_c3dc054b586dce 586
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "6c25026cf0fca34c9bcdad60e6c7431dc102f69d",
+  "prompts": {},
+  "sessions": {
+    "s_55bb2e5cb9e884": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d8eefc-b814-4369-9677-981c907ab665",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+libs/code/tests/unit_tests/test_thread_selector.py
+  s_c7c46c5650c54b::t_b9c774efbd4589 510,514,518,525,529,533,537
+libs/code/tests/unit_tests/test_app.py
+  s_c7c46c5650c54b::t_51ccbcb6b6e1d4 77
+libs/code/tests/unit_tests/test_model_selector.py
+  s_c7c46c5650c54b::t_51ccbcb6b6e1d4 874,876-877,879-880,882-883,885-891,893-897,899-900,902-904,906-908,910,912,914-917,985,987-989,991-994,996,998-1000,1002-1005,1007,1009-1011,1013-1016,1018,1020-1022,1024-1027,1029,1031-1033,1035,1037,1039-1041,1043-1045,1047,1049-1051,1053,1055,1057-1059,1061,1063,1065-1068,1070-1073,1075,1077-1078,1080-1082,1084-1086
+libs/code/tests/unit_tests/conftest.py
+  s_c7c46c5650c54b::t_51ccbcb6b6e1d4 115-131,221-232
+libs/partners/quickjs/CHANGELOG.md
+  h_9f69767fa5fabf 9,13-14
+libs/code/tests/unit_tests/test_mcp_viewer.py
+  s_c7c46c5650c54b::t_51ccbcb6b6e1d4 1178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "7073e224924b43e5c5019bfc70e59e8c9328f0f6",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_c7c46c5650c54b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8eb9b24b-2935-4874-bc0d-2d928b66147b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

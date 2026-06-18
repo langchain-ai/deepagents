@@ -70,12 +70,14 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import (
+    DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
 
 __all__ = [
+    "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
     "GRADER_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",

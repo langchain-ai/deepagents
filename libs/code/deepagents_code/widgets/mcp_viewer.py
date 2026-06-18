@@ -996,6 +996,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
                     self._move_to(idx)
                     self._reveal_selection(widget, direction=1)
                     break
+        self._focus_filter_input()
 
     async def apply_server_disable_toggle(
         self,
@@ -1204,6 +1205,27 @@ class MCPViewerScreen(ModalScreen[str | None]):
         container.mount(
             Static(self._build_help_text(glyphs), classes="mcp-viewer-help")
         )
+
+    def _focus_filter_input(self) -> None:
+        """Refocus the filter `Input` after an in-place body rebuild.
+
+        `refresh_server_info` removes the screen's focused widget when it
+        clears the body, leaving the freshly mounted `Input` unfocused — so
+        a viewer opened while the server is still connecting would silently
+        swallow keystrokes once tools load. Textual auto-focuses the `Input`
+        only on the first mount, so restore it explicitly here. Deferred via
+        `call_after_refresh` because `_mount_body` mounts without awaiting.
+        """
+
+        def _focus() -> None:
+            from contextlib import suppress
+
+            from textual.css.query import NoMatches
+
+            with suppress(NoMatches):
+                self.query_one("#mcp-filter", Input).focus()
+
+        self.call_after_refresh(_focus)
 
     def _build_help_text(self, glyphs: Glyphs) -> str:
         """Compose the help-footer string from the current `_pending_reconnect`.

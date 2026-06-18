@@ -127,6 +127,36 @@ class TestMCPViewerScreen:
             empty = screen.query_one(".mcp-empty", Static)
             assert "--mcp-config" in _widget_text(empty)
 
+    async def test_refresh_focuses_filter_input(self) -> None:
+        """Refreshing after server-ready must refocus the filter input.
+
+        Regression: a viewer opened while the server is still connecting
+        shows a placeholder with no filter input. When tools load,
+        `refresh_server_info` rebuilds the body and mounts the filter
+        `Input`, but Textual only auto-focuses on the first mount — so the
+        input was left unfocused and silently swallowed every keystroke.
+        """
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # No filter input exists during the connecting placeholder.
+            assert not screen.query("#mcp-filter")
+
+            await screen.refresh_server_info(_sample_info())
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            assert app.focused is filter_input
+
+            await pilot.press("r", "e", "a", "d")
+            await pilot.pause()
+            assert filter_input.value == "read"
+
     async def test_reconnect_hint_hidden_when_no_pending(self) -> None:
         """Footer hint omits the `Ctrl+R` chip when nothing is queued."""
         app = MCPViewerTestApp()

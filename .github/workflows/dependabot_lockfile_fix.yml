@@ -201,22 +201,13 @@ jobs:
           lockfiles_path.write_text("\n".join(lockfiles) + "\n")
           PY
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          app-id: ${{ secrets.ORG_MEMBERSHIP_APP_ID }}
-          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
-          permission-contents: write
-
-      - name: Checkout PR head with push credentials
+      - name: Checkout PR head for commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
           ref: ${{ env.HEAD_REF }}
           path: pr
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Verify checked-out commit
         working-directory: pr
@@ -228,14 +219,15 @@ jobs:
             exit 1
           fi
 
-      - name: Commit and push regenerated lockfiles
+      - name: Commit regenerated lockfiles
+        id: commit_lockfiles
         working-directory: pr
         run: |
           set -euo pipefail
+          echo "has_changes=false" >> "$GITHUB_OUTPUT"
           # Copy the lockfiles regenerated in the no-credential checkout into
-          # this credentialed checkout, then commit. No PR-head code executes in
-          # this step, so the App token persisted in pr/.git/config is never
-          # exposed to untrusted build backends.
+          # this checkout, then commit. No PR-head code executes in this step,
+          # and no write token has been minted or persisted yet.
           missing=0
           while IFS= read -r lockfile; do
             [ -n "$lockfile" ] || continue
@@ -262,4 +254,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: update Dependabot lockfiles"
-          git push origin "HEAD:$HEAD_REF"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.commit_lockfiles.outputs.has_changes == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.ORG_MEMBERSHIP_APP_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Push regenerated lockfiles
+        if: steps.commit_lockfiles.outputs.has_changes == 'true'
+        working-directory: pr
+        env:
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$HEAD_REF"

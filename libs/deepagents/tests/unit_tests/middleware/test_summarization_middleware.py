@@ -531,6 +531,46 @@ class TestOffloadingBasic:
         # No raw base64 payload in the archive.
         assert b64 not in archive_write[1]
 
+    def test_offload_media_uses_deprecated_history_path_prefix(self) -> None:
+        """Media files are written under the final history prefix."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=mock_model,
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 2),
+                history_path_prefix="/custom/history",
+            )
+
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/custom/history/media/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+                id="custom-prefix-image",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/custom/history/media/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert archive_write[0] == "/custom/history/test-thread-123.md"
+        assert expected_path in archive_write[1]
+
     def test_offload_per_block_upload_failure(self) -> None:
         """A failed upload writes a placeholder while other images are still rewritten (issue #2873).
 

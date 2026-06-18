@@ -9,6 +9,8 @@ from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GlobResult,
+    GrepResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -257,6 +259,25 @@ def test_composite_backend_grep_path_isolation():
 
     # Should NOT find results in /memories (this is the bug)
     assert not any("/memories/" in p for p in match_paths), f"grep path=/tools should not return /memories results, but got: {match_paths}"
+
+
+def test_composite_grep_and_glob_propagate_truncated(monkeypatch: pytest.MonkeyPatch):
+    """A truncated result from a routed/default backend must surface through the composite."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    monkeypatch.setattr(routed, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/notes.txt", "line": 1, "text": "hit"}], truncated=True))
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/notes.txt", "is_dir": False}], truncated=True))
+
+    grep_result = comp.grep("hit", path="/memories/")
+    assert grep_result.truncated is True
+    assert grep_result.matches and grep_result.matches[0]["path"] == "/memories/notes.txt"
+
+    glob_result = comp.glob("*.txt", path="/memories/")
+    assert glob_result.truncated is True
+    assert glob_result.matches and glob_result.matches[0]["path"] == "/memories/notes.txt"
 
 
 def test_composite_backend_ls_nested_directories(tmp_path: Path):

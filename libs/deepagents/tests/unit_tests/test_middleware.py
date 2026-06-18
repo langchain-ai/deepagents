@@ -20,6 +20,7 @@ import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GlobResult,
     GrepResult,
     ReadResult,
     SandboxBackendProtocol,
@@ -41,6 +42,7 @@ from deepagents.middleware._message_eviction import (
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     NUM_CHARS_PER_TOKEN,
+    SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
@@ -615,6 +617,59 @@ class TestFilesystemMiddleware:
         assert "Partial matches:" in result.content
         assert "/test.py" in result.content
         assert "1: import os" in result.content
+
+    def test_grep_truncated_renders_as_success_with_note(self):
+        """A truncated grep is a success with valid partial matches plus a narrow-your-search note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+            truncated=True,
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert "1: import os" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    def test_glob_truncated_renders_as_success_with_note(self):
+        """A truncated glob returns its partial paths as a success plus the narrow-your-search note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GlobResult(
+            matches=[{"path": "/test.py", "is_dir": False}],
+            truncated=True,
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", return_value=truncated_result),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "*.py",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert "/test.py" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {

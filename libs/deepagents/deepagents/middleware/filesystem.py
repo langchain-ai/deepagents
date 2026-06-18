@@ -212,6 +212,8 @@ def _format_grep_tool_result(
     formatted = format_grep_matches(matches, output_mode)
     if result.error:
         return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+    if result.truncated:
+        return f"{formatted}\n\n{SEARCH_TRUNCATION_NOTE}", "success"
     return formatted, "success"
 
 
@@ -233,9 +235,21 @@ def _apply_permissions_to_glob_results(
     return [fi.get("path", "") for fi in filtered_infos]
 
 
+def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
+    """Render glob paths for the tool boundary, appending the truncation note when partial."""
+    content = str(truncate_if_too_long(paths))
+    if truncated:
+        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+    return content
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
+SEARCH_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
+    "Narrow the search (a more specific pattern, a subdirectory path, or a file glob) to see the rest."
+)
 
 
 def _glob_timeout_message() -> str:
@@ -1479,7 +1493,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -1543,7 +1557,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -1595,7 +1609,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
             )
             return ToolMessage(
@@ -1638,7 +1652,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
             )
             return ToolMessage(

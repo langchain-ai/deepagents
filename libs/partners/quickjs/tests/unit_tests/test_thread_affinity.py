@@ -175,7 +175,7 @@ async def test_quickjs_task_global_available_without_ptc_e2e() -> None:
     agent = create_deep_agent(
         model=_FakeChatModel(
             messages=_script(
-                "await task({description: 'say hi', subagent_type: 'researcher'})",
+                "await task({description: 'say hi', subagentType: 'researcher'})",
                 final_message="done",
             )
         ),

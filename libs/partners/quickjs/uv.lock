@@ -923,7 +923,7 @@ requires-dist = [
     { name = "langchain", specifier = ">=1.3.9,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.5,<2.0.0" },
-    { name = "quickjs-rs", editable = "/Users/hunter/Projects/github/langchain-ai/worktrees/quickjs-wasm/hearty-palm/quickjs-wasm" },
+    { name = "quickjs-rs", specifier = ">=0.2.0,<0.3.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1728,23 +1728,14 @@ wheels = [
 [[package]]
 name = "quickjs-rs"
 version = "0.2.0"
-source = { editable = "/Users/hunter/Projects/github/langchain-ai/worktrees/quickjs-wasm/hearty-palm/quickjs-wasm" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "wasmtime" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "matplotlib", marker = "extra == 'bench'", specifier = ">=3.8" },
-    { name = "mypy", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-codspeed", marker = "extra == 'bench'", specifier = ">=4.3.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "wasmtime", specifier = ">=45" },
+sdist = { url = "https://files.pythonhosted.org/packages/3f/59/263e19bcff54b7e7993de3f79da25c23b7d7296d84c13d31a3e38ea0ec7f/quickjs_rs-0.2.0.tar.gz", hash = "sha256:db1a8d72ddfc0e766772622adb510f91aa8626d87afd843893c1e2a360ee1ce8", size = 483392, upload-time = "2026-06-18T00:08:53.928Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/22/7caf4552a7880f205c95099c3c3e6d36f146af4e34a0b3baa12d49c47ea1/quickjs_rs-0.2.0-py3-none-any.whl", hash = "sha256:cb661d40ee3ba6d3673a75729223315fd4f0b22087373156425fa4227fa2adc6", size = 454517, upload-time = "2026-06-18T00:08:52.445Z" },
 ]
-provides-extras = ["dev", "bench"]
 
 [[package]]
 name = "readme-renderer"

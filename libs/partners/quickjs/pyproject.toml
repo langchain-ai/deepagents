@@ -60,7 +60,6 @@ test = [
 
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
-quickjs-rs = { path = "/Users/hunter/Projects/github/langchain-ai/worktrees/quickjs-wasm/hearty-palm/quickjs-wasm", editable = true }
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]

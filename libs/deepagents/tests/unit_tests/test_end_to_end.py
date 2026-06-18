@@ -2179,6 +2179,44 @@ class TestLargeHumanMessageEviction:
             assert evicted_to in files, f"Evicted file {evicted_to} not found in state"
             assert files[evicted_to]["content"] == m.content
 
+    def test_eviction_preserves_ai_response_and_no_duplicates_on_replay(self) -> None:
+        """Tagged HumanMessage updates dedupe during DeltaChannel replay."""
+        threshold = 50_000
+        large_content = "x" * (NUM_CHARS_PER_TOKEN * threshold + 1)
+        config = {"configurable": {"thread_id": "eviction-replay"}}
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="Response 1"),
+                    AIMessage(content="Response 2"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=fake_model,
+            backend=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",)),
+            checkpointer=InMemorySaver(),
+        )
+
+        agent.invoke({"messages": [HumanMessage(content=large_content)]}, config)
+        messages = agent.get_state(config).values["messages"]
+        assert len(messages) == 2
+        assert isinstance(messages[0], HumanMessage)
+        assert messages[0].additional_kwargs.get("lc_evicted_to") is not None
+        assert isinstance(messages[1], AIMessage)
+
+        agent.invoke({"messages": [HumanMessage(content="hello")]}, config)
+        messages = agent.get_state(config).values["messages"]
+        assert len(messages) == 4
+
+        message_ids = [message.id for message in messages if message.id is not None]
+        assert len(message_ids) == len(set(message_ids))
+
+        human_messages = [message for message in messages if isinstance(message, HumanMessage)]
+        evicted = [message for message in human_messages if message.additional_kwargs.get("lc_evicted_to")]
+        assert len(human_messages) == 2
+        assert len(evicted) == 1
+
 
 class TestSummarizationOffloadToState:
     """Test that SummarizationMiddleware offloads conversation history to StateBackend."""

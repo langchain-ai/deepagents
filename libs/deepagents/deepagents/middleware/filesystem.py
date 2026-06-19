@@ -2,6 +2,7 @@
 # ruff: noqa: E501
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import contextvars
@@ -75,6 +76,11 @@ from deepagents.middleware._message_eviction import (
     _offload_tool_message_content,
 )
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._video import (
+    VideoExtractionError,
+    _select_sampling_rate as _select_video_sampling_rate,
+    extract_video_frames,
+)
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 _SYNC_GLOB_WORKERS = 4
@@ -90,6 +96,93 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "edit_file": "write",
     "delete": "write",
 }
+
+# Reinterpret offset/limit as seconds for video reads.
+_VIDEO_DEFAULT_LIMIT_SECONDS = 30.0
+
+
+def _handle_video_read(
+    content: str,
+    validated_path: str,
+    tool_call_id: str | None,
+    offset: int,
+    limit: int,
+    sampling_rate: float,
+) -> ToolMessage:
+    """Slice a video byte payload into a sampled frame window for the model.
+
+    The agent's `offset` is reinterpreted as seconds to skip into the
+    source, and `limit` as seconds of source to sample. Missing `offset`/
+    `limit` fall back to reading from the start of the source up to
+    `_VIDEO_DEFAULT_LIMIT_SECONDS`.
+
+    Errors are returned as success-shaped `ToolMessage` instances carrying
+    a plain text error, so the turn still completes and the agent can
+    recover (e.g. by retrying with a smaller window).
+    """
+    rate = _select_video_sampling_rate(sampling_rate)
+    offset_seconds = max(0.0, float(offset))
+    if limit <= 0:
+        duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS)
+        header = f"Reading first {int(duration_seconds)}s of {validated_path} at {rate} fps."
+    else:
+        duration_seconds = float(limit)
+        header = f"Reading [{offset_seconds:.3f}s, {offset_seconds + duration_seconds:.3f}s) of {validated_path} at {rate} fps."
+
+    def _err(msg: str) -> ToolMessage:
+        return ToolMessage(
+            content=f"Error reading video {validated_path}: {msg}\n{header}",
+            name="read_file",
+            tool_call_id=tool_call_id,
+            status="error",
+        )
+
+    try:
+        raw_bytes = base64.b64decode(content) if isinstance(content, str) else content
+    except (ValueError, TypeError) as exc:
+        return _err(f"video bytes are not valid base64 ({exc})")
+
+    try:
+        blocks = extract_video_frames(
+            raw_bytes,
+            offset_seconds=offset_seconds,
+            duration_seconds=duration_seconds,
+            sampling_rate=rate,
+        )
+    except VideoExtractionError as exc:
+        return _err(str(exc))
+    else:
+        blocks.insert(0, {"type": "text", "text": header})
+        return ToolMessage(
+            content_blocks=blocks,
+            name="read_file",
+            tool_call_id=tool_call_id,
+            additional_kwargs={"read_file_path": validated_path},
+            status="success",
+        )
+
+
+def _emit_binary_block(
+    content: str,
+    validated_path: str,
+    tool_call_id: str | None,
+    file_type: str,
+) -> ToolMessage:
+    """Emit a base64 content block for non-video binary reads (image/audio/PDF/etc).
+
+    Routes on `file_type` so the multimodal block picks the right block kind
+    (`image`, `audio`, `file`); falls back to the generic `file` block when the
+    backend-returned file extension is not in `_EXTENSION_TO_FILE_TYPE`.
+    """
+    block_type = file_type if file_type != "text" else "file"
+    mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+    return ToolMessage(
+        content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
+        name="read_file",
+        tool_call_id=tool_call_id,
+        additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
+        status="success",
+    )
 
 
 @dataclass
@@ -483,7 +576,8 @@ Usage:
 
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
-- Do NOT use `offset`/`limit` for images (pagination is text-only)
+- For images and PDFs, pagination via `offset`/`limit` is text-only — supply `file_path` only
+- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default `limit=30` reads the first 30 seconds). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps).
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -886,6 +980,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        video_sampling_rate: float = 0.5,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -903,6 +998,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            video_sampling_rate: Frames-per-second emitted by `read_file` when
+                reading a video file. For video reads, `offset` is reinterpreted
+                as seconds into the source to skip and `limit` as seconds of source
+                to sample. Must be > 0. Defaults to 0.5 (one frame every two
+                seconds).
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -912,6 +1012,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        if video_sampling_rate <= 0:
+            msg = f"video_sampling_rate must be > 0, got {video_sampling_rate!r}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
@@ -945,6 +1048,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._video_sampling_rate = float(video_sampling_rate)
         self._permissions = list(_permissions or [])
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
@@ -1119,7 +1223,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(
+        def _handle_read_result(  # noqa: PLR0911
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
@@ -1177,21 +1281,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
+            # Video reads must be sliced into a sampled frame window before the
+            # generic base64 branch runs; otherwise raw video bytes would reach
+            # the model.
+            if file_type == "video":
+                return _handle_video_read(
+                    content,
+                    validated_path,
+                    tool_call_id,
+                    offset,
+                    limit,
+                    self._video_sampling_rate,
+                )
+
             # Route on the backend-declared encoding first: `"base64"` means the
             # content is binary and must never be line-numbered as text, even
             # when the extension is absent from `_EXTENSION_TO_FILE_TYPE`.
             # The extension map is only consulted to pick the multimodal block
             # type; unknown binary extensions fall back to the generic `"file"`.
             if encoding == "base64" or file_type != "text":
-                block_type = file_type if file_type != "text" else "file"
-                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
-                return ToolMessage(
-                    content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
-                    name="read_file",
-                    tool_call_id=tool_call_id,
-                    additional_kwargs={"read_file_path": validated_path, "read_file_media_type": mime_type},
-                    status="success",
-                )
+                return _emit_binary_block(content, validated_path, tool_call_id, file_type)
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
             # `limit` already bounded raw source lines at the backend; do not

@@ -18,7 +18,6 @@ class CLIContextSchema:
     model: str | None = None
     model_params: dict[str, Any] = field(default_factory=dict)
     effective_model: str | None = None
-    auto_approve: bool = False
 
 
 class CLIContext(TypedDict, total=False):
@@ -44,14 +43,4 @@ class CLIContext(TypedDict, total=False):
     checkpoint state for restore on resume. `None` when no usable spec is
     resolved yet (e.g. credentials not configured), in which case nothing is
     recorded rather than a malformed spec.
-    """
-
-    auto_approve: bool
-    """Whether every gated tool call should run without a human-in-the-loop
-    interrupt for this invocation.
-
-    Read by the `interrupt_on` `when` predicate so that, once the user enables
-    "approve always", `HumanInTheLoopMiddleware` stops interrupting entirely
-    rather than interrupting and being auto-resolved on the client — which
-    otherwise splits the turn into a separate run after every tool call.
     """

@@ -26,7 +26,6 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
-    _runtime_auto_approve,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
     build_model_identity_section,
@@ -64,38 +63,24 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def _request_with_context(context: object) -> "ToolCallRequest":
+def _request_with_state(state: object) -> "ToolCallRequest":
     return cast(
         "ToolCallRequest",
-        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+        SimpleNamespace(state=state),
     )
 
 
-def test_should_interrupt_tool_call_respects_auto_approve() -> None:
-    """The predicate suppresses interrupts once auto-approve is in context."""
-    assert _should_interrupt_tool_call(
-        _request_with_context(CLIContextSchema(auto_approve=False))
-    )
-    assert not _should_interrupt_tool_call(
-        _request_with_context(CLIContextSchema(auto_approve=True))
-    )
+def test_should_interrupt_tool_call_respects_auto_approve_state() -> None:
+    """The predicate suppresses interrupts once auto-approve is in state."""
+    assert _should_interrupt_tool_call(_request_with_state({"_auto_approve": False}))
+    assert not _should_interrupt_tool_call(_request_with_state({"_auto_approve": True}))
 
 
-def test_should_interrupt_tool_call_handles_dict_and_missing_context() -> None:
-    """Dict context and absent runtime/context default to interrupting."""
-    assert not _should_interrupt_tool_call(
-        _request_with_context({"auto_approve": True})
-    )
-    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
-    assert _should_interrupt_tool_call(_request_with_context(None))
-    assert _should_interrupt_tool_call(
-        cast("ToolCallRequest", SimpleNamespace(runtime=None))
-    )
-
-
-def test_runtime_auto_approve_handles_none_runtime() -> None:
-    """A missing runtime never auto-approves."""
-    assert _runtime_auto_approve(None) is False
+def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
+    """Missing or malformed state should not auto-approve."""
+    assert _should_interrupt_tool_call(_request_with_state({}))
+    assert _should_interrupt_tool_call(_request_with_state(None))
+    assert _should_interrupt_tool_call(_request_with_state(SimpleNamespace()))
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:

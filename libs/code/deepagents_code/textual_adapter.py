@@ -519,7 +519,10 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict | Command = {"messages": [user_msg]}
+    stream_input: dict | Command = {
+        "messages": [user_msg],
+        "_auto_approve": bool(session_state.auto_approve),
+    }
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -530,6 +533,7 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+            resume_state_update: dict[str, Any] = {}
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1253,13 +1257,12 @@ async def execute_task_textual(
 
                             if decision_type == "auto_approve_all":
                                 session_state.auto_approve = True
-                                # Carry the flag into the run context so the
+                                # Carry the flag into graph state so the
                                 # `interrupt_on` `when` predicate suppresses
                                 # interrupts on the remaining tool calls in this
                                 # turn — keeping it a single run instead of
                                 # resuming after each call.
-                                if context is not None:
-                                    context["auto_approve"] = True
+                                resume_state_update["_auto_approve"] = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
                                 decisions = [
@@ -1393,7 +1396,11 @@ async def execute_task_textual(
                     )
                     return turn_stats
 
-                stream_input = Command(resume=resume_payload)
+                stream_input = (
+                    Command(resume=resume_payload, update=resume_state_update)
+                    if resume_state_update
+                    else Command(resume=resume_payload)
+                )
             else:
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break

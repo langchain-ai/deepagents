@@ -7446,7 +7446,6 @@ class DeepAgentsApp(App):
                     model=self._model_override,
                     model_params=self._model_params_override or {},
                     effective_model=self._effective_model_spec(),
-                    auto_approve=self._auto_approve,
                 ),
                 turn_stats=turn_stats,
             )

@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
-    from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
@@ -49,7 +48,11 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    PrivateStateAttr,
+)
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -1008,32 +1011,22 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
-def _runtime_auto_approve(runtime: Runtime | None) -> bool:
-    """Read the run-scoped `auto_approve` flag from the runtime context.
+class AutoApproveState(AgentState):
+    """Private state for the current tool-approval mode."""
 
-    Tolerates both the coerced `CLIContextSchema` dataclass and a raw dict so
-    the predicate works regardless of how the context was supplied.
+    _auto_approve: Annotated[NotRequired[bool], PrivateStateAttr]
 
-    Args:
-        runtime: The node-level runtime passed to the interrupt predicate.
 
-    Returns:
-        `True` when the active run opted into "approve always".
-    """
-    if runtime is None:
-        return False
-    ctx = getattr(runtime, "context", None)
-    if isinstance(ctx, CLIContextSchema):
-        return bool(ctx.auto_approve)
-    if isinstance(ctx, dict):
-        return bool(ctx.get("auto_approve"))
-    return bool(getattr(ctx, "auto_approve", False))
+class AutoApproveStateMiddleware(AgentMiddleware[AutoApproveState, Any]):
+    """Registers state used by tool-interrupt predicates."""
+
+    state_schema = AutoApproveState
 
 
 def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     """Decide whether a gated tool call should pause for human approval.
 
-    Returns `False` once the run carries the `auto_approve` flag so
+    Returns `False` once graph state carries `_auto_approve=True` so
     `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
     interrupt-then-auto-resolve pattern that previously split each turn into a
     separate run after every tool call, producing noisy traces.
@@ -1044,7 +1037,10 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     Returns:
         `True` to interrupt for approval, `False` to auto-approve.
     """
-    return not _runtime_auto_approve(getattr(request, "runtime", None))
+    state = getattr(request, "state", None)
+    if not isinstance(state, dict):
+        return True
+    return not bool(state.get("_auto_approve", False))
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -1056,7 +1052,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     is enabled.
 
     Each config carries a `when` predicate so that enabling "approve always"
-    mid-session (recorded in the run context) suppresses the interrupt itself
+    mid-session (recorded in graph state) suppresses the interrupt itself
     instead of relying on the client to auto-resolve it.
 
     Returns:
@@ -1391,6 +1387,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
+        AutoApproveStateMiddleware(),
         ConfigurableModelMiddleware(),
         _FilesystemEmptyResultMiddleware(),
     ]

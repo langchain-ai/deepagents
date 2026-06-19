@@ -75,7 +75,6 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
             model=ctx.get("model"),
             model_params=ctx.get("model_params") or {},
             effective_model=ctx.get("effective_model"),
-            auto_approve=bool(ctx.get("auto_approve", False)),
         )
     return None
 

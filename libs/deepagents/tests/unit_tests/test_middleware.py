@@ -1467,6 +1467,149 @@ class TestFilesystemMiddleware:
 
         assert result == tool_message
 
+    def test_init_video_sampling_rate_default(self):
+        """Default sampling rate is 0.5 fps."""
+        middleware = FilesystemMiddleware()
+        assert middleware._video_sampling_rate == 0.5
+
+    def test_init_video_sampling_rate_override(self):
+        """Constructor value is honored verbatim."""
+        middleware = FilesystemMiddleware(video_sampling_rate=2.0)
+        assert middleware._video_sampling_rate == 2.0
+
+    @pytest.mark.parametrize("bad", [0, -0.5, -1])
+    def test_init_video_sampling_rate_rejects_non_positive(self, bad: float) -> None:
+        """Constructor rejects zero and negative sampling rates up front."""
+        with pytest.raises(ValueError, match="video_sampling_rate must be > 0"):
+            FilesystemMiddleware(video_sampling_rate=bad)
+
+    def test_read_file_video_routes_to_frame_extractor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Video reads route through `_video.extract_video_frames`, not the generic base64 branch.
+
+        The middleware must interpret `offset`/`limit` as seconds for video
+        reads, return interleaved text+image content blocks, and never leak the
+        raw video bytes to the model.
+        """
+
+        class VideoBackend(StateBackend):
+            def __init__(self, raw: bytes) -> None:
+                super().__init__()
+                self._raw = raw
+
+            def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
+                return ReadResult(file_data={"content": self._raw, "encoding": "base64"})
+
+        sentinel = [
+            {"type": "text", "text": "Frame at t=00:00:00.000"},
+            {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+            {"type": "text", "text": "Frame at t=00:00:02.000"},
+            {"type": "image", "base64": "BBBB", "mime_type": "image/jpeg"},
+        ]
+
+        def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]
+            # Capture the call arguments so the test asserts the
+            # offset/limit -> seconds reinterpretation.
+            fake_extract.calls.append(
+                {
+                    "len": len(content),
+                    "offset_seconds": offset_seconds,
+                    "duration_seconds": duration_seconds,
+                    "sampling_rate": sampling_rate,
+                }
+            )
+            return sentinel
+
+        fake_extract.calls = []
+
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+
+        middleware = FilesystemMiddleware(
+            backend=VideoBackend(b"\x00\x01\x02 fake video bytes"),
+            video_sampling_rate=0.5,
+        )
+        state = FilesystemState(messages=[], files={})
+        runtime = _build_runtime(state, "video-read-1")
+        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        result = read_file_tool.invoke(
+            {
+                "file_path": "/clips/intro.mp4",
+                "offset": 0,
+                "limit": 30,
+                "runtime": runtime,
+            }
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.additional_kwargs["read_file_path"] == "/clips/intro.mp4"
+        # Raw video bytes must NOT leak to the model: the content_blocks are
+        # the extracted frames, not the original base64 from the backend.
+        assert isinstance(result.content, list)
+        assert result.content == sentinel
+        assert b"\x00\x01\x02" not in str(result.content).encode()
+
+        # The middleware must convert offset/limit to seconds with the
+        # constructor-defined sampling rate forwarded verbatim.
+        assert len(fake_extract.calls) == 1
+        call = fake_extract.calls[0]
+        assert call["offset_seconds"] == 0
+        assert call["duration_seconds"] == 30
+        assert call["sampling_rate"] == 0.5
+
+    def test_read_file_video_offset_and_limit_reinterpreted_as_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`offset`skip `limit`window seconds for video reads."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
+                return ReadResult(file_data={"content": b"raw", "encoding": "base64"})
+
+        captured: dict[str, float] = {}
+
+        def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]  # noqa: ARG001
+            captured.update(offset_seconds=offset_seconds, duration_seconds=duration_seconds, sampling_rate=sampling_rate)
+            return [{"type": "text", "text": "ok"}]
+
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = _build_runtime(state, "video-read-2")
+        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        read_file_tool.invoke(
+            {
+                "file_path": "/c.mp4",
+                "offset": 12,  # -> seek 12 seconds into the source
+                "limit": 90,  # -> sample a 90-second window
+                "runtime": runtime,
+            }
+        )
+
+        assert captured == {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5}
+
+    def test_read_file_video_extraction_error_surfaces_as_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PyAV failures and missing-dep errors render as a tool error, not an exception."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
+                return ReadResult(file_data={"content": b"corrupt", "encoding": "base64"})
+
+        monkeypatch.setattr(
+            filesystem_middleware,
+            "extract_video_frames",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(filesystem_middleware.VideoExtractionError("av not installed")),
+        )
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = _build_runtime(state, "video-read-err")
+        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        result = read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "av not installed" in result.content  # type: ignore[operator]
+
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
 
@@ -2580,3 +2723,15 @@ class TestBuiltinTruncationTools:
 
         with pytest.raises(ValueError, match="max_execute_timeout must be positive"):
             FilesystemMiddleware(max_execute_timeout=-1)
+
+
+def _build_runtime(state: FilesystemState, tool_call_id: str) -> ToolRuntime:
+    """Build a `ToolRuntime` for the binary/video read_file tests."""
+    return ToolRuntime(
+        state=state,
+        context=None,
+        tool_call_id=tool_call_id,
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )

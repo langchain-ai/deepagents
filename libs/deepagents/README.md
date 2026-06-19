@@ -27,8 +27,11 @@ Install with:
 uv add "deepagents[video]"
 ```
 
-The extra pulls in [PyAV](https://pyav.basswood-io.com/). Without it, video reads surface
-a clear "install `deepagents[video]`" error instead of failing silently.
+The extra pulls in [PyAV](https://pyav.basswood-io.com/) and Pillow. Without it, video
+reads surface a clear "install `deepagents[video]`" error instead of failing silently.
+
+Sandbox-backed video reads currently inherit the backend's binary preview size cap.
+Support for larger sandbox videos is deferred to follow-up backend work.
 
 ## 🤔 What is this?
 

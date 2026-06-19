@@ -26,7 +26,7 @@ else:
     ContentBlock = dict  # only used at runtime by the agent runtime
 
 
-MISSING_AV_HINT = "Reading video files requires the optional `av` dependency. Install it with `pip install 'deepagents[video]'`."
+MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `pip install 'deepagents[video]'`."
 
 
 class VideoExtractionError(RuntimeError):
@@ -46,7 +46,7 @@ def _import_av() -> Any:  # noqa: ANN401
     try:
         import av  # noqa: PLC0415 - lazy import keeps the extra optional
     except ImportError as exc:  # pragma: no cover - exercised only when `av` is absent
-        msg = f"{MISSING_AV_HINT} (underlying error: {exc})"
+        msg = f"{MISSING_VIDEO_HINT} (underlying error: {exc})"
         raise VideoExtractionError(msg) from exc
     return av
 
@@ -198,10 +198,14 @@ def _sample_frames_in_window(
 def _encode_jpeg(frame: Any) -> bytes:  # noqa: ANN401
     """Encode a decoded PyAV frame as JPEG bytes via Pillow.
 
-    Pillow ships with PyAV's standard install (it is its image bridge), but
-    we keep the import lazy so module load is independent of optional deps.
+    Pillow is part of the `video` extra, and the import stays lazy so module
+    load is independent of optional deps.
     """
-    from PIL import Image  # noqa: PLC0415 - lazy import; PyAV pulls Pillow transitively
+    try:
+        from PIL import Image  # noqa: PLC0415 - lazy import keeps the extra optional
+    except ImportError as exc:  # pragma: no cover - exercised only when Pillow is absent
+        msg = f"{MISSING_VIDEO_HINT} (underlying error: {exc})"
+        raise VideoExtractionError(msg) from exc
 
     img = frame.to_image() if hasattr(frame, "to_image") else Image.fromarray(frame.to_ndarray(format="rgb24"))
     buf = io.BytesIO()

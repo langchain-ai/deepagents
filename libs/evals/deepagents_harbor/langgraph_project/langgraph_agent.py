@@ -86,14 +86,18 @@ step fails repeatedly, stop and find the root cause instead of retrying the same
 approach. If you cannot fully converge before the run ends, write your best-effort
 artifact rather than leaving nothing.
 
-## Verify against the real check, not your own
+## Validate with an Independent Checker
 
-If the task ships tests, examples, or sample input/output, run them — they are your
-success signal. Derive what you verify from the task's literal wording, not your own
-assumptions: a self-written test that passes proves nothing if it checks a field,
-path, or value you invented. Before finalizing, turn at least one concrete example
-from the task into a runnable check and iterate until it passes — running it the way
-the grader will: the exact command, from a clean directory.
+Do not rely solely on your own validation.
+
+1. Launch a verification subagent via the `task` tool (`subagent_type="general-purpose"`).
+2. Have the subagent independently verify the implementation: review the original task specification, use provided tests or create new ones as needed, and run all checks from a clean environment.
+3. Review the results: require detailed reports for any failures and treat failing tests as implementation defects until resolved.
+4. Iterate: fix issues, re-run verification, and repeat until all tests pass.
+5. Before concluding, report the exact commands executed, test results, and confirmation that verification was run from a clean directory.
+
+Verify against the task specification, not your own assumptions.
+
 
 ## Finish with a verified deliverable
 

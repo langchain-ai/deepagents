@@ -139,6 +139,7 @@ def extract_video_frames(
                 time_base=time_base,
                 stream_start_seconds=stream_start_seconds,
                 deadline_seconds=time.monotonic() + MAX_VIDEO_DECODE_SECONDS,
+                decode_error_types=_video_backend_error_types(av),
             )
         )
     finally:
@@ -161,12 +162,24 @@ def _open_video_container(av: Any, content: bytes) -> Any:  # noqa: ANN401
     """
     try:
         return av.open(io.BytesIO(content))
-    except av.error.InvalidDataError as exc:  # pragma: no cover - depends on the input
+    except _video_backend_error_types(av) as exc:  # pragma: no cover - depends on host/input
         msg = f"Failed to open video payload: {exc}"
         raise VideoExtractionError(msg) from exc
-    except OSError as exc:  # pragma: no cover - dependency ffmpeg missing on host
-        msg = f"Failed to open video payload: {exc}"
-        raise VideoExtractionError(msg) from exc
+
+
+def _video_backend_error_types(av: Any) -> tuple[type[BaseException], ...]:  # noqa: ANN401
+    """Return backend failures that should surface as `VideoExtractionError`."""
+    errors: list[type[BaseException]] = [OSError]
+    av_error = getattr(av, "error", None)
+    for name in ("FFmpegError", "InvalidDataError"):
+        error_type = getattr(av_error, name, None)
+        if (
+            isinstance(error_type, type)
+            and issubclass(error_type, BaseException)
+            and not any(issubclass(error_type, existing) for existing in errors)
+        ):
+            errors.append(error_type)
+    return tuple(errors)
 
 
 def _find_video_stream(container: Any) -> Any:  # noqa: ANN401
@@ -235,6 +248,7 @@ def _sample_frames_in_window(
     time_base: float,
     stream_start_seconds: float = 0.0,
     deadline_seconds: float | None = None,
+    decode_error_types: tuple[type[BaseException], ...] = (),
 ) -> list[ContentBlock]:
     """Pick JPEG+timestamp content blocks for frames inside the requested window."""
     frame_interval_seconds = 1.0 / sampling_rate
@@ -244,41 +258,45 @@ def _sample_frames_in_window(
     blocks: list[ContentBlock] = []
     emitted_frames = 0
     emitted_bytes = 0
-    for frame in decoded_frames:
-        _check_decode_deadline(deadline_seconds)
-        frame_seconds = _frame_seconds(frame, time_base=time_base, stream_start_seconds=stream_start_seconds)
-        if frame_seconds is None:
-            continue
-        if frame_seconds >= end_seconds:
-            break
-        if frame_seconds + 1e-6 < next_emit_seconds:
-            continue
+    try:
+        for frame in decoded_frames:
+            _check_decode_deadline(deadline_seconds)
+            frame_seconds = _frame_seconds(frame, time_base=time_base, stream_start_seconds=stream_start_seconds)
+            if frame_seconds is None:
+                continue
+            if frame_seconds >= end_seconds:
+                break
+            if frame_seconds + 1e-6 < next_emit_seconds:
+                continue
 
-        jpeg_bytes = _encode_jpeg(frame)
-        image_base64 = base64.b64encode(jpeg_bytes)
-        ts = _format_timestamp(frame_seconds)
-        text = f"Frame at t={ts}"
-        next_block_bytes = len(text.encode()) + len(image_base64)
-        if emitted_bytes + next_block_bytes > MAX_VIDEO_EMITTED_BYTES:
-            if emitted_frames == 0:
-                msg = f"Video frame output exceeded the {MAX_VIDEO_EMITTED_BYTES} byte safety budget before emitting a frame"
-                raise VideoExtractionError(msg)
-            break
+            jpeg_bytes = _encode_jpeg(frame)
+            image_base64 = base64.b64encode(jpeg_bytes)
+            ts = _format_timestamp(frame_seconds)
+            text = f"Frame at t={ts}"
+            next_block_bytes = len(text.encode()) + len(image_base64)
+            if emitted_bytes + next_block_bytes > MAX_VIDEO_EMITTED_BYTES:
+                if emitted_frames == 0:
+                    msg = f"Video frame output exceeded the {MAX_VIDEO_EMITTED_BYTES} byte safety budget before emitting a frame"
+                    raise VideoExtractionError(msg)
+                break
 
-        blocks.append({"type": "text", "text": f"Frame at t={ts}"})
-        blocks.append(
-            {
-                "type": "image",
-                "base64": image_base64.decode("ascii"),
-                "mime_type": "image/jpeg",
-            }
-        )
-        emitted_frames += 1
-        emitted_bytes += next_block_bytes
-        if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
-            break
-        emitted_index = round((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
-        next_emit_seconds = offset_seconds + frame_interval_seconds * emitted_index
+            blocks.append({"type": "text", "text": f"Frame at t={ts}"})
+            blocks.append(
+                {
+                    "type": "image",
+                    "base64": image_base64.decode("ascii"),
+                    "mime_type": "image/jpeg",
+                }
+            )
+            emitted_frames += 1
+            emitted_bytes += next_block_bytes
+            if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
+                break
+            emitted_index = round((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
+            next_emit_seconds = offset_seconds + frame_interval_seconds * emitted_index
+    except decode_error_types as exc:
+        msg = f"Failed to decode video frames: {exc}"
+        raise VideoExtractionError(msg) from exc
     return blocks
 
 

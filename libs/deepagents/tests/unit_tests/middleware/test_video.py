@@ -8,6 +8,7 @@ lightweight.
 """
 
 import base64
+from collections.abc import Iterator
 
 import pytest
 
@@ -116,6 +117,27 @@ def test_extract_no_frames_in_window_raises(synthetic_video_bytes: bytes) -> Non
             duration_seconds=5,
             sampling_rate=0.5,
         )
+
+
+def test_sample_frames_wraps_decode_iteration_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PyAV decode errors raised after iteration starts surface as `VideoExtractionError`."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+
+    def decoded_frames() -> Iterator[_FakeFrame]:
+        yield _FakeFrame(0)
+        raise av.error.InvalidDataError(1094995529, "invalid data")
+
+    with pytest.raises(video_module.VideoExtractionError, match="Failed to decode video frames") as exc_info:
+        video_module._sample_frames_in_window(
+            decoded_frames(),
+            offset_seconds=0,
+            duration_seconds=3,
+            sampling_rate=1,
+            time_base=1,
+            decode_error_types=video_module._video_backend_error_types(av),
+        )
+
+    assert isinstance(exc_info.value.__cause__, av.error.InvalidDataError)
 
 
 def test_sample_frames_normalizes_non_zero_stream_start(monkeypatch: pytest.MonkeyPatch) -> None:

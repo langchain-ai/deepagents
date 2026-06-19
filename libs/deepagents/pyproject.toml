@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 quickjs = ["langchain-quickjs"]
-video = ["av>=17.0.0"]
+video = ["av>=17.0.0", "pillow>=10.0.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

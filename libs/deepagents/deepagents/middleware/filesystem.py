@@ -101,7 +101,7 @@ def _handle_video_read(
     validated_path: str,
     tool_call_id: str | None,
     offset: int,
-    limit: int,
+    limit: int | None,
     sampling_rate: float,
 ) -> ToolMessage:
     """Slice a video byte payload into a sampled frame window for the model.
@@ -117,7 +117,7 @@ def _handle_video_read(
     """
     rate = _select_video_sampling_rate(sampling_rate)
     offset_seconds = max(0.0, float(offset))
-    if limit <= 0:
+    if limit is None or limit <= 0:
         duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS)
         header = f"Reading first {int(duration_seconds)}s of {validated_path} at {rate} fps."
     else:
@@ -441,9 +441,9 @@ class ReadFileSchema(BaseModel):
         default=DEFAULT_READ_OFFSET,
         description="Line number to start reading from (0-indexed). Use for pagination of large files.",
     )
-    limit: int = Field(
-        default=DEFAULT_READ_LIMIT,
-        description="Maximum number of lines to read. Use for pagination of large files.",
+    limit: int | None = Field(
+        default=None,
+        description="Maximum number of lines to read for text files. Omit to use the default window: 100 text lines or 30 video seconds.",
     )
 
 
@@ -505,11 +505,11 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- By default, it reads up to 100 lines starting from the beginning of the file
+- For text files, by default it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
     - First scan: read_file(file_path="...", limit=100) to see file structure
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
-    - Only omit limit (read full file) when necessary for editing
+    - Omit `limit` to use the default window; increase it only when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
@@ -519,8 +519,9 @@ Usage:
 
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
-- For images and PDFs, pagination via `offset`/`limit` is text-only — supply `file_path` only
+- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
 - For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default `limit=30` reads the first 30 seconds). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps).
+- Sandbox-backed video reads currently inherit the backend's binary preview size cap; larger sandbox videos require follow-up backend work.
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -1159,8 +1160,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
-            limit: int,
+            limit: int | None,
         ) -> ToolMessage:
+            effective_limit = DEFAULT_READ_LIMIT if limit is None else limit
             if isinstance(read_result, str):
                 warn_deprecated(
                     since="0.5.0",
@@ -1174,7 +1176,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
                 # Legacy backends already format with line numbers
                 return ToolMessage(
-                    content=_truncate(read_result, validated_path, line_limit=limit),
+                    content=_truncate(read_result, validated_path, line_limit=effective_limit),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="success",
@@ -1248,7 +1250,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            limit: Annotated[
+                int | None,
+                "Maximum number of lines to read for text files. Omit to use the default window: 100 text lines or 30 video seconds.",
+            ] = None,
         ) -> ToolMessage:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1268,14 +1273,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            backend_limit = DEFAULT_READ_LIMIT if limit is None else limit
+            read_result = resolved_backend.read(validated_path, offset=offset, limit=backend_limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            limit: Annotated[
+                int | None,
+                "Maximum number of lines to read for text files. Omit to use the default window: 100 text lines or 30 video seconds.",
+            ] = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1295,7 +1304,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            backend_limit = DEFAULT_READ_LIMIT if limit is None else limit
+            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=backend_limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(

@@ -1,3 +1,4 @@
+import base64
 import mimetypes
 import time
 from unittest.mock import patch
@@ -1489,7 +1490,7 @@ class TestFilesystemMiddleware:
                 self._raw = raw
 
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
-                return ReadResult(file_data={"content": self._raw, "encoding": "base64"})
+                return ReadResult(file_data={"content": base64.b64encode(self._raw).decode("ascii"), "encoding": "base64"})
 
         sentinel = [
             {"type": "text", "text": "Frame at t=00:00:00.000"},
@@ -1509,7 +1510,7 @@ class TestFilesystemMiddleware:
                     "sampling_rate": sampling_rate,
                 }
             )
-            return sentinel
+            return list(sentinel)
 
         fake_extract.calls = []
 
@@ -1538,7 +1539,10 @@ class TestFilesystemMiddleware:
         # Raw video bytes must NOT leak to the model: the content_blocks are
         # the extracted frames, not the original base64 from the backend.
         assert isinstance(result.content, list)
-        assert result.content == sentinel
+        assert result.content == [
+            {"type": "text", "text": "Reading [0.000s, 30.000s) of /clips/intro.mp4 at 0.5 fps."},
+            *sentinel,
+        ]
         assert b"\x00\x01\x02" not in str(result.content).encode()
 
         # The middleware must convert offset/limit to seconds with the
@@ -1548,13 +1552,14 @@ class TestFilesystemMiddleware:
         assert call["offset_seconds"] == 0
         assert call["duration_seconds"] == 30
         assert call["sampling_rate"] == 0.5
+        assert call["len"] == len(b"\x00\x01\x02 fake video bytes")
 
     def test_read_file_video_offset_and_limit_reinterpreted_as_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`offset`skip `limit`window seconds for video reads."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
-                return ReadResult(file_data={"content": b"raw", "encoding": "base64"})
+                return ReadResult(file_data={"content": base64.b64encode(b"raw").decode("ascii"), "encoding": "base64"})
 
         captured: dict[str, float] = {}
 
@@ -1579,12 +1584,40 @@ class TestFilesystemMiddleware:
 
         assert captured == {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5}
 
+    def test_read_file_video_omitted_limit_uses_video_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting `limit` samples the first 30 seconds for video reads."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
+                return ReadResult(file_data={"content": base64.b64encode(b"raw").decode("ascii"), "encoding": "base64"})
+
+        captured: dict[str, float] = {}
+
+        def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]  # noqa: ARG001
+            captured.update(offset_seconds=offset_seconds, duration_seconds=duration_seconds, sampling_rate=sampling_rate)
+            return [{"type": "text", "text": "ok"}]
+
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = _build_runtime(state, "video-read-default")
+        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        read_file_tool.invoke(
+            {
+                "file_path": "/c.mp4",
+                "runtime": runtime,
+            }
+        )
+
+        assert captured == {"offset_seconds": 0.0, "duration_seconds": 30.0, "sampling_rate": 0.5}
+
     def test_read_file_video_extraction_error_surfaces_as_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PyAV failures and missing-dep errors render as a tool error, not an exception."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
-                return ReadResult(file_data={"content": b"corrupt", "encoding": "base64"})
+                return ReadResult(file_data={"content": base64.b64encode(b"corrupt").decode("ascii"), "encoding": "base64"})
 
         monkeypatch.setattr(
             filesystem_middleware,

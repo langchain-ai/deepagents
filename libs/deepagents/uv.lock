@@ -457,6 +457,7 @@ quickjs = [
 ]
 video = [
     { name = "av" },
+    { name = "pillow" },
 ]
 
 [package.dev-dependencies]
@@ -489,6 +490,7 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.2.5,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
     { name = "langsmith", specifier = ">=0.8.11" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=10.0.0" },
     { name = "wcmatch", specifier = ">=10.1" },
 ]
 provides-extras = ["quickjs", "video"]

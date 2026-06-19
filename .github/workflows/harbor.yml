@@ -153,6 +153,11 @@ on:
         required: true
         default: "1"
         type: string
+      max_retries:
+        description: "Max retry attempts per trial on infra-timeout errors (0 = no retries)"
+        required: true
+        default: "0"
+        type: string
 permissions:
   contents: read
 
@@ -236,6 +241,7 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_MAX_RETRIES: ${{ inputs.max_retries }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -361,6 +367,21 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
             exit 1
           fi
+          if ! [[ "$HARBOR_MAX_RETRIES" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid max_retries: $HARBOR_MAX_RETRIES"
+            exit 1
+          fi
+
+          # Retries are scoped to infra-timeout exceptions so genuine model
+          # failures are not re-run.
+          retry_args=()
+          if [ "$HARBOR_MAX_RETRIES" != "0" ]; then
+            retry_args+=(
+              --max-retries "$HARBOR_MAX_RETRIES"
+              --retry-include AgentSetupTimeoutError
+              --retry-include EnvironmentStartTimeoutError
+            )
+          fi
 
           include_args=()
           if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
@@ -438,6 +459,7 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
+            "${retry_args[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

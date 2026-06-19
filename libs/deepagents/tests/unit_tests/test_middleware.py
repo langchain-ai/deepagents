@@ -1534,7 +1534,7 @@ class TestFilesystemMiddleware:
 
         result = read_file_tool.invoke(
             {
-                "file_path": "/clips/intro.mp4",
+                "file_path": "/clips/intro.mkv",
                 "offset": 0,
                 "limit": 30,
                 "runtime": runtime,
@@ -1543,12 +1543,12 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
-        assert result.additional_kwargs["read_file_path"] == "/clips/intro.mp4"
+        assert result.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
         # Raw video bytes must NOT leak to the model: the content_blocks are
         # the extracted frames, not the original base64 from the backend.
         assert isinstance(result.content, list)
         assert result.content == [
-            {"type": "text", "text": "Reading [0.000s, 30.000s) of /clips/intro.mp4 at 0.5 fps."},
+            {"type": "text", "text": "Reading [0.000s, 30.000s) of /clips/intro.mkv at 0.5 fps."},
             *sentinel,
         ]
         assert b"\x00\x01\x02" not in str(result.content).encode()
@@ -1563,7 +1563,7 @@ class TestFilesystemMiddleware:
         assert call["len"] == len(b"\x00\x01\x02 fake video bytes")
 
     def test_read_file_video_offset_and_limit_reinterpreted_as_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`offset`skip `limit`window seconds for video reads."""
+        """`offset` skips into the source and oversized video windows are capped."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
@@ -1585,12 +1585,12 @@ class TestFilesystemMiddleware:
             {
                 "file_path": "/c.mp4",
                 "offset": 12,  # -> seek 12 seconds into the source
-                "limit": 90,  # -> sample a 90-second window
+                "limit": 90,  # -> sample a capped 30-second window
                 "runtime": runtime,
             }
         )
 
-        assert captured == {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5}
+        assert captured == {"offset_seconds": 12.0, "duration_seconds": 30.0, "sampling_rate": 0.5}
 
     def test_read_file_video_omitted_limit_uses_video_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Omitting `limit` samples the first 30 seconds for video reads."""

@@ -40,6 +40,7 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
     ".flv": "video",
     ".mpg": "video",
     ".webm": "video",
+    ".mkv": "video",
     ".wmv": "video",
     ".3gpp": "video",
     # Audio (https://ai.google.dev/gemini-api/docs/audio)

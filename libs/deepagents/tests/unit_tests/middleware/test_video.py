@@ -14,7 +14,14 @@ import pytest
 import deepagents.middleware._video as video_module
 
 av = pytest.importorskip("av", reason="`av` extra not installed (pip install deepagents[video])")
-np = pytest.importorskip("numpy", reason="numpy not installed")
+Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+
+
+class _FakeFrame:
+    def __init__(self, pts: int, *, width: int = 32, height: int = 32) -> None:
+        self.pts = pts
+        self.width = width
+        self.height = height
 
 
 @pytest.fixture(scope="module")
@@ -26,11 +33,8 @@ def synthetic_video_bytes(tmp_path_factory: pytest.TempPathFactory) -> bytes:
     stream = container.add_stream("libx264", rate=5)
     stream.width, stream.height, stream.pix_fmt = 32, 32, "yuv420p"
     for i in range(15):
-        img = np.tile(
-            np.array([(i * 8) % 255, 128, 64], dtype=np.uint8),
-            (32, 32, 1),
-        )
-        frame = av.VideoFrame.from_ndarray(img)
+        img = Image.new("RGB", (32, 32), ((i * 8) % 255, 128, 64))
+        frame = av.VideoFrame.from_image(img)
         frame.pts = i
         for pkt in stream.encode(frame):
             container.mux(pkt)
@@ -111,4 +115,107 @@ def test_extract_no_frames_in_window_raises(synthetic_video_bytes: bytes) -> Non
             offset_seconds=10,
             duration_seconds=5,
             sampling_rate=0.5,
+        )
+
+
+def test_sample_frames_normalizes_non_zero_stream_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Frame timestamps are measured from the video start, not raw container PTS."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+
+    blocks = video_module._sample_frames_in_window(
+        [_FakeFrame(3600), _FakeFrame(3601), _FakeFrame(3602)],
+        offset_seconds=0,
+        duration_seconds=3,
+        sampling_rate=1,
+        time_base=1,
+        stream_start_seconds=3600,
+    )
+
+    headers = [block["text"] for block in blocks if block["type"] == "text"]
+    assert headers == [
+        "Frame at t=00:00:00.000",
+        "Frame at t=00:00:01.000",
+        "Frame at t=00:00:02.000",
+    ]
+
+
+def test_sample_frames_caps_requested_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Huge requested windows are capped before sampling frames."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLE_DURATION_SECONDS", 2.0)
+
+    blocks = video_module._sample_frames_in_window(
+        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
+        offset_seconds=0,
+        duration_seconds=999,
+        sampling_rate=1,
+        time_base=1,
+    )
+
+    headers = [block["text"] for block in blocks if block["type"] == "text"]
+    assert headers == ["Frame at t=00:00:00.000", "Frame at t=00:00:01.000"]
+
+
+def test_sample_frames_caps_frame_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sampling stops at the fixed frame-count budget."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 2)
+
+    blocks = video_module._sample_frames_in_window(
+        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
+        offset_seconds=0,
+        duration_seconds=3,
+        sampling_rate=1,
+        time_base=1,
+    )
+
+    headers = [block["text"] for block in blocks if block["type"] == "text"]
+    assert headers == ["Frame at t=00:00:00.000", "Frame at t=00:00:01.000"]
+
+
+def test_sample_frames_rejects_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Extraction fails before retaining an oversized first image block."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+    monkeypatch.setattr(video_module, "MAX_VIDEO_EMITTED_BYTES", 1)
+
+    with pytest.raises(video_module.VideoExtractionError, match="safety budget"):
+        video_module._sample_frames_in_window(
+            [_FakeFrame(0)],
+            offset_seconds=0,
+            duration_seconds=1,
+            sampling_rate=1,
+            time_base=1,
+        )
+
+
+def test_encode_jpeg_rejects_oversized_dimensions_before_conversion() -> None:
+    """Oversized frames are rejected before Pillow conversion retains them."""
+
+    class OversizedFrame(_FakeFrame):
+        def __init__(self) -> None:
+            super().__init__(0, width=video_module.MAX_VIDEO_FRAME_SIDE + 1, height=1)
+            self.converted = False
+
+        def to_image(self):  # type: ignore[no-untyped-def]
+            self.converted = True
+            msg = "oversized frame should not be converted"
+            raise AssertionError(msg)
+
+    frame = OversizedFrame()
+
+    with pytest.raises(video_module.VideoExtractionError, match="dimensions"):
+        video_module._encode_jpeg(frame)
+    assert not frame.converted
+
+
+def test_sample_frames_enforces_decode_deadline() -> None:
+    """Best-effort decode timeout raises instead of continuing indefinitely."""
+    with pytest.raises(video_module.VideoExtractionError, match="decoding exceeded"):
+        video_module._sample_frames_in_window(
+            [_FakeFrame(0)],
+            offset_seconds=0,
+            duration_seconds=1,
+            sampling_rate=1,
+            time_base=1,
+            deadline_seconds=0,
         )

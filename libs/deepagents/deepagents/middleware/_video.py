@@ -18,7 +18,8 @@ operators trade frame density for token cost without prompting changes.
 
 import base64
 import io
-from typing import TYPE_CHECKING, Any
+import time
+from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from langchain_core.messages.content import ContentBlock
@@ -27,6 +28,13 @@ else:
 
 
 MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `pip install 'deepagents[video]'`."
+MAX_VIDEO_SAMPLE_DURATION_SECONDS: Final = 30.0
+MAX_VIDEO_SAMPLED_FRAMES: Final = 64
+MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
+MAX_VIDEO_FRAME_SIDE: Final = 4096
+MAX_VIDEO_EMITTED_BYTES: Final = 4 * 1024 * 1024
+MAX_VIDEO_DECODE_SECONDS: Final = 10.0
+_JPEG_QUALITY: Final = 85
 
 
 class VideoExtractionError(RuntimeError):
@@ -57,6 +65,14 @@ def _select_sampling_rate(value: float) -> float:
         msg = f"video_sampling_rate must be > 0, got {value!r}"
         raise ValueError(msg)
     return float(value)
+
+
+def _select_duration(value: float) -> float:
+    """Validate and cap the requested video sampling window."""
+    if value <= 0:
+        msg = f"duration_seconds must be > 0, got {value!r}"
+        raise ValueError(msg)
+    return min(float(value), MAX_VIDEO_SAMPLE_DURATION_SECONDS)
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -99,36 +115,37 @@ def extract_video_frames(
     if offset_seconds < 0:
         msg = f"offset_seconds must be >= 0, got {offset_seconds!r}"
         raise ValueError(msg)
-    if duration_seconds <= 0:
-        msg = f"duration_seconds must be > 0, got {duration_seconds!r}"
-        raise ValueError(msg)
     rate = _select_sampling_rate(sampling_rate)
+    duration = _select_duration(duration_seconds)
 
     av = _import_av()
     container = _open_video_container(av, content)
     try:
         video_stream = _find_video_stream(container)
         time_base = float(video_stream.time_base)
+        stream_start_seconds = _stream_start_seconds(video_stream, time_base)
         if offset_seconds > 0:
             # `seek` keeps the math correct across containers that already sit
             # at a non-zero timeline (e.g. trimmed clips).
-            start_pts = int(offset_seconds / time_base)
+            start_pts = _stream_start_pts(video_stream) + int(offset_seconds / time_base)
             container.seek(start_pts, any_frame=False, backward=True, stream=video_stream)
 
         blocks = list(
             _sample_frames_in_window(
                 container.decode(video_stream),
                 offset_seconds=offset_seconds,
-                duration_seconds=duration_seconds,
+                duration_seconds=duration,
                 sampling_rate=rate,
                 time_base=time_base,
+                stream_start_seconds=stream_start_seconds,
+                deadline_seconds=time.monotonic() + MAX_VIDEO_DECODE_SECONDS,
             )
         )
     finally:
         container.close()
 
     if not blocks:
-        end_seconds = offset_seconds + duration_seconds
+        end_seconds = offset_seconds + duration
         msg = f"No frames decoded for window [{offset_seconds:.3f}s, {end_seconds:.3f}s)"
         raise VideoExtractionError(msg)
     return blocks
@@ -161,6 +178,54 @@ def _find_video_stream(container: Any) -> Any:  # noqa: ANN401
     return video_stream
 
 
+def _stream_start_pts(video_stream: Any) -> int:  # noqa: ANN401
+    """Return the stream start timestamp in stream time-base units."""
+    start_time = getattr(video_stream, "start_time", None)
+    return int(start_time) if start_time is not None else 0
+
+
+def _stream_start_seconds(video_stream: Any, time_base: float) -> float:  # noqa: ANN401
+    """Return the stream start timestamp in seconds."""
+    return _stream_start_pts(video_stream) * time_base
+
+
+def _frame_seconds(frame: Any, *, time_base: float, stream_start_seconds: float) -> float | None:  # noqa: ANN401
+    """Return a frame timestamp normalized to seconds from the video start."""
+    pts = getattr(frame, "pts", None)
+    if pts is not None:
+        return max(0.0, float(pts) * time_base - stream_start_seconds)
+    frame_time = getattr(frame, "time", None)
+    if frame_time is not None:
+        return max(0.0, float(frame_time) - stream_start_seconds)
+    return None
+
+
+def _frame_dimensions(frame: Any) -> tuple[int, int] | None:  # noqa: ANN401
+    """Return frame dimensions when the decoder exposes them."""
+    width = getattr(frame, "width", None)
+    height = getattr(frame, "height", None)
+    if width is None or height is None:
+        return None
+    return int(width), int(height)
+
+
+def _validate_dimensions(width: int, height: int) -> None:
+    """Reject frames that exceed the fixed decode/encode budget."""
+    if width <= 0 or height <= 0:
+        return
+    pixels = width * height
+    if width > MAX_VIDEO_FRAME_SIDE or height > MAX_VIDEO_FRAME_SIDE or pixels > MAX_VIDEO_FRAME_PIXELS:
+        msg = f"Video frame dimensions {width}x{height} exceed the maximum {MAX_VIDEO_FRAME_PIXELS} pixels / {MAX_VIDEO_FRAME_SIDE}px side"
+        raise VideoExtractionError(msg)
+
+
+def _check_decode_deadline(deadline_seconds: float | None) -> None:
+    """Raise when best-effort video decoding has exceeded its time budget."""
+    if deadline_seconds is not None and time.monotonic() > deadline_seconds:
+        msg = f"Video decoding exceeded the {MAX_VIDEO_DECODE_SECONDS:.1f}s safety budget"
+        raise VideoExtractionError(msg)
+
+
 def _sample_frames_in_window(
     decoded_frames: Any,  # noqa: ANN401
     *,
@@ -168,28 +233,50 @@ def _sample_frames_in_window(
     duration_seconds: float,
     sampling_rate: float,
     time_base: float,
+    stream_start_seconds: float = 0.0,
+    deadline_seconds: float | None = None,
 ) -> list[ContentBlock]:
     """Pick JPEG+timestamp content blocks for frames inside the requested window."""
     frame_interval_seconds = 1.0 / sampling_rate
-    end_seconds = offset_seconds + duration_seconds
+    duration = _select_duration(duration_seconds)
+    end_seconds = offset_seconds + duration
     next_emit_seconds = offset_seconds
     blocks: list[ContentBlock] = []
+    emitted_frames = 0
+    emitted_bytes = 0
     for frame in decoded_frames:
-        frame_seconds = float(frame.pts) * time_base
+        _check_decode_deadline(deadline_seconds)
+        frame_seconds = _frame_seconds(frame, time_base=time_base, stream_start_seconds=stream_start_seconds)
+        if frame_seconds is None:
+            continue
         if frame_seconds >= end_seconds:
             break
         if frame_seconds + 1e-6 < next_emit_seconds:
             continue
+
         jpeg_bytes = _encode_jpeg(frame)
+        image_base64 = base64.b64encode(jpeg_bytes)
         ts = _format_timestamp(frame_seconds)
+        text = f"Frame at t={ts}"
+        next_block_bytes = len(text.encode()) + len(image_base64)
+        if emitted_bytes + next_block_bytes > MAX_VIDEO_EMITTED_BYTES:
+            if emitted_frames == 0:
+                msg = f"Video frame output exceeded the {MAX_VIDEO_EMITTED_BYTES} byte safety budget before emitting a frame"
+                raise VideoExtractionError(msg)
+            break
+
         blocks.append({"type": "text", "text": f"Frame at t={ts}"})
         blocks.append(
             {
                 "type": "image",
-                "base64": base64.b64encode(jpeg_bytes).decode("ascii"),
+                "base64": image_base64.decode("ascii"),
                 "mime_type": "image/jpeg",
             }
         )
+        emitted_frames += 1
+        emitted_bytes += next_block_bytes
+        if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
+            break
         emitted_index = round((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
         next_emit_seconds = offset_seconds + frame_interval_seconds * emitted_index
     return blocks
@@ -207,7 +294,11 @@ def _encode_jpeg(frame: Any) -> bytes:  # noqa: ANN401
         msg = f"{MISSING_VIDEO_HINT} (underlying error: {exc})"
         raise VideoExtractionError(msg) from exc
 
+    if dimensions := _frame_dimensions(frame):
+        _validate_dimensions(*dimensions)
+
     img = frame.to_image() if hasattr(frame, "to_image") else Image.fromarray(frame.to_ndarray(format="rgb24"))
+    _validate_dimensions(*img.size)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
     return buf.getvalue()

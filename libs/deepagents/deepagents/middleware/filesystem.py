@@ -77,7 +77,9 @@ from deepagents.middleware._message_eviction import (
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
+    MAX_VIDEO_SAMPLE_DURATION_SECONDS,
     VideoExtractionError,
+    _select_duration as _select_video_duration,
     _select_sampling_rate as _select_video_sampling_rate,
     extract_video_frames,
 )
@@ -98,7 +100,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 }
 
 # Reinterpret offset/limit as seconds for video reads.
-_VIDEO_DEFAULT_LIMIT_SECONDS = 30.0
+_VIDEO_DEFAULT_LIMIT_SECONDS = MAX_VIDEO_SAMPLE_DURATION_SECONDS
 
 
 def _handle_video_read(
@@ -126,7 +128,7 @@ def _handle_video_read(
         duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS)
         header = f"Reading first {int(duration_seconds)}s of {validated_path} at {rate} fps."
     else:
-        duration_seconds = float(limit)
+        duration_seconds = _select_video_duration(float(limit))
         header = f"Reading [{offset_seconds:.3f}s, {offset_seconds + duration_seconds:.3f}s) of {validated_path} at {rate} fps."
 
     def _err(msg: str) -> ToolMessage:
@@ -577,7 +579,7 @@ Usage:
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
 - For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
-- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default `limit=30` reads the first 30 seconds). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps).
+- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default and maximum `limit=30` reads a 30-second window). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps). Use `offset` to read later windows.
 - Sandbox-backed video reads currently inherit the backend's binary preview size cap; larger sandbox videos require follow-up backend work.
 - If file details were compacted from history, call `read_file` again on the same path
 

@@ -204,6 +204,10 @@ def test_get_file_type_returns_text_for_unknown_extensions() -> None:
     assert _get_file_type("/foo/bar") == "text"
 
 
+def test_get_file_type_recognizes_mkv_as_video() -> None:
+    assert _get_file_type("/foo/bar.mkv") == "video"
+
+
 def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
     """Every non-text file type must be accepted as a ContentBlock `type`."""
     for file_type in _EXTENSION_TO_FILE_TYPE.values():

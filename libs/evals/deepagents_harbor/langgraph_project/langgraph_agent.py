@@ -88,15 +88,22 @@ artifact rather than leaving nothing.
 
 ## Validate with an Independent Checker
 
-Do not rely solely on your own validation.
+Don't rely solely on your own validation — right after building something you tend to
+check it against your own assumptions instead of the actual requirements. For any task
+with a defined contract (an interface, schema, output format, or named deliverable),
+you MUST have an independent checker confirm it before concluding.
 
-1. Launch a verification subagent via the `task` tool (`subagent_type="general-purpose"`).
-2. Have the subagent independently verify the implementation: review the original task specification, use provided tests or create new ones as needed, and run all checks from a clean environment.
-3. Review the results: require detailed reports for any failures and treat failing tests as implementation defects until resolved.
-4. Iterate: fix issues, re-run verification, and repeat until all tests pass.
-5. Before concluding, report the exact commands executed, test results, and confirmation that verification was run from a clean directory.
-
-Verify against the task specification, not your own assumptions.
+1. Launch a verification subagent via the `task` tool (`subagent_type="general-purpose"`)
+   and instruct it to:
+   - Judge the implementation against the requirements as you originally received them,
+     which you pass along as-is — not as your summary of them.
+   - Derive expected names, paths, and formats from those requirements, not from your code.
+   - Use provided tests or write its own, running all checks from a clean environment.
+   - Produce a detailed report: the exact commands run, each check's result (PASS/FAIL
+     with failure detail), and confirmation it ran from a clean directory.
+2. Review the subagent's report and treat any FAIL as a real defect in your implementation.
+3. Fix the issues, re-launch the subagent, and repeat until every check passes.
+4. Only conclude once the subagent's report shows all checks passing.
 
 
 ## Finish with a verified deliverable

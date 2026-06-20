@@ -14,7 +14,11 @@ Talon currently includes:
 
 ## Quickstart
 
+Run the commands in this README from `libs/talon`. From the repository root,
+prefix `uv` commands with `--directory libs/talon`.
+
 ```bash
+cd libs/talon
 uv sync --group test
 AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon --once
 ```
@@ -95,6 +99,19 @@ DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=-1001234567890 \
 AGENT_ASSISTANT_ID=telegram-local \
 AGENT_MODEL=<provider>:<model-id> \
 uv run deepagents-talon --telegram
+```
+
+From the repository root, run the same host with:
+
+```bash
+DEEPAGENTS_TALON_TELEGRAM_ENABLED=true \
+DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN=... \
+DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS=123456789 \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=-1001234567890 \
+AGENT_ASSISTANT_ID=telegram-local \
+AGENT_MODEL=<provider>:<model-id> \
+uv run --directory libs/talon deepagents-talon --telegram
 ```
 
 In `allowlist` mode, `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS` allows private bot DMs from specific Telegram user IDs, while `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS` allows channel posts from specific channel chat IDs. If `AGENT_MODEL`, `DEEPAGENTS_TALON_MODEL`, and `DEEPAGENTS_TALON_FLEET_DIR` are all unset, Talon uses the echo runtime and replies with the inbound text unchanged.

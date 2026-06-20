@@ -584,7 +584,7 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 
 
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
-"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded>`."""
+"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
 
 _EXECUTE_CAPTURE_TRUNC: Final = "__DEEPAGENTS_EXEC_TRUNC__"
 """In-preview marker between the head and tail of an offloaded result."""
@@ -592,36 +592,50 @@ _EXECUTE_CAPTURE_TRUNC: Final = "__DEEPAGENTS_EXEC_TRUNC__"
 _EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
 _EXECUTE_CAPTURE_TAIL_BYTES: Final = 2000
 
+_EXECUTE_CAPTURE_MAX_BYTES: Final = 10 * 1024 * 1024
+"""Hard cap on captured stdout/stderr persisted to the sandbox.
+
+Bounds sandbox disk use for runaway output: the captured stream is piped through
+`head -c`, so when the cap is hit the writer receives `SIGPIPE` and nothing
+further reaches disk even if the command ignores the signal. Set well above the
+inline budget so legitimately large output is still preserved in full; output
+beyond the cap is truncated and flagged.
+"""
+
+# The captured stream is piped through `head -c` so the on-disk file can never
+# exceed the cap regardless of how the command behaves. Because that puts the
+# command in a pipeline, its real exit code is recovered from a sidecar file
+# rather than `$?` (which would be `head`'s). The command runs in a subshell so a
+# command `exit` cannot abort the wrapper, and `eval` preserves the backend's own
+# shell/env. The command is embedded via a quoted heredoc with a random delimiter
+# to avoid shell-quoting issues; the (internal, sanitized) path is shell-quoted.
 _EXECUTE_CAPTURE_CMD_TEMPLATE = """__da_f=__PATH_Q__
+__da_ecf="$__da_f.ec"
 mkdir -p "$(dirname "$__da_f")" 2>/dev/null
 __da_cmd=$(cat <<'__DELIM__'
 __COMMAND__
 __DELIM__
 )
-( eval "$__da_cmd" ) > "$__da_f" 2>&1
-__da_ec=$?
+{ ( eval "$__da_cmd" ); echo "$?" > "$__da_ecf"; } 2>&1 | head -c __MAXBYTES__ > "$__da_f"
+__da_ec=$(cat "$__da_ecf" 2>/dev/null)
+: "${__da_ec:=1}"
+rm -f "$__da_ecf"
 __da_bytes=$(wc -c < "$__da_f" 2>/dev/null | tr -d ' ')
 : "${__da_bytes:=0}"
+__da_capped=0
+[ "$__da_bytes" -ge __MAXBYTES__ ] && __da_capped=1
 if [ "$__da_bytes" -le __BUDGET__ ]; then
-  printf '%s %s %s\\n' '__SENTINEL__' "$__da_ec" 0
+  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0
   cat "$__da_f"
   rm -f "$__da_f"
 else
-  printf '%s %s %s\\n' '__SENTINEL__' "$__da_ec" 1
+  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped"
   head -c __HEAD__ "$__da_f"
   printf '\\n%s\\n' '__TRUNC__'
   tail -c __TAIL__ "$__da_f"
 fi
 """
-"""Pure POSIX sh wrapper for capture-at-source `execute`.
-
-Runs the command in a subshell — so a command `exit` cannot abort the
-measurement step, and the backend's own shell/env is preserved via `eval` — with
-combined output redirected to the capture file. A byte size (`wc -c`) then drives
-the inline-vs-offload branch. The command is embedded via a quoted heredoc with a
-random delimiter to avoid shell-quoting issues; the (internal, sanitized) path is
-shell-quoted.
-"""
+"""Pure POSIX sh wrapper for capture-at-source `execute`. See the comment above."""
 
 
 def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int) -> str:
@@ -629,7 +643,8 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
 
     `inline_budget` is the byte threshold at or below which output is returned
     inline; above it the output is left at `capture_path` and only a head/tail
-    preview is returned.
+    preview is returned. Captured output is hard-capped at
+    `_EXECUTE_CAPTURE_MAX_BYTES`; beyond that it is truncated and flagged.
     """
     delim = "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
     # __COMMAND__ is substituted last so command content can never collide with a
@@ -637,6 +652,7 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     return (
         _EXECUTE_CAPTURE_CMD_TEMPLATE.replace("__PATH_Q__", shlex.quote(capture_path))
         .replace("__DELIM__", delim)
+        .replace("__MAXBYTES__", str(_EXECUTE_CAPTURE_MAX_BYTES))
         .replace("__BUDGET__", str(inline_budget))
         .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
         .replace("__HEAD__", str(_EXECUTE_CAPTURE_HEAD_BYTES))
@@ -651,18 +667,24 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
 
     Returns the raw output verbatim (no exit code, not offloaded) when the meta
     line is absent — e.g. if the backend truncated transport. The caller must
-    not re-run the command on this fallback. `backend_truncated` carries the
-    transport-truncation flag from the underlying `execute` through to the result.
+    not re-run the command on this fallback. `truncated` is set when the captured
+    output hit the size cap (the saved file is incomplete) or `backend_truncated`
+    is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
     parts = first.split(" ")
-    if len(parts) != 3 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+    if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
         return ExecuteResponse(output=output, truncated=backend_truncated)
     try:
         exit_code = int(parts[1])
     except ValueError:
         return ExecuteResponse(output=output, truncated=backend_truncated)
-    return ExecuteResponse(output=body, exit_code=exit_code, offloaded=parts[2] == "1", truncated=backend_truncated)
+    return ExecuteResponse(
+        output=body,
+        exit_code=exit_code,
+        offloaded=parts[2] == "1",
+        truncated=parts[3] == "1" or backend_truncated,
+    )
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):

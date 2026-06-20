@@ -1726,8 +1726,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if not result.offloaded:
             return self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
         cmd_status = "succeeded" if result.exit_code == 0 else "failed"
+        status_line = f"[Command {cmd_status} with exit code {result.exit_code}]"
+        if result.truncated:
+            status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
         preview = result.output.replace(_EXECUTE_CAPTURE_TRUNC, "... [middle truncated] ...")
-        content_sample = f"[Command {cmd_status} with exit code {result.exit_code}]\n{preview}"
+        content_sample = f"{status_line}\n{preview}"
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,

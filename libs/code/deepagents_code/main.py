@@ -129,6 +129,13 @@ def _restart_current_process() -> NoReturn:
     raise RuntimeError(msg)
 
 
+def _terminal_row_count(console: "Console", text: str) -> int:
+    """Return how many terminal rows Rich renders for `text`."""
+    from rich.text import Text
+
+    return max(1, len(console.render_lines(Text(text), console.options)))
+
+
 def _confirm_launch_after_restart(console: "Console", version: str) -> None:
     """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
 
@@ -150,16 +157,19 @@ def _confirm_launch_after_restart(console: "Console", version: str) -> None:
     from rich.control import Control
     from rich.segment import ControlType
 
-    # Move up onto the "Launching..." line, return to column 0, erase it, then
-    # reprint the same line with the resolved status.
-    console.control(
-        Control(
-            (ControlType.CURSOR_UP, 1),
-            (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
-            (ControlType.ERASE_IN_LINE, 2),
+    launch_status = f"Updated to v{version}. Launching..."
+    launch_rows = _terminal_row_count(console, launch_status)
+    # Move up to the bottom row of the old status and erase each rendered row.
+    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
+    for _ in range(launch_rows):
+        console.control(
+            Control(
+                (ControlType.CURSOR_UP, 1),
+                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                (ControlType.ERASE_IN_LINE, 2),
+            )
         )
-    )
-    console.print(f"[green]Updated to v{version}. Launched.[/green]")
+    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
 
 
 def _run_startup_auto_update(console: "Console") -> None:
@@ -273,7 +283,10 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
-            console.print(f"[green]Updated to v{latest}. Launching...[/green]")
+            console.print(
+                f"[green]Updated to v{latest}. Launching...[/green]",
+                highlight=False,
+            )
             # Record the target version so the re-exec'd process can detect a
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest

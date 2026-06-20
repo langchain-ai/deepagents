@@ -5,12 +5,14 @@ import inspect
 import os
 import sys
 from collections.abc import Iterator
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
@@ -20,6 +22,7 @@ from deepagents_code.main import (
     _restart_current_process,
     _ripgrep_install_hint,
     _run_startup_auto_update,
+    _terminal_row_count,
     build_missing_tool_notification,
     check_optional_tools,
     cli_main,
@@ -381,8 +384,8 @@ class TestStartupAutoUpdate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The re-exec'd process rewrites `Launching...` to `Launched.`."""
-        console = MagicMock()
-        console.is_terminal = True
+        stream = StringIO()
+        console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         # The prior generation recorded the version it restarted into.
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
 
@@ -414,10 +417,47 @@ class TestStartupAutoUpdate:
         # Sentinel is consumed so the confirmation only fires once.
         assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
         # The prior line is erased via a control sequence, then reprinted.
-        console.control.assert_called_once()
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "Launched." in printed
-        assert "9.9.9" in printed
+        output = stream.getvalue()
+        assert output.count("\x1b[1A") == 1
+        assert "Launched." in output
+        assert "9.9.9" in output
+
+    def test_update_launch_status_rewrite_handles_narrow_terminal_wrap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The status rewrite erases every row in narrow terminal panes."""
+        stream = StringIO()
+        console = Console(file=stream, force_terminal=True, no_color=True, width=10)
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, "9.9.9"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade"),
+            patch("deepagents_code.main._restart_current_process"),
+        ):
+            _run_startup_auto_update(console)
+
+        launch_rows = _terminal_row_count(console, "Updated to v9.9.9. Launching...")
+        output = stream.getvalue()
+        assert output.count("\x1b[1A") == launch_rows
+        assert "Launched." in output
+        assert "9.9.9" in output
 
     def test_restart_after_update_skips_rewrite_when_not_terminal(
         self, monkeypatch: pytest.MonkeyPatch
@@ -459,6 +499,7 @@ class TestStartupAutoUpdate:
         """A re-exec that did not change the version must not claim `Launched.`."""
         console = MagicMock()
         console.is_terminal = True
+        console.width = 80
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
 
         with (

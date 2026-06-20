@@ -141,11 +141,29 @@ def _make_update(  # noqa: PLR0913  # test helper with many optional fields
     return {"update_id": update_id, "message": message}
 
 
+def _make_channel_post(
+    *,
+    update_id: int = 1,
+    chat_id: int = -100111,
+    text: str = "channel input",
+    message_id: int = 10,
+) -> dict[str, object]:
+    return {
+        "update_id": update_id,
+        "channel_post": {
+            "message_id": message_id,
+            "chat": {"id": chat_id, "type": "channel"},
+            "text": text,
+        },
+    }
+
+
 def _make_config(
     tmp_path: Path,
     *,
     exposure: ChannelExposure | None = None,
     operator_id: str | None = None,
+    allowed_user_ids: frozenset[str] | None = None,
 ) -> TelegramChannelConfig:
     return TelegramChannelConfig(
         bot_token="test-token",  # noqa: S106  # inert test token
@@ -156,6 +174,7 @@ def _make_config(
         poll_interval_seconds=60,
         poll_timeout_seconds=1,
         operator_id=operator_id,
+        allowed_user_ids=allowed_user_ids or frozenset(),
     )
 
 
@@ -178,6 +197,7 @@ def test_config_from_talon_env_maps_telegram_values(tmp_path: Path) -> None:
             "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "secret-token",
             "DEEPAGENTS_TALON_TELEGRAM_EXPOSURE": "allowlist",
             "DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS": "123, 456",
+            "DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS": "777, 888",
             "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
             "DEEPAGENTS_TALON_TELEGRAM_POLL_TIMEOUT_SECONDS": "45",
             "DEEPAGENTS_TALON_TELEGRAM_POLL_INTERVAL_SECONDS": "2",
@@ -195,6 +215,7 @@ def test_config_from_talon_env_maps_telegram_values(tmp_path: Path) -> None:
         operator_id="999",
         conversations=frozenset({"123", "456"}),
     )
+    assert telegram.allowed_user_ids == frozenset({"777", "888"})
     assert telegram.poll_timeout_seconds == 45.0
     assert telegram.poll_interval_seconds == 2.0
 
@@ -311,6 +332,97 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
     assert received[0].metadata["provider"] == "telegram"
     assert received[0].conversation_id == "111"
     assert received[0].message_id == "10"
+    get_updates_calls = [call for call in transport.calls if call[0] == "getUpdates"]
+    assert get_updates_calls[0][1]["allowed_updates"] == ["message", "channel_post"]
+
+
+async def test_channel_polls_and_dispatches_allowed_channel_posts(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[_make_channel_post(update_id=10, chat_id=-100111, text="from channel")],
+    )
+    channel = TelegramChannel(
+        _make_config(
+            tmp_path,
+            exposure=ChannelExposure(
+                mode=ExposureMode.ALLOWLIST,
+                conversations=frozenset({"-100111"}),
+            ),
+        ),
+        transport=cast("TelegramTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await _wait_for_received(received, 1)
+    await channel.stop()
+
+    assert received[0].text == "from channel"
+    assert received[0].conversation_id == "-100111"
+    assert received[0].sender_id is None
+    assert received[0].message_id == "10"
+    assert received[0].metadata["chat_type"] == "channel"
+
+
+async def test_channel_polls_and_dispatches_allowed_private_users(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_update(update_id=10, chat_id=111, sender_id=111, text="allowed user"),
+            _make_update(update_id=11, chat_id=222, sender_id=222, text="blocked user"),
+        ],
+    )
+    channel = TelegramChannel(
+        _make_config(
+            tmp_path,
+            exposure=ChannelExposure(
+                mode=ExposureMode.ALLOWLIST,
+                conversations=frozenset({"-100111"}),
+            ),
+            allowed_user_ids=frozenset({"111"}),
+        ),
+        transport=cast("TelegramTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [msg.text for msg in received] == ["allowed user"]
+    assert received[0].conversation_id == "111"
+    assert received[0].sender_id == "111"
+    assert received[0].metadata["chat_type"] == "private"
+
+
+async def test_channel_posts_do_not_pass_self_exposure(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[_make_channel_post(update_id=10, chat_id=-100111, text="from channel")],
+    )
+    channel = TelegramChannel(
+        _make_config(tmp_path, operator_id="111"),
+        transport=cast("TelegramTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert received == []
 
 
 async def test_channel_drops_group_messages(tmp_path: Path) -> None:

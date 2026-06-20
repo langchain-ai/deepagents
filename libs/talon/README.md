@@ -82,6 +82,23 @@ DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 
 See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
 
+## Telegram
+
+The Telegram channel uses the Bot API with long polling. Provide a bot token from BotFather and either a model or Fleet export so Talon runs the real Deep Agents runtime instead of the echo runtime:
+
+```bash
+DEEPAGENTS_TALON_TELEGRAM_ENABLED=true \
+DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN=... \
+DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS=123456789 \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=-1001234567890 \
+AGENT_ASSISTANT_ID=telegram-local \
+AGENT_MODEL=openai:gpt-5.2 \
+uv run deepagents-talon --telegram
+```
+
+In `allowlist` mode, `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS` allows private bot DMs from specific Telegram user IDs, while `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS` allows channel posts from specific channel chat IDs. If `AGENT_MODEL`, `DEEPAGENTS_TALON_MODEL`, and `DEEPAGENTS_TALON_FLEET_DIR` are all unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+
 ## Tracing
 
 LangSmith tracing is opt-in. Set both values before starting the host:

@@ -43,6 +43,7 @@ MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 _OFFSET_FILENAME = "telegram_offset.json"
+_ALLOWED_UPDATES = ["message", "channel_post"]
 
 # MarkdownV2 special characters that must be escaped.
 _MARKDOWNV2_SPECIAL = re.compile(r"([_*\[\]()~`>#=+\-|{}.!\\])")
@@ -77,6 +78,8 @@ class TelegramChannelConfig:
         poll_interval_seconds: Delay between getUpdates calls.
         request_timeout_seconds: Per-request HTTP timeout for Bot API calls.
         operator_id: Telegram user ID for the operator (self exposure mode).
+        allowed_user_ids: Telegram user IDs allowed to trigger private chats in
+            allowlist exposure mode.
     """
 
     bot_token: str = field(repr=False)
@@ -89,6 +92,7 @@ class TelegramChannelConfig:
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     operator_id: str | None = None
+    allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> TelegramChannelConfig:
@@ -147,6 +151,9 @@ class TelegramChannelConfig:
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
             operator_id=operator_id,
+            allowed_user_ids=frozenset(
+                _split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
+            ),
         )
 
     @property
@@ -453,7 +460,7 @@ class TelegramChannel:
                     "getUpdates",
                     offset=self._offset,
                     timeout=int(self.config.poll_timeout_seconds),
-                    allowed_updates=["message"],
+                    allowed_updates=_ALLOWED_UPDATES,
                 )
                 updates = _extract_updates(payload)
                 if updates:
@@ -469,7 +476,11 @@ class TelegramChannel:
                     if message is None:
                         continue
                     message = _with_from_self(message, self._bot_id)
-                    if not self._exposure.allows(message):
+                    if not _allows_telegram_message(
+                        self._exposure,
+                        self.config.allowed_user_ids,
+                        message,
+                    ):
                         logger.debug(
                             "Dropping Telegram message %s from %s due to exposure policy",
                             message.message_id,
@@ -696,6 +707,20 @@ def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessa
     )
 
 
+def _allows_telegram_message(
+    exposure: ChannelExposure,
+    allowed_user_ids: frozenset[str],
+    message: ChannelMessage,
+) -> bool:
+    if (
+        exposure.mode == ExposureMode.ALLOWLIST
+        and message.metadata.get("chat_type") == "private"
+        and message.sender_id in allowed_user_ids
+    ):
+        return True
+    return exposure.allows(message)
+
+
 def _downloaded_mime_type(path: Path, metadata: dict[str, object]) -> str | None:
     raw = metadata.get("mime_type")
     if isinstance(raw, str) and "/" in raw:
@@ -802,23 +827,27 @@ def _parse_update(update: Mapping[str, object]) -> ChannelMessage | None:
     Returns:
         Parsed channel message, or ``None`` if the update should be skipped.
     """
-    values = _private_message_values(update)
+    values = _message_values(update)
     if values is None:
         return None
-    msg, chat_id, message_id = values
+    msg, chat_id, message_id, chat_type = values
     return ChannelMessage(
         conversation_id=str(chat_id),
         text=_message_text(msg),
         sender_id=_sender_id(msg),
         message_id=str(message_id),
-        metadata=_message_metadata(msg),
+        metadata=_message_metadata(msg, chat_type=chat_type),
     )
 
 
-def _private_message_values(
+def _message_values(
     update: Mapping[str, object],
-) -> tuple[Mapping[str, object], int, int] | None:
+) -> tuple[Mapping[str, object], int, int, str] | None:
     message = update.get("message")
+    expected_chat_type = "private"
+    if not isinstance(message, dict):
+        message = update.get("channel_post")
+        expected_chat_type = "channel"
     if not isinstance(message, dict):
         return None
     msg = cast("Mapping[str, object]", message)
@@ -827,7 +856,7 @@ def _private_message_values(
         return None
     chat_values = cast("Mapping[str, object]", chat)
     chat_type = chat_values.get("type")
-    if chat_type != "private":
+    if chat_type != expected_chat_type:
         return None
     chat_id = chat_values.get("id")
     if not isinstance(chat_id, int):
@@ -835,7 +864,7 @@ def _private_message_values(
     message_id = msg.get("message_id")
     if not isinstance(message_id, int):
         return None
-    return msg, chat_id, message_id
+    return msg, chat_id, message_id, expected_chat_type
 
 
 def _sender_id(msg: Mapping[str, object]) -> str | None:
@@ -856,10 +885,10 @@ def _message_text(msg: Mapping[str, object]) -> str:
     return text
 
 
-def _message_metadata(msg: Mapping[str, object]) -> dict[str, object]:
+def _message_metadata(msg: Mapping[str, object], *, chat_type: str) -> dict[str, object]:
     metadata: dict[str, object] = {
         "provider": "telegram",
-        "chat_type": "private",
+        "chat_type": chat_type,
         "from_self": False,
     }
 

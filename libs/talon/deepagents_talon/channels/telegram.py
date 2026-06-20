@@ -21,10 +21,16 @@ from deepagents_talon.channels.base import (
     DEFAULT_MAX_MEDIA_BYTES,
     MAX_TEXT_CHARS,
     ChannelExposure,
+    ChannelExposureEnv,
     ChannelMediaError,
     ExposureMode,
+    channel_exposure_from_env,
     chunk_text,
     max_media_bytes_from_env,
+    message_with_media_paths,
+    parse_float,
+    replace_message_metadata,
+    split_csv,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
@@ -42,13 +48,10 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+MAX_CAPTION_CHARS = 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
-OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 _OFFSET_FILENAME = "telegram_offset.json"
 _ALLOWED_UPDATES = ["message", "channel_post"]
-
-# MarkdownV2 special characters that must be escaped.
-_MARKDOWNV2_SPECIAL = re.compile(r"([_*\[\]()~`>#=+\-|{}.!\\])")
 
 
 class TelegramError(RuntimeError):
@@ -143,22 +146,22 @@ class TelegramChannelConfig:
             outbound_media_dir=outbound_media_dir,
             api_base=env.get("DEEPAGENTS_TALON_TELEGRAM_API_BASE", DEFAULT_API_BASE),
             exposure=exposure,
-            poll_timeout_seconds=_parse_float(
+            poll_timeout_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_TELEGRAM_POLL_TIMEOUT_SECONDS"),
                 DEFAULT_POLL_TIMEOUT_SECONDS,
             ),
-            poll_interval_seconds=_parse_float(
+            poll_interval_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_TELEGRAM_POLL_INTERVAL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
             ),
-            request_timeout_seconds=_parse_float(
+            request_timeout_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_TELEGRAM_REQUEST_TIMEOUT_SECONDS"),
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
             max_media_bytes=max_media_bytes_from_env(env),
             operator_id=operator_id,
             allowed_user_ids=frozenset(
-                _split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
+                split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
             ),
         )
 
@@ -332,27 +335,18 @@ class TelegramChannel:
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
 
     async def send_message(self, conversation_id: str, text: str) -> None:
-        """Send chunked text with MarkdownV2 formatting and plain-text fallback.
+        """Send chunked plain text.
 
         Args:
             conversation_id: Telegram chat id.
             text: Message content to send.
         """
         for chunk in chunk_text(text, limit=MAX_TEXT_CHARS):
-            escaped = _escape_markdown_v2(chunk)
-            try:
-                await self._transport.call(
-                    "sendMessage",
-                    chat_id=conversation_id,
-                    text=escaped,
-                    parse_mode="MarkdownV2",
-                )
-            except TelegramError:
-                await self._transport.call(
-                    "sendMessage",
-                    chat_id=conversation_id,
-                    text=chunk,
-                )
+            await self._transport.call(
+                "sendMessage",
+                chat_id=conversation_id,
+                text=chunk,
+            )
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
         """Send validated image or document media to a Telegram chat.
@@ -370,12 +364,11 @@ class TelegramChannel:
             max_bytes=self.config.max_media_bytes,
         )
         _check_telegram_size(checked)
-        caption = _escape_markdown_v2(checked.caption) if checked.caption else None
+        caption = await self._media_caption(conversation_id, checked.caption)
         if checked.media_type == "image":
             params: dict[str, object] = {"chat_id": conversation_id}
             if caption:
                 params["caption"] = caption
-                params["parse_mode"] = "MarkdownV2"
             await self._transport.upload(
                 "sendPhoto",
                 file_field="photo",
@@ -386,7 +379,6 @@ class TelegramChannel:
             params = {"chat_id": conversation_id}
             if caption:
                 params["caption"] = caption
-                params["parse_mode"] = "MarkdownV2"
             await self._transport.upload(
                 "sendDocument",
                 file_field="document",
@@ -417,22 +409,12 @@ class TelegramChannel:
             message_id: Telegram message id.
             text: Replacement message content.
         """
-        escaped = _escape_markdown_v2(text)
-        try:
-            await self._transport.call(
-                "editMessageText",
-                chat_id=conversation_id,
-                message_id=int(message_id),
-                text=escaped,
-                parse_mode="MarkdownV2",
-            )
-        except TelegramError:
-            await self._transport.call(
-                "editMessageText",
-                chat_id=conversation_id,
-                message_id=int(message_id),
-                text=text,
-            )
+        await self._transport.call(
+            "editMessageText",
+            chat_id=conversation_id,
+            message_id=int(message_id),
+            text=text,
+        )
 
     async def status(self) -> ChannelStatus:
         """Report the most recent Telegram Bot API connection status."""
@@ -462,6 +444,14 @@ class TelegramChannel:
             connected=True,
             detail=f"connected as @{username}" if isinstance(username, str) else "connected",
         )
+
+    async def _media_caption(self, conversation_id: str, caption: str | None) -> str | None:
+        if not caption:
+            return None
+        if len(caption) <= MAX_CAPTION_CHARS:
+            return caption
+        await self.send_message(conversation_id, caption)
+        return None
 
     async def _poll_updates(self) -> None:
         while not self._stopped.is_set():
@@ -549,29 +539,15 @@ class TelegramChannel:
             metadata = dict(message.metadata)
             metadata["has_media"] = False
             metadata["media_error"] = str(error)
-            return ChannelMessage(
-                conversation_id=message.conversation_id,
-                text=message.text,
-                sender_id=message.sender_id,
-                message_id=message.message_id,
-                metadata=metadata,
-            )
+            return replace_message_metadata(message, metadata)
         metadata = dict(message.metadata)
         path = str(destination)
-        metadata["has_media"] = True
-        metadata["media_paths"] = [path]
-        metadata["media_path"] = path
-        if media_type == "voice":
-            metadata["voice_path"] = path
         mime_type = _downloaded_mime_type(destination, metadata)
-        if mime_type is not None:
-            metadata["media_mime_types"] = [mime_type]
-        return ChannelMessage(
-            conversation_id=message.conversation_id,
-            text=message.text,
-            sender_id=message.sender_id,
-            message_id=message.message_id,
-            metadata=metadata,
+        message = replace_message_metadata(message, metadata)
+        return message_with_media_paths(
+            message,
+            media_paths=[path],
+            mime_types=[mime_type] if mime_type is not None else [],
         )
 
     async def _download_inbound_media(
@@ -627,18 +603,6 @@ class TelegramChannel:
     def timeout(self) -> float:
         """Request timeout for downloads."""
         return self.config.request_timeout_seconds
-
-
-def _escape_markdown_v2(text: str) -> str:
-    """Escape MarkdownV2 special characters.
-
-    Args:
-        text: Plain text to escape.
-
-    Returns:
-        Text with all MarkdownV2 special characters escaped.
-    """
-    return _MARKDOWNV2_SPECIAL.sub(r"\\\1", text)
 
 
 def _check_telegram_size(media: ChannelMedia) -> None:
@@ -748,13 +712,7 @@ def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessa
         return message
     metadata = dict(message.metadata)
     metadata["from_self"] = True
-    return ChannelMessage(
-        conversation_id=message.conversation_id,
-        text=message.text,
-        sender_id=message.sender_id,
-        message_id=message.message_id,
-        metadata=metadata,
-    )
+    return replace_message_metadata(message, metadata)
 
 
 def _allows_telegram_message(
@@ -1083,62 +1041,24 @@ def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
     Raises:
         ValueError: If the exposure mode is invalid or open mode is not acknowledged.
     """
-    mode = _exposure_mode(env.get("DEEPAGENTS_TALON_TELEGRAM_EXPOSURE", ExposureMode.SELF.value))
-    operator_id = env.get("DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID") or None
-    if mode == ExposureMode.SELF and operator_id is None:
-        msg = (
-            "Telegram self exposure requires DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID; "
-            "set DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist or open for other modes"
-        )
-        raise ValueError(msg)
-    if mode == ExposureMode.OPEN:
-        _require_open_acknowledgement(env)
+    exposure = channel_exposure_from_env(
+        env,
+        ChannelExposureEnv(
+            provider="Telegram",
+            exposure="DEEPAGENTS_TALON_TELEGRAM_EXPOSURE",
+            allowlist_chats="DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS",
+            mention_patterns="DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS",
+            operator_id="DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID",
+            open_ack=OPEN_EXPOSURE_ACK_ENV,
+            require_self_operator=True,
+        ),
+    )
+    if exposure.mode == ExposureMode.OPEN:
         logger.warning(
             "Telegram open exposure enabled; arbitrary senders can trigger the agent with "
             "operator credentials and local host access",
         )
-    conversations = _split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS", ""))
-    mentions = tuple(_split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS", "")))
-    return ChannelExposure(
-        mode=mode,
-        operator_id=operator_id,
-        conversations=frozenset(conversations),
-        mention_patterns=mentions,
-    )
-
-
-def _exposure_mode(value: str) -> ExposureMode:
-    try:
-        return ExposureMode(value)
-    except ValueError as error:
-        modes = ", ".join(mode.value for mode in ExposureMode)
-        msg = f"invalid Telegram exposure mode {value!r}; expected one of: {modes}"
-        raise ValueError(msg) from error
-
-
-def _require_open_acknowledgement(env: Mapping[str, str]) -> None:
-    if env.get(OPEN_EXPOSURE_ACK_ENV) == OPEN_EXPOSURE_ACK_VALUE:
-        return
-    msg = (
-        "Telegram exposure mode 'open' allows arbitrary senders to trigger the agent with "
-        "operator credentials and local host access; set "
-        f"{OPEN_EXPOSURE_ACK_ENV}={OPEN_EXPOSURE_ACK_VALUE} to acknowledge this risk"
-    )
-    raise ValueError(msg)
-
-
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _parse_float(value: str | None, default: float) -> float:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except ValueError as error:
-        msg = f"expected float value, got {value!r}"
-        raise ValueError(msg) from error
+    return exposure
 
 
 # --- Offset persistence (ticket 23) ---

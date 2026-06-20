@@ -24,7 +24,6 @@ from deepagents_talon.channels.telegram import (
     TelegramTransport,
     _download_file,
     _encode_multipart_form,
-    _escape_markdown_v2,
     _load_offset,
     _save_offset,
 )
@@ -96,24 +95,6 @@ class ErrorOnFirstSuccessTransport:
                 raise TelegramError(msg)
             return {"ok": True, "result": []}
         return {"ok": True, "result": True}
-
-
-class MarkdownV2ErrorTransport:
-    """Transport that fails MarkdownV2 messages, forcing plain-text fallback."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
-
-    async def call(self, method: str, **params: object) -> object:
-        self.calls.append((method, dict(params)))
-        if method == "getMe":
-            return {"ok": True, "result": {"id": 123456, "username": "test_bot"}}
-        if method == "getUpdates":
-            return {"ok": True, "result": []}
-        if params.get("parse_mode") == "MarkdownV2":
-            msg = "Bad Request: can't parse entities"
-            raise TelegramError(msg)
-        return {"ok": True, "result": {"message_id": 42}}
 
 
 def _make_update(  # noqa: PLR0913  # test helper with many optional fields
@@ -310,21 +291,6 @@ def test_config_accepts_open_exposure_with_acknowledgement(tmp_path: Path) -> No
     telegram = TelegramChannelConfig.from_talon_config(config)
 
     assert telegram.exposure.mode == ExposureMode.OPEN
-
-
-# --- MarkdownV2 escaping tests ---
-
-
-def test_escape_markdown_v2_escapes_special_chars() -> None:
-    assert _escape_markdown_v2("hello *world*") == r"hello \*world\*"
-    assert _escape_markdown_v2("a_b_c") == r"a\_b\_c"
-    assert _escape_markdown_v2("list [1]") == r"list \[1\]"
-    assert _escape_markdown_v2("not! really.") == r"not\! really\."
-    assert _escape_markdown_v2("plain text") == "plain text"
-
-
-def test_escape_markdown_v2_escapes_backslash() -> None:
-    assert _escape_markdown_v2(r"path\to") == r"path\\to"
 
 
 # --- Polling and exposure tests ---
@@ -544,7 +510,7 @@ async def test_channel_identifies_bot_on_start(tmp_path: Path) -> None:
 # --- Outbound text tests ---
 
 
-async def test_send_message_uses_markdown_v2(tmp_path: Path) -> None:
+async def test_send_message_uses_plain_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path),
@@ -555,24 +521,9 @@ async def test_send_message_uses_markdown_v2(tmp_path: Path) -> None:
 
     assert transport.calls[0][0] == "sendMessage"
     params = transport.calls[0][1]
-    assert params["parse_mode"] == "MarkdownV2"
-    assert params["text"] == r"hello \*world\*"
+    assert "parse_mode" not in params
+    assert params["text"] == "hello *world*"
     assert params["chat_id"] == "123"
-
-
-async def test_send_message_falls_back_to_plain_text(tmp_path: Path) -> None:
-    transport = MarkdownV2ErrorTransport()
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
-    )
-
-    await channel.send_message("123", "hello *world*")
-
-    # First call uses MarkdownV2, second is plain text fallback.
-    assert transport.calls[0][1]["parse_mode"] == "MarkdownV2"
-    assert "parse_mode" not in transport.calls[1][1]
-    assert transport.calls[1][1]["text"] == "hello *world*"
 
 
 async def test_send_message_chunks_long_text(tmp_path: Path) -> None:
@@ -610,7 +561,7 @@ async def test_send_media_sends_photo_for_images(tmp_path: Path) -> None:
             "sendPhoto",
             "photo",
             image,
-            {"chat_id": "123", "caption": "cap", "parse_mode": "MarkdownV2"},
+            {"chat_id": "123", "caption": "cap"},
         ),
     ]
 
@@ -627,6 +578,22 @@ async def test_send_media_sends_document_for_videos(tmp_path: Path) -> None:
     await channel.send_media("123", ChannelMedia(path=video, media_type="video"))
 
     assert transport.uploads == [("sendDocument", "document", video, {"chat_id": "123"})]
+
+
+async def test_send_media_sends_long_caption_as_text_before_upload(tmp_path: Path) -> None:
+    transport = RecordingTransport()
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image-data")
+    channel = TelegramChannel(
+        _make_config(tmp_path),
+        transport=cast("TelegramTransport", transport),
+    )
+
+    caption = "x" * 1025
+    await channel.send_media("123", ChannelMedia(path=image, media_type="image", caption=caption))
+
+    assert transport.calls[0] == ("sendMessage", {"chat_id": "123", "text": caption})
+    assert transport.uploads == [("sendPhoto", "photo", image, {"chat_id": "123"})]
 
 
 def test_multipart_form_encodes_local_file_upload(tmp_path: Path) -> None:
@@ -716,7 +683,7 @@ async def test_send_media_rejects_oversized_document(
 # --- Edit message tests ---
 
 
-async def test_edit_message_uses_markdown_v2(tmp_path: Path) -> None:
+async def test_edit_message_uses_plain_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path),
@@ -726,25 +693,9 @@ async def test_edit_message_uses_markdown_v2(tmp_path: Path) -> None:
     await channel.edit_message("123", "42", "updated *text*")
 
     assert transport.calls[0][0] == "editMessageText"
-    assert transport.calls[0][1]["parse_mode"] == "MarkdownV2"
-    assert transport.calls[0][1]["text"] == r"updated \*text\*"
+    assert "parse_mode" not in transport.calls[0][1]
+    assert transport.calls[0][1]["text"] == "updated *text*"
     assert transport.calls[0][1]["message_id"] == 42
-
-
-async def test_edit_message_falls_back_to_plain_text(tmp_path: Path) -> None:
-    transport = MarkdownV2ErrorTransport()
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
-    )
-
-    await channel.edit_message("123", "42", "updated *text*")
-
-    edit_calls = [c for c in transport.calls if c[0] == "editMessageText"]
-    assert len(edit_calls) == 2
-    assert edit_calls[0][1]["parse_mode"] == "MarkdownV2"
-    assert "parse_mode" not in edit_calls[1][1]
-    assert edit_calls[1][1]["text"] == "updated *text*"
 
 
 # --- Typing indicator tests ---

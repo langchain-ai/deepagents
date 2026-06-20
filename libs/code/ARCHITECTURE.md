@@ -4,11 +4,11 @@ A map of how `deepagents-code` (the `dcode` TUI) fits together. Intentionally hi
 
 ## What this package is
 
-`deepagents-code` is a terminal coding agent (think Claude Code / Cursor in the shell) built on top of the `deepagents` SDK. The SDK supplies the agent harness (`create_deep_agent`, backends, and middleware like memory and skills); this package wraps it in an interactive Textual UI, a headless mode, conversation persistence, MCP integration, slash commands, skills, and remote sandboxes.
+`deepagents-code` is a terminal coding agent (think Claude Code / Cursor in the shell) built on top of the `deepagents` SDK. At its core is a pre-built `create_deep_agent` configuration — a ready-to-run coding agent that other applications can import and reuse — assembled from the SDK's harness, backends, and middleware (memory, skills, and more). Around that core, this package adds an interactive Textual UI, a headless mode, conversation persistence, MCP integration, slash commands, and remote sandboxes.
 
 ## The big picture
 
-The single most important thing to internalize: the UI and the agent run in **two different processes**. The client (the TUI or headless runner) talks to a LangGraph server that runs the agent graph, over HTTP/SSE.
+A key thing to internalize: the UI and the agent run in **two different processes**. The client (the TUI or headless runner) talks to a LangGraph server that runs the agent graph, over HTTP/SSE.
 
 ```text
 ┌─────────────────────────── client process ───────────────────────────┐

@@ -6730,8 +6730,14 @@ class DeepAgentsApp(App):
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
         elif cmd == "/timestamps":
-            await self._mount_message(UserMessage(command))
             await self._toggle_message_timestamp_footers()
+            label = "shown" if self._message_timestamps_visible else "hidden"
+            self.notify(
+                f"Message timestamps {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:

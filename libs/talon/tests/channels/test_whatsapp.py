@@ -9,12 +9,12 @@ from typing import Self, cast
 import pytest
 
 from deepagents_talon.channels.base import (
-    DEFAULT_MAX_MEDIA_BYTES,
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
 )
 from deepagents_talon.channels.whatsapp import (
+    DEFAULT_WHATSAPP_MAX_MEDIA_BYTES,
     BridgeTransport,
     WhatsAppBridgeError,
     WhatsAppChannel,
@@ -91,7 +91,7 @@ def test_config_from_talon_env_maps_exposure(
     assert whatsapp.session_dir == tmp_path / "assistant" / "channels" / "whatsapp"
     assert whatsapp.inbound_media_dir == tmp_path / "assistant" / "media" / "inbound" / "whatsapp"
     assert whatsapp.outbound_media_dir == tmp_path
-    assert whatsapp.max_media_bytes == DEFAULT_MAX_MEDIA_BYTES
+    assert whatsapp.max_media_bytes == DEFAULT_WHATSAPP_MAX_MEDIA_BYTES
     assert whatsapp.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,
         operator_id="operator",
@@ -113,6 +113,20 @@ def test_config_from_talon_env_maps_max_media_bytes(tmp_path: Path) -> None:
     whatsapp = WhatsAppChannelConfig.from_talon_config(config)
 
     assert whatsapp.max_media_bytes == 12345
+
+
+def test_config_from_talon_env_clamps_large_max_media_bytes(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_MAX_MEDIA_BYTES": str(DEFAULT_WHATSAPP_MAX_MEDIA_BYTES + 1),
+        },
+        base_home=tmp_path,
+    )
+
+    whatsapp = WhatsAppChannelConfig.from_talon_config(config)
+
+    assert whatsapp.max_media_bytes == DEFAULT_WHATSAPP_MAX_MEDIA_BYTES
 
 
 def test_config_from_talon_env_accepts_explicit_bridge_token(tmp_path: Path) -> None:

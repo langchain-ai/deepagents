@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.channels.base import (
-    DEFAULT_MAX_MEDIA_BYTES,
     MAX_TEXT_CHARS,
     ChannelExposure,
     ChannelMediaError,
@@ -49,6 +48,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_BRIDGE_START_TIMEOUT_SECONDS = 10.0
 DEFAULT_BOT_HEADER = "deepagents bot"
 DEFAULT_BRIDGE_TOKEN_BYTES = 32
+DEFAULT_WHATSAPP_MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
@@ -77,7 +77,9 @@ class WhatsAppChannelConfig:
         web_version_cache_url: Optional pinned WhatsApp Web HTML cache URL.
         bridge_token: Bearer token shared with the loopback bridge process.
         max_media_bytes: Maximum media bytes allowed for inbound bridge downloads
-            and outbound local files.
+            and outbound local files. WhatsApp stores downloaded media in memory
+            before the bridge can write it, so this defaults lower than the
+            cross-channel cap.
         poll_interval_seconds: Interval for draining inbound bridge messages.
         health_interval_seconds: Interval for bridge health checks.
         request_timeout_seconds: Per-request timeout for loopback bridge calls.
@@ -97,7 +99,7 @@ class WhatsAppChannelConfig:
         default_factory=lambda: secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
         repr=False,
     )
-    max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
+    max_media_bytes: int = DEFAULT_WHATSAPP_MAX_MEDIA_BYTES
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -146,7 +148,7 @@ class WhatsAppChannelConfig:
             web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
             bridge_token=env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN")
             or secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
-            max_media_bytes=max_media_bytes_from_env(env),
+            max_media_bytes=_whatsapp_max_media_bytes_from_env(env),
             poll_interval_seconds=_parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
@@ -537,6 +539,10 @@ def bridge_script_path() -> Path:
 
 def _bridge_media_dir(config: WhatsAppChannelConfig) -> Path:
     return config.inbound_media_dir or config.session_dir.parent / "media"
+
+
+def _whatsapp_max_media_bytes_from_env(env: Mapping[str, str]) -> int:
+    return min(max_media_bytes_from_env(env), DEFAULT_WHATSAPP_MAX_MEDIA_BYTES)
 
 
 def _stage_bridge_media(path: Path, config: WhatsAppChannelConfig) -> Path:

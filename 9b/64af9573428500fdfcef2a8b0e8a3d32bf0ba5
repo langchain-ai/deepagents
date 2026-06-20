@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_app.py
+  s_01469149e6cba2::t_4d6bd40d1df1f2 4226-4227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "9b64af9573428500fdfcef2a8b0e8a3d32bf0ba5",
+  "prompts": {},
+  "sessions": {
+    "s_01469149e6cba2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee707-85fa-76f0-8561-8f5feeb2ddef",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

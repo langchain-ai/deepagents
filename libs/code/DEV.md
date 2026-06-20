@@ -1,8 +1,6 @@
 # Deep Agents Code Development Guide
 
-New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a
-high-level map of how the TUI, the `langgraph dev` server subprocess, and the
-agent graph fit together.
+New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high-level map of how the TUI, the `langgraph dev` server subprocess, and the agent graph fit together.
 
 ## Live CSS development with Textual devtools
 

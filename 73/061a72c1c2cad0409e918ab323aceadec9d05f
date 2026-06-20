@@ -1,0 +1,26 @@
+libs/code/tests/unit_tests/test_command_registry.py
+  s_7d69a9ff0b161a::t_ff4b26c109ec4c 153,218
+libs/README.md
+  s_7d69a9ff0b161a::t_ff4b26c109ec4c 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "73061a72c1c2cad0409e918ab323aceadec9d05f",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_7d69a9ff0b161a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee39d-ef7d-7540-9874-7a3e8d5fc090",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

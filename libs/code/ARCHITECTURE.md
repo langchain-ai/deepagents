@@ -105,22 +105,39 @@ The package is a flat ~70-file directory; grouping by concern:
 
 ## On-disk layout (runtime)
 
-User and project state lives under `~/.deepagents/` (project-local `.deepagents/`
-overrides for some files):
+User and project state lives under `~/.deepagents/`, with user instructions,
+custom skills, and custom subagents scoped to the selected agent name. The
+default agent name is `agent`. Project-local `.deepagents/` and shared
+`.agents/` directories override or extend some user-level locations:
 
 ```text
 ~/.deepagents/
 ├── config.toml          # models, sandboxes, settings
-├── AGENTS.md            # user-level agent instructions
 ├── hooks.json           # external tool hooks (hooks.py)
 ├── .mcp.json            # MCP server config (also discovered project-local)
-├── agents/              # custom subagents (markdown + YAML frontmatter)
-├── skills/              # custom skills
+├── <agent>/
+│   ├── AGENTS.md        # user-level instructions for that agent
+│   ├── agents/          # user custom subagents ({name}/AGENTS.md)
+│   └── skills/          # user custom skills
 ├── bin/                 # managed binaries (e.g. ripgrep)
 └── .state/
     ├── auth.json, chatgpt-auth.json, mcp-tokens/   # credentials
     ├── history.jsonl, recent_models.json
     └── mcp_trust.json
+
+<project>/
+├── AGENTS.md            # project instructions
+├── .mcp.json            # project root MCP server config
+├── .deepagents/
+│   ├── AGENTS.md        # higher-priority project instructions
+│   ├── agents/          # project custom subagents ({name}/AGENTS.md)
+│   ├── skills/          # project custom skills
+│   └── .mcp.json        # project MCP server config
+└── .agents/
+    └── skills/          # shared project skills alias
+
+~/.agents/
+└── skills/              # shared user skills alias
 ```
 
 ## Conventions & where to look

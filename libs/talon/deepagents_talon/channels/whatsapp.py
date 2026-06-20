@@ -23,18 +23,23 @@ from typing import TYPE_CHECKING, cast
 from deepagents_talon.channels.base import (
     MAX_TEXT_CHARS,
     ChannelExposure,
-    ChannelMediaError,
+    ChannelExposureEnv,
     ExposureMode,
+    channel_exposure_from_env,
     chunk_text,
+    filter_capped_media_paths,
     format_markdown_for_channel,
     max_media_bytes_from_env,
+    message_with_media_paths,
+    parse_float,
+    parse_int,
+    replace_message_metadata,
     validate_media,
-    validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
     from deepagents_talon.config import TalonConfig
 
@@ -51,7 +56,6 @@ DEFAULT_BRIDGE_TOKEN_BYTES = 32
 DEFAULT_WHATSAPP_MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
-OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 
 
 class WhatsAppBridgeError(RuntimeError):
@@ -119,7 +123,7 @@ class WhatsAppChannelConfig:
         """
         env = config.env
         host = env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_HOST", DEFAULT_BRIDGE_HOST)
-        port = _parse_int(env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_PORT"), DEFAULT_BRIDGE_PORT)
+        port = parse_int(env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_PORT"), DEFAULT_BRIDGE_PORT)
         session = Path(
             env.get("DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR", str(config.channel_dir / "whatsapp")),
         )
@@ -149,15 +153,15 @@ class WhatsAppChannelConfig:
             bridge_token=env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN")
             or secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
             max_media_bytes=_whatsapp_max_media_bytes_from_env(env),
-            poll_interval_seconds=_parse_float(
+            poll_interval_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
             ),
-            health_interval_seconds=_parse_float(
+            health_interval_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_HEALTH_SECONDS"),
                 DEFAULT_HEALTH_INTERVAL_SECONDS,
             ),
-            request_timeout_seconds=_parse_float(
+            request_timeout_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_REQUEST_TIMEOUT_SECONDS"),
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
@@ -628,82 +632,29 @@ def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> Ch
         return message
 
     mime_types = message.metadata.get("media_mime_types")
-    kept, kept_mime_types, changed = _filter_inbound_media(
-        message,
+    filtered = filter_capped_media_paths(
         media_paths=media_paths,
         mime_types=mime_types if isinstance(mime_types, list) else [],
         max_bytes=max_bytes,
     )
-    if not changed:
+    for error in filtered.errors:
+        logger.warning(
+            "Skipping WhatsApp inbound media for message %s: %s",
+            message.message_id,
+            error,
+        )
+    if not filtered.changed:
         return message
-    return _with_inbound_media_paths(
+    checked = message_with_media_paths(
         message,
-        media_paths=kept,
-        mime_types=kept_mime_types,
-        max_bytes=max_bytes,
+        media_paths=filtered.paths,
+        mime_types=filtered.mime_types,
     )
-
-
-def _filter_inbound_media(
-    message: ChannelMessage,
-    *,
-    media_paths: Sequence[object],
-    mime_types: Sequence[object],
-    max_bytes: int,
-) -> tuple[list[str], list[str], bool]:
-    kept: list[str] = []
-    kept_mime_types: list[str] = []
-    changed = False
-    for index, raw_path in enumerate(media_paths):
-        if not isinstance(raw_path, str):
-            changed = True
-            continue
-        try:
-            validate_media_size(Path(raw_path), max_bytes=max_bytes)
-        except FileNotFoundError:
-            kept.append(raw_path)
-        except ChannelMediaError as error:
-            logger.warning(
-                "Skipping WhatsApp inbound media for message %s: %s",
-                message.message_id,
-                error,
-            )
-            changed = True
-            continue
-        else:
-            kept.append(raw_path)
-        if index < len(mime_types):
-            mime_type = mime_types[index]
-            if isinstance(mime_type, str):
-                kept_mime_types.append(mime_type)
-    return kept, kept_mime_types, changed
-
-
-def _with_inbound_media_paths(
-    message: ChannelMessage,
-    *,
-    media_paths: list[str],
-    mime_types: list[str],
-    max_bytes: int,
-) -> ChannelMessage:
-    metadata = dict(message.metadata)
-    metadata["media_paths"] = media_paths
-    metadata["media_path"] = media_paths[0] if media_paths else None
-    metadata["media_mime_types"] = mime_types
-    metadata["media_types"] = mime_types
-    metadata["voice_path"] = (
-        media_paths[0] if media_paths and metadata.get("media_type") == "voice" else None
-    )
-    metadata["has_media"] = bool(media_paths)
-    if not media_paths:
+    if not filtered.paths:
+        metadata = dict(checked.metadata)
         metadata["media_error"] = f"all media files exceeded {max_bytes} bytes"
-    return ChannelMessage(
-        conversation_id=message.conversation_id,
-        text=message.text,
-        sender_id=message.sender_id,
-        message_id=message.message_id,
-        metadata=metadata,
-    )
+        return replace_message_metadata(checked, metadata)
+    return checked
 
 
 def _parse_status(payload: object) -> ChannelStatus:
@@ -782,41 +733,23 @@ def _is_video_type(value: str | None) -> bool:
 
 
 def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
-    mode = _exposure_mode(env.get("DEEPAGENTS_TALON_WHATSAPP_EXPOSURE", ExposureMode.SELF.value))
-    if mode == ExposureMode.OPEN:
-        _require_open_acknowledgement(env)
+    exposure = channel_exposure_from_env(
+        env,
+        ChannelExposureEnv(
+            provider="WhatsApp",
+            exposure="DEEPAGENTS_TALON_WHATSAPP_EXPOSURE",
+            allowlist_chats="DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS",
+            mention_patterns="DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS",
+            operator_id="DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID",
+            open_ack=OPEN_EXPOSURE_ACK_ENV,
+        ),
+    )
+    if exposure.mode == ExposureMode.OPEN:
         logger.warning(
             "WhatsApp open exposure enabled; arbitrary senders can trigger the agent with "
             "operator credentials and local host access"
         )
-    conversations = _split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS", ""))
-    mentions = tuple(_split_csv(env.get("DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS", "")))
-    return ChannelExposure(
-        mode=mode,
-        operator_id=env.get("DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID"),
-        conversations=frozenset(conversations),
-        mention_patterns=mentions,
-    )
-
-
-def _exposure_mode(value: str) -> ExposureMode:
-    try:
-        return ExposureMode(value)
-    except ValueError as error:
-        modes = ", ".join(mode.value for mode in ExposureMode)
-        msg = f"invalid WhatsApp exposure mode {value!r}; expected one of: {modes}"
-        raise ValueError(msg) from error
-
-
-def _require_open_acknowledgement(env: Mapping[str, str]) -> None:
-    if env.get(OPEN_EXPOSURE_ACK_ENV) == OPEN_EXPOSURE_ACK_VALUE:
-        return
-    msg = (
-        "WhatsApp exposure mode 'open' allows arbitrary senders to trigger the agent with "
-        "operator credentials and local host access; set "
-        f"{OPEN_EXPOSURE_ACK_ENV}={OPEN_EXPOSURE_ACK_VALUE} to acknowledge this risk"
-    )
-    raise ValueError(msg)
+    return exposure
 
 
 def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:
@@ -826,27 +759,3 @@ def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:
     if env.get("DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE", "").lower() in {"1", "true", "yes"}:
         return ("node", str(bridge_script_path()))
     return None
-
-
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _parse_int(value: str | None, default: int) -> int:
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError as error:
-        msg = f"expected integer value, got {value!r}"
-        raise ValueError(msg) from error
-
-
-def _parse_float(value: str | None, default: float) -> float:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except ValueError as error:
-        msg = f"expected float value, got {value!r}"
-        raise ValueError(msg) from error

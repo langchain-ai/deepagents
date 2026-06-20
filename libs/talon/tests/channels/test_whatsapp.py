@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Self, cast
+from typing import TYPE_CHECKING, Self, cast
 
 import pytest
 
@@ -23,6 +23,9 @@ from deepagents_talon.channels.whatsapp import (
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+
+if TYPE_CHECKING:
+    import urllib.request
 
 
 class RecordingTransport:
@@ -160,7 +163,7 @@ def test_bridge_transport_sends_bearer_token(monkeypatch: pytest.MonkeyPatch) ->
 
     result = transport._request("GET", "/health", None)
 
-    request = cast("object", captured["request"])
+    request = cast("urllib.request.Request", captured["request"])
     assert result == {"success": True}
     assert captured["timeout"] == 2
     assert request.get_header("Authorization") == "Bearer test-token"

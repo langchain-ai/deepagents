@@ -10,20 +10,21 @@ import mimetypes
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-    from pathlib import Path
+    from collections.abc import Mapping, Sequence
 
 MAX_TEXT_CHARS = 4096
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
 MAX_VIDEO_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 MAX_MEDIA_BYTES_ENV = "DEEPAGENTS_TALON_MAX_MEDIA_BYTES"
+OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
@@ -41,6 +42,48 @@ class ExposureMode(StrEnum):
 
 class ChannelMediaError(ValueError):
     """Raised when channel media cannot be handled safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelExposureEnv:
+    """Environment variable names used to build channel exposure policy.
+
+    Args:
+        provider: Human-readable provider name used in error messages.
+        exposure: Environment variable containing the exposure mode.
+        allowlist_chats: Environment variable containing allowlisted chats.
+        mention_patterns: Environment variable containing allowlist text patterns.
+        operator_id: Environment variable containing the trusted operator id.
+        open_ack: Environment variable acknowledging open-exposure risk.
+        open_ack_value: Required acknowledgement value for open exposure.
+        require_self_operator: Whether `self` exposure requires an operator id.
+    """
+
+    provider: str
+    exposure: str
+    allowlist_chats: str
+    mention_patterns: str
+    operator_id: str
+    open_ack: str
+    open_ack_value: str = OPEN_EXPOSURE_ACK_VALUE
+    require_self_operator: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FilteredMediaPaths:
+    """Inbound media paths retained after applying local size caps.
+
+    Args:
+        paths: String paths that remain usable.
+        mime_types: MIME types aligned with `paths`.
+        changed: Whether any input path was dropped or ignored.
+        errors: Human-readable drop reasons for logs or metadata.
+    """
+
+    paths: tuple[str, ...]
+    mime_types: tuple[str, ...]
+    changed: bool
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +165,43 @@ def chunk_text(text: str, *, limit: int = MAX_TEXT_CHARS) -> list[str]:
     return chunks
 
 
+def channel_exposure_from_env(
+    env: Mapping[str, str],
+    config: ChannelExposureEnv,
+) -> ChannelExposure:
+    """Build shared channel exposure policy from provider-specific env names.
+
+    Args:
+        env: Environment variable mapping.
+        config: Provider-specific exposure environment mapping.
+
+    Returns:
+        Parsed exposure policy.
+
+    Raises:
+        ValueError: If the exposure mode is invalid or risk acknowledgement is missing.
+    """
+    mode = _exposure_mode(
+        env.get(config.exposure, ExposureMode.SELF.value),
+        provider=config.provider,
+    )
+    operator_id = env.get(config.operator_id) or None
+    if mode == ExposureMode.SELF and config.require_self_operator and operator_id is None:
+        msg = (
+            f"{config.provider} self exposure requires {config.operator_id}; "
+            f"set {config.exposure}=allowlist or open for other modes"
+        )
+        raise ValueError(msg)
+    if mode == ExposureMode.OPEN:
+        _require_open_acknowledgement(env, config)
+    return ChannelExposure(
+        mode=mode,
+        operator_id=operator_id,
+        conversations=frozenset(split_csv(env.get(config.allowlist_chats, ""))),
+        mention_patterns=tuple(split_csv(env.get(config.mention_patterns, ""))),
+    )
+
+
 def validate_media(
     media: ChannelMedia,
     *,
@@ -161,6 +241,102 @@ def validate_media(
         raise ChannelMediaError(msg)
 
     return _validate_media_size(media, path=path, max_bytes=max_bytes)
+
+
+def replace_message_metadata(
+    message: ChannelMessage,
+    metadata: Mapping[str, object],
+) -> ChannelMessage:
+    """Return `message` with replaced metadata.
+
+    Args:
+        message: Original channel message.
+        metadata: Replacement metadata.
+
+    Returns:
+        Channel message with the same identity and text, plus new metadata.
+    """
+    return ChannelMessage(
+        conversation_id=message.conversation_id,
+        text=message.text,
+        sender_id=message.sender_id,
+        message_id=message.message_id,
+        metadata=metadata,
+    )
+
+
+def message_with_media_paths(
+    message: ChannelMessage,
+    *,
+    media_paths: Sequence[str],
+    mime_types: Sequence[str] = (),
+) -> ChannelMessage:
+    """Return `message` with normalized inbound-media path metadata.
+
+    Args:
+        message: Original channel message.
+        media_paths: Local media paths associated with the message.
+        mime_types: MIME types aligned with `media_paths`.
+
+    Returns:
+        Channel message with standard media path metadata.
+    """
+    paths = list(media_paths)
+    types = list(mime_types)
+    metadata = dict(message.metadata)
+    metadata["media_paths"] = paths
+    metadata["media_path"] = paths[0] if paths else None
+    metadata["media_mime_types"] = types
+    metadata["media_types"] = types
+    metadata["voice_path"] = paths[0] if paths and metadata.get("media_type") == "voice" else None
+    metadata["has_media"] = bool(paths)
+    return replace_message_metadata(message, metadata)
+
+
+def filter_capped_media_paths(
+    media_paths: Sequence[object],
+    mime_types: Sequence[object],
+    *,
+    max_bytes: int,
+) -> FilteredMediaPaths:
+    """Filter inbound local media paths against a configured size cap.
+
+    Args:
+        media_paths: Candidate local media paths from a channel payload.
+        mime_types: Candidate MIME types aligned with `media_paths`.
+        max_bytes: Maximum allowed file size.
+
+    Returns:
+        Filter result containing kept paths and dropped-path reasons.
+    """
+    kept: list[str] = []
+    kept_mime_types: list[str] = []
+    errors: list[str] = []
+    changed = False
+    for index, raw_path in enumerate(media_paths):
+        if not isinstance(raw_path, str):
+            changed = True
+            continue
+        try:
+            validate_media_size(Path(raw_path), max_bytes=max_bytes)
+        except FileNotFoundError:
+            kept.append(raw_path)
+        except ChannelMediaError as error:
+            changed = True
+            errors.append(str(error))
+            continue
+        else:
+            kept.append(raw_path)
+        if index < len(mime_types):
+            mime_type = mime_types[index]
+            if isinstance(mime_type, str):
+                kept_mime_types.append(mime_type)
+    return FilteredMediaPaths(
+        paths=tuple(kept),
+        mime_types=tuple(kept_mime_types),
+        changed=changed,
+        errors=tuple(errors),
+    )
 
 
 def validate_media_size(path: Path, *, max_bytes: int) -> None:
@@ -205,6 +381,62 @@ def max_media_bytes_from_env(env: Mapping[str, str]) -> int:
     return parsed
 
 
+def parse_float(value: str | None, default: float) -> float:
+    """Parse an optional float value with a default.
+
+    Args:
+        value: Raw environment value.
+        default: Value returned when `value` is missing.
+
+    Returns:
+        Parsed float.
+
+    Raises:
+        ValueError: If `value` is not a float.
+    """
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as error:
+        msg = f"expected float value, got {value!r}"
+        raise ValueError(msg) from error
+
+
+def parse_int(value: str | None, default: int) -> int:
+    """Parse an optional integer value with a default.
+
+    Args:
+        value: Raw environment value.
+        default: Value returned when `value` is missing.
+
+    Returns:
+        Parsed integer.
+
+    Raises:
+        ValueError: If `value` is not an integer.
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as error:
+        msg = f"expected integer value, got {value!r}"
+        raise ValueError(msg) from error
+
+
+def split_csv(value: str) -> list[str]:
+    """Split a comma-separated environment value.
+
+    Args:
+        value: Raw comma-separated value.
+
+    Returns:
+        Non-empty, stripped items.
+    """
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def _validate_media_size(
     media: ChannelMedia,
     *,
@@ -230,6 +462,29 @@ def _is_self_message(message: ChannelMessage, operator_id: str | None) -> bool:
 
 def _matches_text(text: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(text, pattern) for pattern in patterns)
+
+
+def _exposure_mode(value: str, *, provider: str) -> ExposureMode:
+    try:
+        return ExposureMode(value)
+    except ValueError as error:
+        modes = ", ".join(mode.value for mode in ExposureMode)
+        msg = f"invalid {provider} exposure mode {value!r}; expected one of: {modes}"
+        raise ValueError(msg) from error
+
+
+def _require_open_acknowledgement(
+    env: Mapping[str, str],
+    config: ChannelExposureEnv,
+) -> None:
+    if env.get(config.open_ack) == config.open_ack_value:
+        return
+    msg = (
+        f"{config.provider} exposure mode 'open' allows arbitrary senders to trigger the "
+        "agent with operator credentials and local host access; set "
+        f"{config.open_ack}={config.open_ack_value} to acknowledge this risk"
+    )
+    raise ValueError(msg)
 
 
 def _split_index(text: str, limit: int) -> int:

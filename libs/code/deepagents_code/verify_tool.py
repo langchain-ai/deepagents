@@ -278,15 +278,17 @@ def _format_report(text: str) -> str:
     return text
 
 
-def _judge_error_report(exc: Exception) -> str:
-    """Build the fail-soft report for a judge invocation error.
+def _incomplete_report(exc: Exception) -> str:
+    """Build the fail-soft report for any verification failure.
 
     Returns:
-        A fail-soft report string describing the checker error.
+        A fail-soft report string describing the error. A verifier must never
+        raise, so every failure (file access, judge call, anything) becomes this.
     """
     return (
-        f"VERIFICATION INCOMPLETE: the checker errored ({type(exc).__name__}); "
-        "not verified. Re-run verification or verify manually before concluding."
+        f"VERIFICATION INCOMPLETE: the checker could not complete "
+        f"({type(exc).__name__}); not verified. Re-run verification or verify "
+        "manually before concluding."
     )
 
 
@@ -306,74 +308,77 @@ def make_verify_tool(
     """
     judge_model = model if not isinstance(model, str) else init_chat_model(model)
 
+    # The whole body of each variant is wrapped: a verification tool must never
+    # raise, or it would crash the agent it is meant to help. Any failure (file
+    # access, judge call, etc.) becomes a fail-soft INCOMPLETE report.
     def _verify(runtime: ToolRuntime, focus: str | None = None) -> str:
-        spec = _original_task(runtime)
-        paths = _eligible_paths(backend.glob("**/*", path=cwd).matches, focus)
-        chunks: list[str] = []
-        total = 0
-        omitted = 0
-        for path in paths:
-            if len(chunks) >= max_files or total >= max_total_bytes:
-                omitted += 1
-                continue
-            result = backend.read(path)
-            if getattr(result, "error", None):
-                continue
-            chunk = _file_chunk(
-                path, getattr(result, "file_data", None), max_file_bytes
-            )
-            if chunk is None:
-                continue
-            chunks.append(chunk)
-            total += len(chunk)
-        bundle = "\n\n".join(chunks) + _bundle_note(omitted)
-        preflight = _preflight(spec, len(chunks))
-        if preflight is not None:
-            return preflight
-        judge_messages = [
-            SystemMessage(_JUDGE_SYSTEM_PROMPT),
-            HumanMessage(_judge_human(spec, bundle)),
-        ]
         try:
+            spec = _original_task(runtime)
+            paths = _eligible_paths(backend.glob("**/*", path=cwd).matches, focus)
+            chunks: list[str] = []
+            total = 0
+            omitted = 0
+            for path in paths:
+                if len(chunks) >= max_files or total >= max_total_bytes:
+                    omitted += 1
+                    continue
+                result = backend.read(path)
+                if getattr(result, "error", None):
+                    continue
+                chunk = _file_chunk(
+                    path, getattr(result, "file_data", None), max_file_bytes
+                )
+                if chunk is None:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+            bundle = "\n\n".join(chunks) + _bundle_note(omitted)
+            preflight = _preflight(spec, len(chunks))
+            if preflight is not None:
+                return preflight
+            judge_messages = [
+                SystemMessage(_JUDGE_SYSTEM_PROMPT),
+                HumanMessage(_judge_human(spec, bundle)),
+            ]
             response = judge_model.invoke(judge_messages)
-        except Exception as exc:  # noqa: BLE001  (never auto-PASS on judge failure)
-            return _judge_error_report(exc)
-        return _format_report(_content_to_text(response.content).strip())
+            return _format_report(_content_to_text(response.content).strip())
+        except Exception as exc:  # noqa: BLE001  (a verifier must never crash the agent)
+            return _incomplete_report(exc)
 
     async def _averify(runtime: ToolRuntime, focus: str | None = None) -> str:
-        spec = _original_task(runtime)
-        glob_result = await backend.aglob("**/*", path=cwd)
-        paths = _eligible_paths(glob_result.matches, focus)
-        chunks: list[str] = []
-        total = 0
-        omitted = 0
-        for path in paths:
-            if len(chunks) >= max_files or total >= max_total_bytes:
-                omitted += 1
-                continue
-            result = await backend.aread(path)
-            if getattr(result, "error", None):
-                continue
-            chunk = _file_chunk(
-                path, getattr(result, "file_data", None), max_file_bytes
-            )
-            if chunk is None:
-                continue
-            chunks.append(chunk)
-            total += len(chunk)
-        bundle = "\n\n".join(chunks) + _bundle_note(omitted)
-        preflight = _preflight(spec, len(chunks))
-        if preflight is not None:
-            return preflight
-        judge_messages = [
-            SystemMessage(_JUDGE_SYSTEM_PROMPT),
-            HumanMessage(_judge_human(spec, bundle)),
-        ]
         try:
+            spec = _original_task(runtime)
+            glob_result = await backend.aglob("**/*", path=cwd)
+            paths = _eligible_paths(glob_result.matches, focus)
+            chunks: list[str] = []
+            total = 0
+            omitted = 0
+            for path in paths:
+                if len(chunks) >= max_files or total >= max_total_bytes:
+                    omitted += 1
+                    continue
+                result = await backend.aread(path)
+                if getattr(result, "error", None):
+                    continue
+                chunk = _file_chunk(
+                    path, getattr(result, "file_data", None), max_file_bytes
+                )
+                if chunk is None:
+                    continue
+                chunks.append(chunk)
+                total += len(chunk)
+            bundle = "\n\n".join(chunks) + _bundle_note(omitted)
+            preflight = _preflight(spec, len(chunks))
+            if preflight is not None:
+                return preflight
+            judge_messages = [
+                SystemMessage(_JUDGE_SYSTEM_PROMPT),
+                HumanMessage(_judge_human(spec, bundle)),
+            ]
             response = await judge_model.ainvoke(judge_messages)
-        except Exception as exc:  # noqa: BLE001  (never auto-PASS on judge failure)
-            return _judge_error_report(exc)
-        return _format_report(_content_to_text(response.content).strip())
+            return _format_report(_content_to_text(response.content).strip())
+        except Exception as exc:  # noqa: BLE001  (a verifier must never crash the agent)
+            return _incomplete_report(exc)
 
     return StructuredTool.from_function(
         name="verify_implementation",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -88,6 +88,22 @@ class _RaisingModel:
         raise _PROVIDER_ERROR
 
     async def ainvoke(self, _messages: list[Any]) -> AIMessage:
+        raise _PROVIDER_ERROR
+
+
+class _RaisingBackend:
+    """Backend whose file access blows up — the tool must not propagate it."""
+
+    def glob(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise _PROVIDER_ERROR
+
+    async def aglob(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise _PROVIDER_ERROR
+
+    def read(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        raise _PROVIDER_ERROR
+
+    async def aread(self, *_args: Any, **_kwargs: Any) -> NoReturn:
         raise _PROVIDER_ERROR
 
 
@@ -285,6 +301,16 @@ def test_verify_judge_error_never_auto_passes() -> None:
     tool = _make(_RaisingModel(), _FakeBackend(files))
 
     report = _call(tool, _human("do a thing"))
+
+    assert "INCOMPLETE" in report
+    assert "PASS" not in report
+
+
+def test_verify_backend_error_does_not_crash() -> None:
+    # A verifier must never propagate an exception that would crash the agent.
+    tool = _make(_FakeModel("VERDICT: PASS"), _RaisingBackend())
+
+    report = _call(tool, _human("spec naming /app/result.txt"))
 
     assert "INCOMPLETE" in report
     assert "PASS" not in report

@@ -12,8 +12,16 @@ const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(pr
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
 const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
-const rawMaxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES || String(64 * 1024 * 1024));
-const maxMediaBytes = Number.isFinite(rawMaxMediaBytes) && rawMaxMediaBytes > 0 ? rawMaxMediaBytes : 64 * 1024 * 1024;
+const defaultMaxMediaBytes = 1024 * 1024 * 1024;
+const rawMaxMediaBytes = Number(
+  process.env.DEEPAGENTS_TALON_MAX_MEDIA_BYTES ||
+    process.env.WHATSAPP_MAX_MEDIA_BYTES ||
+    String(defaultMaxMediaBytes),
+);
+const maxMediaBytes =
+  Number.isFinite(rawMaxMediaBytes) && rawMaxMediaBytes > 0
+    ? rawMaxMediaBytes
+    : defaultMaxMediaBytes;
 const webVersionCacheUrl =
   process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";

@@ -5,11 +5,13 @@ from pathlib import Path
 import pytest
 
 from deepagents_talon.channels.base import (
+    DEFAULT_MAX_MEDIA_BYTES,
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
     chunk_text,
     format_markdown_for_channel,
+    max_media_bytes_from_env,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
@@ -82,6 +84,14 @@ def test_validate_media_accepts_relative_path_under_root(tmp_path: Path) -> None
     assert media == ChannelMedia(path=path.resolve(), media_type="image")
 
 
+def test_validate_media_rejects_configured_global_cap(tmp_path: Path) -> None:
+    path = tmp_path / "image.png"
+    path.write_bytes(b"abcd")
+
+    with pytest.raises(ChannelMediaError, match="exceeds 3"):
+        validate_media(ChannelMedia(path=path, media_type="image"), max_bytes=3)
+
+
 def test_validate_media_rejects_path_outside_root(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -98,3 +108,16 @@ def test_validate_media_rejects_type_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ChannelMediaError, match="does not match"):
         validate_media(ChannelMedia(path=path, media_type="video"))
+
+
+def test_max_media_bytes_from_env_defaults_to_one_gb() -> None:
+    assert max_media_bytes_from_env({}) == DEFAULT_MAX_MEDIA_BYTES
+
+
+def test_max_media_bytes_from_env_accepts_positive_integer() -> None:
+    assert max_media_bytes_from_env({"DEEPAGENTS_TALON_MAX_MEDIA_BYTES": "123"}) == 123
+
+
+def test_max_media_bytes_from_env_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        max_media_bytes_from_env({"DEEPAGENTS_TALON_MAX_MEDIA_BYTES": "0"})

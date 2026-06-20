@@ -21,17 +21,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.channels.base import (
+    DEFAULT_MAX_MEDIA_BYTES,
     MAX_TEXT_CHARS,
     ChannelExposure,
+    ChannelMediaError,
     ExposureMode,
     chunk_text,
     format_markdown_for_channel,
+    max_media_bytes_from_env,
     validate_media,
+    validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from deepagents_talon.config import TalonConfig
 
@@ -72,6 +76,8 @@ class WhatsAppChannelConfig:
         chrome_path: Optional Chrome or Chromium executable path for Puppeteer.
         web_version_cache_url: Optional pinned WhatsApp Web HTML cache URL.
         bridge_token: Bearer token shared with the loopback bridge process.
+        max_media_bytes: Maximum media bytes allowed for inbound bridge downloads
+            and outbound local files.
         poll_interval_seconds: Interval for draining inbound bridge messages.
         health_interval_seconds: Interval for bridge health checks.
         request_timeout_seconds: Per-request timeout for loopback bridge calls.
@@ -91,6 +97,7 @@ class WhatsAppChannelConfig:
         default_factory=lambda: secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
         repr=False,
     )
+    max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -139,6 +146,7 @@ class WhatsAppChannelConfig:
             web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
             bridge_token=env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN")
             or secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
+            max_media_bytes=max_media_bytes_from_env(env),
             poll_interval_seconds=_parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
@@ -300,7 +308,11 @@ class WhatsAppChannel:
             conversation_id: WhatsApp chat id.
             media: Media payload to send.
         """
-        checked = validate_media(media, root=self.config.outbound_media_dir)
+        checked = validate_media(
+            media,
+            root=self.config.outbound_media_dir,
+            max_bytes=self.config.max_media_bytes,
+        )
         staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
         payload: dict[str, object] = {
             "chat_id": conversation_id,
@@ -360,6 +372,7 @@ class WhatsAppChannel:
             "WHATSAPP_BOT_HEADER": self.config.bot_header,
             "WHATSAPP_BRIDGE_TOKEN": self.config.bridge_token,
             "WHATSAPP_MEDIA_DIR": str(_bridge_media_dir(self.config)),
+            "WHATSAPP_MAX_MEDIA_BYTES": str(self.config.max_media_bytes),
         }
         if self.config.chrome_path:
             env["WHATSAPP_CHROME_PATH"] = self.config.chrome_path
@@ -407,7 +420,11 @@ class WhatsAppChannel:
                 payload = await self._transport.get("/messages")
                 for message in _parse_messages(payload):
                     if self.config.exposure.allows(message):
-                        await self._dispatch(message)
+                        checked = _enforce_inbound_media_cap(
+                            message,
+                            max_bytes=self.config.max_media_bytes,
+                        )
+                        await self._dispatch(checked)
                     else:
                         logger.debug(
                             "Dropping WhatsApp message %s from %s due to exposure policy",
@@ -596,6 +613,90 @@ def _parse_message(payload: object) -> ChannelMessage:
             "raw_message": values.get("raw_message") or {},
             "from_self": bool(values.get("from_self") or values.get("fromSelf")),
         },
+    )
+
+
+def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:
+    media_paths = message.metadata.get("media_paths")
+    if not isinstance(media_paths, list) or not media_paths:
+        return message
+
+    mime_types = message.metadata.get("media_mime_types")
+    kept, kept_mime_types, changed = _filter_inbound_media(
+        message,
+        media_paths=media_paths,
+        mime_types=mime_types if isinstance(mime_types, list) else [],
+        max_bytes=max_bytes,
+    )
+    if not changed:
+        return message
+    return _with_inbound_media_paths(
+        message,
+        media_paths=kept,
+        mime_types=kept_mime_types,
+        max_bytes=max_bytes,
+    )
+
+
+def _filter_inbound_media(
+    message: ChannelMessage,
+    *,
+    media_paths: Sequence[object],
+    mime_types: Sequence[object],
+    max_bytes: int,
+) -> tuple[list[str], list[str], bool]:
+    kept: list[str] = []
+    kept_mime_types: list[str] = []
+    changed = False
+    for index, raw_path in enumerate(media_paths):
+        if not isinstance(raw_path, str):
+            changed = True
+            continue
+        try:
+            validate_media_size(Path(raw_path), max_bytes=max_bytes)
+        except FileNotFoundError:
+            kept.append(raw_path)
+        except ChannelMediaError as error:
+            logger.warning(
+                "Skipping WhatsApp inbound media for message %s: %s",
+                message.message_id,
+                error,
+            )
+            changed = True
+            continue
+        else:
+            kept.append(raw_path)
+        if index < len(mime_types):
+            mime_type = mime_types[index]
+            if isinstance(mime_type, str):
+                kept_mime_types.append(mime_type)
+    return kept, kept_mime_types, changed
+
+
+def _with_inbound_media_paths(
+    message: ChannelMessage,
+    *,
+    media_paths: list[str],
+    mime_types: list[str],
+    max_bytes: int,
+) -> ChannelMessage:
+    metadata = dict(message.metadata)
+    metadata["media_paths"] = media_paths
+    metadata["media_path"] = media_paths[0] if media_paths else None
+    metadata["media_mime_types"] = mime_types
+    metadata["media_types"] = mime_types
+    metadata["voice_path"] = (
+        media_paths[0] if media_paths and metadata.get("media_type") == "voice" else None
+    )
+    metadata["has_media"] = bool(media_paths)
+    if not media_paths:
+        metadata["media_error"] = f"all media files exceeded {max_bytes} bytes"
+    return ChannelMessage(
+        conversation_id=message.conversation_id,
+        text=message.text,
+        sender_id=message.sender_id,
+        message_id=message.message_id,
+        metadata=metadata,
     )
 
 

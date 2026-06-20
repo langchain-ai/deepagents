@@ -18,11 +18,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.channels.base import (
+    DEFAULT_MAX_MEDIA_BYTES,
     MAX_TEXT_CHARS,
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
     chunk_text,
+    max_media_bytes_from_env,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
@@ -77,6 +79,8 @@ class TelegramChannelConfig:
         poll_timeout_seconds: Long-polling timeout passed to getUpdates.
         poll_interval_seconds: Delay between getUpdates calls.
         request_timeout_seconds: Per-request HTTP timeout for Bot API calls.
+        max_media_bytes: Maximum media bytes allowed for inbound downloads and
+            outbound local files before provider-specific limits are applied.
         operator_id: Telegram user ID for the operator (self exposure mode).
         allowed_user_ids: Telegram user IDs allowed to trigger private chats in
             allowlist exposure mode.
@@ -91,6 +95,7 @@ class TelegramChannelConfig:
     poll_timeout_seconds: float = DEFAULT_POLL_TIMEOUT_SECONDS
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     operator_id: str | None = None
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
 
@@ -150,6 +155,7 @@ class TelegramChannelConfig:
                 env.get("DEEPAGENTS_TALON_TELEGRAM_REQUEST_TIMEOUT_SECONDS"),
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
+            max_media_bytes=max_media_bytes_from_env(env),
             operator_id=operator_id,
             allowed_user_ids=frozenset(
                 _split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
@@ -358,7 +364,11 @@ class TelegramChannel:
         Raises:
             ChannelMediaError: If the media is too large or invalid.
         """
-        checked = validate_media(media, root=self.config.outbound_media_dir)
+        checked = validate_media(
+            media,
+            root=self.config.outbound_media_dir,
+            max_bytes=self.config.max_media_bytes,
+        )
         _check_telegram_size(checked)
         caption = _escape_markdown_v2(checked.caption) if checked.caption else None
         if checked.media_type == "image":
@@ -524,11 +534,28 @@ class TelegramChannel:
         if self.config.inbound_media_dir is None:
             return message
 
-        destination = await self._download_inbound_media(
-            file_id,
-            media_type=media_type,
-            message_id=message.message_id,
-        )
+        try:
+            destination = await self._download_inbound_media(
+                file_id,
+                media_type=media_type,
+                message_id=message.message_id,
+            )
+        except ChannelMediaError as error:
+            logger.warning(
+                "Skipping Telegram inbound media for message %s: %s",
+                message.message_id,
+                error,
+            )
+            metadata = dict(message.metadata)
+            metadata["has_media"] = False
+            metadata["media_error"] = str(error)
+            return ChannelMessage(
+                conversation_id=message.conversation_id,
+                text=message.text,
+                sender_id=message.sender_id,
+                message_id=message.message_id,
+                metadata=metadata,
+            )
         metadata = dict(message.metadata)
         path = str(destination)
         metadata["has_media"] = True
@@ -570,6 +597,13 @@ class TelegramChannel:
         if not isinstance(file_path, str):
             msg = "Telegram getFile response missing file_path"
             raise TelegramError(msg)
+        file_size = result.get("file_size") if isinstance(result, dict) else None
+        if isinstance(file_size, int) and file_size > self.config.max_media_bytes:
+            msg = (
+                "Telegram media is too large: "
+                f"{file_size} bytes exceeds {self.config.max_media_bytes}"
+            )
+            raise ChannelMediaError(msg)
         if self.config.inbound_media_dir is None:
             msg = "Telegram inbound media directory is not configured"
             raise TelegramError(msg)
@@ -580,7 +614,13 @@ class TelegramChannel:
             suffix=suffix,
         )
         download_url = f"{self.config.api_base}/file/bot{self.config.bot_token}/{file_path}"
-        await asyncio.to_thread(_download_file, download_url, destination, self.timeout)
+        await asyncio.to_thread(
+            _download_file,
+            download_url,
+            destination,
+            self.timeout,
+            self.config.max_media_bytes,
+        )
         return destination
 
     @property
@@ -990,13 +1030,17 @@ def _largest_photo_file_id(photo_sizes: object) -> str | None:
     return file_id if isinstance(file_id, str) else None
 
 
-def _download_file(url: str, destination: Path, timeout: float) -> None:
+def _download_file(url: str, destination: Path, timeout: float, max_bytes: int) -> None:
     """Download a file from a URL to a local path.
 
     Args:
         url: Source URL.
         destination: Destination file path.
         timeout: Download timeout in seconds.
+        max_bytes: Maximum bytes to write before aborting.
+
+    Raises:
+        ChannelMediaError: If the remote file exceeds `max_bytes`.
     """
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     request = urllib.request.Request(url)  # noqa: S310  # URL constructed from Bot API config.
@@ -1004,7 +1048,26 @@ def _download_file(url: str, destination: Path, timeout: float) -> None:
         request,
         timeout=timeout,
     ) as response:
-        destination.write_bytes(response.read())
+        length = response.headers.get("content-length")
+        if length is not None:
+            try:
+                expected = int(length)
+            except ValueError:
+                expected = None
+            if expected is not None and expected > max_bytes:
+                msg = f"media file is too large: {expected} bytes exceeds {max_bytes}"
+                raise ChannelMediaError(msg)
+
+        total = 0
+        with destination.open("wb") as file:
+            while chunk := response.read(64 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    file.close()
+                    destination.unlink(missing_ok=True)
+                    msg = f"media file is too large: {total} bytes exceeds {max_bytes}"
+                    raise ChannelMediaError(msg)
+                file.write(chunk)
     destination.chmod(0o600)
 
 

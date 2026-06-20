@@ -4,12 +4,13 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
 
 import pytest
 
 import deepagents_talon.channels.telegram as telegram_module
 from deepagents_talon.channels.base import (
+    DEFAULT_MAX_MEDIA_BYTES,
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
@@ -21,6 +22,7 @@ from deepagents_talon.channels.telegram import (
     TelegramChannelConfig,
     TelegramError,
     TelegramTransport,
+    _download_file,
     _encode_multipart_form,
     _escape_markdown_v2,
     _load_offset,
@@ -179,7 +181,12 @@ def _make_config(
 
 
 def _stub_download(monkeypatch: pytest.MonkeyPatch) -> None:
-    def download(url: str, destination: Path, timeout: float) -> None:  # noqa: ARG001
+    def download(
+        _url: str,
+        destination: Path,
+        _timeout: float,
+        _max_bytes: int,
+    ) -> None:
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         destination.write_bytes(b"media-bytes")
         destination.chmod(0o600)
@@ -218,6 +225,23 @@ def test_config_from_talon_env_maps_telegram_values(tmp_path: Path) -> None:
     assert telegram.allowed_user_ids == frozenset({"777", "888"})
     assert telegram.poll_timeout_seconds == 45.0
     assert telegram.poll_interval_seconds == 2.0
+    assert telegram.max_media_bytes == DEFAULT_MAX_MEDIA_BYTES
+
+
+def test_config_from_talon_env_maps_max_media_bytes(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "secret-token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            "DEEPAGENTS_TALON_MAX_MEDIA_BYTES": "12345",
+        },
+        base_home=tmp_path,
+    )
+
+    telegram = TelegramChannelConfig.from_talon_config(config)
+
+    assert telegram.max_media_bytes == 12345
 
 
 def test_config_accepts_telegram_bot_token_alias(tmp_path: Path) -> None:
@@ -882,6 +906,97 @@ async def test_channel_parses_inbound_document(
     assert received[0].metadata["media_paths"] == [
         str(tmp_path / "telegram" / "media" / "10_doc123.pdf"),
     ]
+
+
+async def test_channel_skips_oversized_inbound_media_from_get_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OversizedGetFileTransport(RecordingTransport):
+        async def call(self, method: str, **params: object) -> object:
+            if method == "getFile":
+                self.calls.append((method, dict(params)))
+                return {
+                    "ok": True,
+                    "result": {
+                        "file_id": params.get("file_id"),
+                        "file_path": "documents/report.pdf",
+                        "file_size": 11,
+                    },
+                }
+            return await super().call(method, **params)
+
+    _stub_download(monkeypatch)
+    transport = OversizedGetFileTransport(
+        updates=[
+            _make_update(
+                update_id=10,
+                chat_id=111,
+                sender_id=111,
+                text="oversized",
+                document={"file_id": "doc123", "file_name": "report.pdf"},
+            ),
+        ],
+    )
+    config = TelegramChannelConfig(
+        bot_token="test-token",  # noqa: S106  # inert test token
+        session_dir=tmp_path / "telegram",
+        inbound_media_dir=tmp_path / "telegram" / "media",
+        outbound_media_dir=tmp_path,
+        exposure=ChannelExposure(operator_id="111"),
+        poll_interval_seconds=60,
+        poll_timeout_seconds=1,
+        max_media_bytes=10,
+    )
+    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await _wait_for_received(received, 1)
+    await channel.stop()
+
+    assert received[0].text == "oversized"
+    assert received[0].metadata["has_media"] is False
+    assert "media_error" in received[0].metadata
+    assert "media_paths" not in received[0].metadata
+    assert _load_offset(config.offset_file) == 11
+
+
+def test_download_file_aborts_when_stream_exceeds_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ChunkedResponse:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+            self.chunks = [b"abc", b"def"]
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:  # noqa: ARG002  # urllib-compatible fake
+            if not self.chunks:
+                return b""
+            return self.chunks.pop(0)
+
+    def fake_urlopen(request: object, *, timeout: float) -> ChunkedResponse:  # noqa: ARG001
+        return ChunkedResponse()
+
+    destination = tmp_path / "media.bin"
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(ChannelMediaError, match="exceeds 5"):
+        _download_file("https://example.com/file", destination, 1, 5)
+
+    assert not destination.exists()
 
 
 # --- Status tests ---

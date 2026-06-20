@@ -16,11 +16,14 @@ from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
 MAX_TEXT_CHARS = 4096
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
 MAX_VIDEO_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
+MAX_MEDIA_BYTES_ENV = "DEEPAGENTS_TALON_MAX_MEDIA_BYTES"
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
@@ -37,7 +40,7 @@ class ExposureMode(StrEnum):
 
 
 class ChannelMediaError(ValueError):
-    """Raised when outbound media cannot be sent safely."""
+    """Raised when channel media cannot be handled safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,13 +122,19 @@ def chunk_text(text: str, *, limit: int = MAX_TEXT_CHARS) -> list[str]:
     return chunks
 
 
-def validate_media(media: ChannelMedia, *, root: Path | None = None) -> ChannelMedia:
+def validate_media(
+    media: ChannelMedia,
+    *,
+    root: Path | None = None,
+    max_bytes: int | None = None,
+) -> ChannelMedia:
     """Validate outbound media path, type, and size.
 
     Args:
         media: Media payload to validate.
         root: Optional directory that must contain the media after symlink
             resolution.
+        max_bytes: Optional global media size cap.
 
     Returns:
         The validated media payload.
@@ -151,7 +160,60 @@ def validate_media(media: ChannelMedia, *, root: Path | None = None) -> ChannelM
         msg = f"media file type {detected!r} does not match requested type {media.media_type!r}"
         raise ChannelMediaError(msg)
 
+    return _validate_media_size(media, path=path, max_bytes=max_bytes)
+
+
+def validate_media_size(path: Path, *, max_bytes: int) -> None:
+    """Validate a local media file against the configured global cap.
+
+    Args:
+        path: Local media file to inspect.
+        max_bytes: Maximum allowed media file size.
+
+    Raises:
+        ChannelMediaError: If the file exceeds `max_bytes`.
+    """
+    size = path.stat().st_size
+    if size > max_bytes:
+        msg = f"media file is too large: {size} bytes exceeds {max_bytes}"
+        raise ChannelMediaError(msg)
+
+
+def max_media_bytes_from_env(env: Mapping[str, str]) -> int:
+    """Return the configured global media cap.
+
+    Args:
+        env: Environment variable mapping.
+
+    Returns:
+        Maximum media bytes allowed for channel media.
+
+    Raises:
+        ValueError: If the configured value is not a positive integer.
+    """
+    value = env.get(MAX_MEDIA_BYTES_ENV)
+    if value is None:
+        return DEFAULT_MAX_MEDIA_BYTES
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        msg = f"{MAX_MEDIA_BYTES_ENV} must be a positive integer byte count"
+        raise ValueError(msg) from error
+    if parsed < 1:
+        msg = f"{MAX_MEDIA_BYTES_ENV} must be a positive integer byte count"
+        raise ValueError(msg)
+    return parsed
+
+
+def _validate_media_size(
+    media: ChannelMedia,
+    *,
+    path: Path,
+    max_bytes: int | None = None,
+) -> ChannelMedia:
     limit = MAX_IMAGE_BYTES if media.media_type == "image" else MAX_VIDEO_BYTES
+    if max_bytes is not None:
+        limit = min(limit, max_bytes)
     size = path.stat().st_size
     if size > limit:
         msg = f"{media.media_type} media is too large: {size} bytes exceeds {limit}"

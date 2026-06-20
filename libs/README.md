@@ -17,4 +17,4 @@ partners/            # Provider integrations
 
 (Each package contains its own `README.md` file with specific details about that package.)
 
-For monorepo setup and the command reference, see [`DEVELOPMENT.md`](../DEVELOPMENT.md). For a high-level overview of the stack, see [`ARCHITECTURE.md`](../ARCHITECTURE.md).
+For monorepo setup and the command reference, see [`DEVELOPMENT.md`](DEVELOPMENT.md). For a high-level overview of the stack, see [`ARCHITECTURE.md`](ARCHITECTURE.md).

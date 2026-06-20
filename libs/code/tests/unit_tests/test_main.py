@@ -377,6 +377,122 @@ class TestStartupAutoUpdate:
         assert "automatic restart failed" in printed
         assert "Auto-update failed" not in printed
 
+    def test_restart_after_update_confirms_launched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The re-exec'd process rewrites `Launching...` to `Launched.`."""
+        console = MagicMock()
+        console.is_terminal = True
+        # The prior generation recorded the version it restarted into.
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, "9.9.9"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        # Sentinel is consumed so the confirmation only fires once.
+        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
+        # The prior line is erased via a control sequence, then reprinted.
+        console.control.assert_called_once()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Launched." in printed
+        assert "9.9.9" in printed
+
+    def test_restart_after_update_skips_rewrite_when_not_terminal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Redirected (non-terminal) output is not polluted with escape codes."""
+        console = MagicMock()
+        console.is_terminal = False
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, "9.9.9"),
+            ),
+            patch("deepagents_code.main._restart_current_process"),
+        ):
+            _run_startup_auto_update(console)
+
+        console.control.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Launched." not in printed
+
+    def test_failed_restart_does_not_confirm_launched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A re-exec that did not change the version must not claim `Launched.`."""
+        console = MagicMock()
+        console.is_terminal = True
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            # The install did not change the running version.
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        restart.assert_not_called()
+        console.control.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Launched." not in printed
+
     def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
         """`cli_main` must invoke the startup auto-update on interactive launch.
 

@@ -129,6 +129,39 @@ def _restart_current_process() -> NoReturn:
     raise RuntimeError(msg)
 
 
+def _confirm_launch_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+
+    The `Updated to v{version}. Launching...` line is printed by the previous
+    generation right before `os.execv`; this runs in the re-exec'd process to
+    retroactively confirm the launch once the new version is actually running.
+
+    The in-place rewrite is attempted only on a real terminal: `os.execv` does
+    nothing between that print and this process's first output, so the cursor
+    is parked on the line directly below it. On non-terminals the escape codes
+    would corrupt redirected output, so the line is left as-is.
+
+    Args:
+        console: The Rich console used for startup output.
+        version: The version now running, used in the confirmation line.
+    """
+    if not console.is_terminal:
+        return
+    from rich.control import Control
+    from rich.segment import ControlType
+
+    # Move up onto the "Launching..." line, return to column 0, erase it, then
+    # reprint the same line with the resolved status.
+    console.control(
+        Control(
+            (ControlType.CURSOR_UP, 1),
+            (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+            (ControlType.ERASE_IN_LINE, 2),
+        )
+    )
+    console.print(f"[green]Updated to v{version}. Launched.[/green]")
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -168,6 +201,10 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+            # The re-exec landed on the upgraded version, so the prior
+            # "Launching..." line is now accurate as "Launched.".
+            _confirm_launch_after_restart(console, restarted_for)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return

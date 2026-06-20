@@ -463,8 +463,11 @@ class TestStartupAutoUpdate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Redirected (non-terminal) output is not polluted with escape codes."""
-        console = MagicMock()
-        console.is_terminal = False
+        stream = StringIO()
+        # `force_terminal=False` makes `is_terminal` report False, exactly as a
+        # redirected stream (pipe/file) would. Asserting on the real stream
+        # proves no escape bytes reach redirected output, end-to-end.
+        console = Console(file=stream, force_terminal=False, no_color=True, width=80)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
 
         with (
@@ -489,9 +492,9 @@ class TestStartupAutoUpdate:
         ):
             _run_startup_auto_update(console)
 
-        console.control.assert_not_called()
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "Launched." not in printed
+        output = stream.getvalue()
+        assert "\x1b" not in output
+        assert "Launched." not in output
 
     def test_failed_restart_does_not_confirm_launched(
         self, monkeypatch: pytest.MonkeyPatch
@@ -533,6 +536,123 @@ class TestStartupAutoUpdate:
         console.control.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Launched." not in printed
+
+    def test_version_check_failure_skips_confirm_in_isolation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The confirm must be gated solely by `is_installed_version_at_least`.
+
+        With nothing available (`(False, None)`) the function returns before the
+        restart-loop guard, so the only path that could print `Launched.` is the
+        confirm block. This pins the `is_installed_version_at_least(restarted_for)`
+        condition: dropping it would let the confirm fire here and fail the test.
+        """
+        stream = StringIO()
+        console = Console(file=stream, force_terminal=True, no_color=True, width=80)
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            # The re-exec did not land on the recorded version.
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, None),
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        restart.assert_not_called()
+        output = stream.getvalue()
+        assert "\x1b[1A" not in output
+        assert "Launched." not in output
+
+    def test_confirm_launched_then_continues_to_available_update(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming the prior launch must not short-circuit a newer update.
+
+        The sentinel is an older version (now running), while a newer version is
+        available: the function should both rewrite the prior line to `Launched.`
+        and proceed into the upgrade path for the newer version.
+        """
+        stream = StringIO()
+        console = Console(file=stream, force_terminal=True, no_color=True, width=80)
+        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.8")
+        upgrade = AsyncMock(return_value=(True, ""))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            # The running version satisfies the prior restart (9.9.8) but not the
+            # newly available 9.9.9, so the upgrade path must still run.
+            patch(
+                "deepagents_code.update_check.is_installed_version_at_least",
+                side_effect=lambda version: version == "9.9.8",
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ) as restart,
+            pytest.raises(SystemExit),
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_called_once_with()
+        output = stream.getvalue()
+        # The prior launch is confirmed for the running version...
+        assert "v9.9.8. Launched." in output
+        # ...and the newer version still goes through the upgrade path.
+        assert "v9.9.9. Launching..." in output
+
+    def test_terminal_row_count_single_row(self) -> None:
+        """Text that fits on one line counts as a single row."""
+        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=80)
+        assert _terminal_row_count(console, "abc") == 1
+
+    def test_terminal_row_count_wraps_to_multiple_rows(self) -> None:
+        """Text wider than the pane counts each wrapped row."""
+        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
+        # 20 characters at width 10 wraps to exactly 2 rows.
+        assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2
+
+    def test_terminal_row_count_floors_at_one(self) -> None:
+        """Empty text still reports one row, never zero."""
+        console = Console(file=StringIO(), force_terminal=True, no_color=True, width=80)
+        assert _terminal_row_count(console, "") == 1
 
     def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
         """`cli_main` must invoke the startup auto-update on interactive launch.

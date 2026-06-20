@@ -1,8 +1,6 @@
 # CLI Development Guide
 
-`deepagents-cli` now contains only the deployment subcommands (`init`, `dev`,
-`deploy`). For interactive-REPL development guidance, see
-[`libs/code/DEVELOPMENT.md`](../code/DEVELOPMENT.md).
+`deepagents-cli` now contains only the deployment subcommands (`init`, `dev`, `deploy`). For interactive-REPL/headless coding agent (`deepagents-code`/`dcode`) development guidance, see [`libs/code/DEVELOPMENT.md`](../code/DEVELOPMENT.md).
 
 ## Local setup
 
@@ -25,20 +23,15 @@ make test       # unit tests (no network)
 make lint       # ruff + ty
 ```
 
-Integration tests in `tests/integration_tests/` exercise the LangSmith Hub
-seeding path and require `LANGSMITH_API_KEY` to be set.
+Integration tests in `tests/integration_tests/` exercise the LangSmith Hub seeding path and require `LANGSMITH_API_KEY` to be set.
 
 ## `langgraph` subcommand interop
 
-`dev` and `deploy` shell out to the `langgraph` CLI (`langgraph-cli[inmem]`
-runtime dependency). When debugging dev-server startup failures, run the
-generated command manually from the build directory printed by
-`print_bundle_summary`:
+`dev` and `deploy` shell out to the `langgraph` CLI (`langgraph-cli[inmem]` runtime dependency). When debugging dev-server startup failures, run the generated command manually from the build directory printed by `print_bundle_summary`:
 
 ```bash
 cd /tmp/deepagents-dev-XXXX
 langgraph dev --port 2024 --allow-blocking
 ```
 
-The bundle is self-contained — re-running `langgraph dev` from the build
-directory reproduces the failure without re-bundling.
+The bundle is self-contained — re-running `langgraph dev` from the build directory reproduces the failure without re-bundling.

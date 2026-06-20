@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import binascii
 import concurrent.futures
 import contextlib
 import contextvars
@@ -78,8 +79,6 @@ from deepagents.middleware._message_eviction import (
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
     VideoExtractionError,
-    _select_duration as _select_video_duration,
-    _select_sampling_rate as _select_video_sampling_rate,
     extract_video_frames,
 )
 
@@ -104,6 +103,11 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 _VIDEO_DEFAULT_LIMIT_SECONDS = 100
 
 
+def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
+    """Build a success-shaped `ToolMessage` carrying a plain text error."""
+    return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
 def _handle_video_read(
     content: str,
     validated_path: str,
@@ -114,39 +118,30 @@ def _handle_video_read(
 ) -> ToolMessage:
     """Slice a video byte payload into a sampled frame window for the model.
 
-    The agent's `offset` is reinterpreted as seconds to skip into the
-    source, and `limit` as seconds of source to sample. The agent's
-    supplied `limit` is authoritative — there is no per-call upper clamp on
-    it. When `limit` is omitted or non-positive, the fallback is
-    `_VIDEO_DEFAULT_LIMIT_SECONDS`. Output volume is still bounded by the
-    layered caps on the extractor (`MAX_VIDEO_DECODE_SECONDS`,
-    `MAX_VIDEO_SAMPLED_FRAMES`, `MAX_VIDEO_EMITTED_BYTES`,
-    `MAX_VIDEO_FRAME_PIXELS`, `MAX_VIDEO_FRAME_SIDE`).
+    `offset` is reinterpreted as seconds into the source to skip; `limit` as
+    seconds of source to sample. The agent's supplied `limit` is authoritative
+    (no per-call upper clamp); omitting it falls back to
+    `_VIDEO_DEFAULT_LIMIT_SECONDS` and supplying a non-positive value is
+    rejected as a tool error. Output volume is bounded by the layered caps on
+    the extractor (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
+    `MAX_VIDEO_EMITTED_BYTES`, `MAX_VIDEO_FRAME_PIXELS`, `MAX_VIDEO_FRAME_SIDE`).
 
-    Errors are returned as success-shaped `ToolMessage` instances carrying
-    a plain text error, so the turn still completes and the agent can
-    recover (e.g. by retrying with a smaller window).
+    Errors are returned as `ToolMessage` errors so the turn still completes and
+    the agent can recover (e.g. by retrying with a smaller window).
     """
-    rate = _select_video_sampling_rate(sampling_rate)
+    if limit is not None and limit <= 0:
+        return _tool_error("read_file", tool_call_id, f"Error reading video {validated_path}: limit must be > 0, got {limit!r}")
+    rate = float(sampling_rate)
     offset_seconds = max(0.0, float(offset))
-    if limit is None or limit <= 0:
-        duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS)
-        header = f"Reading first {int(duration_seconds)}s of {validated_path} at {rate} fps."
-    else:
-        duration_seconds = _select_video_duration(float(limit))
-        header = f"Reading [{offset_seconds:.3f}s, {offset_seconds + duration_seconds:.3f}s) of {validated_path} at {rate} fps."
+    duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS if limit is None else limit)
+    header = _video_window_header(validated_path, offset_seconds, duration_seconds, rate)
 
     def _err(msg: str) -> ToolMessage:
-        return ToolMessage(
-            content=f"Error reading video {validated_path}: {msg}\n{header}",
-            name="read_file",
-            tool_call_id=tool_call_id,
-            status="error",
-        )
+        return _tool_error("read_file", tool_call_id, f"Error reading video {validated_path}: {msg}\n{header}")
 
     try:
-        raw_bytes = base64.b64decode(content) if isinstance(content, str) else content
-    except (ValueError, TypeError) as exc:
+        raw_bytes = base64.b64decode(content, validate=True) if isinstance(content, str) else content
+    except (ValueError, TypeError, binascii.Error) as exc:
         return _err(f"video bytes are not valid base64 ({exc})")
 
     try:
@@ -158,15 +153,22 @@ def _handle_video_read(
         )
     except VideoExtractionError as exc:
         return _err(str(exc))
-    else:
-        blocks.insert(0, {"type": "text", "text": header})
-        return ToolMessage(
-            content_blocks=blocks,
-            name="read_file",
-            tool_call_id=tool_call_id,
-            additional_kwargs={"read_file_path": validated_path},
-            status="success",
-        )
+    blocks.insert(0, {"type": "text", "text": header})
+    return ToolMessage(
+        content_blocks=blocks,
+        name="read_file",
+        tool_call_id=tool_call_id,
+        additional_kwargs={"read_file_path": validated_path},
+        status="success",
+    )
+
+
+def _video_window_header(path: str, offset_seconds: float, duration_seconds: float, rate: float) -> str:
+    """Render the model-facing text header introducing a sampled frame window."""
+    end = offset_seconds + duration_seconds
+    if offset_seconds <= 0.0:
+        return f"Reading first {int(duration_seconds)}s of {path} at {rate} fps."
+    return f"Reading [{offset_seconds:.3f}s, {end:.3f}s) of {path} at {rate} fps."
 
 
 def _emit_binary_block(
@@ -487,12 +489,12 @@ class ReadFileSchema(BaseModel):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading text files from (0-indexed), or seconds to skip into video files.",
+        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
     )
 
     limit: int | None = Field(
         default=None,
-        description="Maximum number of text lines to read, or video seconds to sample. Omit to use the default window.",
+        description="Maximum number of lines to read for text files. Omit to use the default window.",
     )
 
 
@@ -584,8 +586,7 @@ Usage:
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
 - For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
-- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default 100 s, no upper clamp — set `limit` explicitly to widen the window). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps). Use `offset` to read later windows.
-- Sandbox-backed video reads currently inherit the backend's binary preview size cap; larger sandbox videos require follow-up backend work.
+- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampling rate configured on `FilesystemMiddleware`). Detailed semantics live in the deepagents docs.
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -1322,35 +1323,40 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 status="success",
             )
 
+        def _resolve_read_inputs(
+            file_path: str,
+            tool_call_id: str | None,
+            limit: int | None,
+        ) -> tuple[str, int] | ToolMessage:
+            """Validate path + permission and resolve the effective backend limit.
+
+            Returns `(validated_path, backend_limit)` on success or a ready-to-
+            return `ToolMessage` error.
+            """
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return _tool_error("read_file", tool_call_id, f"Error: {e}")
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return _tool_error("read_file", tool_call_id, f"Error: permission denied for read on {validated_path}")
+            return validated_path, DEFAULT_READ_LIMIT if limit is None else limit
+
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[
                 int | None,
-                "Maximum number of lines to read for text files. Omit to use the default window: 100 text lines or 30 video seconds.",
+                "Maximum number of lines to read for text files. Omit to use the default window.",
             ] = None,
         ) -> ToolMessage:
             """Synchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
-            try:
-                validated_path = validate_path(file_path)
-            except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
-            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
-                return ToolMessage(
-                    content=f"Error: permission denied for read on {validated_path}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
-            backend_limit = DEFAULT_READ_LIMIT if limit is None else limit
-            read_result = resolved_backend.read(validated_path, offset=offset, limit=backend_limit)
+            backend = self._get_backend(runtime)
+            prepared = _resolve_read_inputs(file_path, runtime.tool_call_id, limit)
+            if isinstance(prepared, ToolMessage):
+                return prepared
+            validated_path, backend_limit = prepared
+            read_result = backend.read(validated_path, offset=offset, limit=backend_limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
@@ -1359,29 +1365,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[
                 int | None,
-                "Maximum number of lines to read for text files. Omit to use the default window: 100 text lines or 30 video seconds.",
+                "Maximum number of lines to read for text files. Omit to use the default window.",
             ] = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for read_file tool."""
-            resolved_backend = self._get_backend(runtime)
-            try:
-                validated_path = validate_path(file_path)
-            except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
-            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
-                return ToolMessage(
-                    content=f"Error: permission denied for read on {validated_path}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                )
-            backend_limit = DEFAULT_READ_LIMIT if limit is None else limit
-            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=backend_limit)
+            backend = self._get_backend(runtime)
+            prepared = _resolve_read_inputs(file_path, runtime.tool_call_id, limit)
+            if isinstance(prepared, ToolMessage):
+                return prepared
+            validated_path, backend_limit = prepared
+            read_result = await backend.aread(validated_path, offset=offset, limit=backend_limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(

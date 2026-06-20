@@ -27,7 +27,7 @@ else:
     ContentBlock = dict  # only used at runtime by the agent runtime
 
 
-MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `pip install 'deepagents[video]'`."
+MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `uv add 'deepagents[video]'`."
 MAX_VIDEO_SAMPLED_FRAMES: Final = 64
 MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
 MAX_VIDEO_FRAME_SIDE: Final = 4096
@@ -140,7 +140,7 @@ def extract_video_frames(
             _sample_frames_in_window(
                 container.decode(video_stream),
                 offset_seconds=offset_seconds,
-                duration_seconds=duration,
+                duration_seconds=float(duration),
                 sampling_rate=rate,
                 time_base=time_base,
                 stream_start_seconds=stream_start_seconds,
@@ -258,8 +258,7 @@ def _sample_frames_in_window(
 ) -> list[ContentBlock]:
     """Pick JPEG+timestamp content blocks for frames inside the requested window."""
     frame_interval_seconds = 1.0 / sampling_rate
-    duration = _select_duration(duration_seconds)
-    end_seconds = offset_seconds + duration
+    end_seconds = offset_seconds + float(duration_seconds)
     next_emit_seconds = offset_seconds
     blocks: list[ContentBlock] = []
     emitted_frames = 0

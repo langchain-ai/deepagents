@@ -161,13 +161,18 @@ def test_sample_frames_normalizes_non_zero_stream_start(monkeypatch: pytest.Monk
     ]
 
 
-def test_sample_frames_caps_requested_duration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Huge requested windows are capped before sampling frames."""
+def test_sample_frames_does_not_cap_requested_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Huge requested windows are passed through unchanged.
+
+    Output is still bounded by the layered output caps (`MAX_VIDEO_SAMPLED_FRAMES`,
+    etc.); the agent's `limit` is the only authority on how much of the source is
+    sampled.
+    """
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
-    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLE_DURATION_SECONDS", 2.0)
+    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 2)
 
     blocks = video_module._sample_frames_in_window(
-        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
+        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
         offset_seconds=0,
         duration_seconds=999,
         sampling_rate=1,
@@ -175,6 +180,8 @@ def test_sample_frames_caps_requested_duration(monkeypatch: pytest.MonkeyPatch) 
     )
 
     headers = [block["text"] for block in blocks if block["type"] == "text"]
+    # Three frames fit inside the 999 s window without being silently clamped;
+    # only the frame-count cap (`MAX_VIDEO_SAMPLED_FRAMES = 2`) trims the output.
     assert headers == ["Frame at t=00:00:00.000", "Frame at t=00:00:01.000"]
 
 

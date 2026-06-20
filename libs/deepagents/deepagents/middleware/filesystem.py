@@ -77,7 +77,6 @@ from deepagents.middleware._message_eviction import (
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
-    MAX_VIDEO_SAMPLE_DURATION_SECONDS,
     VideoExtractionError,
     _select_duration as _select_video_duration,
     _select_sampling_rate as _select_video_sampling_rate,
@@ -99,8 +98,10 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "delete": "write",
 }
 
-# Reinterpret offset/limit as seconds for video reads.
-_VIDEO_DEFAULT_LIMIT_SECONDS = MAX_VIDEO_SAMPLE_DURATION_SECONDS
+# Reinterpret offset/limit as seconds for video reads. The agent's `limit`
+# is authoritative; this is only the fallback when the agent omits the
+# argument. Mirrors `DEFAULT_READ_LIMIT` (the text-read default).
+_VIDEO_DEFAULT_LIMIT_SECONDS = 100
 
 
 def _handle_video_read(
@@ -114,9 +115,13 @@ def _handle_video_read(
     """Slice a video byte payload into a sampled frame window for the model.
 
     The agent's `offset` is reinterpreted as seconds to skip into the
-    source, and `limit` as seconds of source to sample. Missing `offset`/
-    `limit` fall back to reading from the start of the source up to
-    `_VIDEO_DEFAULT_LIMIT_SECONDS`.
+    source, and `limit` as seconds of source to sample. The agent's
+    supplied `limit` is authoritative — there is no per-call upper clamp on
+    it. When `limit` is omitted or non-positive, the fallback is
+    `_VIDEO_DEFAULT_LIMIT_SECONDS`. Output volume is still bounded by the
+    layered caps on the extractor (`MAX_VIDEO_DECODE_SECONDS`,
+    `MAX_VIDEO_SAMPLED_FRAMES`, `MAX_VIDEO_EMITTED_BYTES`,
+    `MAX_VIDEO_FRAME_PIXELS`, `MAX_VIDEO_FRAME_SIDE`).
 
     Errors are returned as success-shaped `ToolMessage` instances carrying
     a plain text error, so the turn still completes and the agent can
@@ -579,7 +584,7 @@ Usage:
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
 - For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
-- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default and maximum `limit=30` reads a 30-second window). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps). Use `offset` to read later windows.
+- For videos, `offset` is interpreted as seconds into the source to skip, `limit` as seconds of source to sample (default 100 s, no upper clamp — set `limit` explicitly to widen the window). Frames are sampled at the rate configured by `FilesystemMiddleware(video_sampling_rate=...)` (default 0.5 fps). Use `offset` to read later windows.
 - Sandbox-backed video reads currently inherit the backend's binary preview size cap; larger sandbox videos require follow-up backend work.
 - If file details were compacted from history, call `read_file` again on the same path
 

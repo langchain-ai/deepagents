@@ -28,7 +28,6 @@ else:
 
 
 MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `pip install 'deepagents[video]'`."
-MAX_VIDEO_SAMPLE_DURATION_SECONDS: Final = 30.0
 MAX_VIDEO_SAMPLED_FRAMES: Final = 64
 MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
 MAX_VIDEO_FRAME_SIDE: Final = 4096
@@ -68,11 +67,18 @@ def _select_sampling_rate(value: float) -> float:
 
 
 def _select_duration(value: float) -> float:
-    """Validate and cap the requested video sampling window."""
+    """Validate the agent-supplied video window length.
+
+    The agent's `limit` is authoritative over how much of the source is
+    sampled; this function only checks that the request is positive. Bounds
+    on emitted output are enforced elsewhere in the pipeline
+    (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
+    `MAX_VIDEO_EMITTED_BYTES`).
+    """
     if value <= 0:
         msg = f"duration_seconds must be > 0, got {value!r}"
         raise ValueError(msg)
-    return min(float(value), MAX_VIDEO_SAMPLE_DURATION_SECONDS)
+    return float(value)
 
 
 def _format_timestamp(seconds: float) -> str:

@@ -1563,7 +1563,7 @@ class TestFilesystemMiddleware:
         assert call["len"] == len(b"\x00\x01\x02 fake video bytes")
 
     def test_read_file_video_offset_and_limit_reinterpreted_as_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`offset` skips into the source and oversized video windows are capped."""
+        """`offset` skips into the source and the agent-supplied `limit` is authoritative."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
@@ -1585,15 +1585,15 @@ class TestFilesystemMiddleware:
             {
                 "file_path": "/c.mp4",
                 "offset": 12,  # -> seek 12 seconds into the source
-                "limit": 90,  # -> sample a capped 30-second window
+                "limit": 90,  # -> sample a 90-second window, no per-call clamp
                 "runtime": runtime,
             }
         )
 
-        assert captured == {"offset_seconds": 12.0, "duration_seconds": 30.0, "sampling_rate": 0.5}
+        assert captured == {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5}
 
     def test_read_file_video_omitted_limit_uses_video_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Omitting `limit` samples the first 30 seconds for video reads."""
+        """Omitting `limit` samples the first 100 seconds (video default) for video reads."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):  # type: ignore[override]
@@ -1618,7 +1618,7 @@ class TestFilesystemMiddleware:
             }
         )
 
-        assert captured == {"offset_seconds": 0.0, "duration_seconds": 30.0, "sampling_rate": 0.5}
+        assert captured == {"offset_seconds": 0.0, "duration_seconds": 100.0, "sampling_rate": 0.5}
 
     def test_read_file_video_extraction_error_surfaces_as_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PyAV failures and missing-dep errors render as a tool error, not an exception."""

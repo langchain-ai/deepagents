@@ -2,7 +2,7 @@
 
 `deepagents-cli` now contains only the deployment subcommands (`init`, `dev`,
 `deploy`). For interactive-REPL development guidance, see
-[`libs/code/DEV.md`](../code/DEV.md).
+[`libs/code/DEVELOPMENT.md`](../code/DEVELOPMENT.md).
 
 ## Local setup
 

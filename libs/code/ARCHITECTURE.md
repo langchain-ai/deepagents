@@ -1,10 +1,8 @@
 # Deep Agents Code Architecture
 
-A map of how `deepagents-code` (the `dcode` TUI) fits together. Intentionally high-level — file-level details live in module docstrings.
-
 ## What this package is
 
-`deepagents-code` is a terminal coding agent (think Claude Code / Cursor in the shell) built on top of the `deepagents` SDK. At its core is a pre-built `create_deep_agent` configuration — a ready-to-run coding agent that other applications can import and reuse — assembled from the SDK's harness, backends, and middleware (memory, skills, and more). Around that core, this package adds an interactive Textual UI, a headless mode, conversation persistence, MCP integration, slash commands, and remote sandboxes.
+`deepagents-code` is a terminal coding agent (think Claude Code / Cursor in the shell) built on top of the `deepagents` SDK. At its core is a pre-built `create_deep_agent` configuration — a ready-to-run coding agent that other applications can import and reuse — assembled from the SDK's harness, backends, and middleware (memory, skills, and more). Around that core, this package adds an interactive Textual UI, a headless mode, conversation persistence, MCP integration, commands, hooks, and remote sandboxes.
 
 ## The big picture
 
@@ -40,7 +38,7 @@ A key thing to internalize: the UI and the agent run in **two different processe
 
 ### Why the subprocess?
 
-The agent graph is served by `langgraph dev` so the client gets LangGraph's streaming, checkpointing, and state management "for free" via `RemoteGraph`. The cost is a process boundary: when the agent crashes at startup, the client only sees a one-line banner — the real traceback is in the subprocess's captured log. Debugging that boundary (the `DEEPAGENTS_CODE_DEBUG` env var, the `deepagents_server_log_*.txt` files, the triage flow) is documented in [`DEV.md`](./DEV.md). Read that section before debugging a "server failed to start" report.
+The agent graph is served by `langgraph dev` so the client gets LangGraph's streaming, checkpointing, and state management "for free" via `RemoteGraph`. The cost is a process boundary: when the agent crashes at startup, the client only sees a one-line banner — the real traceback is in the subprocess's captured log. Debugging that boundary (the `DEEPAGENTS_CODE_DEBUG` env var, the `deepagents_server_log_*.txt` files, the triage flow) is documented in [`DEVELOPMENT.md`](./DEVELOPMENT.md). Read that section before debugging a "server failed to start" report.
 
 ## Request lifecycle (interactive)
 
@@ -113,7 +111,7 @@ User and project state lives under `~/.deepagents/`, with user instructions, cus
 ## Conventions & where to look
 
 - **Textual footguns** (Content vs Rich Text, `notify(markup=True)` crashes, glyph/spinner sourcing, modal/worker rules) — [`AGENTS.md`](./AGENTS.md). Read it before touching `app.py` or `widgets/`.
-- **Local dev, debugging, CSS hot-reload** — [`DEV.md`](./DEV.md).
+- **Local dev, debugging, CSS hot-reload** — [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 - **Slash commands** are declared once in `command_registry.py`; regenerate [`COMMANDS.md`](./COMMANDS.md) with `make commands-catalog`.
 - **SDK coupling**: `pyproject.toml` pins an exact `deepagents==X.Y.Z`. Bump it in the same PR as features that need new SDK behavior.
 - **Security model** for tool execution / untrusted content — [`THREAT_MODEL.md`](./THREAT_MODEL.md).
@@ -130,5 +128,5 @@ User and project state lives under `~/.deepagents/`, with user instructions, cus
 | Add a sandbox backend | `integrations/` (`sandbox_registry.py`) |
 | Change the system prompt | `system_prompt.md` / `default_agent_prompt.md` |
 | Touch agent graph / middleware | `agent.py`, `server_graph.py` |
-| Debug a startup crash | `DEV.md` → `DEEPAGENTS_CODE_DEBUG=1` |
+| Debug a startup crash | `DEVELOPMENT.md` → `DEEPAGENTS_CODE_DEBUG=1` |
 | Add a model provider | `model_config.py`, `pyproject.toml` extras |

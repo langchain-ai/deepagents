@@ -482,7 +482,7 @@ The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_
 
 ### Overriding a Merged Commit's Changelog Entry
 
-Append a `BEGIN_COMMIT_OVERRIDE` block to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
+Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
 
 Two situations call for this:
 

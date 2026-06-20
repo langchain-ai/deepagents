@@ -129,6 +129,62 @@ def _restart_current_process() -> NoReturn:
     raise RuntimeError(msg)
 
 
+def _terminal_row_count(console: "Console", text: str) -> int:
+    """Return how many terminal rows Rich renders for `text`.
+
+    Args:
+        console: The Rich console whose current width determines wrapping.
+        text: The string to measure, rendered with no markup.
+
+    Returns:
+        The number of visual rows Rich wraps `text` into, at least 1.
+    """
+    from rich.text import Text
+
+    return max(1, len(console.render_lines(Text(text), console.options)))
+
+
+def _confirm_launch_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+
+    The `Updated to v{version}. Launching...` line is printed by the previous
+    generation right before `os.execv`; this runs in the re-exec'd process to
+    retroactively confirm the launch once the new version is actually running.
+
+    The in-place rewrite is attempted only on a real terminal: `os.execv` does
+    nothing between that print and this process's first output, so the cursor
+    is parked on the line directly below it. On non-terminals the escape codes
+    would corrupt redirected output, so the line is left as-is.
+
+    The row count is recomputed against the current terminal width, so a resize
+    during the upgrade/re-exec window could make the erase loop clear the wrong
+    number of wrapped rows. This is a benign visual glitch (no exception), and
+    is rare enough not to warrant defending against here.
+
+    Args:
+        console: The Rich console used for startup output.
+        version: The version now running, used in the confirmation line.
+    """
+    if not console.is_terminal:
+        return
+    from rich.control import Control
+    from rich.segment import ControlType
+
+    launch_status = f"Updated to v{version}. Launching..."
+    launch_rows = _terminal_row_count(console, launch_status)
+    # Move up to the bottom row of the old status and erase each rendered row.
+    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
+    for _ in range(launch_rows):
+        console.control(
+            Control(
+                (ControlType.CURSOR_UP, 1),
+                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                (ControlType.ERASE_IN_LINE, 2),
+            )
+        )
+    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -168,6 +224,18 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+            # The re-exec landed on the upgraded version, so the prior
+            # "Launching..." line is now accurate as "Launched.".
+            try:
+                _confirm_launch_after_restart(console, restarted_for)
+            except Exception:
+                # The upgrade already succeeded; this rewrite is purely
+                # cosmetic. Swallow rendering glitches with their own guard so
+                # the outer fail-soft handler does not misreport a successful
+                # upgrade as "Auto-update failed". The prior "Launching..."
+                # line simply stays.
+                logger.debug("Post-restart launch confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
@@ -236,7 +304,10 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
-            console.print(f"[green]Updated to v{latest}. Launching...[/green]")
+            console.print(
+                f"[green]Updated to v{latest}. Launching...[/green]",
+                highlight=False,
+            )
             # Record the target version so the re-exec'd process can detect a
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest

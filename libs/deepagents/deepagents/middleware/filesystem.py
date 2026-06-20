@@ -57,7 +57,6 @@ from deepagents.backends.protocol import (
     execute_accepts_timeout,
 )
 from deepagents.backends.sandbox import (
-    _EXECUTE_CAPTURE_TRUNC,
     BaseSandbox,
     _build_capture_execute_cmd,
     _parse_capture_execute_output,
@@ -1729,8 +1728,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         status_line = f"[Command {cmd_status} with exit code {result.exit_code}]"
         if result.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
-        preview = result.output.replace(_EXECUTE_CAPTURE_TRUNC, "... [middle truncated] ...")
-        content_sample = f"{status_line}\n{preview}"
+        content_sample = f"{status_line}\n{result.output}"
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,

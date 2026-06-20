@@ -586,9 +586,8 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
 """First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
 
-_EXECUTE_CAPTURE_TRUNC: Final = "__DEEPAGENTS_EXEC_TRUNC__"
-"""In-preview marker between the head and tail of an offloaded result."""
-
+_EXECUTE_CAPTURE_HEAD_LINES: Final = 5
+_EXECUTE_CAPTURE_TAIL_LINES: Final = 5
 _EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
 _EXECUTE_CAPTURE_TAIL_BYTES: Final = 2000
 
@@ -629,10 +628,17 @@ if [ "$__da_bytes" -le __BUDGET__ ]; then
   cat "$__da_f"
   rm -f "$__da_f"
 else
+  __da_lines=$(wc -l < "$__da_f" 2>/dev/null | tr -d ' ')
+  : "${__da_lines:=0}"
+  __da_omitted=$((__da_lines - __HEADLINES__ - __TAILLINES__))
   printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped"
-  head -c __HEAD__ "$__da_f"
-  printf '\\n%s\\n' '__TRUNC__'
-  tail -c __TAIL__ "$__da_f"
+  if [ "$__da_omitted" -gt 0 ]; then
+    head -c __HEAD__ "$__da_f" | head -n __HEADLINES__
+    printf '... [%s lines truncated] ...\\n' "$__da_omitted"
+    tail -c __TAIL__ "$__da_f" | tail -n __TAILLINES__
+  else
+    head -c $((__HEAD__ + __TAIL__)) "$__da_f"
+  fi
 fi
 """
 """Pure POSIX sh wrapper for capture-at-source `execute`. See the comment above."""
@@ -655,9 +661,10 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
         .replace("__MAXBYTES__", str(_EXECUTE_CAPTURE_MAX_BYTES))
         .replace("__BUDGET__", str(inline_budget))
         .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
+        .replace("__HEADLINES__", str(_EXECUTE_CAPTURE_HEAD_LINES))
+        .replace("__TAILLINES__", str(_EXECUTE_CAPTURE_TAIL_LINES))
         .replace("__HEAD__", str(_EXECUTE_CAPTURE_HEAD_BYTES))
         .replace("__TAIL__", str(_EXECUTE_CAPTURE_TAIL_BYTES))
-        .replace("__TRUNC__", _EXECUTE_CAPTURE_TRUNC)
         .replace("__COMMAND__", command)
     )
 

@@ -13,6 +13,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
@@ -49,6 +50,11 @@ def main() -> None:
         action="store_true",
         help="Attach the WhatsApp channel adapter.",
     )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Attach the Telegram channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
@@ -64,7 +70,7 @@ def main() -> None:
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channels = _channels(config, enabled=args.whatsapp)
+    channels = _channels(config, whatsapp=args.whatsapp, telegram=args.telegram)
     host = TalonHost(
         config=config,
         agent=asyncio.run(_agent_runtime(config, cron_store)),
@@ -186,14 +192,26 @@ async def _run_once(host: TalonHost) -> None:
     await host.stop()
 
 
-def _channels(config: TalonConfig, *, enabled: bool) -> tuple[ChannelAdapter, ...]:
-    if not enabled and config.env.get("DEEPAGENTS_TALON_WHATSAPP_ENABLED", "").lower() not in {
+def _channels(
+    config: TalonConfig,
+    *,
+    whatsapp: bool = False,
+    telegram: bool = False,
+) -> tuple[ChannelAdapter, ...]:
+    channels: list[ChannelAdapter] = []
+    if whatsapp or config.env.get("DEEPAGENTS_TALON_WHATSAPP_ENABLED", "").lower() in {
         "1",
         "true",
         "yes",
     }:
-        return ()
-    return (WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)),)
+        channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
+    if telegram or config.env.get("DEEPAGENTS_TALON_TELEGRAM_ENABLED", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
+    return tuple(channels)
 
 
 def _runtime_env(config: TalonConfig) -> dict[str, str]:

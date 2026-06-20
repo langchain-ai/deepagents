@@ -4308,6 +4308,105 @@ class TestMessageTimestampFooters:
             footer = app.query_one("#msg-start-timestamp-footer", Static)
             assert footer.display is True
 
+    async def test_footers_render_for_restored_thread_history(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restoring an old thread builds visible footers for its messages."""
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_message_timestamps = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content="restored",
+                        id="hist-msg",
+                        timestamp=1_704_110_405.0,
+                    ),
+                    # Excluded types never receive a footer, even on restore.
+                    MessageData(
+                        type=MessageType.APP,
+                        content="Resumed thread",
+                        id="hist-app",
+                        timestamp=1_704_110_406.0,
+                    ),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-restored", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            footer = app.query_one("#hist-msg-timestamp-footer", Static)
+            assert footer.display is True
+            # Footer sits directly after its message in the DOM.
+            messages = app.query_one("#messages", Container)
+            children = list(messages.children)
+            anchor = app.query_one("#hist-msg", UserMessage)
+            assert children[children.index(anchor) + 1] is footer
+            # Excluded-type messages get no footer, even on restore.
+            with pytest.raises(NoMatches):
+                app.query_one("#hist-app-timestamp-footer", Static)
+
+    async def test_footers_render_for_hydrated_messages_above(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Scroll-up hydration of older messages builds visible footers."""
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_message_timestamps = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Shrink the window so a small load archives messages above the
+            # visible range, mirroring a long thread scrolled to the bottom.
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content=f"m{index}",
+                        id=f"hist-{index}",
+                        timestamp=1_704_110_400.0 + index,
+                    )
+                    for index in range(4)
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-long", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            # Older messages start archived (no widget/footer mounted yet).
+            with pytest.raises(NoMatches):
+                app.query_one("#hist-0-timestamp-footer", Static)
+
+            await app._hydrate_messages_above()
+            await pilot.pause()
+
+            footer = app.query_one("#hist-0-timestamp-footer", Static)
+            assert footer.display is True
+            # Footer sits directly after its hydrated message in the DOM.
+            messages = app.query_one("#messages", Container)
+            children = list(messages.children)
+            anchor = app.query_one("#hist-0", UserMessage)
+            assert children[children.index(anchor) + 1] is footer
+
     async def test_mount_message_adds_footer_when_enabled(self) -> None:
         """New messages receive a footer while timestamps are enabled."""
         app = DeepAgentsApp()

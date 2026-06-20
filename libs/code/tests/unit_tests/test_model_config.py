@@ -418,6 +418,109 @@ models = ["m1"]
         assert status.source is ProviderAuthSource.ENV
 
 
+class TestServiceCredentials:
+    """Non-model services (e.g. Tavily) resolve and apply stored keys."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_tavily_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip Tavily env vars so each test controls its own state."""
+        for var in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_is_service(self) -> None:
+        """`is_service` recognizes registered services, not model providers."""
+        from deepagents_code.model_config import is_service
+
+        assert is_service("tavily") is True
+        assert is_service("anthropic") is False
+
+    def test_status_missing_when_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """No stored or env key reports MISSING with the canonical env var."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "TAVILY_API_KEY"
+
+    def test_status_configured_from_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An env var reports CONFIGURED from the env source."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+
+    def test_status_configured_from_store(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A stored key reports CONFIGURED from the stored source."""
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("tavily", "from-store")
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.STORED
+
+    def test_apply_exports_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """`apply_stored_service_credentials` copies the stored key to env."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        auth_store.set_stored_key("tavily", "from-store")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+    def test_apply_noop_without_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key leaves an existing env var untouched."""
+        import os
+
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-env"
+
+    def test_apply_stored_key_overrides_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key wins over a conflicting existing env var.
+
+        Guards the documented precedence (matching `apply_stored_credentials`):
+        a key entered via `/auth` must beat a plain `TAVILY_API_KEY` already in
+        the environment, otherwise the stored key would be silently ignored.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        auth_store.set_stored_key("tavily", "from-store")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+
 class TestSplitCredentialSource:
     """`warn_on_split_credential_source` flags key/endpoint env-tier mismatches."""
 
@@ -1181,6 +1284,73 @@ api_key_env = "OPENAI_API_KEY"
             "claude-haiku-4-5",
         ]
         assert config.providers["anthropic"]["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_loads_provider_display_metadata(self, tmp_path):
+        """Loads provider metadata used by auth UI."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+api_key_url = "https://gateway.example/keys"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_display_name("my_gateway") == "My Gateway"
+        assert (
+            config.get_provider_api_key_url("my_gateway")
+            == "https://gateway.example/keys"
+        )
+        assert config.get_provider_display_name("missing") is None
+        assert config.get_provider_api_key_url("missing") is None
+
+    def test_ignores_non_string_provider_api_key_url(self, tmp_path):
+        """Non-string provider API-key URLs are ignored."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+api_key_url = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_api_key_url("my_gateway") is None
+
+    def test_ignores_non_string_provider_display_name(self, tmp_path):
+        """Non-string provider display names fall back to the default label."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_display_name("my_gateway") is None
+
+    def test_warns_on_non_string_provider_metadata(self, tmp_path, caplog):
+        """Malformed `display_name`/`api_key_url` warn at load, matching siblings.
+
+        Surfaces the misconfiguration as a diagnostic instead of silently
+        dropping it, consistent with the `enabled`/`class_path` validation.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = 123
+api_key_url = ["not", "a", "string"]
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            ModelConfig.load(config_path)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("non-string 'display_name'" in m for m in messages)
+        assert any("non-string 'api_key_url'" in m for m in messages)
 
     def test_loads_custom_base_url(self, tmp_path):
         """Loads custom base_url for providers."""

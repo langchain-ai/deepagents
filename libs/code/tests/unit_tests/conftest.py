@@ -92,16 +92,41 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent update debug/loop-guard env vars from affecting tests.
+    """Prevent update debug/loop-guard and toggle env vars from affecting tests.
 
     `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
     internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
-    auto-update to break a restart loop. Either leaking in (from a developer
+    auto-update to break a restart loop. `DEEPAGENTS_CODE_NO_UPDATE_CHECK` and
+    `DEEPAGENTS_CODE_AUTO_UPDATE` are read directly from the environment by the
+    startup gate (`is_update_check_enabled` / `is_auto_update_enabled`), so a
+    developer who exports either to opt out would otherwise make the auto-update
+    tests fail or pass spuriously. Any of these leaking in (from a developer
     shell, or a prior test exercising the production code that sets the
-    sentinel) would make the startup auto-update tests non-deterministic.
+    sentinel) would make the startup auto-update tests non-deterministic. Tests
+    that need a specific value set them explicitly via `monkeypatch`/`patch`.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_app_startup_update_checks(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep app startup tests from racing PyPI or user update config.
+
+    `test_config_manifest` and `test_main` patch `is_update_check_enabled` themselves.
+    """
+    module_name = request.module.__name__.rsplit(".", 1)[-1]
+    if module_name in {"test_config_manifest", "test_main"}:
+        return
+    monkeypatch.setattr(
+        "deepagents_code.update_check.is_update_check_enabled",
+        lambda: False,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -191,6 +216,20 @@ def _provide_app_context() -> Generator[None]:
         yield
     finally:
         active_app.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect app-managed state away from the developer's real data."""
+    state_dir = tmp_path / ".state"
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
+
+    from deepagents_code import sessions
+
+    monkeypatch.setattr(sessions, "_db_path", None)
+    sessions._message_count_cache.clear()
+    sessions._initial_prompt_cache.clear()
+    sessions._recent_threads_cache.clear()
 
 
 @pytest.fixture(autouse=True)

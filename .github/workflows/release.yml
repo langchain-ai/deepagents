@@ -467,6 +467,9 @@ jobs:
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$RELEASE_COMMIT" ]; then
             echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
@@ -647,6 +650,19 @@ jobs:
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
+          fi
+
+          # Annotate releases cut from a non-default branch (a vX.Y version line
+          # or an alpha/* throwaway branch) with the originating branch and the
+          # immutable release commit. Skipped for normal default-branch releases,
+          # where the branch carries no signal. The branch is rendered as plain
+          # text and the link targets the commit SHA, never tree/<branch>: alpha
+          # branches are deleted after release, so a branch link would 404, and
+          # the commit is the exact code that shipped even when release-sha points
+          # somewhere other than the branch tip.
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
           fi
 
           # Append contributor shoutouts

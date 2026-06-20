@@ -378,9 +378,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
-            override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`. See `interrupt_on` below for inheritance and override
-            behavior.
+            override `tools`, `model`, `middleware`, `interrupt_on`, `skills`,
+            `permissions`, and `response_format`. See `interrupt_on` below for
+            inheritance and override behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt

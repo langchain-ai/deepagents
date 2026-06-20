@@ -26,7 +26,9 @@ from deepagents_code.config_manifest import (
     OptionKind,
     get_config_options,
     get_option,
+    is_provider_package_installed,
     option_keys,
+    provider_install_extra,
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
@@ -71,6 +73,46 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+# --- Provider install helpers ----------------------------------------------
+
+
+def test_provider_install_extra_known_provider() -> None:
+    """Known providers resolve to their installing extra."""
+    assert provider_install_extra("baseten") == "baseten"
+    # Provider name uses underscores; the extra uses hyphens.
+    assert provider_install_extra("google_genai") == "google-genai"
+
+
+def test_provider_install_extra_extra_only_provider() -> None:
+    """Providers without required API keys can still resolve to extras."""
+    assert provider_install_extra("bedrock") == "bedrock"
+    assert provider_install_extra("ollama") == "ollama"
+
+
+def test_provider_install_extra_unknown_provider() -> None:
+    """Providers without a curated extra resolve to `None`."""
+    assert provider_install_extra("not-a-real-provider") is None
+
+
+def test_is_provider_package_installed_unknown_provider() -> None:
+    """Providers without a curated extra are reported as installed."""
+    assert is_provider_package_installed("not-a-real-provider") is True
+
+
+def test_is_provider_package_installed_core_provider() -> None:
+    """Core providers ship as base dependencies and are always importable."""
+    assert is_provider_package_installed("openai") is True
+
+
+def test_is_provider_package_installed_missing_extra() -> None:
+    """A known provider whose package is absent is reported as not installed."""
+    import importlib.util
+
+    if importlib.util.find_spec("langchain_baseten") is not None:
+        pytest.skip("langchain_baseten is installed in this environment")
+    assert is_provider_package_installed("baseten") is False
 
 
 # --- Secrets ----------------------------------------------------------------
@@ -240,6 +282,117 @@ def test_resolve_empty_env_is_unset_matching_resolve_env_var(monkeypatch) -> Non
     assert resolve_env_var("OPENAI_API_KEY") is None
     assert source == "default"
     assert value is None
+
+
+def test_langsmith_project_prefers_prefixed_env(monkeypatch) -> None:
+    """The prefixed project env var wins over a bare `LANGSMITH_PROJECT`."""
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "prefixed")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("prefixed", "env (DEEPAGENTS_CODE_LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_falls_back_to_bare_env(monkeypatch) -> None:
+    """A bare `LANGSMITH_PROJECT` resolves when the prefixed var is unset.
+
+    Mirrors `get_langsmith_project_name`, so `config show`/`get` report the
+    project agent traces actually route to.
+    """
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_default_when_unset(monkeypatch) -> None:
+    """With no project env var set, the default project name is rendered."""
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+
+
+def test_langsmith_project_empty_prefixed_falls_through_to_bare(monkeypatch) -> None:
+    """An empty prefixed var is skipped, so a set bare `LANGSMITH_PROJECT` wins.
+
+    This is the opposite of the single-name credential path
+    (`test_resolve_empty_env_is_unset_matching_resolve_env_var`): with a
+    fallback declared, an empty prefixed var does not suppress resolution — it
+    falls through to the next name, matching `get_langsmith_project_name`.
+    """
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "bare")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == ("bare", "env (LANGSMITH_PROJECT)")
+
+
+def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
+    """An empty bare `LANGSMITH_PROJECT` is unset, so the default applies."""
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    opt = get_option("tracing.langsmith_project")
+    assert opt is not None
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.setenv("LANGSMITH_PROJECT", "")
+    assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
+
+
+def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
+    """A synthetic option exercises the empty-fallback → `config.toml` path.
+
+    No shipping option both declares `fallback_env_vars` and has `toml_keys`,
+    so this guards the generic resolver: an empty fallback env var must fall
+    through to `config.toml`, while a set one still wins over it.
+    """
+    opt = ConfigOption(
+        key="synthetic.fallback_toml",
+        group="Synthetic",
+        summary="Synthetic option for fallback + TOML precedence.",
+        kind=OptionKind.STR,
+        env_var=_env_vars.LANGSMITH_PROJECT,
+        fallback_env_vars=("SYNTHETIC_FALLBACK",),
+        toml_keys=("synthetic", "value"),
+    )
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+    toml_data = {"synthetic": {"value": "from-toml"}}
+
+    monkeypatch.setenv("SYNTHETIC_FALLBACK", "")
+    assert resolve_scalar(opt, toml_data=toml_data) == ("from-toml", "config.toml")
+
+    monkeypatch.setenv("SYNTHETIC_FALLBACK", "from-env")
+    assert resolve_scalar(opt, toml_data=toml_data) == (
+        "from-env",
+        "env (SYNTHETIC_FALLBACK)",
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_fallback",
+    [
+        ["LANGSMITH_PROJECT"],  # mutable list reintroduces the lru_cache hazard
+        ("",),  # empty name never matches any env var
+        ("LANGSMITH_PROJECT", ""),  # one valid, one empty
+    ],
+)
+def test_fallback_env_vars_rejects_invalid(bad_fallback) -> None:
+    """`__post_init__` rejects non-tuple or empty/non-str `fallback_env_vars`."""
+    with pytest.raises(TypeError, match="fallback_env_vars must be a tuple"):
+        ConfigOption(
+            key="synthetic.bad_fallback",
+            group="Synthetic",
+            summary="Synthetic option with an invalid fallback.",
+            kind=OptionKind.STR,
+            fallback_env_vars=bad_fallback,
+        )
 
 
 def test_run_show_json_redacts_every_secret(monkeypatch, capsys) -> None:
@@ -969,17 +1122,19 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
 
 
 def test_provider_dependency_metadata_is_exhaustive() -> None:
-    """Every provider key has dependency metadata, and vice versa.
-
-    The module promises new providers cannot silently miss the config surface;
-    that guarantee only holds for the *availability hints* if the dependency
-    table tracks `PROVIDER_API_KEY_ENV` exactly.
-    """
+    """Provider dependency metadata must cover auth and install surfaces."""
     from deepagents_code.config_manifest import _PROVIDER_DEPENDENCIES
+    from deepagents_code.extras_info import MODEL_PROVIDER_EXTRAS
 
-    assert set(_PROVIDER_DEPENDENCIES) == set(PROVIDER_API_KEY_ENV), (
-        "_PROVIDER_DEPENDENCIES must track PROVIDER_API_KEY_ENV so config show's "
-        "availability hints stay complete for every provider"
+    assert set(PROVIDER_API_KEY_ENV) <= set(_PROVIDER_DEPENDENCIES), (
+        "_PROVIDER_DEPENDENCIES must include every provider credential so config "
+        "show's availability hints stay complete"
+    )
+    assert {extra for _module, extra in _PROVIDER_DEPENDENCIES.values()} == set(
+        MODEL_PROVIDER_EXTRAS
+    ), (
+        "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
+        "model selector can surface install-required recommended models"
     )
 
 

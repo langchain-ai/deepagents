@@ -304,6 +304,19 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
+        "fireworks:accounts/fireworks/models/minimax-m3",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+        "MiniMax M3",
+        "Fireworks",
+    ),
+    Model(
         "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8",
         frozenset(
             {

@@ -7,23 +7,21 @@ in the implementation. Sourcing the spec from state (not from a model-supplied
 argument) prevents the agent from paraphrasing the contract into the checker.
 """
 
-from __future__ import annotations
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from typing import TYPE_CHECKING, Any
-
+from deepagents.backends.protocol import BackendProtocol
 from langchain.chat_models import init_chat_model
-from langchain.tools import (
-    ToolRuntime,  # noqa: TC002  (needed at runtime for tool injection)
-)
+from langchain.tools import ToolRuntime
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
-
-    from deepagents.backends.protocol import BackendProtocol
-    from langchain_core.language_models import BaseChatModel
+# NOTE: this module intentionally does NOT use `from __future__ import annotations`.
+# langgraph's tool node detects the injectable `ToolRuntime` parameter by its real
+# annotation type; stringized (future) annotations break that detection, so the
+# runtime arg would not be injected and every tool call would raise TypeError.
 
 
 VERIFY_IMPLEMENTATION_DESCRIPTION = """\

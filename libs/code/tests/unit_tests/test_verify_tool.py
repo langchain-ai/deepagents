@@ -5,14 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 
 from deepagents_code import verify_tool as vt
+from deepagents_code.agent import create_cli_agent
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from deepagents.backends.protocol import BackendProtocol
     from langchain.tools import ToolRuntime
-    from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import StructuredTool
 
 
@@ -336,3 +340,72 @@ async def test_averify_matches_sync_behaviour() -> None:
     assert model.last_messages is not None
     assert "VERDICT: PASS" in report
     assert "int32 value = 2" in model.last_messages[1].content
+
+
+# --------------------------------------------------------------------------- #
+# Graph-level regression: the tool must be invokable *through the agent*, with
+# ToolRuntime injected. (A stringized `runtime` annotation silently breaks
+# injection so every call raises TypeError and crashes the agent — this test
+# would have caught that; the .func-based tests above did not.)
+# --------------------------------------------------------------------------- #
+class _ScriptedModel(BaseChatModel):
+    responses: list[AIMessage] = []  # noqa: RUF012  (pydantic field, per-instance)
+    _call_idx: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(self, *_args: Any, **_kwargs: Any) -> ChatResult:
+        idx = min(self._call_idx, len(self.responses) - 1)
+        self._call_idx += 1
+        return ChatResult(generations=[ChatGeneration(message=self.responses[idx])])
+
+    def bind_tools(self, *_args: Any, **_kwargs: Any) -> BaseChatModel:
+        return self
+
+
+async def test_tool_runs_through_the_agent_graph(tmp_path: Path) -> None:
+    (tmp_path / "kv-store.proto").write_text(
+        "message SetValRequest { string key = 1; int32 value = 2; }\n"
+    )
+    verify_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "verify_implementation", "args": {}, "id": "c1"}],
+    )
+    model = _ScriptedModel(
+        responses=[
+            verify_call,
+            AIMessage(content="MATCH all\nVERDICT: PASS"),  # the judge call
+            AIMessage(content="Done."),  # agent concludes
+        ]
+    )
+    graph, _backend = create_cli_agent(
+        model=model,
+        assistant_id="t",
+        system_prompt="test agent",
+        interactive=False,
+        auto_approve=True,
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=True,
+        enable_verify=True,
+        cwd=str(tmp_path),
+    )
+
+    result = await graph.ainvoke(
+        {
+            "messages": [
+                {"role": "user", "content": "build kv store with a value field"}
+            ]
+        },
+        {"configurable": {"thread_id": "t1"}},
+    )
+
+    tool_msgs = [
+        m
+        for m in result["messages"]
+        if getattr(m, "name", None) == "verify_implementation"
+    ]
+    assert tool_msgs, "verify_implementation never executed (runtime injection broken?)"
+    assert "VERDICT: PASS" in tool_msgs[0].content

@@ -16,7 +16,7 @@ Talon currently includes:
 
 ```bash
 uv sync --group test
-AGENT_ASSISTANT_ID=local AGENT_MODEL=openai:gpt-5.2 uv run deepagents-talon --once
+AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon --once
 ```
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
@@ -58,8 +58,8 @@ cd ../../..
 
 DEEPAGENTS_TALON_WHATSAPP_ENABLED=true \
 DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE=true \
-AGENT_ASSISTANT_ID=whatsapp-local \
-AGENT_MODEL=openai:gpt-5.2 \
+AGENT_ASSISTANT_ID=talon-docker-local \
+AGENT_MODEL=<provider>:<model-id> \
 uv run deepagents-talon --whatsapp
 ```
 
@@ -80,7 +80,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon-docker/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 
@@ -93,7 +93,7 @@ DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist \
 DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS=123456789 \
 DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=-1001234567890 \
 AGENT_ASSISTANT_ID=telegram-local \
-AGENT_MODEL=openai:gpt-5.2 \
+AGENT_MODEL=<provider>:<model-id> \
 uv run deepagents-talon --telegram
 ```
 

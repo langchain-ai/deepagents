@@ -4276,6 +4276,26 @@ class TestThreadSelectorAgentFilter:
         options = screen._collect_agent_options()
         assert options[0] == ("All agents", _AGENT_VALUE_ALL)
 
+    def test_collect_agent_options_loading_while_pending(self) -> None:
+        """While loading with no known agents, the dropdown shows 'Loading...'."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_LABEL_LOADING,
+            _AGENT_VALUE_ALL,
+        )
+
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=None,
+            filter_cwd=None,
+        )
+        assert screen._disk_load_complete is False
+        assert screen._collect_agent_options() == [
+            (_AGENT_LABEL_LOADING, _AGENT_VALUE_ALL)
+        ]
+        # Once the disk load completes with no threads, fall back to "All agents".
+        screen._disk_load_complete = True
+        assert screen._collect_agent_options() == [("All agents", _AGENT_VALUE_ALL)]
+
     def test_collect_agent_options_sorted_unique(self) -> None:
         """collect_agent_options returns sorted unique agent names."""
         screen = ThreadSelectorScreen(

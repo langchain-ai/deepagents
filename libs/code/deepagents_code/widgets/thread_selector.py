@@ -115,6 +115,13 @@ _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
 _AGENT_SELECT_ID = "thread-agent-select"
 _AGENT_VALUE_ALL = "__all__"
+# Label shown in the agent dropdown while the disk load is still pending and no
+# agent names are known yet. The options list is derived from visible threads
+# (plus the configured `/agents` list), so before the load completes it would
+# otherwise show only the "All agents" sentinel; "Loading..." signals that more
+# options may appear. Reuses `_AGENT_VALUE_ALL` so the unfiltered default value
+# stays valid. Matches the "Loading threads..." empty-state copy.
+_AGENT_LABEL_LOADING = "Loading..."
 # Display label and filter key for threads with no stored `agent_name`. Shared
 # between the Agent column renderer, the agent dropdown options, and the filter
 # predicate so all three read identically. The parentheses distinguish the
@@ -1053,12 +1060,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         (and the `_UNKNOWN_AGENT_LABEL` sentinel for threads with no agent name)
         filterable.
 
+        While the disk load is still pending and no agent names are known yet,
+        returns a single `("Loading...", _AGENT_VALUE_ALL)` option so the
+        dropdown signals that more options are on the way rather than implying
+        "All agents" is the only choice.
+
         Returns:
             List of `(label, value)` pairs; the first entry is always
-                `("All agents", _AGENT_VALUE_ALL)`.
+                `("All agents", _AGENT_VALUE_ALL)` once the load has completed
+                (or `("Loading...", _AGENT_VALUE_ALL)` while it is still
+                pending with no known agents).
         """
         names = {t.get("agent_name") or _UNKNOWN_AGENT_LABEL for t in self._threads}
         names.update(self._available_agent_names)
+        if not names and not self._disk_load_complete:
+            return [(_AGENT_LABEL_LOADING, _AGENT_VALUE_ALL)]
         ordered = sorted(names, key=str.casefold)
         return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
 

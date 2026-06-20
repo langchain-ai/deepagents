@@ -29,7 +29,7 @@ LangGraph server that runs the agent graph, over HTTP/SSE.
 │     ├── interactive ──▶ app.py (DeepAgentsApp, Textual)               │
 │     │                      │  widgets/ render; textual_adapter.py     │
 │     │                      │  translates the agent stream → widgets   │
-│     └── headless (-x) ─▶ non_interactive.py                           │
+│     └── headless (-n) ─▶ non_interactive.py                           │
 │                            │                                          │
 │              server_manager.start_server_and_get_agent()             │
 │                            │ spawns + configures                      │
@@ -75,10 +75,11 @@ start" report.
 `event_bus.py` is a side door: it lets external local processes push prompts /
 commands / signals into a *running* session over a Unix-domain socket.
 
-## Headless lifecycle (`-x`)
+## Headless lifecycle (`-n`)
 
-`non_interactive.py` runs a single task against the same server subprocess,
-streams results to stdout, and exits with a status code. It reuses the agent
+`non_interactive.py` runs a single task against the same server subprocess
+(`dcode -n "task"`, or by piping a prompt on stdin), streams results to stdout,
+and exits with a status code. It reuses the agent
 and server machinery but skips Textual entirely — this is the scripting/CI
 path. Several flags in `main.py` (`--update`, `--install`, model defaults) are
 also handled headlessly without ever starting a session.

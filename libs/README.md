@@ -11,6 +11,7 @@ acp/                 # Agent Client Protocol integration
 evals/               # Evaluation suite and Harbor integration
 code/                # Coding agent with interactive terminal interface (Textual TUI)
 cli/                 # Deployment CLI
+talon/               # Local runtime host for long-running agents (experimental)
 partners/            # Provider integrations
 ```
 

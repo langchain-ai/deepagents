@@ -31,7 +31,7 @@ libs/
 ├── code/           # Coding agent with an interactive Textual TUI
 ├── acp/            # Agent Client Protocol integration
 ├── evals/          # Evaluation suite and Harbor integration
-├── talon/          # ACP-related package
+├── talon/          # Local runtime host for long-running agents (channels, cron) — experimental
 └── partners/       # Provider/sandbox integrations
     ├── daytona/
     ├── modal/
@@ -70,7 +70,9 @@ per package: `acp` resolves against Python 3.14 and every other package against
 ## Common commands
 
 Run these from inside a package directory (e.g. `libs/deepagents`). They are
-consistent across the SDK packages:
+consistent across the core SDK packages (`deepagents`, `code`); smaller packages
+(`cli`, `acp`) expose a subset — run `make help` to see what a given package
+supports:
 
 | Command | What it does |
 | --- | --- |

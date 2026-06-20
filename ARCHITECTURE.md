@@ -129,8 +129,8 @@ tracked so subagents don't leak internal state.
 
 These are the supported, public ways to customize a Deep Agent without forking.
 Anything exported from a package's `__init__.py` is public; modules and symbols
-prefixed with an underscore (`_tools.py`, `_models.py`, `_api/`, `_state.py`,
-etc.) are internal and may change without notice.
+prefixed with an underscore (`_tools.py`, `_models.py`, `_api/`,
+`_excluded_middleware.py`, etc.) are internal and may change without notice.
 
 | Want to change... | Use | Where |
 | --- | --- | --- |

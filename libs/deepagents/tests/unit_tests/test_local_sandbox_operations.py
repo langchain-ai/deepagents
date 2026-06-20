@@ -1703,3 +1703,16 @@ class TestExecuteCaptureOffload:
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)
+
+    def test_enable_capture_offload_flag_gates_capture(self) -> None:
+        # Fresh sandbox so toggling the flag does not leak into the shared fixture.
+        sandbox = LocalSubprocessSandbox()
+        backend = CompositeBackend(default=sandbox, routes={}, artifacts_root=VIRTUAL_SANDBOX_ROOT)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        # Enabled by default -> a sandbox-local capture path is chosen.
+        assert middleware._capture_path_if_local(backend, "c1") is not None
+
+        # Opting out -> capture is skipped (caller falls back to generic eviction).
+        sandbox.enable_capture_offload = False
+        assert middleware._capture_path_if_local(backend, "c1") is None

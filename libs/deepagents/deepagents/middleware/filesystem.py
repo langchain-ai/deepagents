@@ -1686,27 +1686,29 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         `execute()` and `read_file` share one filesystem at that path. Only
         `BaseSandbox` guarantees this, so the optimization is gated on it (a
         stub or host-shell backend falls back to inline execute plus generic
-        eviction). Also returns `None` when eviction is disabled, the tool call
-        has no id, or the offload path would route to a different backend.
+        eviction). Also returns `None` when the sandbox opts out via
+        `enable_capture_offload`, eviction is disabled, the tool call has no id,
+        or the offload path would route to a different backend.
         """
         if not self._tool_token_limit_before_evict or not tool_call_id:
             return None
         capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
         if isinstance(resolved_backend, CompositeBackend):
-            if not isinstance(resolved_backend.default, BaseSandbox):
+            default = resolved_backend.default
+            if not isinstance(default, BaseSandbox) or not default.enable_capture_offload:
                 return None
             backend, _backend_path, route_prefix = _route_for_path(
-                default=resolved_backend.default,
+                default=default,
                 sorted_routes=resolved_backend.sorted_routes,
                 path=capture_path,
             )
             # Safe only when the path falls through to the default backend
             # unchanged, since execute() also runs on the default.
-            if route_prefix is None and backend is resolved_backend.default:
+            if route_prefix is None and backend is default:
                 return capture_path
             return None
         if isinstance(resolved_backend, BaseSandbox):
-            return capture_path
+            return capture_path if resolved_backend.enable_capture_offload else None
         return None
 
     @staticmethod

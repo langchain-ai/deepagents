@@ -720,6 +720,16 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     and the `id` property.
     """
 
+    enable_capture_offload: bool = True
+    """Whether `FilesystemMiddleware` may use capture-at-source offload for `execute`.
+
+    When `True` (default), large `execute` output is captured to a file in the
+    sandbox and only a preview is returned, avoiding a round-trip back through the
+    agent process. Set to `False` (on the subclass or an instance) to fall back to
+    inline execution plus the middleware's generic eviction -- an escape hatch for
+    environments where the capture wrapper's shell assumptions do not hold.
+    """
+
     @abstractmethod
     def execute(
         self,

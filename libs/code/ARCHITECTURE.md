@@ -2,131 +2,69 @@
 
 ## What this package is
 
-`deepagents-code` is a terminal coding agent (think Claude Code / Cursor in the shell) built on top of the `deepagents` SDK. At its core is a pre-built `create_deep_agent` configuration — a ready-to-run coding agent that other applications can import and reuse — assembled from the SDK's harness, backends, and middleware (memory, skills, and more). Around that core, this package adds an interactive Textual UI, a headless mode, conversation persistence, MCP integration, commands, hooks, and remote sandboxes.
+`deepagents-code` is a prebuilt terminal coding agent built on top of the `deepagents` SDK. It is a reference implementation: one design for packaging the SDK into a useful coding-agent product, based on patterns that have worked well in our experience.
+
+The SDK provides the agent harness. This package shows how to combine that harness with a terminal experience, persistence, tools, skills, and optional sandboxed execution.
 
 ## The big picture
 
-A key thing to internalize: the UI and the agent run in **two different processes**. The client (the TUI or headless runner) talks to a LangGraph server that runs the agent graph, over HTTP/SSE.
+Deep Agents Code has two runtime halves:
 
 ```text
-┌─────────────────────────── client process ───────────────────────────┐
-│                                                                       │
-│  main.py (entry, arg parsing, mode select)                            │
-│     │                                                                 │
-│     ├── interactive ──▶ app.py (DeepAgentsApp, Textual)               │
-│     │                      │  widgets/ render; textual_adapter.py     │
-│     │                      │  translates the agent stream → widgets   │
-│     └── headless (-n) ─▶ non_interactive.py                           │
-│                            │                                          │
-│              server_manager.start_server_and_get_agent()             │
-│                            │ spawns + configures                      │
-│                            ▼                                          │
-│                   remote_client.RemoteAgent ──(RemoteGraph)──┐        │
-└──────────────────────────────────────────────────────────────┼───────┘
-                                                                 │ HTTP/SSE
-┌──────────────────── `langgraph dev` subprocess ───────────────┼───────┐
-│  server.py / server_manager.py manage its lifecycle           ▼       │
-│  langgraph.json ──loads──▶ server_graph.py ──builds──▶ agent.py       │
-│                                                          │            │
-│                            deepagents SDK create_deep_agent           │
-│                              + middleware (memory, skills,            │
-│                                local_context, ask_user, resume_state) │
-│                              + tools.py / managed_tools.py / MCP      │
-│                              + backend: LocalShell | Sandbox          │
-└───────────────────────────────────────────────────────────────────────┘
+┌──────────────────── Terminal client ─────────────────────┐
+│  Presents interactive or headless output                 │
+│  Collects user input and approvals                       │
+└──────────────────────────┬───────────────────────────────┘
+                           │ streaming protocol
+                           ▼
+┌──────────────────── Agent server ────────────────────────┐
+│  Runs the coding agent graph                             │
+│  Connects the model, tools, memory, skills, and backend  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### Why the subprocess?
+The client and server run in separate processes. The client owns presentation and input. The server owns the agent runtime. Keeping that boundary narrow makes the UI responsive while letting the agent use LangGraph's streaming, checkpointing, and resume behavior.
 
-The agent graph is served by `langgraph dev` so the client gets LangGraph's streaming, checkpointing, and state management "for free" via `RemoteGraph`. The cost is a process boundary: when the agent crashes at startup, the client only sees a one-line banner — the real traceback is in the subprocess's captured log. Debugging that boundary (the `DEEPAGENTS_CODE_DEBUG` env var, the `deepagents_server_log_*.txt` files, the triage flow) is documented in [`DEVELOPMENT.md`](./DEVELOPMENT.md). Read that section before debugging a "server failed to start" report.
+## Request flow
 
-## Request lifecycle (interactive)
+A request follows the same shape in interactive and headless mode:
 
-1. A keystroke / submit in `widgets/chat_input.py` raises a Textual message.
-2. `DeepAgentsApp` (`app.py`) handles it, updates the `MessageStore`, and sends the prompt to the `RemoteAgent`.
-3. `RemoteAgent` (`remote_client.py`) streams the run from the server graph and converts streamed message dicts back into LangChain message objects.
-4. `textual_adapter.py` consumes that stream and drives the UI — appending assistant text, tool-call widgets, approvals, and `ask_user` prompts.
-5. Human-in-the-loop interrupts (tool approval, `ask_user`) round-trip back to the server as resumed input.
+1. The client receives user input.
+2. The client sends that input to the agent server.
+3. The server runs the agent and streams events back.
+4. The client renders those events and collects any needed human response.
+5. Session state is preserved so the conversation can continue later.
 
-`event_bus.py` is a side door: it lets external local processes push prompts / commands / signals into a *running* session over a Unix-domain socket.
+Headless mode uses the same agent runtime as the interactive UI, but swaps the terminal interface for machine-friendly input and output.
 
-## Headless lifecycle (`-n`)
+## Configuration and extension
 
-`non_interactive.py` runs a single task against the same server subprocess (`dcode -n "task"`, or by piping a prompt on stdin), streams results to stdout, and exits with a status code. It reuses the agent and server machinery but skips Textual entirely — this is the scripting/CI path. Several flags in `main.py` (`--update`, `--install`, model defaults) are also handled headlessly without ever starting a session.
+Configuration is layered across user, project, session, and runtime scopes. That lets teams share project defaults while individual users keep their own credentials, preferences, skills, and local settings.
 
-## Module map
+The main extension points are:
 
-The package is a flat ~70-file directory; grouping by concern:
+- **Skills and subagents** for reusable agent workflows
+- **Tools and MCP servers** for external capabilities
+- **Sandboxes** for changing where tool execution happens
+- **Hooks and commands** for integrating with local workflows
 
-| Concern | Key modules |
-| --- | --- |
-| **Entry / lifecycle** | `main.py`, `__init__.py` (lazy `cli_main`), `server.py`, `server_manager.py`, `server_graph.py` |
-| **UI (Textual)** | `app.py` (the `DeepAgentsApp` god object), `widgets/`, `textual_adapter.py`, `theme.py`, `app.tcss`, `input.py`, `tool_display.py`, `formatting.py` |
-| **Client ↔ server** | `remote_client.py`, `_server_config.py`, `_env_vars.py`, `event_bus.py` |
-| **Agent construction** | `agent.py`, `configurable_model.py`, `model_config.py`, `config.py`, prompt files (`system_prompt.md`, `default_agent_prompt.md`) |
-| **Middleware (client-side)** | `local_context.py`, `ask_user.py`, `resume_state.py`, `memory_guard.py`, `filesystem_empty_result.py` |
-| **Tools** | `tools.py`, `managed_tools.py` (auto-installs `rg`), `hooks.py` |
-| **MCP** | `mcp_tools.py`, `mcp_auth.py`, `mcp_oauth_ui.py`, `mcp_trust.py`, `mcp_commands.py`, `mcp_providers/` |
-| **Skills & subagents** | `skills/`, `built_in_skills/`, `subagents.py` |
-| **Slash commands** | `command_registry.py` (single source of truth), `config_commands.py`; generated catalog in [`COMMANDS.md`](./COMMANDS.md) |
-| **Sessions / persistence** | `sessions.py`, `resume_state.py`, `state_migration.py`, `auth_store.py` |
-| **Sandboxes** | `integrations/` (`sandbox_factory.py`, `sandbox_registry.py`, `sandbox_provider.py`, `sandbox_config.py`) |
-| **Headless / machine output** | `non_interactive.py`, `output.py` |
-| **Onboarding / updates** | `onboarding.py`, `update_check.py`, `notifications.py` |
+These pieces are designed to compose. A project can provide shared defaults and integrations, while each user can layer personal configuration on top.
 
-## On-disk layout (runtime)
+## Design tradeoffs
 
-User and project state lives under `~/.deepagents/`, with user instructions, custom skills, and custom subagents scoped to the selected agent name. The default agent name is `agent`. Project-local `.deepagents/` and shared `.agents/` directories override or extend some user-level locations:
+This architecture optimizes for:
 
-```text
-~/.deepagents/
-├── config.toml          # models, sandboxes, settings
-├── hooks.json           # external tool hooks (hooks.py)
-├── .mcp.json            # MCP server config (also discovered project-local)
-├── <agent>/
-│   ├── AGENTS.md        # user-level instructions for that agent
-│   ├── agents/          # user custom subagents ({name}/AGENTS.md)
-│   └── skills/          # user custom skills
-├── bin/                 # managed binaries (e.g. ripgrep)
-└── .state/
-    ├── auth.json, chatgpt-auth.json, mcp-tokens/   # credentials
-    ├── history.jsonl, recent_models.json
-    └── mcp_trust.json
+- A responsive local terminal experience
+- A reusable agent core that can be tested apart from the UI
+- Durable sessions that can be resumed
+- Controlled tool execution, locally or in a sandbox
+- Practical extension points without rewriting the core app
 
-<project>/
-├── AGENTS.md            # project instructions
-├── .mcp.json            # project root MCP server config
-├── .deepagents/
-│   ├── AGENTS.md        # higher-priority project instructions
-│   ├── agents/          # project custom subagents ({name}/AGENTS.md)
-│   ├── skills/          # project custom skills
-│   └── .mcp.json        # project MCP server config
-└── .agents/
-    └── skills/          # shared project skills alias
+The main cost is the client/server boundary. When debugging, first decide which side owns the failure: presentation and input usually belong to the client; model execution, tools, memory, and graph startup usually belong to the server.
 
-~/.agents/
-└── skills/              # shared user skills alias
-```
+## Where to go next
 
-## Conventions & where to look
-
-- **Textual footguns** (Content vs Rich Text, `notify(markup=True)` crashes, glyph/spinner sourcing, modal/worker rules) — [`AGENTS.md`](./AGENTS.md). Read it before touching `app.py` or `widgets/`.
-- **Local dev, debugging, CSS hot-reload** — [`DEVELOPMENT.md`](./DEVELOPMENT.md).
-- **Slash commands** are declared once in `command_registry.py`; regenerate [`COMMANDS.md`](./COMMANDS.md) with `make commands-catalog`.
-- **SDK coupling**: `pyproject.toml` pins an exact `deepagents==X.Y.Z`. Bump it in the same PR as features that need new SDK behavior.
-- **Security model** for tool execution / untrusted content — [`THREAT_MODEL.md`](./THREAT_MODEL.md).
-- **Lazy imports**: heavy imports are deferred to call sites on purpose to protect startup time (guarded by CodSpeed benchmarks). The module-top `if TYPE_CHECKING:` block is the canonical dependency list for a file.
-
-## "I want to change X" cheat sheet
-
-| Goal | Start here |
-| --- | --- |
-| Add/modify a slash command | `command_registry.py` (+ `make commands-catalog`) |
-| Change how a tool call renders | `widgets/tool_renderers.py`, `tool_display.py` |
-| Add a tool | `tools.py` (and `agent.py` wiring) |
-| Add an MCP provider | `mcp_providers/` |
-| Add a sandbox backend | `integrations/` (`sandbox_registry.py`) |
-| Change the system prompt | `system_prompt.md` / `default_agent_prompt.md` |
-| Touch agent graph / middleware | `agent.py`, `server_graph.py` |
-| Debug a startup crash | `DEVELOPMENT.md` → `DEEPAGENTS_CODE_DEBUG=1` |
-| Add a model provider | `model_config.py`, `pyproject.toml` extras |
+- For local setup and debugging, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
+- For command behavior, see [`COMMANDS.md`](./COMMANDS.md).
+- For security boundaries, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).
+- For package-specific coding conventions, see [`AGENTS.md`](./AGENTS.md).

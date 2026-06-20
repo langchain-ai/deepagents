@@ -123,7 +123,7 @@ class WhatsAppChannelConfig:
         outbound_media_dir = Path(
             env.get("DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR")
             or env.get("DEEPAGENTS_TALON_WORKSPACE")
-            or "/workspace",
+            or Path.cwd(),
         )
         command = _bridge_command(env)
         return cls(

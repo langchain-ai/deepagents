@@ -1,4 +1,4 @@
-"""StateBackend: Store files in LangGraph agent state (ephemeral)."""
+"""`StateBackend`: Store files in LangGraph agent state (ephemeral)."""
 
 import base64
 from typing import Any
@@ -161,8 +161,9 @@ class StateBackend(BackendProtocol):
             path: Absolute path to directory.
 
         Returns:
-            List of FileInfo-like dicts for files and directories directly in the directory.
-            Directories have a trailing / in their path and is_dir=True.
+            List of `FileInfo`-like dicts for files and directories directly in the directory.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
         """
         files = self._read_files()
         infos: list[FileInfo] = []
@@ -219,8 +220,9 @@ class StateBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested
-            window. Line-number formatting is applied by the middleware.
+            `ReadResult` with raw (unformatted) content for the requested window.
+
+                Line-number formatting is applied by the middleware.
         """
         files = self._read_files()
         file_data = files.get(file_path)
@@ -301,7 +303,7 @@ class StateBackend(BackendProtocol):
         return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Get FileInfo for files matching glob pattern."""
+        """Get `FileInfo` for files matching glob pattern."""
         files = self._read_files()
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
@@ -330,10 +332,10 @@ class StateBackend(BackendProtocol):
         """Upload multiple files to state.
 
         Args:
-            files: List of (path, content) tuples to upload
+            files: List of `(path, content)` tuples to upload
 
         Returns:
-            List of FileUploadResponse objects, one per input file
+            List of `FileUploadResponse` objects, one per input file
         """
         existing = self._read_files()
         responses: list[FileUploadResponse] = []
@@ -360,7 +362,7 @@ class StateBackend(BackendProtocol):
             paths: List of file paths to download
 
         Returns:
-            List of FileDownloadResponse objects, one per input path
+            List of `FileDownloadResponse` objects, one per input path
         """
         state_files = self._read_files()
         responses: list[FileDownloadResponse] = []

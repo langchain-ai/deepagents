@@ -1,4 +1,4 @@
-"""ContextHubBackend: Store files in a LangSmith Hub agent repo (persistent)."""
+"""`ContextHubBackend`: Store files in a LangSmith Hub agent repo (persistent)."""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ class ContextHubBackend(BackendProtocol):
         return dict(self._linked_entries)
 
     def has_prior_commits(self) -> bool:
-        """Return True if the hub repo already exists with at least one commit."""
+        """Return `True` if the hub repo already exists with at least one commit."""
         self._ensure_cache()
         return self._commit_hash is not None
 
@@ -137,7 +137,7 @@ class ContextHubBackend(BackendProtocol):
             limit: Maximum number of lines.
 
         Returns:
-            ReadResult with raw (unformatted) content.
+            `ReadResult` with raw (unformatted) content.
         """
         hub_path = self._strip_prefix(file_path)
         try:

@@ -1,6 +1,6 @@
 """Protocol definition for pluggable memory backends.
 
-This module defines the BackendProtocol that all backend implementations
+This module defines the `BackendProtocol` that all backend implementations
 must follow. Backends can store files in different locations (state, filesystem,
 database, etc.) and provide a uniform interface for file operations.
 """
@@ -52,10 +52,10 @@ FileOperationError = Literal[
 These represent common, recoverable errors that an LLM can understand and
 potentially fix:
 
-- file_not_found: The requested file doesn't exist (download)
-- permission_denied: Access denied for the operation
-- is_directory: Attempted to download a directory as a file
-- invalid_path: Path syntax is malformed or contains invalid characters
+- `file_not_found`: The requested file doesn't exist (download)
+- `permission_denied`: Access denied for the operation
+- `is_directory`: Attempted to download a directory as a file
+- `invalid_path`: Path syntax is malformed or contains invalid characters
 """
 
 # Named constants for each `FileOperationError` literal. Use these instead of
@@ -226,11 +226,11 @@ def _normalize_files_update(
 
 @dataclass(init=False)
 class WriteResult:
-    """Result from backend write operations.
+    """Result from backend `write` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        path: Absolute path of written file, None on failure.
+        error: Error message on failure, `None` on success.
+        path: Absolute path of written file, `None` on failure.
 
     Examples:
         >>> WriteResult(path="/f.txt")
@@ -255,12 +255,12 @@ class WriteResult:
 
 @dataclass(init=False)
 class EditResult:
-    """Result from backend edit operations.
+    """Result from backend `edit` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        path: Absolute path of edited file, None on failure.
-        occurrences: Number of replacements made, None on failure.
+        error: Error message on failure, `None` on success.
+        path: Absolute path of edited file, `None` on failure.
+        occurrences: Number of replacements made, `None` on failure.
 
     Examples:
         >>> EditResult(path="/f.txt", occurrences=1)
@@ -288,11 +288,11 @@ class EditResult:
 
 @dataclass
 class LsResult:
-    """Result from backend ls operations.
+    """Result from backend `ls` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        entries: List of file info dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        entries: List of file info dicts on success, `None` on failure.
     """
 
     error: str | None = None
@@ -301,11 +301,11 @@ class LsResult:
 
 @dataclass
 class GrepResult:
-    """Result from backend grep operations.
+    """Result from backend `grep` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        matches: List of grep match dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        matches: List of grep match dicts on success, `None` on failure.
     """
 
     error: str | None = None
@@ -314,11 +314,11 @@ class GrepResult:
 
 @dataclass
 class GlobResult:
-    """Result from backend glob operations.
+    """Result from backend `glob` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        matches: List of matching file info dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        matches: List of matching file info dicts on success, `None` on failure.
     """
 
     error: str | None = None
@@ -329,8 +329,8 @@ class GlobResult:
 class BackendProtocol(abc.ABC):  # noqa: B024
     r"""Protocol for pluggable memory backends (single, unified).
 
-    Backends can store files in different locations (state, filesystem, database, etc.)
-    and provide a uniform interface for file operations.
+    Backends can store files in different locations (state, filesystem,
+    database, etc.) and provide a uniform interface for file operations.
 
     All file data is represented as dicts with the following structure:
 
@@ -343,7 +343,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     }
     ```
 
-    Note:
+    !!! note
+
         Legacy data may still contain `"content": list[str]` (lines split on
         `\\n`). Backends accept this for backwards compatibility and emit a
         `LangChainDeprecationWarning` (a `DeprecationWarning` subclass).
@@ -353,7 +354,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """List all files in a directory with metadata.
 
         Args:
-            path: Absolute path to the directory to list. Must start with '/'.
+            path: Absolute path to the directory to list. Must start with `'/'`.
 
         Returns:
             `LsResult` with directory entries or error.
@@ -386,15 +387,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Read file content with line numbers.
 
         Args:
-            file_path: Absolute path to the file to read. Must start with '/'.
-            offset: Line number to start reading from (0-indexed). Default: 0.
-            limit: Maximum number of lines to read. Default: 2000.
+            file_path: Absolute path to the file to read. Must start with `'/'`.
+            offset: Line number to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers (cat -n format),
-            starting at line 1. Lines longer than 2000 characters are truncated.
+            String containing file content formatted with line numbers (`cat -n` format),
+                starting at line 1.
 
-            Returns an error string if the file doesn't exist or can't be read.
+                Lines longer than 2000 characters are truncated.
+
+                Returns an error string if the file doesn't exist or can't be read.
         """
         raise NotImplementedError
 
@@ -420,11 +423,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
                 Performs exact substring matching within file content.
 
-                Example: "TODO" matches any line containing "TODO"
+                Example: `"TODO"` matches any line containing `"TODO"`
 
             path: Optional directory path to search in.
 
-                If None, searches in current working directory.
+                If `None`, searches in current working directory.
 
                 Example: `'/workspace/src'`
 
@@ -581,7 +584,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 Must be different from old_string.
             replace_all: If True, replace all occurrences.
 
-                If False (default), `old_string` must be unique in the file or
+                If `False` (default), `old_string` must be unique in the file or
                 the edit fails.
 
         Returns:
@@ -609,9 +612,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             files: List of (path, content) tuples to upload.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
+            List of `FileUploadResponse` objects, one per input file.
 
-                Response order matches input order (response[i] for files[i]).
+                Response order matches input order (`response[i] for files[i]`).
 
                 Check the error field to determine success/failure per file.
 
@@ -643,7 +646,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             List of `FileDownloadResponse` objects, one per input path.
 
-                Response order matches input order (response[i] for paths[i]).
+                Response order matches input order (`response[i] for paths[i]`).
 
                 Check the error field to determine success/failure per file.
         """

@@ -5,10 +5,10 @@
 The LLM receives tools through two paths:
 
 1. **SDK middleware** (this package) -- tools, system-prompt injection, and
-   request interception that any SDK consumer gets automatically.
+    request interception that any SDK consumer gets automatically.
 2. **Consumer-provided tools** -- plain callable functions passed via the
-   `tools` parameter to `create_deep_agent()`. The CLI uses this path for
-   lightweight, consumer-specific tools.
+    `tools` parameter to `create_deep_agent()`. The CLI uses this path for
+    lightweight, consumer-specific tools.
 
 Both are merged by `create_deep_agent()` into the final tool set the LLM sees.
 

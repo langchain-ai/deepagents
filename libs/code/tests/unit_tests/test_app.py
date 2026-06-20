@@ -4483,6 +4483,39 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#msg-summ-timestamp-footer", Static)
 
+    async def test_command_shows_toast_not_app_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/timestamps` reports its new state via a toast, not a chat message."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/timestamps")
+                await pilot.pause()
+
+            notify_mock.assert_called_once()
+            assert notify_mock.call_args.args[0] == "Message timestamps shown."
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+            assert not app.query(UserMessage)
+
+            # Toggling back reports the "hidden" state via the same toast path.
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/timestamps")
+                await pilot.pause()
+
+            notify_mock.assert_called_once()
+            assert notify_mock.call_args.args[0] == "Message timestamps hidden."
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+            assert not app.query(UserMessage)
+
 
 class TestMessageTimestampsPersistence:
     """Tests for persisting the timestamp-footer visibility to config."""

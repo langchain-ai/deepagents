@@ -1,0 +1,46 @@
+libs/deepagents/deepagents/backends/state.py
+  h_9f69767fa5fabf 1,164-166,223-224,306,335,338,365
+libs/deepagents/deepagents/backends/utils.py
+  h_9f69767fa5fabf 90,123,125-126,173,188,195,203,221,224,237,245,258,261,265,290,337,567,571,603,608-609,664,699-700
+libs/deepagents/deepagents/backends/filesystem.py
+  h_9f69767fa5fabf 422-423,586,627,629,889,893,977,980-981,1015
+libs/deepagents/deepagents/graph.py
+  h_9f69767fa5fabf 65,192,194-197
+libs/deepagents/deepagents/backends/store.py
+  h_9f69767fa5fabf 1,189,213,277,307,310,313-315,352,358,362-364,432,434-435,501-502,541,578,601,626,664,754,757-758,788-789
+libs/deepagents/deepagents/backends/local_shell.py
+  h_9f69767fa5fabf 3,126,129,132,144,163,167-168,172-175,263-264,269,278,281-284
+libs/deepagents/deepagents/backends/protocol.py
+  h_9f69767fa5fabf 3,55-58,229,232-233,258,261-263,291,294-295,304,307-308,317,320-321,346-347,357,390,395,398,426,430,587,615,617,649
+libs/deepagents/deepagents/backends/langsmith.py
+  h_9f69767fa5fabf 72-73,219
+libs/deepagents/deepagents/middleware/summarization.py
+  h_9f69767fa5fabf 148,151-152,154-155,157,183,185-186,190,194-195,197-198,200,217-218,220-221,223
+libs/deepagents/deepagents/backends/context_hub.py
+  h_9f69767fa5fabf 1,102,140
+libs/deepagents/deepagents/middleware/filesystem.py
+  h_9f69767fa5fabf 99-101,105-106,108,317,319,349,354,365,373,375,377,388,396,398,400,411,2019,2021,2025-2026,2061-2062,2124,2161,2192,2203,2229,2274,2281-2283,2325-2326,2374,2376,2393,2400
+libs/deepagents/deepagents/middleware/async_subagents.py
+  h_9f69767fa5fabf 41,43-44,852
+libs/partners/quickjs/langchain_quickjs/_ptc.py
+  h_9f69767fa5fabf 1,4-5,20,54,56-57,61,63-65,67,71-74,120
+libs/deepagents/deepagents/middleware/rubric.py
+  h_9f69767fa5fabf 75
+libs/deepagents/deepagents/backends/composite.py
+  h_9f69767fa5fabf 31,86,115,118,142-143,146,178,183,186,276,309,315-316,320,368,477,510,513,550,553,601-603,606,609-610,674-676,682-683
+libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  h_9f69767fa5fabf 67-68
+libs/deepagents/deepagents/backends/sandbox.py
+  h_9f69767fa5fabf 187,201,615,621,624,948
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "8649014ba09e0c5acc834e36ab4fd25aa1277166",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

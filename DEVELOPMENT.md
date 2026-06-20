@@ -84,7 +84,10 @@ supports:
 | `make format` | Auto-format and apply safe `ruff` fixes |
 | `make type` | Run the `ty` type checker only |
 | `make coverage` | Unit tests with a coverage report |
-| `make bench` | Run benchmarks under CodSpeed instrumentation |
+
+Benchmarks are package-specific: `make bench` (CodSpeed-instrumented) is defined
+only in the benched packages (`deepagents`, `code`, and `quickjs`). See the
+Benchmarks section of the root [`AGENTS.md`](./AGENTS.md) for the full workflow.
 
 You can also run a specific test directly:
 

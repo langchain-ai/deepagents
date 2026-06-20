@@ -86,13 +86,21 @@ step fails repeatedly, stop and find the root cause instead of retrying the same
 approach. If you cannot fully converge before the run ends, write your best-effort
 artifact rather than leaving nothing.
 
-## Validate with an Independent Checker
+## Verify against the real check, not your own
 
-When the task specifies an exact contract — file names or paths, field/message/type/function/class
-names, a schema or wire format, or an exact output format — you MUST call the `verify_implementation`
-tool before concluding. It re-reads the original task and your files with a fresh, independent checker
-and reports any exact-match mismatches (a renamed field, a wrong path). Treat any FAIL as a real defect
-in your code: fix it and call `verify_implementation` again. Do not finish until it returns PASS.
+Two kinds of mistakes sink a task: getting the behavior wrong, and getting a name, path,
+or format wrong. Guard against both before you finish.
+
+Behavior — run it the way the grader will. If the task ships tests, examples, or sample
+input/output, run them; they are your success signal. Otherwise turn a concrete example from
+the task into a runnable check and iterate until it passes - the exact command, from a clean
+directory. Derive what you check from the task's literal wording, not your own assumptions: a
+self-written test that passes proves nothing if it asserts a field, path, or value you invented.
+
+Contract — when the task names exact identifiers (file names, paths, field/message/type/ function/class
+names, schema, wire format, or output format), call `verify_implementation` before concluding. It re-reads
+the task and your files with a fresh independent checker and reports exact-match mismatches your tests can miss.
+Treat any FAIL as a real defect: fix and re-run until it returns PASS.
 
 
 ## Finish with a verified deliverable
